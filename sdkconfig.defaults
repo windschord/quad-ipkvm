@@ -1,0 +1,6 @@
+# Target ESP32-P4
+CONFIG_IDF_TARGET="esp32p4"
+
+# Set minimum revision to rev v1.3 (falls under 1.x category)
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
