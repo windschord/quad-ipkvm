@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   host-tests:
     runs-on: ubuntu-latest
@@ -28,4 +32,10 @@ jobs:
       - name: Build IDF Project
         run: |
           . $IDF_PATH/export.sh
+          idf.py set-target esp32p4
           idf.py build
+      - name: Verify sdkconfig
+        run: |
+          grep -E '^CONFIG_IDF_TARGET="esp32p4"' sdkconfig
+          grep '^CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y' sdkconfig
+          grep '^CONFIG_ESP32P4_REV_MIN_100=y' sdkconfig
