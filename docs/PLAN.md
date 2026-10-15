@@ -71,7 +71,7 @@ docs/             # HANDOFF.md, PLAN.md, HW_VERIFY.md, 各フェーズの結果�
 | P1 | ブートログ確認（オーナー作業） | T0-1 | 実機に書き込み、チップ rev v1.3 とブートログを Issue に記録 | 要 |
 | TB-1 | `kvm_logic`: 切替/ATX 状態機械（TDD） | T0-1 | 4・4.1 章の要件すべて。HANDOFF 3.3 の全シナリオ＋4 章の競合表をホストテストで網羅し、不変条件 1〜4 に対応するテストが存在 | — |
 | TC-1 | `docs/HW_VERIFY.md`（確認チェックリスト） | なし | HANDOFF 6章の各項目について「何を・どう測り・結果をどこに書くか」。**Claude が作成**しオーナーが記入 | オーナーが記入 |
-| P2a | TC358743 I2C 初期化 | T0-1, TC-1 | 読み取り系（chip id 等）＋初期化シーケンスがビルド可。診断ログ（chip id、レジスタダンプ、CSI エラーカウンタ）を出力。`TODO(hw-verify)` を明示 | 要 |
+| P2a | TC358743 I2C 初期化（**キャプチャ基板は Geekworm X630 v1.5**） | T0-1, TC-1 | 読み取り系（chip id 等）＋初期化シーケンスがビルド可。**EDID を I2C で書き込む処理**（X630 は既定で EDID なし）。診断ログ（chip id、レジスタダンプ、CSI エラーカウンタ）を出力。RESET/INT が使えない前提（ソフトリセット・INT ポーリング）で書く。`TODO(hw-verify)` を明示（HW_VERIFY E 章） | 要 |
 | P2b | CSI/ISP でフレーム 1 枚取得 → JPEG 保存 | P2a | 同上。解像度変更追従のコールバック骨格を含む | 要（フェーズ 2 の完了条件） |
 | P3 | MJPEG + HTTPS(自己署名) + WebSocket + 認証 | P2b | 認証なし拒否、初期パスワード強制、`WS /video` | 要 |
 | P4 | HID（ブートKB + 絶対/相対ポインタ）＋ `hid_logic` | P3 | TinyUSB 複合デバイスがビルド可。`WS /ws` の入力変換は `hid_logic`（ホストテスト可）に置く | 要（BIOS） |

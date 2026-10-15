@@ -20,12 +20,13 @@ LinuxベースのPiKVMの代わりに、**ベアメタル(FreeRTOS)環境の ESP
 |---|---|
 | ボード | Waveshare ESP32-P4-ETH（100M Ethernet, USB 2.0 OTG HS, MIPI-CSI, 32MB PSRAM, 32MB flash, microSD） |
 | **チップ rev** | **v1.3**（esptool 5.6.0 の `chip-id` で確認済み）。ビルドは rev < 3.0 系を選ぶ |
-| HDMI キャプチャ | TC358743 搭載 HDMI→MIPI-CSI-2 ボード（Geekworm C790 など。2レーン） |
+| HDMI キャプチャ | **Geekworm X630 v1.5**（TC358743XBG 搭載 HDMI→MIPI-CSI-2。2レーン想定。CSI は **15pin / 1.0mm FPC**）。<br>※当初想定の C790 から変更（2026-10-15、手元の実機に合わせた）。詳細・未確認事項は `docs/HW_VERIFY.md` の E 章 |
 | HDMI 切替 | AliExpress で購入した 4ch HDMI KVM（**型番不明**）を前段に置く |
 | ATX 駆動 | 74HC139 ×2 + フォトリレー×8（TC74HC157AP は機能的に不適、CD74HC4052 も検討したが 74HC139 方式を採用） |
 | パネル | LED 付きモーメンタリボタン×4（切替先の選択と表示） |
 
 接続:
+- HDMI キャプチャ（X630）とボードの CSI コネクタ: X630 は 15pin/1.0mm、ESP32-P4-ETH は **22pin/0.5mm**（回路図 J1「22PIN--PI5」）のため、**22pin→15pin の変換ケーブル（Raspberry Pi 5 用カメラケーブル相当）が必要**。ピン対応・向きは未確認（`TODO(hw-verify)`、HW_VERIFY E 章）。
 - ボードの USB-C のうち **UART / USB-JTAG 側**: 書き込み・ログ用（開発機に接続）。
 - ボードの USB-C のうち **OTG 側**: KVM 経由でターゲットPCに接続（HID デバイスとして認識させる）。
 - 開発環境: macOS。書き込み例: `esptool --chip esp32p4 -b 921600 write-flash ...`（ポートは `/dev/cu.usbmodem*`）。
