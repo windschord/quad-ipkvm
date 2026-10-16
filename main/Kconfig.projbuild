@@ -1,0 +1,10 @@
+menu "Quad IP-KVM Configuration"
+
+    config TC358743_INIT
+        bool "Initialize TC358743 on startup"
+        default n
+        help
+            Enable this to initialize the TC358743 HDMI-CSI bridge during app_main.
+            Requires proper I2C connections on the hardware.
+
+endmenu
