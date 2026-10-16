@@ -21,6 +21,10 @@ FetchContent_MakeAvailable(unity)
 # Setup kvm_logic component
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_logic ${CMAKE_BINARY_DIR}/kvm_logic)
 
+# Create a lightweight static library for testing pure C logic from tc358743
+add_library(tc358743_edid STATIC ${CMAKE_SOURCE_DIR}/../../components/tc358743/tc358743_edid.c)
+target_include_directories(tc358743_edid PUBLIC ${CMAKE_SOURCE_DIR}/../../components/tc358743/include)
+
 # Discover tests automatically
 file(GLOB_RECURSE TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*/test_*.c" "${CMAKE_CURRENT_SOURCE_DIR}/test_*.c")
 list(FILTER TEST_SOURCES EXCLUDE REGEX ".*build/.*")
@@ -38,7 +42,13 @@ foreach(test_source ${TEST_SOURCES})
     get_filename_component(test_name ${test_source} NAME_WE)
 
     add_executable(${test_name} ${test_source})
+    # Link kvm_logic for all, and conditionally link tc358743_edid for its tests
     target_link_libraries(${test_name} PRIVATE unity kvm_logic)
+
+    if (test_source MATCHES "test_edid.c")
+        target_link_libraries(${test_name} PRIVATE tc358743_edid)
+    endif()
+
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})
     target_link_options(${test_name} PRIVATE ${TEST_LINK_OPTIONS})
 
