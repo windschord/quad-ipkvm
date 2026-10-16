@@ -49,4 +49,31 @@ void test_unknown_state_on_invalid_led(void) {
     TEST_ASSERT_TRUE(outputs.atx_locked);
 }
 
-int main(void) { UNITY_BEGIN(); RUN_TEST(test_unknown_state_on_invalid_led); return UNITY_END(); }
+void test_invalid_config_prevents_step_and_requests(void) {
+    kvm_logic_t logic_bad;
+    kvm_logic_config_t bad_config = {0}; // invalid 0 values
+    kvm_result_t res = kvm_logic_init(&logic_bad, &bad_config);
+    TEST_ASSERT_EQUAL(KVM_RESULT_ERR_INVALID_PARAM, res);
+
+    kvm_logic_outputs_t out_bad = {0};
+    kvm_logic_inputs_t in_bad = {.led_raw_state = 1, .video_sync = KVM_VIDEO_SYNC_LOCKED};
+
+    // step should do nothing but emit safe defaults (UNKNOWN, locked, e high)
+    kvm_logic_step(&logic_bad, &in_bad, 1000, &out_bad);
+    TEST_ASSERT_EQUAL(KVM_STATE_UNKNOWN, logic_bad.state);
+    TEST_ASSERT_TRUE(out_bad.atx_locked);
+    TEST_ASSERT_FALSE(out_bad.e_power_low);
+    TEST_ASSERT_FALSE(out_bad.e_reset_low);
+    TEST_ASSERT_FALSE(out_bad.e_kvm_low);
+
+    // requests should be rejected
+    TEST_ASSERT_EQUAL(KVM_RESULT_ERR_UNKNOWN_STATE, kvm_logic_request_switch(&logic_bad, 2));
+    TEST_ASSERT_EQUAL(KVM_RESULT_ERR_UNKNOWN_STATE, kvm_logic_request_atx(&logic_bad, 1, KVM_ATX_TARGET_POWER, 100));
+}
+
+int main(void) {
+    UNITY_BEGIN();
+    RUN_TEST(test_unknown_state_on_invalid_led);
+    RUN_TEST(test_invalid_config_prevents_step_and_requests);
+    return UNITY_END();
+}

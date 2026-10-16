@@ -73,6 +73,16 @@ void test_atx_rejected_when_unknown(void) {
     TEST_ASSERT_EQUAL(KVM_RESULT_ERR_UNKNOWN_STATE, res);
 }
 
+void test_atx_invalid_targets(void) {
+    // Attempt NONE
+    TEST_ASSERT_EQUAL(KVM_RESULT_ERR_INVALID_PARAM, kvm_logic_request_atx(&logic, 1, KVM_ATX_TARGET_NONE, 100));
+    // Attempt unknown integer cast
+    TEST_ASSERT_EQUAL(KVM_RESULT_ERR_INVALID_PARAM, kvm_logic_request_atx(&logic, 1, (kvm_atx_target_t)99, 100));
+
+    // Attempt normal should succeed
+    TEST_ASSERT_EQUAL(KVM_RESULT_OK, kvm_logic_request_atx(&logic, 1, KVM_ATX_TARGET_POWER_FORCE, 100));
+}
+
 void test_atx_pulse_length_clamped(void) {
     uint64_t ms = config.led_stable_time_ms;
     kvm_result_t res = kvm_logic_request_atx(&logic, 1, KVM_ATX_TARGET_POWER, 1000); // Exceeds 500 max
@@ -128,4 +138,15 @@ void test_atx_anomaly_on_pulse_start_or_end(void) {
     TEST_ASSERT_TRUE(outputs.atx_anomaly_detected);
 }
 
-int main(void) { UNITY_BEGIN(); RUN_TEST(test_atx_normal_pulse); RUN_TEST(test_atx_rejected_on_channel_mismatch); RUN_TEST(test_atx_rejected_when_locked_or_switching); RUN_TEST(test_atx_rejected_when_unknown); RUN_TEST(test_atx_pulse_length_clamped); RUN_TEST(test_atx_aborted_and_anomaly_recorded_if_led_changes_during_pulse); RUN_TEST(test_atx_anomaly_on_pulse_start_or_end); return UNITY_END(); }
+int main(void) {
+    UNITY_BEGIN();
+    RUN_TEST(test_atx_normal_pulse);
+    RUN_TEST(test_atx_rejected_on_channel_mismatch);
+    RUN_TEST(test_atx_rejected_when_locked_or_switching);
+    RUN_TEST(test_atx_rejected_when_unknown);
+    RUN_TEST(test_atx_invalid_targets);
+    RUN_TEST(test_atx_pulse_length_clamped);
+    RUN_TEST(test_atx_aborted_and_anomaly_recorded_if_led_changes_during_pulse);
+    RUN_TEST(test_atx_anomaly_on_pulse_start_or_end);
+    return UNITY_END();
+}

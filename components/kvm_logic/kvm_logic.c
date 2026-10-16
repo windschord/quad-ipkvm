@@ -17,6 +17,7 @@ void kvm_logic_config_default(kvm_logic_config_t *config) {
 }
 
 kvm_result_t kvm_logic_init(kvm_logic_t *logic, const kvm_logic_config_t *config) {
+    if (!logic) return KVM_RESULT_ERR_INVALID_PARAM;
     memset(logic, 0, sizeof(kvm_logic_t));
     logic->state = KVM_STATE_UNKNOWN;
     logic->current_outputs.a0a1_channel = 1;
@@ -25,12 +26,14 @@ kvm_result_t kvm_logic_init(kvm_logic_t *logic, const kvm_logic_config_t *config
     logic->current_outputs.e_kvm_low = false;
     logic->current_outputs.atx_locked = true;
     logic->target_channel = 0;
+    logic->config_valid = false;
 
     if (!config) return KVM_RESULT_ERR_INVALID_PARAM;
     if (config->setup_time_ms == 0 || config->led_stable_time_ms == 0 ||
         config->switch_kvm_pulse_time_ms == 0 || config->switch_led_wait_timeout_ms == 0 ||
         config->switch_video_sync_timeout_ms == 0 || config->max_power_pulse_ms == 0 ||
-        config->max_reset_pulse_ms == 0 || config->max_force_power_pulse_ms == 0) {
+        config->max_reset_pulse_ms == 0 || config->max_force_power_pulse_ms == 0 ||
+        config->no_signal_settle_ms == 0) {
         return KVM_RESULT_ERR_INVALID_PARAM;
     }
 
@@ -47,10 +50,12 @@ kvm_result_t kvm_logic_init(kvm_logic_t *logic, const kvm_logic_config_t *config
         logic->config.max_force_power_pulse_ms = KVM_ATX_HARD_MAX_FORCE_MS;
     }
 
+    logic->config_valid = true;
     return KVM_RESULT_OK;
 }
 
 kvm_result_t kvm_logic_request_switch(kvm_logic_t *logic, kvm_channel_t channel) {
+    if (!logic || !logic->config_valid) return KVM_RESULT_ERR_UNKNOWN_STATE;
     if (channel < 1 || channel > 4) return KVM_RESULT_ERR_INVALID_PARAM;
 
     if (logic->state == KVM_STATE_IDLE) {
@@ -67,6 +72,8 @@ kvm_result_t kvm_logic_request_switch(kvm_logic_t *logic, kvm_channel_t channel)
 }
 
 kvm_result_t kvm_logic_request_atx(kvm_logic_t *logic, kvm_channel_t channel, kvm_atx_target_t target, uint32_t pulse_ms) {
+    if (!logic || !logic->config_valid) return KVM_RESULT_ERR_UNKNOWN_STATE;
+    if (target != KVM_ATX_TARGET_POWER && target != KVM_ATX_TARGET_RESET && target != KVM_ATX_TARGET_POWER_FORCE) return KVM_RESULT_ERR_INVALID_PARAM;
     if (channel < 1 || channel > 4) return KVM_RESULT_ERR_INVALID_PARAM;
     if (pulse_ms == 0) return KVM_RESULT_ERR_INVALID_PARAM;
     if (logic->state == KVM_STATE_UNKNOWN) return KVM_RESULT_ERR_UNKNOWN_STATE;
@@ -102,6 +109,18 @@ static bool is_valid_channel(uint8_t raw) {
 }
 
 void kvm_logic_step(kvm_logic_t *logic, const kvm_logic_inputs_t *inputs, uint64_t now_ms, kvm_logic_outputs_t *outputs) {
+    if (!logic || !logic->config_valid) {
+        if (logic) {
+            logic->state = KVM_STATE_UNKNOWN;
+            logic->current_outputs.atx_locked = true;
+            logic->current_outputs.e_power_low = false;
+            logic->current_outputs.e_reset_low = false;
+            logic->current_outputs.e_kvm_low = false;
+            if (outputs) *outputs = logic->current_outputs;
+        }
+        return;
+    }
+
     if (!logic->state_entered) {
         logic->state_start_ms = now_ms;
         logic->state_entered = true;
@@ -265,8 +284,12 @@ void kvm_logic_step(kvm_logic_t *logic, const kvm_logic_inputs_t *inputs, uint64
                 logic->state_start_ms = now_ms;
                 logic->state_entered = true;
             } else {
+                uint64_t wait_start_ms = logic->state_start_ms;
+                uint64_t effective_no_signal_start_ms = logic->no_signal_start_ms > wait_start_ms ? logic->no_signal_start_ms : wait_start_ms;
+
                 bool no_signal_settled = (inputs->video_sync == KVM_VIDEO_SYNC_NO_SIGNAL && logic->no_signal_active &&
-                                          (now_ms - logic->no_signal_start_ms) >= logic->config.no_signal_settle_ms);
+                                          now_ms >= effective_no_signal_start_ms &&
+                                          (now_ms - effective_no_signal_start_ms) >= logic->config.no_signal_settle_ms);
 
                 if (inputs->video_sync == KVM_VIDEO_SYNC_LOCKED || no_signal_settled ||
                     state_elapsed >= logic->config.switch_video_sync_timeout_ms) {
@@ -305,8 +328,12 @@ void kvm_logic_step(kvm_logic_t *logic, const kvm_logic_inputs_t *inputs, uint64
                     logic->state_start_ms = now_ms;
                     logic->state_entered = true;
                 } else {
+                    uint64_t wait_start_ms = logic->state_start_ms + logic->config.setup_time_ms;
+                    uint64_t effective_no_signal_start_ms = logic->no_signal_start_ms > wait_start_ms ? logic->no_signal_start_ms : wait_start_ms;
+
                     bool no_signal_settled = (inputs->video_sync == KVM_VIDEO_SYNC_NO_SIGNAL && logic->no_signal_active &&
-                                              (now_ms - logic->no_signal_start_ms) >= logic->config.no_signal_settle_ms);
+                                              now_ms >= effective_no_signal_start_ms &&
+                                              (now_ms - effective_no_signal_start_ms) >= logic->config.no_signal_settle_ms);
 
                     if (inputs->video_sync == KVM_VIDEO_SYNC_LOCKED || no_signal_settled ||
                         (state_elapsed - logic->config.setup_time_ms) >= logic->config.switch_video_sync_timeout_ms) {

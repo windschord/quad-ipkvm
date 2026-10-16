@@ -10,6 +10,9 @@ static uint32_t rnd(void){ rs^=rs<<13; rs^=rs>>7; rs^=rs<<17; return (uint32_t)(
 static int viol[16]; static char first[16][256];
 #define VIOL(id, ...) do { viol[id]++; if(!first[id][0]) snprintf(first[id],256,__VA_ARGS__); } while(0)
 
+void setUp(void) {}
+void tearDown(void) {}
+
 void test_fuzz_invariants(void) {
     int seeds = 200;
     long steps = 20000;
@@ -45,6 +48,13 @@ void test_fuzz_invariants(void) {
 
                 kvm_logic_request_atx(&L,ch,target, rnd()%7000);
             }
+
+            kvm_logic_state_t prev_state = L.state;
+            bool was_wait = (prev_state == KVM_STATE_SWITCH_WAIT_VIDEO || prev_state == KVM_STATE_MANUAL_TRACK_WAIT_VIDEO);
+            uint64_t wait_start_ms = prev_state == KVM_STATE_MANUAL_TRACK_WAIT_VIDEO ? L.state_start_ms + c.setup_time_ms : L.state_start_ms;
+            uint64_t effective_no_signal_start_ms = L.no_signal_start_ms > wait_start_ms ? L.no_signal_start_ms : wait_start_ms;
+            bool was_no_signal_long_enough = (in.video_sync == KVM_VIDEO_SYNC_NO_SIGNAL && L.no_signal_active && now >= effective_no_signal_start_ms && (now - effective_no_signal_start_ms) >= c.no_signal_settle_ms);
+
             kvm_logic_step(&L,&in,now,&cur);
             int anyE = cur.e_power_low||cur.e_reset_low||cur.e_kvm_low, pE=prev.e_power_low||prev.e_reset_low||prev.e_kvm_low;
 
@@ -70,12 +80,19 @@ void test_fuzz_invariants(void) {
             /* C8 ATX low only in ATX_PULSE; KVM low only in SWITCH_PULSE */
             if((cur.e_power_low||cur.e_reset_low) && L.state!=KVM_STATE_ATX_PULSE) VIOL(10,"seed%d step%ld: ATX E low in state %d",sd,i,L.state);
             if(cur.e_kvm_low && L.state!=KVM_STATE_SWITCH_PULSE) VIOL(11,"seed%d step%ld: KVM E low in state %d",sd,i,L.state);
+
+            if (was_wait && L.state == KVM_STATE_IDLE) {
+                if (in.video_sync != KVM_VIDEO_SYNC_LOCKED && !was_no_signal_long_enough && (now - wait_start_ms < c.switch_video_sync_timeout_ms)) {
+                    VIOL(12, "seed%d step%ld: transitioned to IDLE from WAIT_VIDEO without sync/timeout/no_signal settle", sd, i);
+                }
+            }
+
             prev=cur;
         }
     }
 
-    const char*n[]={"","ATX E low while locked","KVM+ATX E low together","A0/A1 changed while an E was low","E fell low before setup time after A0/A1 change","ATX E low while raw LED != active","power pulse too long","reset pulse too long","kvm pulse too long","IDLE but A0/A1 != active","ATX E low outside ATX_PULSE","KVM E low outside SWITCH_PULSE"};
-    int total=0; for(int k=1;k<12;k++){
+    const char*n[]={"","ATX E low while locked","KVM+ATX E low together","A0/A1 changed while an E was low","E fell low before setup time after A0/A1 change","ATX E low while raw LED != active","power pulse too long","reset pulse too long","kvm pulse too long","IDLE but A0/A1 != active","ATX E low outside ATX_PULSE","KVM E low outside SWITCH_PULSE", "Invalid transition to IDLE"};
+    int total=0; for(int k=1;k<13;k++){
         if (viol[k]) {
             printf("%-48s : %d%s%s\n",n[k],viol[k],viol[k]?"   e.g. ":"",first[k]);
         }
@@ -89,6 +106,3 @@ int main(void) {
     RUN_TEST(test_fuzz_invariants);
     return UNITY_END();
 }
-
-void setUp(void) {}
-void tearDown(void) {}

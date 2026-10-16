@@ -96,6 +96,7 @@ typedef enum {
 /* State Machine Context */
 typedef struct {
     kvm_logic_config_t config;
+    bool config_valid;
 
     kvm_logic_state_t state;
 

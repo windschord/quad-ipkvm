@@ -122,8 +122,16 @@ void test_switch_video_sync_timeout_releases_atx_lock(void) {
 }
 
 void test_switch_video_no_signal_releases_atx_lock(void) {
-    kvm_logic_request_switch(&logic, 2);
+    // Start with a long 60 sec period of NO_SIGNAL before switching
     uint64_t ms = config.led_stable_time_ms;
+
+    inputs.video_sync = KVM_VIDEO_SYNC_NO_SIGNAL;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+    ms += 60000;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+
+    // Now switch
+    kvm_logic_request_switch(&logic, 2);
 
     kvm_logic_step(&logic, &inputs, ms, &outputs);
     ms += config.setup_time_ms;
@@ -138,12 +146,14 @@ void test_switch_video_no_signal_releases_atx_lock(void) {
     kvm_logic_step(&logic, &inputs, ms, &outputs); // WAIT_VIDEO reached
     TEST_ASSERT_EQUAL(KVM_STATE_SWITCH_WAIT_VIDEO, logic.state);
 
-    inputs.video_sync = KVM_VIDEO_SYNC_NO_SIGNAL;
+    // At this point NO_SIGNAL has been active for 60 seconds. But we ONLY want to consider it settled if it stays active for `no_signal_settle_ms` MORE from WAIT_VIDEO entry time.
     ms += 10;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // registers no signal
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+
+    TEST_ASSERT_EQUAL(KVM_STATE_SWITCH_WAIT_VIDEO, logic.state); // Not yet
 
     ms += config.no_signal_settle_ms;
-    kvm_logic_step(&logic, &inputs, ms, &outputs);
+    kvm_logic_step(&logic, &inputs, ms, &outputs); // Now it should settle
 
     TEST_ASSERT_EQUAL(KVM_STATE_IDLE, logic.state);
     TEST_ASSERT_FALSE(outputs.atx_locked);
@@ -152,6 +162,11 @@ void test_switch_video_no_signal_releases_atx_lock(void) {
 
 void test_manual_switch_tracking(void) {
     uint64_t ms = config.led_stable_time_ms;
+
+    // Have a long NO_SIGNAL period beforehand
+    inputs.video_sync = KVM_VIDEO_SYNC_NO_SIGNAL;
+    ms += 60000;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
 
     inputs.led_raw_state = 2;
     ms += 10;
@@ -164,17 +179,13 @@ void test_manual_switch_tracking(void) {
     TEST_ASSERT_EQUAL(KVM_STATE_MANUAL_TRACK_WAIT_VIDEO, logic.state);
     TEST_ASSERT_EQUAL(2, outputs.a0a1_channel);
 
-    inputs.video_sync = KVM_VIDEO_SYNC_NO_SIGNAL;
-    ms += 10;
+    // It should wait setup time + settle time from NO SIGNAL BEFORE unlocking!
+    ms += config.setup_time_ms + 10;
     kvm_logic_step(&logic, &inputs, ms, &outputs);
+    TEST_ASSERT_EQUAL(KVM_STATE_MANUAL_TRACK_WAIT_VIDEO, logic.state);
 
-    ms += config.setup_time_ms;
+    ms += config.no_signal_settle_ms;
     kvm_logic_step(&logic, &inputs, ms, &outputs);
-
-    inputs.video_sync = KVM_VIDEO_SYNC_LOCKED;
-    ms += 10;
-    kvm_logic_step(&logic, &inputs, ms, &outputs);
-
     TEST_ASSERT_EQUAL(KVM_STATE_IDLE, logic.state);
     TEST_ASSERT_FALSE(outputs.atx_locked);
     TEST_ASSERT_EQUAL(2, outputs.active_channel);
