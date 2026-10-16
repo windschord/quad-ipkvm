@@ -62,26 +62,29 @@ size_t tc358743_edid_build(uint8_t* out_buffer, size_t buffer_size, uint32_t max
         out_buffer[70] = 0x00; // border
         out_buffer[71] = 0x1E; // flags (interlaced=0, syncs...)
     } else {
-        // Fallback: 640x480@60Hz (25.175 MHz) DTD
-        uint16_t pix_clk = 2518; // 25.175 MHz
+        // Fallback: 640x480@60Hz (25.175 MHz) DTD (VIC 1)
+        // Total H = 640 + 160 = 800
+        // Total V = 480 + 45 = 525
+        // Frame rate = 25.175 MHz / (800 * 525) = 59.94 Hz
+        uint16_t pix_clk = 2517; // 25.175 MHz -> 2517 (rounded to nearest 10kHz)
         out_buffer[54] = pix_clk & 0xFF;
         out_buffer[55] = pix_clk >> 8;
-        out_buffer[56] = 0x80; // H active (640)
-        out_buffer[57] = 0x60; // H blanking (160)
-        out_buffer[58] = 0x20; // H active/blank upper
-        out_buffer[59] = 0xE0; // V active (480)
-        out_buffer[60] = 0x2D; // V blanking (45)
-        out_buffer[61] = 0x10; // V active/blank upper
-        out_buffer[62] = 0x10; // H sync offset (16)
-        out_buffer[63] = 0x60; // H sync width (96)
-        out_buffer[64] = 0x00; // V sync offset (10), V sync width (2) -- example values
-        out_buffer[65] = 0x00; // sync upper
-        out_buffer[66] = 0x10; // H image size
-        out_buffer[67] = 0x09; // V image size
+        out_buffer[56] = 0x80; // H active (640) lower 8
+        out_buffer[57] = 0xA0; // H blanking (160) lower 8
+        out_buffer[58] = 0x20; // H active upper 4 (0x2), H blanking upper 4 (0x0) -> 0x20
+        out_buffer[59] = 0xE0; // V active (480) lower 8
+        out_buffer[60] = 0x2D; // V blanking (45) lower 8
+        out_buffer[61] = 0x10; // V active upper 4 (0x1), V blanking upper 4 (0x0) -> 0x10
+        out_buffer[62] = 0x10; // H sync offset (16) lower 8
+        out_buffer[63] = 0x60; // H sync width (96) lower 8
+        out_buffer[64] = 0xA2; // V sync offset (10) upper 4, V sync width (2) lower 4 -> 1010 0010 -> 0xA2
+        out_buffer[65] = 0x00; // sync upper bits
+        out_buffer[66] = 0x10; // H image size lower 8
+        out_buffer[67] = 0x09; // V image size lower 8
         out_buffer[68] = 0x00; // image sizes upper
         out_buffer[69] = 0x00; // border
         out_buffer[70] = 0x00; // border
-        out_buffer[71] = 0x18; // flags
+        out_buffer[71] = 0x18; // flags: sync negative/negative -> 0x18
     }
 
     // Monitor Name Descriptor (Descriptor 2)

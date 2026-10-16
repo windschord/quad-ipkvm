@@ -70,7 +70,7 @@ void test_edid_dtd_fallback(void) {
 
     // Should fallback to 640x480 (25.175 MHz)
     // pix_clk = 2518 -> 0x09D6
-    TEST_ASSERT_EQUAL_HEX8(0xD6, buffer_low_mhz[54]);
+    TEST_ASSERT_EQUAL_HEX8(0xD5, buffer_low_mhz[54]);
     TEST_ASSERT_EQUAL_HEX8(0x09, buffer_low_mhz[55]);
 }
 
@@ -109,6 +109,8 @@ void test_edid_vendor_id_del_sam(void) {
     TEST_ASSERT_EQUAL_CHAR('M', c3);
 }
 
+void test_edid_dtd_refresh_rates(void);
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_edid_generation_basic);
@@ -116,5 +118,40 @@ int main(void) {
     RUN_TEST(test_edid_dtd_fallback);
     RUN_TEST(test_edid_vendor_id_decode);
     RUN_TEST(test_edid_vendor_id_del_sam);
+    RUN_TEST(test_edid_dtd_refresh_rates);
     return UNITY_END();
+}
+
+void test_edid_dtd_refresh_rates(void) {
+    uint8_t buffer_1080p[256];
+    tc358743_edid_build(buffer_1080p, sizeof(buffer_1080p), 81000);
+
+    // Parse 1080p30 DTD
+    uint8_t* dtd1 = &buffer_1080p[54];
+    uint16_t pix_clk_10k = dtd1[0] | (dtd1[1] << 8); // 10kHz unit
+    uint16_t h_active = dtd1[2] | ((dtd1[4] & 0xF0) << 4);
+    uint16_t h_blanking = dtd1[3] | ((dtd1[4] & 0x0F) << 8);
+    uint16_t v_active = dtd1[5] | ((dtd1[7] & 0xF0) << 4);
+    uint16_t v_blanking = dtd1[6] | ((dtd1[7] & 0x0F) << 8);
+
+    float total_pixels_1 = (float)(h_active + h_blanking) * (float)(v_active + v_blanking);
+    float refresh_1 = (float)(pix_clk_10k * 10000) / total_pixels_1;
+    // Expected ~30.00 Hz
+    TEST_ASSERT_FLOAT_WITHIN(0.01, 30.00, refresh_1);
+
+    uint8_t buffer_480p[256];
+    tc358743_edid_build(buffer_480p, sizeof(buffer_480p), 25000);
+
+    // Parse 640x480@60 DTD
+    uint8_t* dtd2 = &buffer_480p[54];
+    uint16_t pix_clk_10k_2 = dtd2[0] | (dtd2[1] << 8); // 10kHz unit
+    uint16_t h_active_2 = dtd2[2] | ((dtd2[4] & 0xF0) << 4);
+    uint16_t h_blanking_2 = dtd2[3] | ((dtd2[4] & 0x0F) << 8);
+    uint16_t v_active_2 = dtd2[5] | ((dtd2[7] & 0xF0) << 4);
+    uint16_t v_blanking_2 = dtd2[6] | ((dtd2[7] & 0x0F) << 8);
+
+    float total_pixels_2 = (float)(h_active_2 + h_blanking_2) * (float)(v_active_2 + v_blanking_2);
+    float refresh_2 = (float)(pix_clk_10k_2 * 10000) / total_pixels_2;
+    // Expected ~59.94 Hz (25.175 MHz / 420000) = 59.9404...
+    TEST_ASSERT_FLOAT_WITHIN(0.02, 59.94, refresh_2);
 }

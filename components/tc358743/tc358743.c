@@ -264,7 +264,8 @@ static esp_err_t tc_set_csi(tc358743_handle_t dev) {
     if (err != ESP_OK) return err;
 
     if (!dev->config.csi_timings_provided) {
-        ESP_LOGW(TAG, "UNVERIFIED CSI timings. Using stubbed/dummy values.");
+        ESP_LOGW(TAG, "UNVERIFIED CSI timings — CSI start skipped. Skipping CSI configurations but resuming initialization.");
+        return ESP_OK;
     }
 
     tc358743_csi_timings_t* t = &dev->config.csi_timings;
@@ -298,7 +299,7 @@ static esp_err_t tc_set_csi(tc358743_handle_t dev) {
     err = tc_write32(dev, TXOPTIONCNTRL, MASK_CONTCLKMODE); // Set continuous clock mode or similar based on PPA/CSI receiver needs
     if (err != ESP_OK) return err;
 
-    err = tc_write32(dev, STARTCNTRL, 0); // Start control (0 usually means video driven, default)
+    err = tc_write32(dev, STARTCNTRL, MASK_STRT);
     if (err != ESP_OK) return err;
 
     err = tc_write32(dev, CSI_START, MASK_STRT);
