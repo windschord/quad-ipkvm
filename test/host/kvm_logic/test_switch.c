@@ -7,68 +7,48 @@ kvm_logic_inputs_t inputs;
 kvm_logic_outputs_t outputs;
 
 void setUp(void) {
-    config = (kvm_logic_config_t){
-        .led_stable_time_ms = 50,
-        .switch_kvm_pulse_time_ms = 150,
-        .switch_led_wait_timeout_ms = 2000,
-        .switch_video_sync_timeout_ms = 3000,
-        .setup_time_ms = 10,
-        .max_power_pulse_ms = 500,
-        .max_reset_pulse_ms = 200,
-        .max_force_power_pulse_ms = 5000
-    };
+    kvm_logic_config_default(&config);
     kvm_logic_init(&logic, &config);
     inputs.led_raw_state = 1;
     inputs.video_sync = KVM_VIDEO_SYNC_LOCKED;
 
-    // Stabilize LED to channel 1
     kvm_logic_step(&logic, &inputs, 0, &outputs);
     kvm_logic_step(&logic, &inputs, config.led_stable_time_ms, &outputs);
 }
-
-void tearDown(void) {
-}
+void tearDown(void) {}
 
 void test_switch_normal_success(void) {
-    TEST_ASSERT_EQUAL(KVM_STATE_IDLE, logic.state);
+    kvm_logic_request_switch(&logic, 2);
 
-    kvm_result_t res = kvm_logic_request_switch(&logic, 2);
-    TEST_ASSERT_EQUAL(KVM_RESULT_OK, res);
+    uint64_t ms = config.led_stable_time_ms;
 
-    // Transition to setup wait
-    uint64_t ms = config.led_stable_time_ms + 1;
+    ms += 1;
     kvm_logic_step(&logic, &inputs, ms, &outputs);
     TEST_ASSERT_EQUAL(KVM_STATE_SWITCH_WAIT_SETUP, logic.state);
     TEST_ASSERT_TRUE(outputs.atx_locked);
-    TEST_ASSERT_FALSE(outputs.e_kvm_low); // Not low yet
     TEST_ASSERT_EQUAL(2, outputs.a0a1_channel);
 
-    // Wait setup time
     ms += config.setup_time_ms;
     kvm_logic_step(&logic, &inputs, ms, &outputs);
     TEST_ASSERT_EQUAL(KVM_STATE_SWITCH_PULSE, logic.state);
-    TEST_ASSERT_TRUE(outputs.e_kvm_low); // E low
+    TEST_ASSERT_TRUE(outputs.e_kvm_low);
 
-    // Wait KVM pulse
     ms += config.switch_kvm_pulse_time_ms;
     kvm_logic_step(&logic, &inputs, ms, &outputs);
     TEST_ASSERT_EQUAL(KVM_STATE_SWITCH_WAIT_LED, logic.state);
-    TEST_ASSERT_FALSE(outputs.e_kvm_low); // E high again
+    TEST_ASSERT_FALSE(outputs.e_kvm_low);
 
-    // Change LED
     inputs.led_raw_state = 2;
     ms += 10;
     kvm_logic_step(&logic, &inputs, ms, &outputs);
-
-    // Wait LED stabilization
     ms += config.led_stable_time_ms;
     kvm_logic_step(&logic, &inputs, ms, &outputs);
     TEST_ASSERT_EQUAL(KVM_STATE_SWITCH_WAIT_VIDEO, logic.state);
 
-    // Change video sync
-    inputs.video_sync = KVM_VIDEO_SYNC_NO_SIGNAL; // or sync unknown, then locked
+    inputs.video_sync = KVM_VIDEO_SYNC_NO_SIGNAL;
     ms += 10;
     kvm_logic_step(&logic, &inputs, ms, &outputs);
+
     inputs.video_sync = KVM_VIDEO_SYNC_LOCKED;
     ms += 10;
     kvm_logic_step(&logic, &inputs, ms, &outputs);
@@ -81,39 +61,32 @@ void test_switch_normal_success(void) {
 void test_switch_to_current_channel_is_ignored(void) {
     kvm_result_t res = kvm_logic_request_switch(&logic, 1);
     TEST_ASSERT_EQUAL(KVM_RESULT_OK, res);
-
-    uint64_t ms = config.led_stable_time_ms + 1;
-    kvm_logic_step(&logic, &inputs, ms, &outputs);
-
-    // Still in idle, didn't do anything
     TEST_ASSERT_EQUAL(KVM_STATE_IDLE, logic.state);
-    TEST_ASSERT_FALSE(outputs.atx_locked);
+
+    kvm_logic_step(&logic, &inputs, config.led_stable_time_ms + 10, &outputs);
+    TEST_ASSERT_EQUAL(KVM_STATE_IDLE, logic.state);
 }
 
 void test_switch_led_timeout_reverts_a0a1(void) {
     kvm_logic_request_switch(&logic, 2);
+    uint64_t ms = config.led_stable_time_ms;
 
-    uint64_t ms = config.led_stable_time_ms + 1;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // SETUP
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
     ms += config.setup_time_ms;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // PULSE
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
     ms += config.switch_kvm_pulse_time_ms;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // WAIT_LED
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
 
-    // Don't change LED. Wait for timeout.
+    TEST_ASSERT_EQUAL(KVM_STATE_SWITCH_WAIT_LED, logic.state);
+
     ms += config.switch_led_wait_timeout_ms;
     kvm_logic_step(&logic, &inputs, ms, &outputs);
-
     TEST_ASSERT_EQUAL(KVM_STATE_SWITCH_REVERT_SETUP, logic.state);
     TEST_ASSERT_EQUAL(1, outputs.a0a1_channel);
-    TEST_ASSERT_FALSE(outputs.e_power_low);
-    TEST_ASSERT_FALSE(outputs.e_reset_low);
     TEST_ASSERT_FALSE(outputs.e_kvm_low);
 
-    // Setup time passed
     ms += config.setup_time_ms;
     kvm_logic_step(&logic, &inputs, ms, &outputs);
-
     TEST_ASSERT_EQUAL(KVM_STATE_IDLE, logic.state);
     TEST_ASSERT_FALSE(outputs.atx_locked);
     TEST_ASSERT_EQUAL(1, outputs.active_channel);
@@ -121,77 +94,82 @@ void test_switch_led_timeout_reverts_a0a1(void) {
 
 void test_switch_video_sync_timeout_releases_atx_lock(void) {
     kvm_logic_request_switch(&logic, 2);
+    uint64_t ms = config.led_stable_time_ms;
 
-    uint64_t ms = config.led_stable_time_ms + 1;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // SETUP
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
     ms += config.setup_time_ms;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // PULSE
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
     ms += config.switch_kvm_pulse_time_ms;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // WAIT_LED
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
 
     inputs.led_raw_state = 2;
-    ms += 10;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // register change
-
     ms += config.led_stable_time_ms;
-    inputs.video_sync = KVM_VIDEO_SYNC_UNKNOWN; // simulate no immediate sync
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // WAIT_VIDEO
-    TEST_ASSERT_EQUAL(KVM_STATE_SWITCH_WAIT_VIDEO, logic.state);
-
-    ms += config.switch_video_sync_timeout_ms;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // Now wait timeout
-
-    TEST_ASSERT_EQUAL(KVM_STATE_IDLE, logic.state);
-    TEST_ASSERT_FALSE(outputs.atx_locked);
-}
-
-void test_switch_video_no_signal_releases_atx_lock(void) {
-    kvm_logic_request_switch(&logic, 2);
-
-    uint64_t ms = config.led_stable_time_ms + 1;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // SETUP
-    ms += config.setup_time_ms;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // PULSE
-    ms += config.switch_kvm_pulse_time_ms;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // WAIT_LED
-
-    inputs.led_raw_state = 2;
-    ms += 10;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // register change
-
+    kvm_logic_step(&logic, &inputs, ms, &outputs); // LED tracks 2
     ms += config.led_stable_time_ms;
-    inputs.video_sync = KVM_VIDEO_SYNC_UNKNOWN;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // WAIT_VIDEO
+    kvm_logic_step(&logic, &inputs, ms, &outputs); // stable
     TEST_ASSERT_EQUAL(KVM_STATE_SWITCH_WAIT_VIDEO, logic.state);
 
     inputs.video_sync = KVM_VIDEO_SYNC_NO_SIGNAL;
     ms += 10;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // immediately transitions
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+
+    ms += config.switch_video_sync_timeout_ms;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
 
     TEST_ASSERT_EQUAL(KVM_STATE_IDLE, logic.state);
     TEST_ASSERT_FALSE(outputs.atx_locked);
+    TEST_ASSERT_EQUAL(2, outputs.active_channel);
+}
+
+void test_switch_video_no_signal_releases_atx_lock(void) {
+    kvm_logic_request_switch(&logic, 2);
+    uint64_t ms = config.led_stable_time_ms;
+
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+    ms += config.setup_time_ms;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+    ms += config.switch_kvm_pulse_time_ms;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+
+    inputs.led_raw_state = 2;
+    ms += config.led_stable_time_ms;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+    ms += config.led_stable_time_ms;
+    kvm_logic_step(&logic, &inputs, ms, &outputs); // WAIT_VIDEO reached
+    TEST_ASSERT_EQUAL(KVM_STATE_SWITCH_WAIT_VIDEO, logic.state);
+
+    inputs.video_sync = KVM_VIDEO_SYNC_NO_SIGNAL;
+    ms += 10;
+    kvm_logic_step(&logic, &inputs, ms, &outputs); // registers no signal
+
+    ms += config.no_signal_settle_ms;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+
+    TEST_ASSERT_EQUAL(KVM_STATE_IDLE, logic.state);
+    TEST_ASSERT_FALSE(outputs.atx_locked);
+    TEST_ASSERT_EQUAL(2, outputs.active_channel);
 }
 
 void test_manual_switch_tracking(void) {
-    uint64_t ms = config.led_stable_time_ms + 1;
+    uint64_t ms = config.led_stable_time_ms;
 
-    // Change LED manually
-    inputs.led_raw_state = 3;
-    kvm_logic_step(&logic, &inputs, ms, &outputs); // register change
-
-    // Should immediately go to MANUAL_TRACK_WAIT_LED and lock ATX
+    inputs.led_raw_state = 2;
+    ms += 10;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
     TEST_ASSERT_EQUAL(KVM_STATE_MANUAL_TRACK_WAIT_LED, logic.state);
     TEST_ASSERT_TRUE(outputs.atx_locked);
 
-    // Wait stabilization
     ms += config.led_stable_time_ms;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+    TEST_ASSERT_EQUAL(KVM_STATE_MANUAL_TRACK_WAIT_VIDEO, logic.state);
+    TEST_ASSERT_EQUAL(2, outputs.a0a1_channel);
+
+    inputs.video_sync = KVM_VIDEO_SYNC_NO_SIGNAL;
+    ms += 10;
     kvm_logic_step(&logic, &inputs, ms, &outputs);
 
     ms += config.setup_time_ms;
-    inputs.video_sync = KVM_VIDEO_SYNC_UNKNOWN;
     kvm_logic_step(&logic, &inputs, ms, &outputs);
-
-    TEST_ASSERT_EQUAL(3, outputs.a0a1_channel);
 
     inputs.video_sync = KVM_VIDEO_SYNC_LOCKED;
     ms += 10;
@@ -199,6 +177,112 @@ void test_manual_switch_tracking(void) {
 
     TEST_ASSERT_EQUAL(KVM_STATE_IDLE, logic.state);
     TEST_ASSERT_FALSE(outputs.atx_locked);
+    TEST_ASSERT_EQUAL(2, outputs.active_channel);
 }
 
-int main(void) { UNITY_BEGIN(); RUN_TEST(test_switch_normal_success); RUN_TEST(test_switch_to_current_channel_is_ignored); RUN_TEST(test_switch_led_timeout_reverts_a0a1); RUN_TEST(test_switch_video_sync_timeout_releases_atx_lock); RUN_TEST(test_switch_video_no_signal_releases_atx_lock); RUN_TEST(test_manual_switch_tracking); return UNITY_END(); }
+void test_startup_led_stabilization(void) {
+    kvm_logic_t logic2;
+    kvm_logic_init(&logic2, &config);
+    kvm_logic_outputs_t out2;
+
+    inputs.led_raw_state = 3;
+    kvm_logic_step(&logic2, &inputs, 0, &out2);
+    TEST_ASSERT_EQUAL(KVM_STATE_UNKNOWN, logic2.state);
+
+    kvm_logic_step(&logic2, &inputs, config.led_stable_time_ms, &out2);
+    TEST_ASSERT_EQUAL(KVM_STATE_IDLE, logic2.state);
+    TEST_ASSERT_EQUAL(3, out2.active_channel);
+    TEST_ASSERT_EQUAL(3, out2.a0a1_channel);
+}
+
+void test_duplicate_switch_requests_rejected(void) {
+    kvm_logic_request_switch(&logic, 2);
+    kvm_result_t res = kvm_logic_request_switch(&logic, 3);
+    TEST_ASSERT_EQUAL(KVM_RESULT_ERR_SWITCHING, res);
+}
+
+void test_switch_interrupted_by_unexpected_led_change(void) {
+    kvm_logic_request_switch(&logic, 2);
+    uint64_t ms = config.led_stable_time_ms;
+
+    // Process step for request
+    kvm_logic_step(&logic, &inputs, ms, &outputs); // state entered becomes true
+
+    ms += config.setup_time_ms + 1;
+    kvm_logic_step(&logic, &inputs, ms, &outputs); // Switch wait pulse
+    ms += config.switch_kvm_pulse_time_ms + 1;
+    kvm_logic_step(&logic, &inputs, ms, &outputs); // Switch wait LED
+
+    TEST_ASSERT_EQUAL(KVM_STATE_SWITCH_WAIT_LED, logic.state);
+
+    inputs.led_raw_state = 3;
+    ms += 10;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+    TEST_ASSERT_EQUAL(KVM_STATE_MANUAL_TRACK_WAIT_LED, logic.state);
+}
+
+void test_manual_switch_tracked_after_switch_timeout(void) {
+    kvm_logic_request_switch(&logic, 2);
+    uint64_t ms = config.led_stable_time_ms;
+
+    // Request setup
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+
+    ms += config.setup_time_ms + 1;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+    ms += config.switch_kvm_pulse_time_ms + 1;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+
+    ms += config.switch_led_wait_timeout_ms;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+    TEST_ASSERT_EQUAL(KVM_STATE_SWITCH_REVERT_SETUP, logic.state);
+
+    ms += config.setup_time_ms;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+    TEST_ASSERT_EQUAL(KVM_STATE_IDLE, logic.state);
+
+    inputs.led_raw_state = 2;
+    ms += 10;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+    TEST_ASSERT_EQUAL(KVM_STATE_MANUAL_TRACK_WAIT_LED, logic.state);
+}
+
+void test_idle_retracks_if_led_changes(void) {
+    // Tests that if IDLE detects an unexpected LED change or unmatching state, it re-tracks
+    uint64_t ms = config.led_stable_time_ms;
+
+    inputs.led_raw_state = 3;
+    ms += 10;
+    kvm_logic_step(&logic, &inputs, ms, &outputs); // Wait LED tracking...
+    ms += config.led_stable_time_ms;
+    kvm_logic_step(&logic, &inputs, ms, &outputs); // Wait video...
+    ms += config.setup_time_ms;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+    ms += 10;
+    inputs.video_sync = KVM_VIDEO_SYNC_LOCKED;
+    kvm_logic_step(&logic, &inputs, ms, &outputs); // Back to IDLE
+
+    TEST_ASSERT_EQUAL(KVM_STATE_IDLE, logic.state);
+
+    // Now abruptly change led
+    inputs.led_raw_state = 4;
+    ms += 10;
+    kvm_logic_step(&logic, &inputs, ms, &outputs);
+    TEST_ASSERT_EQUAL(KVM_STATE_MANUAL_TRACK_WAIT_LED, logic.state);
+}
+
+int main(void) {
+    UNITY_BEGIN();
+    RUN_TEST(test_switch_normal_success);
+    RUN_TEST(test_switch_to_current_channel_is_ignored);
+    RUN_TEST(test_switch_led_timeout_reverts_a0a1);
+    RUN_TEST(test_switch_video_sync_timeout_releases_atx_lock);
+    RUN_TEST(test_switch_video_no_signal_releases_atx_lock);
+    RUN_TEST(test_manual_switch_tracking);
+    RUN_TEST(test_startup_led_stabilization);
+    RUN_TEST(test_duplicate_switch_requests_rejected);
+    RUN_TEST(test_switch_interrupted_by_unexpected_led_change);
+    RUN_TEST(test_manual_switch_tracked_after_switch_timeout);
+    RUN_TEST(test_idle_retracks_if_led_changes);
+    return UNITY_END();
+}

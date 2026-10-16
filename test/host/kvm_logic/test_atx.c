@@ -7,16 +7,7 @@ kvm_logic_inputs_t inputs;
 kvm_logic_outputs_t outputs;
 
 void setUp(void) {
-    config = (kvm_logic_config_t){
-        .led_stable_time_ms = 50,
-        .switch_kvm_pulse_time_ms = 150,
-        .switch_led_wait_timeout_ms = 2000,
-        .switch_video_sync_timeout_ms = 3000,
-        .setup_time_ms = 10,
-        .max_power_pulse_ms = 500,
-        .max_reset_pulse_ms = 200,
-        .max_force_power_pulse_ms = 5000
-    };
+    kvm_logic_config_default(&config);
     kvm_logic_init(&logic, &config);
     inputs.led_raw_state = 1;
     inputs.video_sync = KVM_VIDEO_SYNC_LOCKED;

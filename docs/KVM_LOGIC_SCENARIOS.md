@@ -23,7 +23,7 @@
 | UNKNOWN 状態での拒否 | LEDが不定 (UNKNOWN) の間はATX要求を拒否。 | `test_atx_rejected_when_unknown` |
 | パルス長上限による clamp | 要求されたパルス長が設定(config)の最大値を超える場合、最大値に切り詰める（clampする）。※board側でも別途clampする前提。 | `test_atx_pulse_length_clamped` |
 | パルス中のLED変化（異常） | パルス中にLEDが不一致になった場合、直ちに全ĒをHighにしパルス中断。異常を記録。 | `test_atx_aborted_and_anomaly_recorded_if_led_changes_during_pulse` |
-| パルス直前/直後のLED異常 | パルス開始前・終了後にLEDが一致しない場合、要求拒否・異常記録。 | `test_atx_anomaly_on_pulse_start_or_end` |
+| パルス終了時のLED不一致のLED異常 | パルス開始前・終了後にLEDが一致しない場合、要求拒否・異常記録。 | `test_atx_anomaly_on_pulse_start_or_end` |
 
 ## 3. 競合・異常シナリオ (test_unknown.c / test_switch.c)
 
@@ -38,8 +38,8 @@
 
 | シナリオ | 期待動作 | テスト名 |
 | --- | --- | --- |
-| 【不変条件1】 A0/A1の一致 | 切替中(A0/A1変更からLED確定まで)を除き、A0/A1はLEDが示す現在チャンネルと一致していること。 | (各テストで `assert_invariant_1` 的なチェックを実施)、または個別テスト `test_invariant_1_a0a1_matches_led` |
+| 【不変条件1】 A0/A1の一致 | 切替中(A0/A1変更からLED確定まで)を除き、A0/A1はLEDが示す現在チャンネルと一致していること。 | `test_invariant_1_a0a1_matches_led` |
 | 【不変条件2】 切替中のATX保護 | 切替中(ボタン押下〜LED確定+HDMI再同期)は、ATXの Ē が決して Low にならないこと。 | `test_invariant_2_no_atx_during_switch` |
 | 【不変条件3】 ATX LED監視 | ATXパルス前後・中のLED監視と上限。 | (test_atx.c で網羅) |
 | 【不変条件4】 A0/A1変更手順 | A0/A1の変更時は、必ず「全Ē High -> A0/A1変更 -> セットアップ時間 -> Ē Low」の順序を守ること。いかなる時も Ē が Low の状態で A0/A1 を変更してはならない。 | `test_invariant_4_a0a1_change_sequence` |
-| タイムスタンプ・ラップアラウンド | 外部注入される `now_ms` のラップアラウンド耐性。uint32ではなくuint64を想定するが、ロジック内のタイマー差分計算が安全か。 | `test_time_wraparound_safety` |
+| タイムスタンプ・ラップアラウンド安全確認 | 外部注入される `now_ms` のラップアラウンド耐性。uint32ではなくuint64を想定するが、ロジック内のタイマー差分計算が安全か。 | `test_time_wraparound_safety` |
