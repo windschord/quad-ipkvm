@@ -12,12 +12,10 @@ size_t tc358743_edid_build(uint8_t* out_buffer, size_t buffer_size, uint32_t max
     out_buffer[7] = 0x00;
 
     // Vendor / Product ID
-    // "ESP" in compressed ASCII:
-    // 'E' = 5, 'S' = 19, 'P' = 16
-    // Binary: 00001 (5), 10011 (19), 10000 (16)
-    // 00001100 11100000 -> 0x0C, 0xE0 -> Little Endian: 0xE0, 0x0C
-    out_buffer[8]  = 0x70;
-    out_buffer[9]  = 0x16;
+    // Compressed ASCII, Big Endian (byte 8 = upper, byte 9 = lower)
+    // "ESP": 'E' = 5, 'S' = 19, 'P' = 16 -> 00001 10011 10000 -> 0x1670
+    out_buffer[8]  = 0x16;
+    out_buffer[9]  = 0x70;
     out_buffer[10] = 0x01; // Product Code
     out_buffer[11] = 0x00;
 
@@ -27,16 +25,21 @@ size_t tc358743_edid_build(uint8_t* out_buffer, size_t buffer_size, uint32_t max
 
     // Basic Display Parameters
     out_buffer[20] = 0x80; // Digital input
-    out_buffer[21] = 0x10; // H size
-    out_buffer[22] = 0x09; // V size
+    out_buffer[21] = 0x10; // H size (16 cm)
+    out_buffer[22] = 0x09; // V size (9 cm)
     out_buffer[23] = 0x78; // Gamma
     out_buffer[24] = 0x0A; // Features
 
     // Established Timings (e.g. 640x480)
     out_buffer[35] = 0x20;
 
-    // Detailed Timing Descriptor (DTD)
-    // Using 1080p30 as the highest supported standard inside base block if allowed by max clock
+    // Standard Timings (bytes 38-53) - Unused filled with 0x01, 0x01
+    for (int i = 38; i < 54; i += 2) {
+        out_buffer[i] = 0x01;
+        out_buffer[i+1] = 0x01;
+    }
+
+    // Detailed Timing Descriptor (DTD) 1
     if (max_pixel_clock_khz >= 74250) {
         // 1080p30 DTD (~74.25 MHz)
         uint16_t pix_clk = 7425; // 74.25 MHz / 10kHz
@@ -52,25 +55,55 @@ size_t tc358743_edid_build(uint8_t* out_buffer, size_t buffer_size, uint32_t max
         out_buffer[63] = 0x2C; // H sync width (44) lower 8
         out_buffer[64] = 0x45; // V sync offset (4) upper 4, V sync width (5) lower 4 -> 0100 0101
         out_buffer[65] = 0x00; // sync offsets/widths upper bits
-        out_buffer[66] = 0x00; // H image size lower
-        out_buffer[67] = 0x00; // V image size lower
+        out_buffer[66] = 0x10; // H image size (160mm) lower 8
+        out_buffer[67] = 0x09; // V image size (90mm) lower 8
         out_buffer[68] = 0x00; // image sizes upper
         out_buffer[69] = 0x00; // border
         out_buffer[70] = 0x00; // border
         out_buffer[71] = 0x1E; // flags (interlaced=0, syncs...)
+    } else {
+        // Fallback: 640x480@60Hz (25.175 MHz) DTD
+        uint16_t pix_clk = 2518; // 25.175 MHz
+        out_buffer[54] = pix_clk & 0xFF;
+        out_buffer[55] = pix_clk >> 8;
+        out_buffer[56] = 0x80; // H active (640)
+        out_buffer[57] = 0x60; // H blanking (160)
+        out_buffer[58] = 0x20; // H active/blank upper
+        out_buffer[59] = 0xE0; // V active (480)
+        out_buffer[60] = 0x2D; // V blanking (45)
+        out_buffer[61] = 0x10; // V active/blank upper
+        out_buffer[62] = 0x10; // H sync offset (16)
+        out_buffer[63] = 0x60; // H sync width (96)
+        out_buffer[64] = 0x00; // V sync offset (10), V sync width (2) -- example values
+        out_buffer[65] = 0x00; // sync upper
+        out_buffer[66] = 0x10; // H image size
+        out_buffer[67] = 0x09; // V image size
+        out_buffer[68] = 0x00; // image sizes upper
+        out_buffer[69] = 0x00; // border
+        out_buffer[70] = 0x00; // border
+        out_buffer[71] = 0x18; // flags
     }
 
-    // Monitor Name Descriptor
-    out_buffer[72] = 0x00;
-    out_buffer[73] = 0x00;
-    out_buffer[74] = 0x00;
-    out_buffer[75] = 0xFC;
+    // Monitor Name Descriptor (Descriptor 2)
+    out_buffer[72] = 0x00; out_buffer[73] = 0x00; out_buffer[74] = 0x00; out_buffer[75] = 0xFC;
     out_buffer[76] = 0x00;
-    out_buffer[77] = 'E';
-    out_buffer[78] = 'S';
-    out_buffer[79] = 'P';
+    out_buffer[77] = 'E'; out_buffer[78] = 'S'; out_buffer[79] = 'P';
     out_buffer[80] = 0x0A; // newline
-    for (int i = 81; i < 90; i++) out_buffer[i] = 0x20;
+    for (int i = 81; i < 90; i++) out_buffer[i] = 0x20; // space padding
+
+    // Dummy Descriptor (Descriptor 3)
+    out_buffer[90] = 0x00; out_buffer[91] = 0x00; out_buffer[92] = 0x00; out_buffer[93] = 0x10;
+    out_buffer[94] = 0x00;
+    // Omit Monitor Range Limits as we don't have a strict analog CRT range to enforce
+    for (int i = 95; i < 108; i++) out_buffer[i] = 0x00; // actually 0x0A, 0x20...
+    out_buffer[95] = 0x0A;
+    for (int i = 96; i < 108; i++) out_buffer[i] = 0x20;
+
+    // Dummy Descriptor (Descriptor 4)
+    out_buffer[108] = 0x00; out_buffer[109] = 0x00; out_buffer[110] = 0x00; out_buffer[111] = 0x10;
+    out_buffer[112] = 0x00;
+    out_buffer[113] = 0x0A;
+    for (int i = 114; i < 126; i++) out_buffer[i] = 0x20;
 
     // Number of extensions (1 CEA-861 block)
     out_buffer[126] = 0x01;

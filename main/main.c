@@ -43,6 +43,8 @@ void app_main(void)
             .i2c_bus = bus_handle,
             .i2c_addr = 0x0F,
             .refclk_hz = 27000000, // TODO(hw-verify): X630 27MHz?
+            .pll_prd = 0, // Unverified, triggers a warning and skips
+            .pll_fbd = 0, // Unverified
             .enable_edid = true
         };
 

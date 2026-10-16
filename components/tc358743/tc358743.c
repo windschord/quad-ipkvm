@@ -3,9 +3,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include <esp_log.h>
-#include "driver/i2c_master.h"
+#include <driver/i2c_master.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <inttypes.h>
 
 static const char* TAG = "tc358743";
 
@@ -124,7 +125,6 @@ static esp_err_t tc_write16(tc358743_handle_t dev, uint16_t reg, uint16_t val) {
     return i2c_master_transmit(dev->i2c_dev, tx, 4, -1);
 }
 
-// I2C 8-bit register write
 // I2C 32-bit register write
 static esp_err_t tc_write32(tc358743_handle_t dev, uint16_t reg, uint32_t val) {
     uint8_t tx[6] = { reg >> 8, reg & 0xFF, val & 0xFF, (val >> 8) & 0xFF, (val >> 16) & 0xFF, (val >> 24) & 0xFF }; // Little Endian
@@ -142,30 +142,72 @@ static esp_err_t tc_write32(tc358743_handle_t dev, uint16_t reg, uint32_t val) {
 #define SET_PLL_FRS(frs)                      (((frs) << 10) & MASK_PLL_FRS)
 // Source: tc358743_regs.h MASK_PLL_EN
 #define MASK_PLL_EN                           0x0001
+// Source: tc358743_regs.h MASK_RESETB
+#define MASK_RESETB                           0x0002
+// Source: tc358743_regs.h MASK_CKEN
+#define MASK_CKEN                             0x0010
+
+static esp_err_t tc_sleep_mode(tc358743_handle_t dev, bool sleep) {
+    uint16_t sysctl;
+    esp_err_t err = tc_read16(dev, SYSCTL, &sysctl);
+    if (err != ESP_OK) return err;
+
+    // If sleep is true, set MASK_SLEEP to 1, else clear it.
+    if (sleep) sysctl |= MASK_SLEEP;
+    else sysctl &= ~MASK_SLEEP;
+
+    return tc_write16(dev, SYSCTL, sysctl);
+}
 
 // Setup PLL matching Linux driver logic
 static esp_err_t tc_set_pll(tc358743_handle_t dev) {
-    esp_err_t err = ESP_OK;
-
-    // TODO(hw-verify): Proper PLL prd/fbd parameters based on actual required CSI clock
-    // Using a typical fallback: PRD=3, FBD=85, FRS=1
-    uint16_t pllctl0_new = SET_PLL_PRD(3) | SET_PLL_FBD(85);
-    uint16_t pllctl1_new = SET_PLL_FRS(1);
-
-    uint16_t pllctl0, pllctl1;
-    tc_read16(dev, PLLCTL0, &pllctl0);
-    tc_read16(dev, PLLCTL1, &pllctl1);
-
-    if (pllctl0 != pllctl0_new || pllctl1 != pllctl1_new) {
-        // Disable PLL
-        err |= tc_write16(dev, PLLCTL1, pllctl1_new & ~MASK_PLL_EN);
-        err |= tc_write16(dev, PLLCTL0, pllctl0_new);
+    if (!dev->config.pll_prd || !dev->config.pll_fbd) {
+        ESP_LOGW(TAG, "UNVERIFIED PLL parameters. Skipping PLL configuration (requires hw-verify).");
+        return ESP_OK;
     }
 
-    err |= tc_write16(dev, PLLCTL1, pllctl1_new | MASK_PLL_EN);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    uint32_t hsck = (dev->config.refclk_hz / dev->config.pll_prd) * dev->config.pll_fbd;
+    uint16_t frs = 0;
+    if (hsck > 500000000) {
+        frs = 0;
+    } else if (hsck > 250000000) {
+        frs = 1;
+    } else if (hsck > 125000000) {
+        frs = 2;
+    } else {
+        frs = 3;
+    }
 
-    return err;
+    uint16_t pllctl0_new = SET_PLL_PRD(dev->config.pll_prd) | SET_PLL_FBD(dev->config.pll_fbd);
+    uint16_t pllctl1_new = SET_PLL_FRS(frs);
+
+    uint16_t pllctl0 = 0, pllctl1 = 0;
+    esp_err_t err = tc_read16(dev, PLLCTL0, &pllctl0);
+    if (err != ESP_OK) return err;
+    err = tc_read16(dev, PLLCTL1, &pllctl1);
+    if (err != ESP_OK) return err;
+
+    if (pllctl0 != pllctl0_new || pllctl1 != pllctl1_new) {
+        // Procedure from Linux driver
+        err = tc_sleep_mode(dev, true);
+        if (err != ESP_OK) return err;
+
+        err = tc_write16(dev, PLLCTL0, pllctl0_new);
+        if (err != ESP_OK) return err;
+
+        err = tc_write16(dev, PLLCTL1, pllctl1_new | MASK_RESETB | MASK_PLL_EN);
+        if (err != ESP_OK) return err;
+
+        vTaskDelay(pdMS_TO_TICKS(1)); // >10us wait
+
+        err = tc_write16(dev, PLLCTL1, pllctl1_new | MASK_RESETB | MASK_PLL_EN | MASK_CKEN);
+        if (err != ESP_OK) return err;
+
+        err = tc_sleep_mode(dev, false);
+        if (err != ESP_OK) return err;
+    }
+
+    return ESP_OK;
 }
 
 // Source: tc358743_regs.h CLW_CNTRL
@@ -179,30 +221,97 @@ static esp_err_t tc_set_pll(tc358743_handle_t dev) {
 // Source: tc358743_regs.h D3W_CNTRL
 #define D3W_CNTRL                             0x0150
 // Source: tc358743_regs.h MASK_CLW_LANEDISABLE
-#define MASK_CLW_LANEDISABLE                  0x00000001
-#define MASK_D0W_LANEDISABLE                  0x00000001
-#define MASK_D1W_LANEDISABLE                  0x00000001
-#define MASK_D2W_LANEDISABLE                  0x00000001
-#define MASK_D3W_LANEDISABLE                  0x00000001
+#define MASK_CLW_LANEDISABLE                  0x0001
+#define MASK_D0W_LANEDISABLE                  0x0001
+#define MASK_D1W_LANEDISABLE                  0x0001
+#define MASK_D2W_LANEDISABLE                  0x0001
+#define MASK_D3W_LANEDISABLE                  0x0001
+
+#define STARTCNTRL                            0x0204
+#define LINEINITCNT                           0x0210
+#define LPTXTIMECNT                           0x0214
+#define TCLK_HEADERCNT                        0x0218
+#define TCLK_TRAILCNT                         0x021C
+#define THS_HEADERCNT                         0x0220
+#define TWAKEUP                               0x0224
+#define TCLK_POSTCNT                          0x0228
+#define THS_TRAILCNT                          0x022C
+#define HSTXVREGCNT                           0x0230
+#define HSTXVREGEN                            0x0234
+#define TXOPTIONCNTRL                         0x0238
+
 // Source: tc358743_regs.h MASK_STRT
 #define MASK_STRT                             0x00000001
+#define MASK_CONTCLKMODE                      0x00000001
+#define MASK_D3M_HSTXVREGEN                   0x0010
+#define MASK_D2M_HSTXVREGEN                   0x0008
+#define MASK_D1M_HSTXVREGEN                   0x0004
+#define MASK_D0M_HSTXVREGEN                   0x0002
+#define MASK_CLM_HSTXVREGEN                   0x0001
+
+static esp_err_t tc_reset(tc358743_handle_t dev, uint16_t mask);
 
 // Setup CSI matching Linux driver logic
 static esp_err_t tc_set_csi(tc358743_handle_t dev) {
-    esp_err_t err = ESP_OK;
+    esp_err_t err = tc_reset(dev, MASK_CTXRST);
+    if (err != ESP_OK) return err;
 
     // We assume 2 lanes based on X630 hardware.
     // Disable unused lanes (D2, D3). Wait to confirm D1/D0.
-    err |= tc_write32(dev, D2W_CNTRL, MASK_D2W_LANEDISABLE);
-    err |= tc_write32(dev, D3W_CNTRL, MASK_D3W_LANEDISABLE);
+    err = tc_write32(dev, D2W_CNTRL, MASK_D2W_LANEDISABLE);
+    if (err != ESP_OK) return err;
+    err = tc_write32(dev, D3W_CNTRL, MASK_D3W_LANEDISABLE);
+    if (err != ESP_OK) return err;
 
-    // TODO(hw-verify): Proper CSI lane timing (CSI_CONFW, CSI_START) configuration
-    // The exact timings (e.g. THSTX, THSZERO, TCLKPREPARE) usually come from the CSI clock rate
+    if (!dev->config.csi_timings_provided) {
+        ESP_LOGW(TAG, "UNVERIFIED CSI timings. Using stubbed/dummy values.");
+    }
+
+    tc358743_csi_timings_t* t = &dev->config.csi_timings;
+
+    // Follow Linux logic: Write timing counters
+    err = tc_write32(dev, LINEINITCNT, t->lineinitcnt);
+    if (err != ESP_OK) return err;
+    err = tc_write32(dev, LPTXTIMECNT, t->lptxtimecnt);
+    if (err != ESP_OK) return err;
+    err = tc_write32(dev, TCLK_HEADERCNT, t->tclk_headercnt);
+    if (err != ESP_OK) return err;
+    err = tc_write32(dev, TCLK_TRAILCNT, t->tclk_trailcnt);
+    if (err != ESP_OK) return err;
+    err = tc_write32(dev, THS_HEADERCNT, t->ths_headercnt);
+    if (err != ESP_OK) return err;
+    err = tc_write32(dev, TWAKEUP, t->twakeup);
+    if (err != ESP_OK) return err;
+    err = tc_write32(dev, TCLK_POSTCNT, t->tclk_postcnt);
+    if (err != ESP_OK) return err;
+    err = tc_write32(dev, THS_TRAILCNT, t->ths_trailcnt);
+    if (err != ESP_OK) return err;
+    err = tc_write32(dev, HSTXVREGCNT, t->hstxvregcnt);
+    if (err != ESP_OK) return err;
+
+    // Enable regulators for active lanes (CLK + D0 + D1 for 2-lane mode)
+    uint32_t reg_en = MASK_CLM_HSTXVREGEN | MASK_D0M_HSTXVREGEN | MASK_D1M_HSTXVREGEN;
+    err = tc_write32(dev, HSTXVREGEN, reg_en);
+    if (err != ESP_OK) return err;
+
+    // Continuous clock mode
+    err = tc_write32(dev, TXOPTIONCNTRL, MASK_CONTCLKMODE); // Set continuous clock mode or similar based on PPA/CSI receiver needs
+    if (err != ESP_OK) return err;
+
+    err = tc_write32(dev, STARTCNTRL, 0); // Start control (0 usually means video driven, default)
+    if (err != ESP_OK) return err;
+
+    err = tc_write32(dev, CSI_START, MASK_STRT);
+    if (err != ESP_OK) return err;
+
+    // Finally CSI_CONFW
+    // 0x0500 - configure mode, lane count, etc.
+    // E.g., mode clear then mode set (like Linux does depending on the format)
+    // For now we leave CSI_CONFW as TODO(hw-verify) because it depends strictly on color space and pixel format
     // Linux uses tc358743_set_csi_color_space() to configure color output first
-    // For now we do a minimal start
+    ESP_LOGW(TAG, "UNVERIFIED: CSI_CONFW (Color Space/Format) not implemented yet.");
 
-    err |= tc_write32(dev, CSI_START, MASK_STRT);
-    return err;
+    return ESP_OK;
 }
 
 static esp_err_t tc_write8(tc358743_handle_t dev, uint16_t reg, uint8_t val) {
@@ -237,34 +346,24 @@ static esp_err_t tc_reset(tc358743_handle_t dev, uint16_t mask) {
     return tc_write16(dev, SYSCTL, sysctl & ~mask);
 }
 
-static esp_err_t tc_sleep_mode(tc358743_handle_t dev, bool sleep) {
-    uint16_t sysctl;
-    esp_err_t err = tc_read16(dev, SYSCTL, &sysctl);
-    if (err != ESP_OK) return err;
-
-    // If sleep is true, set MASK_SLEEP to 1, else clear it.
-    if (sleep) sysctl |= MASK_SLEEP;
-    else sysctl &= ~MASK_SLEEP;
-
-    return tc_write16(dev, SYSCTL, sysctl);
-}
-
 // Set reference clock (from tc358743_set_ref_clk)
 static esp_err_t tc_set_ref_clk(tc358743_handle_t dev) {
     uint32_t refclk_hz = dev->config.refclk_hz ? dev->config.refclk_hz : 27000000;
     if (refclk_hz != 26000000 && refclk_hz != 27000000 && refclk_hz != 42000000) {
-        ESP_LOGE(TAG, "Unsupported refclk %ld", refclk_hz);
+        ESP_LOGE(TAG, "Unsupported refclk %" PRIu32, refclk_hz);
         return ESP_ERR_INVALID_ARG;
     }
 
     uint32_t sys_freq = refclk_hz / 10000;
 
     esp_err_t err = ESP_OK;
-    err |= tc_write8(dev, SYS_FREQ0, sys_freq & 0x00ff);
-    err |= tc_write8(dev, SYS_FREQ1, (sys_freq & 0xff00) >> 8);
+    err = tc_write8(dev, SYS_FREQ0, sys_freq & 0x00ff);
+    if (err == ESP_OK) err = tc_write8(dev, SYS_FREQ1, (sys_freq & 0xff00) >> 8);
 
-    err |= tc_update8(dev, PHY_CTL0, MASK_PHY_SYSCLK_IND,
-               (refclk_hz == 42000000) ? MASK_PHY_SYSCLK_IND : 0x0);
+    if (err == ESP_OK) {
+        err = tc_update8(dev, PHY_CTL0, MASK_PHY_SYSCLK_IND,
+                   (refclk_hz == 42000000) ? MASK_PHY_SYSCLK_IND : 0x0);
+    }
 
     return err;
 }
@@ -282,15 +381,16 @@ static esp_err_t tc_write_edid(tc358743_handle_t dev) {
         return ESP_FAIL;
     }
 
-    esp_err_t err = ESP_OK;
+    esp_err_t err;
 
     // 1. Disable EDID Mode
-    err |= tc_update8(dev, EDID_MODE, MASK_EDID_MODE, MASK_EDID_MODE_DISABLE);
+    err = tc_update8(dev, EDID_MODE, MASK_EDID_MODE, MASK_EDID_MODE_DISABLE);
+    if (err != ESP_OK) return err;
 
     // 2. Set Length (8-bit registers)
-    err |= tc_write8(dev, EDID_LEN1, 0x00); // 256 lower byte
-    err |= tc_write8(dev, EDID_LEN2, 0x01); // 256 upper byte
-
+    err = tc_write8(dev, EDID_LEN1, 0x00); // 256 lower byte
+    if (err != ESP_OK) return err;
+    err = tc_write8(dev, EDID_LEN2, 0x01); // 256 upper byte
     if (err != ESP_OK) return err;
 
     // 3. Write 256 bytes to EDID RAM (0x8C00) in 128-byte chunks
@@ -351,28 +451,30 @@ tc358743_handle_t tc358743_init(const tc358743_config_t* config) {
     }
     ESP_LOGI(TAG, "Found TC358743, Chip ID: 0x%04x (Revision 0x%02x)", chipid, chipid & MASK_REVID);
 
-    esp_err_t err = ESP_OK;
+    esp_err_t err;
 
     // 2. Initial Setup
-    err |= tc_update16(dev, SYSCTL, MASK_IRRST | MASK_CECRST, MASK_IRRST | MASK_CECRST);
-    err |= tc_reset(dev, MASK_CTXRST | MASK_HDMIRST);
-    err |= tc_sleep_mode(dev, false);
+    err = tc_update16(dev, SYSCTL, MASK_IRRST | MASK_CECRST, MASK_IRRST | MASK_CECRST);
+    if (err == ESP_OK) err = tc_reset(dev, MASK_CTXRST | MASK_HDMIRST);
+    if (err == ESP_OK) err = tc_sleep_mode(dev, false);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Initial setup failed");
         tc358743_deinit(dev);
         return NULL;
     }
 
-    err |= tc_write16(dev, FIFOCTL, 16); // fifo_level from Linux pdata defaults
-    err |= tc_set_ref_clk(dev);
+    err = tc_write16(dev, FIFOCTL, 16); // fifo_level from Linux pdata defaults
+    if (err == ESP_OK) err = tc_set_ref_clk(dev);
 
     // DDC delay
-    err |= tc_update8(dev, DDC_CTL, MASK_DDC5V_MODE, 0); // delay 0
+    if (err == ESP_OK) err = tc_update8(dev, DDC_CTL, MASK_DDC5V_MODE, 0); // delay 0
 
-    // HDMI PHY, HDCP, Audio, Infoframe (Skipped detailed impl for now, minimum needed for CSI)
-    err |= tc_update8(dev, VI_MODE, MASK_RGB_DVI, 0);
-    err |= tc_update8(dev, VOUT_SET2, MASK_VOUTCOLORMODE, MASK_VOUTCOLORMODE_AUTO);
-    err |= tc_write8(dev, VOUT_SET3, MASK_VOUT_EXTCNT);
+    // HDMI PHY, HDCP, Audio, Infoframe
+    // Detailed setup is skipped for now, as it depends on full HDMI rx bring-up (similar to tc358743_set_hdmi_phy).
+    ESP_LOGW(TAG, "UNVERIFIED: Detailed HDMI PHY, Audio, Infoframe setup skipped (requires hw-verify or future implementation).");
+    if (err == ESP_OK) err = tc_update8(dev, VI_MODE, MASK_RGB_DVI, 0);
+    if (err == ESP_OK) err = tc_update8(dev, VOUT_SET2, MASK_VOUTCOLORMODE, MASK_VOUTCOLORMODE_AUTO);
+    if (err == ESP_OK) err = tc_write8(dev, VOUT_SET3, MASK_VOUT_EXTCNT);
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "PHY/DDC setup failed");
@@ -383,26 +485,38 @@ tc358743_handle_t tc358743_init(const tc358743_config_t* config) {
     // 3. HPD Control Order
     // Pull HPD down before writing EDID and configuring CSI
     ESP_LOGI(TAG, "Lowering HPD...");
-    // Linux uses HPD_CTL (0x8544), MASK_HPD_CTL0 (0x10) and MASK_HPD_OUT0 (0x01)
-    err |= tc_update8(dev, HPD_CTL, MASK_HPD_CTL0 | MASK_HPD_OUT0, 0);
+    err = tc_update8(dev, HPD_CTL, MASK_HPD_CTL0 | MASK_HPD_OUT0, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to lower HPD");
+        tc358743_deinit(dev);
+        return NULL;
+    }
 
     // Write EDID
-    if (tc_write_edid(dev) != ESP_OK) {
+    err = tc_write_edid(dev);
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to program EDID");
-        // We can continue, but without EDID the source might not output
+        // Do not bring up HPD if EDID programming fails
+        tc358743_deinit(dev);
+        return NULL;
     }
 
     // Configure CSI (Minimal setup to enable the bridge)
-    err |= tc_set_pll(dev);
-    err |= tc_reset(dev, MASK_CTXRST);
-    err |= tc_set_csi(dev);
+    err = tc_set_pll(dev);
+    if (err == ESP_OK) err = tc_set_csi(dev);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure PLL/CSI");
+        tc358743_deinit(dev);
+        return NULL;
+    }
 
     // Bring up HPD to signal the source that we are ready
     ESP_LOGI(TAG, "Bringing up HPD...");
-    err |= tc_update8(dev, HPD_CTL, MASK_HPD_CTL0 | MASK_HPD_OUT0, MASK_HPD_CTL0 | MASK_HPD_OUT0);
-
+    err = tc_update8(dev, HPD_CTL, MASK_HPD_CTL0 | MASK_HPD_OUT0, MASK_HPD_CTL0 | MASK_HPD_OUT0);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Initialization completed with errors");
+        ESP_LOGE(TAG, "Failed to bring up HPD");
+        tc358743_deinit(dev);
+        return NULL;
     }
 
     return dev;

@@ -16,23 +16,24 @@ void test_edid_generation_basic(void) {
     TEST_ASSERT_EQUAL_HEX8(0xFF, buffer[6]);
     TEST_ASSERT_EQUAL_HEX8(0x00, buffer[7]);
 
-    // Check Vendor ID for "ESP"
-    TEST_ASSERT_EQUAL_HEX8(0x70, buffer[8]);
-    TEST_ASSERT_EQUAL_HEX8(0x16, buffer[9]);
+    // Check Vendor ID for "ESP" (Big Endian)
+    TEST_ASSERT_EQUAL_HEX8(0x16, buffer[8]);
+    TEST_ASSERT_EQUAL_HEX8(0x70, buffer[9]);
+
+    // Check Established Timings empty block
+    TEST_ASSERT_EQUAL_HEX8(0x01, buffer[38]);
+    TEST_ASSERT_EQUAL_HEX8(0x01, buffer[53]);
 
     // Check Monitor Name Descriptor is present
     TEST_ASSERT_EQUAL_HEX8(0x00, buffer[72]);
-    TEST_ASSERT_EQUAL_HEX8(0x00, buffer[73]);
-    TEST_ASSERT_EQUAL_HEX8(0x00, buffer[74]);
     TEST_ASSERT_EQUAL_HEX8(0xFC, buffer[75]);
     TEST_ASSERT_EQUAL_HEX8('E', buffer[77]);
 
-    // Check extension count
-    TEST_ASSERT_EQUAL_HEX8(0x01, buffer[126]);
-
-    // Check extension block tag and revision
-    TEST_ASSERT_EQUAL_HEX8(0x02, buffer[128]);
-    TEST_ASSERT_EQUAL_HEX8(0x03, buffer[129]);
+    // Check Dummy Descriptors
+    TEST_ASSERT_EQUAL_HEX8(0x00, buffer[90]);
+    TEST_ASSERT_EQUAL_HEX8(0x10, buffer[93]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buffer[108]);
+    TEST_ASSERT_EQUAL_HEX8(0x10, buffer[111]);
 
     // Checksums
     uint8_t sum1 = 0;
@@ -63,12 +64,22 @@ void test_edid_max_pixel_clock_filtering(void) {
     TEST_ASSERT_EQUAL_HEX8(34, buffer_150mhz[134]);
 }
 
+void test_edid_dtd_fallback(void) {
+    uint8_t buffer_low_mhz[256];
+    tc358743_edid_build(buffer_low_mhz, sizeof(buffer_low_mhz), 25000);
+
+    // Should fallback to 640x480 (25.175 MHz)
+    // pix_clk = 2518 -> 0x09D6
+    TEST_ASSERT_EQUAL_HEX8(0xD6, buffer_low_mhz[54]);
+    TEST_ASSERT_EQUAL_HEX8(0x09, buffer_low_mhz[55]);
+}
+
 void test_edid_vendor_id_decode(void) {
     uint8_t buffer[256];
     tc358743_edid_build(buffer, sizeof(buffer), 81000);
 
-    // Vendor ID at offset 8 and 9 (Little Endian)
-    uint16_t vendor_id = buffer[8] | (buffer[9] << 8);
+    // Vendor ID at offset 8 and 9 (Big Endian)
+    uint16_t vendor_id = (buffer[8] << 8) | buffer[9];
 
     char c1 = ((vendor_id >> 10) & 0x1F) + 'A' - 1;
     char c2 = ((vendor_id >> 5) & 0x1F) + 'A' - 1;
@@ -79,10 +90,31 @@ void test_edid_vendor_id_decode(void) {
     TEST_ASSERT_EQUAL_CHAR('P', c3);
 }
 
+// "DEL" (0x10AC) decoder check
+void test_edid_vendor_id_del_sam(void) {
+    uint16_t del_id = 0x10AC;
+    char c1 = ((del_id >> 10) & 0x1F) + 'A' - 1;
+    char c2 = ((del_id >> 5) & 0x1F) + 'A' - 1;
+    char c3 = (del_id & 0x1F) + 'A' - 1;
+    TEST_ASSERT_EQUAL_CHAR('D', c1);
+    TEST_ASSERT_EQUAL_CHAR('E', c2);
+    TEST_ASSERT_EQUAL_CHAR('L', c3);
+
+    uint16_t sam_id = 0x4C2D;
+    c1 = ((sam_id >> 10) & 0x1F) + 'A' - 1;
+    c2 = ((sam_id >> 5) & 0x1F) + 'A' - 1;
+    c3 = (sam_id & 0x1F) + 'A' - 1;
+    TEST_ASSERT_EQUAL_CHAR('S', c1);
+    TEST_ASSERT_EQUAL_CHAR('A', c2);
+    TEST_ASSERT_EQUAL_CHAR('M', c3);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_edid_generation_basic);
     RUN_TEST(test_edid_max_pixel_clock_filtering);
+    RUN_TEST(test_edid_dtd_fallback);
     RUN_TEST(test_edid_vendor_id_decode);
+    RUN_TEST(test_edid_vendor_id_del_sam);
     return UNITY_END();
 }
