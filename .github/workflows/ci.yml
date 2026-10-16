@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+      - name: Build and Run Host Tests
+        run: |
+          mkdir build
+          cd build
+          cmake ../test/host
+          make
+          ctest --output-on-failure
+
+  idf-build:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.0.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build IDF Project
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py set-target esp32p4
+          idf.py build
+      - name: Verify sdkconfig
+        run: |
+          grep -E '^CONFIG_IDF_TARGET="esp32p4"' sdkconfig
+          grep '^CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y' sdkconfig
+          grep '^CONFIG_ESP32P4_REV_MIN_100=y' sdkconfig
