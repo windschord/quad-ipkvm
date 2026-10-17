@@ -25,6 +25,10 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_logic ${CMAKE_BINARY_D
 add_library(tc358743_edid STATIC ${CMAKE_SOURCE_DIR}/../../components/tc358743/tc358743_edid.c)
 target_include_directories(tc358743_edid PUBLIC ${CMAKE_SOURCE_DIR}/../../components/tc358743/include)
 
+# frame_hub component
+add_library(frame_hub_lib STATIC ${CMAKE_SOURCE_DIR}/../../components/frame_hub/frame_hub.c)
+target_include_directories(frame_hub_lib PUBLIC ${CMAKE_SOURCE_DIR}/../../components/frame_hub/include)
+
 # Discover tests automatically
 file(GLOB_RECURSE TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*/test_*.c" "${CMAKE_CURRENT_SOURCE_DIR}/test_*.c")
 list(FILTER TEST_SOURCES EXCLUDE REGEX ".*build/.*")
@@ -47,6 +51,10 @@ foreach(test_source ${TEST_SOURCES})
 
     if (test_source MATCHES "test_edid.c")
         target_link_libraries(${test_name} PRIVATE tc358743_edid)
+    endif()
+
+    if (test_source MATCHES "test_frame_hub.c" OR test_source MATCHES "test_fuzz_frame_hub.c")
+        target_link_libraries(${test_name} PRIVATE frame_hub_lib)
     endif()
 
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})
