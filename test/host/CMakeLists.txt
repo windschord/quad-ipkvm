@@ -21,9 +21,16 @@ FetchContent_MakeAvailable(unity)
 # Setup kvm_logic component
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_logic ${CMAKE_BINARY_DIR}/kvm_logic)
 
+# Setup auth_logic component (pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/auth_logic ${CMAKE_BINARY_DIR}/auth_logic)
+
 # Create a lightweight static library for testing pure C logic from tc358743
 add_library(tc358743_edid STATIC ${CMAKE_SOURCE_DIR}/../../components/tc358743/tc358743_edid.c)
 target_include_directories(tc358743_edid PUBLIC ${CMAKE_SOURCE_DIR}/../../components/tc358743/include)
+
+# Create a static library for auth test reference crypto
+add_library(auth_crypto_ref STATIC ${CMAKE_SOURCE_DIR}/auth_logic/auth_crypto_ref.c)
+target_include_directories(auth_crypto_ref PUBLIC ${CMAKE_SOURCE_DIR}/../../components/auth_logic/include)
 
 # Discover tests automatically
 file(GLOB_RECURSE TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*/test_*.c" "${CMAKE_CURRENT_SOURCE_DIR}/test_*.c")
@@ -47,6 +54,11 @@ foreach(test_source ${TEST_SOURCES})
 
     if (test_source MATCHES "test_edid.c")
         target_link_libraries(${test_name} PRIVATE tc358743_edid)
+    endif()
+
+    # Conditionally link auth_logic and auth_crypto_ref for auth tests
+    if (test_source MATCHES "/auth_logic/")
+        target_link_libraries(${test_name} PRIVATE auth_logic auth_crypto_ref)
     endif()
 
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})
