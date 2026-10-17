@@ -28,7 +28,10 @@ void app_main(void)
 
     if (CONFIG_NET_ETH_INIT) {
         ESP_LOGI(TAG, "Starting Ethernet initialization...");
-        net_eth_init();
+        esp_err_t err = net_eth_init();
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "Ethernet initialization failed: %s", esp_err_to_name(err));
+        }
     }
 
     // Use a standard C `if` to guard the body, as specifically requested

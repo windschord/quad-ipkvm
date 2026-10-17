@@ -26,8 +26,10 @@ static const char *TAG = "net_eth";
 #define ETH_PHY_RESET_GPIO 51
 #define ETH_PHY_ADDR       ESP_ETH_PHY_ADDR_AUTO
 
-static net_eth_state_t s_eth_state = NET_ETH_STATE_DOWN;
-static net_eth_cb_t s_eth_cb = NULL;
+// volatile is used because these variables are accessed across tasks (event loop vs caller)
+// exact lock-free exclusion is not strictly required here.
+static volatile net_eth_state_t s_eth_state = NET_ETH_STATE_DOWN;
+static volatile net_eth_cb_t s_eth_cb = NULL;
 
 net_eth_state_t net_eth_get_state(void)
 {
@@ -95,7 +97,12 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
 
 esp_err_t net_eth_init(void)
 {
+    static bool s_is_initialized = false;
     esp_err_t ret;
+
+    if (s_is_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
 
     // Initialize network interface
     ret = esp_netif_init();
@@ -118,6 +125,13 @@ esp_err_t net_eth_init(void)
         return ESP_FAIL;
     }
 
+    esp_eth_mac_t *mac = NULL;
+    esp_eth_phy_t *phy = NULL;
+    esp_eth_handle_t eth_handle = NULL;
+    void *glue = NULL;
+    bool eth_event_registered = false;
+    bool ip_event_registered = false;
+
     // Configure EMAC (MAC)
     eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
     eth_esp32_emac_config_t esp32_emac_config = ETH_ESP32_EMAC_DEFAULT_CONFIG();
@@ -135,10 +149,11 @@ esp_err_t net_eth_init(void)
     esp32_emac_config.emac_dataif_gpio.rmii.rxd0_num = ETH_RXD0_GPIO;
     esp32_emac_config.emac_dataif_gpio.rmii.rxd1_num = ETH_RXD1_GPIO;
 
-    esp_eth_mac_t *mac = esp_eth_mac_new_esp32(&esp32_emac_config, &mac_config);
+    mac = esp_eth_mac_new_esp32(&esp32_emac_config, &mac_config);
     if (!mac) {
         ESP_LOGE(TAG, "esp_eth_mac_new_esp32 failed");
-        return ESP_FAIL;
+        ret = ESP_FAIL;
+        goto err_mac;
     }
 
     // Configure PHY (Generic)
@@ -146,62 +161,78 @@ esp_err_t net_eth_init(void)
     phy_config.phy_addr = ETH_PHY_ADDR;
     phy_config.reset_gpio_num = ETH_PHY_RESET_GPIO;
 
-    esp_eth_phy_t *phy = esp_eth_phy_new_generic(&phy_config);
+    phy = esp_eth_phy_new_generic(&phy_config);
     if (!phy) {
         ESP_LOGE(TAG, "esp_eth_phy_new_generic failed");
-        mac->del(mac);
-        return ESP_FAIL;
+        ret = ESP_FAIL;
+        goto err_phy;
     }
 
     esp_eth_config_t eth_config = ETH_DEFAULT_CONFIG(mac, phy);
-    esp_eth_handle_t eth_handle = NULL;
     ret = esp_eth_driver_install(&eth_config, &eth_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_eth_driver_install failed: %s", esp_err_to_name(ret));
-        phy->del(phy);
-        mac->del(mac);
-        return ret;
+        goto err_driver;
     }
 
     // Attach Ethernet driver to TCP/IP stack
-    void *glue = esp_eth_new_netif_glue(eth_handle);
+    glue = esp_eth_new_netif_glue(eth_handle);
     if (!glue) {
         ESP_LOGE(TAG, "esp_eth_new_netif_glue failed");
-        esp_eth_driver_uninstall(eth_handle);
-        phy->del(phy);
-        mac->del(mac);
-        return ESP_FAIL;
+        ret = ESP_FAIL;
+        goto err_glue;
     }
 
     ret = esp_netif_attach(eth_netif, glue);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_netif_attach failed: %s", esp_err_to_name(ret));
-        esp_eth_del_netif_glue(glue);
-        esp_eth_driver_uninstall(eth_handle);
-        phy->del(phy);
-        mac->del(mac);
-        return ret;
+        goto err_attach;
     }
 
     // Register user defined event handers
     ret = esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_event_handler_register for ETH_EVENT failed: %s", esp_err_to_name(ret));
-        return ret;
+        goto err_event;
     }
+    eth_event_registered = true;
+
     ret = esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler, NULL);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_event_handler_register for IP_EVENT failed: %s", esp_err_to_name(ret));
-        return ret;
+        goto err_event;
     }
+    ip_event_registered = true;
 
     // Start Ethernet driver state machine
     ret = esp_eth_start(eth_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_eth_start failed: %s", esp_err_to_name(ret));
-        return ret;
+        goto err_start;
     }
 
+    s_is_initialized = true;
     ESP_LOGI(TAG, "Ethernet initialized successfully");
     return ESP_OK;
+
+err_start:
+err_event:
+    if (ip_event_registered) {
+        esp_event_handler_unregister(IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler);
+    }
+    if (eth_event_registered) {
+        esp_event_handler_unregister(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler);
+    }
+err_attach:
+    if (glue) esp_eth_del_netif_glue(glue);
+err_glue:
+    if (eth_handle) esp_eth_driver_uninstall(eth_handle);
+err_driver:
+    if (phy) phy->del(phy);
+err_phy:
+    if (mac) mac->del(mac);
+err_mac:
+    if (eth_netif) esp_netif_destroy(eth_netif);
+    s_is_initialized = false;
+    return ret;
 }
