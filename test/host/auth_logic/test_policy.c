@@ -61,8 +61,51 @@ void test_fail_closed_random_token(void) {
     TEST_ASSERT_EQUAL(-1, auth_logic_login(&ctx, "ValidPassword123!", 17, 1, 0, token));
 }
 
+void test_config_validation(void) {
+    auth_logic_config_t bad_cfg;
+
+    // Zero config should fail
+    memset(&bad_cfg, 0, sizeof(bad_cfg));
+    TEST_ASSERT_EQUAL(-1, auth_logic_init(&ctx, &ref_crypto_if, &bad_cfg));
+
+    // Valid defaults should succeed
+    auth_logic_config_default(&bad_cfg);
+    TEST_ASSERT_EQUAL(0, auth_logic_init(&ctx, &ref_crypto_if, &bad_cfg));
+
+    // Check individual rate limit rejections
+    bad_cfg.rate_limit_window_ms = 0;
+    TEST_ASSERT_EQUAL(-1, auth_logic_init(&ctx, &ref_crypto_if, &bad_cfg));
+    auth_logic_config_default(&bad_cfg);
+
+    bad_cfg.rate_limit_max_attempts = 0;
+    TEST_ASSERT_EQUAL(-1, auth_logic_init(&ctx, &ref_crypto_if, &bad_cfg));
+    auth_logic_config_default(&bad_cfg);
+
+    bad_cfg.rate_limit_base_lockout_ms = 0;
+    TEST_ASSERT_EQUAL(-1, auth_logic_init(&ctx, &ref_crypto_if, &bad_cfg));
+    auth_logic_config_default(&bad_cfg);
+
+    bad_cfg.rate_limit_max_lockout_ms = bad_cfg.rate_limit_base_lockout_ms - 1;
+    TEST_ASSERT_EQUAL(-1, auth_logic_init(&ctx, &ref_crypto_if, &bad_cfg));
+    auth_logic_config_default(&bad_cfg);
+
+    bad_cfg.rate_limit_global_max_attempts = bad_cfg.rate_limit_max_attempts - 1;
+    TEST_ASSERT_EQUAL(-1, auth_logic_init(&ctx, &ref_crypto_if, &bad_cfg));
+    auth_logic_config_default(&bad_cfg);
+
+    // Session rejection
+    bad_cfg.session_idle_timeout_ms = 0;
+    TEST_ASSERT_EQUAL(-1, auth_logic_init(&ctx, &ref_crypto_if, &bad_cfg));
+    auth_logic_config_default(&bad_cfg);
+
+    bad_cfg.session_absolute_timeout_ms = bad_cfg.session_idle_timeout_ms - 1;
+    TEST_ASSERT_EQUAL(-1, auth_logic_init(&ctx, &ref_crypto_if, &bad_cfg));
+    auth_logic_config_default(&bad_cfg);
+}
+
 int main(void) {
     UNITY_BEGIN();
+    RUN_TEST(test_config_validation);
     RUN_TEST(test_policy_min_length);
     RUN_TEST(test_policy_max_length);
     RUN_TEST(test_policy_weak_passwords);

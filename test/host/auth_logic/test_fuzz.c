@@ -13,31 +13,57 @@ static uint32_t xorshift32(void) {
 }
 
 static int pbkdf2_call_count = 0;
-static int pbkdf2_wrapper(const uint8_t *password, size_t plen, const uint8_t *salt, size_t slen, uint32_t iteration_count, uint32_t key_length, uint8_t *output) {
+// Fast deterministic dummy crypto for fuzzing
+static int dummy_sha256(const uint8_t *input, size_t ilen, uint8_t output[32]) {
+    memset(output, 0, 32);
+    for (size_t i = 0; i < ilen; i++) {
+        output[i % 32] ^= input[i];
+        output[(i + 1) % 32] += input[i]; // simple mixing
+    }
+    return 0;
+}
+
+static int dummy_hmac_sha256(const uint8_t *key, size_t keylen, const uint8_t *input, size_t ilen, uint8_t output[32]) {
+    memset(output, 0x11, 32);
+    for (size_t i = 0; i < keylen; i++) output[i % 32] ^= key[i];
+    for (size_t i = 0; i < ilen; i++) output[i % 32] += input[i];
+    return 0;
+}
+
+static int dummy_pbkdf2(const uint8_t *password, size_t plen, const uint8_t *salt, size_t slen, uint32_t iteration_count, uint32_t key_length, uint8_t *output) {
+    (void)iteration_count; // Ignore the actual iterations to be blazing fast
     pbkdf2_call_count++;
-    return ref_crypto_if.pbkdf2_hmac_sha256(password, plen, salt, slen, iteration_count, key_length, output);
+    memset(output, 0x22, key_length);
+    for (size_t i = 0; i < plen; i++) output[i % key_length] ^= password[i];
+    for (size_t i = 0; i < slen; i++) output[i % key_length] += salt[i];
+    return 0;
+}
+
+static int dummy_random(uint8_t *output, size_t len) {
+    if (g_ref_random_should_fail) return -1;
+    for (size_t i = 0; i < len; i++) {
+        output[i] = (uint8_t)(xorshift32() & 0xFF);
+    }
+    return 0;
 }
 
 auth_logic_t ctx;
 auth_logic_config_t config;
-auth_crypto_if_t wrapped_crypto;
+auth_crypto_if_t dummy_crypto;
 
 void setUp(void) {
-    wrapped_crypto = ref_crypto_if;
-    wrapped_crypto.pbkdf2_hmac_sha256 = pbkdf2_wrapper;
+    dummy_crypto.sha256 = dummy_sha256;
+    dummy_crypto.hmac_sha256 = dummy_hmac_sha256;
+    dummy_crypto.pbkdf2_hmac_sha256 = dummy_pbkdf2;
+    dummy_crypto.random = dummy_random;
+    dummy_crypto.const_time_memcmp = ref_crypto_if.const_time_memcmp; // Can reuse memcmp safely
 
-    config.min_password_len = 10;
-    config.pbkdf2_iterations = 10000;
-    config.session_idle_timeout_ms = 60000;
-    config.session_absolute_timeout_ms = 3600000;
-    config.rate_limit_window_ms = 60000;
+    auth_logic_config_default(&config);
     config.rate_limit_max_attempts = 5;
-    config.rate_limit_base_lockout_ms = 60000;
-    config.rate_limit_max_lockout_ms = 3600000;
     config.rate_limit_global_max_attempts = 20;
 
     g_ref_random_should_fail = false;
-    auth_logic_init(&ctx, &wrapped_crypto, &config);
+    auth_logic_init(&ctx, &dummy_crypto, &config);
     pbkdf2_call_count = 0;
 }
 
@@ -141,8 +167,8 @@ void test_time_wraparound(void) {
     // Validate just before wrap
     TEST_ASSERT_EQUAL(0, auth_logic_validate_session(&ctx, token, 32, huge_time + 1000));
 
-    // Wrap around
-    uint64_t wrapped_time = huge_time + 100000; // Will be small positive number due to overflow
+    // Wrap around, simulating a time leap larger than the absolute timeout
+    uint64_t wrapped_time = huge_time + config.session_absolute_timeout_ms + 100000;
 
     // Since we use subtraction (now_ms - created_ms), unsigned arithmetic handles wraparound correctly!
     // However, if the time delta is very large (e.g. timeout happened during wrap), it should fail.

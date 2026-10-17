@@ -105,6 +105,9 @@ typedef struct {
 // Initialize the logic module. Must be called first. Returns 0 on success.
 int auth_logic_init(auth_logic_t *ctx, const auth_crypto_if_t *crypto, const auth_logic_config_t *config);
 
+// Populate the configuration with sensible defaults.
+void auth_logic_config_default(auth_logic_config_t *config);
+
 // Load serialized password state from NVS. If valid, changes state to READY. Returns 0 on success.
 int auth_logic_load_state(auth_logic_t *ctx, const uint8_t *serialized, size_t len);
 

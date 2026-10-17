@@ -52,16 +52,14 @@ static bool is_weak_password(const char *password, size_t len) {
     }
     if (seq_up || seq_down) return true;
 
-    // Common weak passwords (case-insensitive checking)
+    // Common weak passwords (case-insensitive checking, >= 10 chars)
     const char* weak_list[] = {
         "password123", "password1234", "password12345", "password123456",
-        "qwertyuiop", "asdfghjkl", "zxcvbnm",
-        "1234567890", "0987654321", "123123123", "1111111111",
+        "qwertyuiop", "1234567890", "0987654321", "1111111111",
         "administrator", "admin12345", "admin123456", "adminadmin",
-        "letmein123", "sunshine123", "monkey123", "dragon123", "iloveyou12",
-        "welcome123", "1q2w3e4r5t", "1qaz2wsx3edc", "qazwsxedc",
-        "passwordpassword", "changeme123", "default123", "root12345"
-        // (List of ~30 common templates covering variations)
+        "letmein123", "sunshine123", "iloveyou12",
+        "welcome123", "1q2w3e4r5t", "1qaz2wsx3edc",
+        "passwordpassword", "changeme123", "default123"
     };
 
     char pwd_lower[AUTH_LOGIC_MAX_PASSWORD_LEN + 1];
@@ -77,12 +75,42 @@ static bool is_weak_password(const char *password, size_t len) {
     return false;
 }
 
+void auth_logic_config_default(auth_logic_config_t *config) {
+    if (!config) return;
+    config->min_password_len = 10;
+
+    // TODO(hw-verify): Benchmark on real ESP32-P4 hardware so a login attempt takes 0.5~1.0 seconds.
+    config->pbkdf2_iterations = 10000;
+
+    config->session_idle_timeout_ms = 60 * 60 * 1000; // 1 hour
+    config->session_absolute_timeout_ms = 24 * 60 * 60 * 1000; // 24 hours
+
+    config->rate_limit_window_ms = 5 * 60 * 1000; // 5 minutes window
+    config->rate_limit_max_attempts = 5; // 5 failures per IP allowed before lockout
+
+    // TODO(hw-verify): Adjust based on actual usage requirements.
+    config->rate_limit_base_lockout_ms = 60 * 1000; // 1 minute
+    config->rate_limit_max_lockout_ms = 60 * 60 * 1000; // 1 hour max lockout
+    config->rate_limit_global_max_attempts = 25; // 5 times the IP limit
+}
+
 int auth_logic_init(auth_logic_t *ctx, const auth_crypto_if_t *crypto, const auth_logic_config_t *config) {
     if (!ctx || !crypto || !config) return -1;
     if (!crypto->sha256 || !crypto->hmac_sha256 || !crypto->pbkdf2_hmac_sha256 || !crypto->random || !crypto->const_time_memcmp) return -1;
 
     if (config->pbkdf2_iterations < AUTH_LOGIC_MIN_PBKDF2_ITERATIONS) return -1;
     if (config->min_password_len < AUTH_LOGIC_MIN_PASSWORD_LEN) return -1;
+
+    // Rate limit validation
+    if (config->rate_limit_window_ms == 0) return -1;
+    if (config->rate_limit_max_attempts == 0) return -1;
+    if (config->rate_limit_base_lockout_ms == 0) return -1;
+    if (config->rate_limit_max_lockout_ms < config->rate_limit_base_lockout_ms) return -1;
+    if (config->rate_limit_global_max_attempts < config->rate_limit_max_attempts) return -1;
+
+    // Session validation
+    if (config->session_idle_timeout_ms == 0) return -1;
+    if (config->session_absolute_timeout_ms < config->session_idle_timeout_ms) return -1;
 
     memset(ctx, 0, sizeof(auth_logic_t));
     ctx->crypto = crypto;
@@ -194,26 +222,19 @@ static bool check_rate_limit(auth_logic_t *ctx, uint32_t source_ip, uint64_t now
 static void record_rate_limit_failure(auth_logic_t *ctx, uint32_t source_ip, uint64_t now_ms);
 static void reset_rate_limit(auth_logic_t *ctx, uint32_t source_ip);
 
-int auth_logic_change_password(auth_logic_t *ctx, const char *old_pwd, size_t old_len, const char *new_pwd, size_t new_len, uint32_t source_ip, uint64_t now_ms) {
-    if (!ctx || !old_pwd || !new_pwd) return -1;
-    if (ctx->state != AUTH_STATE_READY) return -1;
-
-    // Perform authentication under rate limits for the old password
-    // (We reuse the login logic up to hash verification)
-    uint8_t dummy_token[32]; // Just to trick the signature if needed, but wait: we can just call login then logout?
-    // No, login will create a session. It's cleaner to duplicate the check logic or separate it.
-    // To avoid creating a session, let's just do the check inline.
-
-    if (old_len > AUTH_LOGIC_MAX_PASSWORD_LEN) {
+static int verify_password_internal(auth_logic_t *ctx, const char *password, size_t pwd_len, uint32_t source_ip, uint64_t now_ms) {
+    if (pwd_len > AUTH_LOGIC_MAX_PASSWORD_LEN) {
         if (!check_rate_limit(ctx, source_ip, now_ms)) return -1;
         record_rate_limit_failure(ctx, source_ip, now_ms);
         return -1;
     }
 
-    if (!check_rate_limit(ctx, source_ip, now_ms)) return -1;
+    if (!check_rate_limit(ctx, source_ip, now_ms)) {
+        return -1;
+    }
 
     uint8_t computed_hash[AUTH_LOGIC_HASH_LEN];
-    int ret = ctx->crypto->pbkdf2_hmac_sha256((const uint8_t*)old_pwd, old_len, ctx->salt, AUTH_LOGIC_SALT_LEN, ctx->iterations, AUTH_LOGIC_HASH_LEN, computed_hash);
+    int ret = ctx->crypto->pbkdf2_hmac_sha256((const uint8_t*)password, pwd_len, ctx->salt, AUTH_LOGIC_SALT_LEN, ctx->iterations, AUTH_LOGIC_HASH_LEN, computed_hash);
     if (ret != 0) {
         secure_zero(computed_hash, sizeof(computed_hash));
         return -1;
@@ -227,6 +248,16 @@ int auth_logic_change_password(auth_logic_t *ctx, const char *old_pwd, size_t ol
     secure_zero(computed_hash, sizeof(computed_hash));
 
     reset_rate_limit(ctx, source_ip);
+    return 0;
+}
+
+int auth_logic_change_password(auth_logic_t *ctx, const char *old_pwd, size_t old_len, const char *new_pwd, size_t new_len, uint32_t source_ip, uint64_t now_ms) {
+    if (!ctx || !old_pwd || !new_pwd) return -1;
+    if (ctx->state != AUTH_STATE_READY) return -1;
+
+    if (verify_password_internal(ctx, old_pwd, old_len, source_ip, now_ms) != 0) {
+        return -1;
+    }
 
     // Now validate and apply new password
     if (new_len < ctx->config.min_password_len || new_len > AUTH_LOGIC_MAX_PASSWORD_LEN) return -1;
@@ -237,7 +268,7 @@ int auth_logic_change_password(auth_logic_t *ctx, const char *old_pwd, size_t ol
 
     if (ctx->crypto->random(new_salt, AUTH_LOGIC_SALT_LEN) != 0) return -1;
 
-    ret = ctx->crypto->pbkdf2_hmac_sha256((const uint8_t*)new_pwd, new_len, new_salt, AUTH_LOGIC_SALT_LEN, ctx->config.pbkdf2_iterations, AUTH_LOGIC_HASH_LEN, new_hash);
+    int ret = ctx->crypto->pbkdf2_hmac_sha256((const uint8_t*)new_pwd, new_len, new_salt, AUTH_LOGIC_SALT_LEN, ctx->config.pbkdf2_iterations, AUTH_LOGIC_HASH_LEN, new_hash);
     if (ret != 0) {
         secure_zero(new_hash, sizeof(new_hash));
         return -1;
@@ -397,33 +428,9 @@ int auth_logic_login(auth_logic_t *ctx, const char *password, size_t pwd_len, ui
     if (!ctx || !password || !token_out) return -1;
     if (ctx->state != AUTH_STATE_READY) return -1;
 
-    if (pwd_len > AUTH_LOGIC_MAX_PASSWORD_LEN) {
-        // Pre-PBKDF2 lockout check even for invalid length
-        if (!check_rate_limit(ctx, source_ip, now_ms)) return -1;
-        record_rate_limit_failure(ctx, source_ip, now_ms);
+    if (verify_password_internal(ctx, password, pwd_len, source_ip, now_ms) != 0) {
         return -1;
     }
-
-    // Pre-PBKDF2 lockout check
-    if (!check_rate_limit(ctx, source_ip, now_ms)) {
-        return -1;
-    }
-
-    uint8_t computed_hash[AUTH_LOGIC_HASH_LEN];
-    int ret = ctx->crypto->pbkdf2_hmac_sha256((const uint8_t*)password, pwd_len, ctx->salt, AUTH_LOGIC_SALT_LEN, ctx->iterations, AUTH_LOGIC_HASH_LEN, computed_hash);
-    if (ret != 0) {
-        secure_zero(computed_hash, sizeof(computed_hash));
-        return -1;
-    }
-
-    if (ctx->crypto->const_time_memcmp(computed_hash, ctx->hash, AUTH_LOGIC_HASH_LEN) != 0) {
-        record_rate_limit_failure(ctx, source_ip, now_ms);
-        secure_zero(computed_hash, sizeof(computed_hash));
-        return -1;
-    }
-    secure_zero(computed_hash, sizeof(computed_hash));
-
-    reset_rate_limit(ctx, source_ip);
 
     // Generate token (fail-closed)
     if (ctx->crypto->random(token_out, AUTH_LOGIC_TOKEN_LEN) != 0) {
