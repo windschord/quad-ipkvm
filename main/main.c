@@ -12,7 +12,13 @@
 #include "tc358743.h"
 #include "driver/i2c_master.h"
 
+#include "frame_hub.h"
+#include "test_pattern_source.h"
+
 static const char *TAG = "app_main";
+
+static void* idf_alloc(size_t size) { return malloc(size); }
+static void idf_free(void* ptr) { free(ptr); }
 
 void app_main(void)
 {
@@ -20,6 +26,20 @@ void app_main(void)
     esp_chip_info(&chip_info);
 
     ESP_LOGI(TAG, "ESP32-P4 chip revision: v%d.%d", chip_info.revision / 100, chip_info.revision % 100);
+
+    frame_hub_config_t hub_config = {
+        .alloc = idf_alloc,
+        .free = idf_free,
+        .pool_size = 3,
+        .max_clients = 2
+    };
+    frame_hub_t* hub = frame_hub_create(&hub_config);
+    if (hub) {
+        test_pattern_source_start(hub);
+        ESP_LOGI(TAG, "Test pattern source started.");
+    } else {
+        ESP_LOGE(TAG, "Failed to create frame hub.");
+    }
 
     // Use a standard C `if` to guard the body, as specifically requested
     if (CONFIG_TC358743_INIT) {
