@@ -79,6 +79,10 @@
 
 PHY は IP101GRI。B 章の GPIO 候補（ATX・パネル用）とは重複しません。
 
+**独立した裏付け**: ESP-IDF v6.0.1 の `components/esp_eth/include/esp_eth_mac_esp.h` にある ESP32-P4 向けデフォルト設定 `ETH_ESP32_EMAC_DEFAULT_CONFIG()` が、上の RMII 結線（MDC=31, MDIO=52, REF_CLK=50 の外部入力, TX_EN=49, TXD0=34, TXD1=35, CRS_DV=28, RXD0=29, RXD1=30）と**完全に一致**します（回路図の目視読み取りと一致。ただし F1 の実機確認は引き続き必要）。
+
+**PHY ドライバ**: ESP-IDF 6.0 では `esp_eth_phy_new_ip101()` を含む個別 PHY ドライバが IDF から**削除**され、外部リポジトリ（esp-eth-drivers、コンポーネントレジストリ）に移りました（移行ガイド `docs/en/migration-guides/release-6.x/6.0/networking.rst`）。P3-0 では IEEE 802.3 準拠の汎用ドライバ `esp_eth_phy_new_generic()` を使います（IP101GRI は基本機能なら動く想定。動かなければ F6 の手順）。RMII クロックの Kconfig も IDF 6.0 で削除済みで、設定は EMAC の構造体だけで行います。
+
 | # | 確認項目 | 方法 | 結果 |
 |---|---|---|---|
 | F1 | 上の RMII 結線が回路図・実機と一致するか（目視読み取りの誤りがないか） | 回路図の拡大確認 / テスタ | |
@@ -86,6 +90,7 @@ PHY は IP101GRI。B 章の GPIO 候補（ATX・パネル用）とは重複し�
 | F3 | REF_CLK が GPIO50 に入力される設定で、リンクが上がるか（クロックモード・リセットのタイミング） | P3-0 のログ | |
 | F4 | DHCP で IP が取れるか、リンク速度（100M）・全二重 | P3-0 のログ | |
 | F5 | ブラウザ（自己署名の警告を受け入れて）でログイン画面が出るか、テストパターンが見えるか | P3-3 | |
+| F6 | 汎用 PHY ドライバ（`esp_eth_phy_new_generic`）で IP101GRI のリンク・オートネゴシエーションが正常か。動かない場合は、外部コンポーネント `espressif/ip101`（esp-eth-drivers）の導入に切り替える（レジストリ到達性・バージョンは要確認） | P3-0 のログ | |
 
 ## D. ソフト環境 — HANDOFF 6章 5
 
