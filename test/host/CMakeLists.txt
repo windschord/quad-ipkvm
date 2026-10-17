@@ -40,6 +40,7 @@ list(FILTER TEST_SOURCES EXCLUDE REGEX ".*build/.*")
 set(TEST_COMPILE_OPTIONS
     -Wall -Wextra -Werror
     -fsanitize=address -fsanitize=undefined
+    -fno-sanitize-recover=undefined
 )
 set(TEST_LINK_OPTIONS
     -fsanitize=address -fsanitize=undefined

@@ -2,18 +2,21 @@
 #include <string.h>
 
 // ESP-IDF mbedTLS wrappers
-#include "mbedtls/sha256.h"
 #include "mbedtls/md.h"
 #include "mbedtls/pkcs5.h"
 #include "esp_random.h"
 
 static int mbedtls_sha256_wrapper(const uint8_t *input, size_t ilen, uint8_t output[32]) {
-    mbedtls_sha256_context ctx;
-    mbedtls_sha256_init(&ctx);
-    int ret = mbedtls_sha256_starts(&ctx, 0); // 0 means SHA-256
-    if (ret == 0) ret = mbedtls_sha256_update(&ctx, input, ilen);
-    if (ret == 0) ret = mbedtls_sha256_finish(&ctx, output);
-    mbedtls_sha256_free(&ctx);
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (!info) return -1;
+
+    int ret = mbedtls_md_setup(&ctx, info, 0);
+    if (ret == 0) ret = mbedtls_md_starts(&ctx);
+    if (ret == 0) ret = mbedtls_md_update(&ctx, input, ilen);
+    if (ret == 0) ret = mbedtls_md_finish(&ctx, output);
+    mbedtls_md_free(&ctx);
     return ret;
 }
 

@@ -35,8 +35,8 @@ typedef struct {
 #define AUTH_LOGIC_SESSION_MAX 5
 #define AUTH_LOGIC_RATE_LIMIT_TABLE_SIZE 10
 
-#define AUTH_LOGIC_SERIALIZED_VERSION 1
-#define AUTH_LOGIC_SERIALIZED_LEN (1 + AUTH_LOGIC_SALT_LEN + 4 + AUTH_LOGIC_HASH_LEN) // 1 + 16 + 4 + 32 = 53 bytes
+#define AUTH_LOGIC_SERIALIZED_VERSION 2
+#define AUTH_LOGIC_SERIALIZED_LEN (1 + AUTH_LOGIC_SALT_LEN + 4 + AUTH_LOGIC_HASH_LEN + 8) // 1 + 16 + 4 + 32 + 8(hash prefix for integrity) = 61 bytes
 
 // --- Config ---
 typedef struct {
@@ -48,8 +48,11 @@ typedef struct {
     uint64_t session_absolute_timeout_ms;
 
     // Rate limit parameters
-    uint32_t rate_limit_max_attempts;
-    uint64_t rate_limit_lockout_ms; // TODO(hw-verify): Adjust based on usage requirements
+    uint64_t rate_limit_window_ms;       // Time window for counting attempts
+    uint32_t rate_limit_max_attempts;    // Max attempts per IP in window before lockout
+    uint64_t rate_limit_base_lockout_ms; // Base lockout time. TODO(hw-verify): Adjust based on usage requirements
+    uint64_t rate_limit_max_lockout_ms;  // Max lockout time for exponential backoff
+    uint32_t rate_limit_global_max_attempts; // Global max attempts in window
 } auth_logic_config_t;
 
 
@@ -69,6 +72,8 @@ typedef struct {
 typedef struct {
     uint32_t source_ip; // Key (IP address as integer)
     uint32_t attempts;
+    uint32_t lockout_count; // For exponential backoff
+    uint64_t first_attempt_ms; // Start of the time window
     uint64_t lockout_until_ms;
 } auth_rate_limit_entry_t;
 
@@ -85,7 +90,9 @@ typedef struct {
 
     // Rate Limiting
     auth_rate_limit_entry_t rate_limits[AUTH_LOGIC_RATE_LIMIT_TABLE_SIZE];
-    uint32_t global_attempts; // Overflow for rate limit table
+    uint32_t global_attempts;
+    uint64_t global_first_attempt_ms;
+    uint32_t global_lockout_count;
     uint64_t global_lockout_until_ms;
 
     const auth_crypto_if_t *crypto;
@@ -106,6 +113,9 @@ int auth_logic_serialize_state(const auth_logic_t *ctx, uint8_t *serialized_out,
 
 // Set initial password. Only works if in NEEDS_SETUP state. Transitions to READY on success.
 int auth_logic_setup_password(auth_logic_t *ctx, const char *password, size_t pwd_len);
+
+// Change password. Invalidates all sessions on success.
+int auth_logic_change_password(auth_logic_t *ctx, const char *old_pwd, size_t old_len, const char *new_pwd, size_t new_len, uint32_t source_ip, uint64_t now_ms);
 
 // Login. If successful, creates a new session and returns a 32-byte token.
 // IMPORTANT: `token_out` must be 32 bytes.

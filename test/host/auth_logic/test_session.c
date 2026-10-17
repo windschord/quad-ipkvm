@@ -11,8 +11,11 @@ void setUp(void) {
     config.pbkdf2_iterations = 10000;
     config.session_idle_timeout_ms = 60000;
     config.session_absolute_timeout_ms = 3600000;
+    config.rate_limit_window_ms = 60000;
     config.rate_limit_max_attempts = 5;
-    config.rate_limit_lockout_ms = 60000;
+    config.rate_limit_base_lockout_ms = 60000;
+    config.rate_limit_max_lockout_ms = 3600000;
+    config.rate_limit_global_max_attempts = 20;
     g_ref_random_should_fail = false;
     auth_logic_init(&ctx, &ref_crypto_if, &config);
 }

@@ -11,8 +11,11 @@ void setUp(void) {
     config.pbkdf2_iterations = 10000;
     config.session_idle_timeout_ms = 60000;
     config.session_absolute_timeout_ms = 3600000;
+    config.rate_limit_window_ms = 60000;
     config.rate_limit_max_attempts = 3; // Use 3 for faster test
-    config.rate_limit_lockout_ms = 60000;
+    config.rate_limit_base_lockout_ms = 60000;
+    config.rate_limit_max_lockout_ms = 3600000;
+    config.rate_limit_global_max_attempts = 15;
     g_ref_random_should_fail = false;
     auth_logic_init(&ctx, &ref_crypto_if, &config);
     auth_logic_setup_password(&ctx, "ValidPassword123!", 17);
@@ -33,7 +36,7 @@ void test_rate_limit_lockout(void) {
     TEST_ASSERT_EQUAL(-1, auth_logic_login(&ctx, "ValidPassword123!", 17, ip, 400, token));
 
     // Wait for lockout to expire
-    TEST_ASSERT_EQUAL(0, auth_logic_login(&ctx, "ValidPassword123!", 17, ip, 300 + config.rate_limit_lockout_ms, token));
+    TEST_ASSERT_EQUAL(0, auth_logic_login(&ctx, "ValidPassword123!", 17, ip, 300 + config.rate_limit_base_lockout_ms, token));
 }
 
 void test_rate_limit_reset_on_success(void) {
@@ -73,12 +76,20 @@ void test_rate_limit_table_overflow_to_global(void) {
     TEST_ASSERT_EQUAL(-1, auth_logic_login(&ctx, "WrongPass!", 10, new_ip, 20, token)); // Global = 2
     TEST_ASSERT_EQUAL(-1, auth_logic_login(&ctx, "WrongPass!", 10, new_ip, 20, token)); // Global = 3, global lockout triggered
 
+    // Wait for global lockout to expire (we failed 15 times before, locking out globally)
+    // Actually, we failed 3 times globally here since rate_limit_global_max_attempts was 20 in previous mock, let's fix it.
+
+    // Fill the remaining global attempts
+    for (int i = 0; i < 15; i++) {
+        auth_logic_login(&ctx, "WrongPass!", 10, new_ip, 20, token);
+    }
+
     // Try correct password from a COMPLETELY DIFFERENT IP (should be blocked by global lockout)
     uint32_t innocent_ip = 8888;
     TEST_ASSERT_EQUAL(-1, auth_logic_login(&ctx, "ValidPassword123!", 17, innocent_ip, 30, token));
 
     // Wait for global lockout to expire
-    TEST_ASSERT_EQUAL(0, auth_logic_login(&ctx, "ValidPassword123!", 17, innocent_ip, 20 + config.rate_limit_lockout_ms, token));
+    TEST_ASSERT_EQUAL(0, auth_logic_login(&ctx, "ValidPassword123!", 17, innocent_ip, 20 + config.rate_limit_base_lockout_ms, token));
 }
 
 void test_rate_limit_eviction_prevents_unlock(void) {
