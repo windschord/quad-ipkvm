@@ -1,57 +1,71 @@
 #include "auth_crypto_mbedtls.h"
 #include <string.h>
 
-// ESP-IDF mbedTLS wrappers
-#include "mbedtls/md.h"
-#include "mbedtls/pkcs5.h"
-#include "esp_random.h"
+// ESP-IDF PSA Crypto wrappers
+#include "psa/crypto.h"
+
+static bool initialized = false;
+
+static void ensure_psa_init(void) {
+    if (!initialized) {
+        psa_crypto_init(); // idempotent, but good practice
+        initialized = true;
+    }
+}
 
 static int mbedtls_sha256_wrapper(const uint8_t *input, size_t ilen, uint8_t output[32]) {
-    mbedtls_md_context_t ctx;
-    mbedtls_md_init(&ctx);
-    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    if (!info) return -1;
-
-    int ret = mbedtls_md_setup(&ctx, info, 0);
-    if (ret == 0) ret = mbedtls_md_starts(&ctx);
-    if (ret == 0) ret = mbedtls_md_update(&ctx, input, ilen);
-    if (ret == 0) ret = mbedtls_md_finish(&ctx, output);
-    mbedtls_md_free(&ctx);
-    return ret;
+    ensure_psa_init();
+    size_t hash_length;
+    psa_status_t status = psa_hash_compute(PSA_ALG_SHA_256, input, ilen, output, 32, &hash_length);
+    return (status == PSA_SUCCESS && hash_length == 32) ? 0 : -1;
 }
 
 static int mbedtls_hmac_sha256_wrapper(const uint8_t *key, size_t keylen, const uint8_t *input, size_t ilen, uint8_t output[32]) {
-    mbedtls_md_context_t ctx;
-    mbedtls_md_init(&ctx);
-    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    if (!info) return -1;
+    ensure_psa_init();
 
-    int ret = mbedtls_md_setup(&ctx, info, 1); // 1 = HMAC
-    if (ret == 0) ret = mbedtls_md_hmac_starts(&ctx, key, keylen);
-    if (ret == 0) ret = mbedtls_md_hmac_update(&ctx, input, ilen);
-    if (ret == 0) ret = mbedtls_md_hmac_finish(&ctx, output);
-    mbedtls_md_free(&ctx);
-    return ret;
+    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE);
+    psa_set_key_algorithm(&attributes, PSA_ALG_HMAC(PSA_ALG_SHA_256));
+    psa_set_key_type(&attributes, PSA_KEY_TYPE_HMAC);
+
+    psa_key_id_t key_id = 0;
+    psa_status_t status = psa_import_key(&attributes, key, keylen, &key_id);
+    if (status != PSA_SUCCESS) return -1;
+
+    size_t mac_length;
+    status = psa_mac_compute(key_id, PSA_ALG_HMAC(PSA_ALG_SHA_256), input, ilen, output, 32, &mac_length);
+
+    psa_destroy_key(key_id);
+    return (status == PSA_SUCCESS && mac_length == 32) ? 0 : -1;
 }
 
 static int mbedtls_pbkdf2_wrapper(const uint8_t *password, size_t plen, const uint8_t *salt, size_t slen, uint32_t iteration_count, uint32_t key_length, uint8_t *output) {
-    mbedtls_md_context_t ctx;
-    mbedtls_md_init(&ctx);
-    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    if (!info) return -1;
+    ensure_psa_init();
 
-    int ret = mbedtls_md_setup(&ctx, info, 1);
-    if (ret == 0) {
-        ret = mbedtls_pkcs5_pbkdf2_hmac(&ctx, password, plen, salt, slen, iteration_count, key_length, output);
-    }
-    mbedtls_md_free(&ctx);
-    return ret;
+    psa_key_derivation_operation_t op = PSA_KEY_DERIVATION_OPERATION_INIT;
+    psa_status_t status = psa_key_derivation_setup(&op, PSA_ALG_PBKDF2_HMAC(PSA_ALG_SHA_256));
+    if (status != PSA_SUCCESS) goto cleanup;
+
+    status = psa_key_derivation_input_integer(&op, PSA_KEY_DERIVATION_INPUT_COST, iteration_count);
+    if (status != PSA_SUCCESS) goto cleanup;
+
+    status = psa_key_derivation_input_bytes(&op, PSA_KEY_DERIVATION_INPUT_SALT, salt, slen);
+    if (status != PSA_SUCCESS) goto cleanup;
+
+    status = psa_key_derivation_input_bytes(&op, PSA_KEY_DERIVATION_INPUT_PASSWORD, password, plen);
+    if (status != PSA_SUCCESS) goto cleanup;
+
+    status = psa_key_derivation_output_bytes(&op, output, key_length);
+
+cleanup:
+    psa_key_derivation_abort(&op);
+    return (status == PSA_SUCCESS) ? 0 : -1;
 }
 
 static int mbedtls_random_wrapper(uint8_t *output, size_t len) {
-    // esp_fill_random generates cryptographic random numbers from hardware RNG
-    esp_fill_random(output, len);
-    return 0; // Always succeeds
+    ensure_psa_init();
+    psa_status_t status = psa_generate_random(output, len);
+    return (status == PSA_SUCCESS) ? 0 : -1;
 }
 
 static int mbedtls_const_time_memcmp(const void *a, const void *b, size_t len) {
