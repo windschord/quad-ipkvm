@@ -8,8 +8,13 @@
 #define CONFIG_TC358743_INIT 0
 #endif
 
+#ifndef CONFIG_NET_ETH_INIT
+#define CONFIG_NET_ETH_INIT 0
+#endif
+
 // We deliberately include this unconditionally to ensure the header builds correctly regardless of toggle
 #include "tc358743.h"
+#include "net_eth.h"
 #include "driver/i2c_master.h"
 
 static const char *TAG = "app_main";
@@ -20,6 +25,11 @@ void app_main(void)
     esp_chip_info(&chip_info);
 
     ESP_LOGI(TAG, "ESP32-P4 chip revision: v%d.%d", chip_info.revision / 100, chip_info.revision % 100);
+
+    if (CONFIG_NET_ETH_INIT) {
+        ESP_LOGI(TAG, "Starting Ethernet initialization...");
+        net_eth_init();
+    }
 
     // Use a standard C `if` to guard the body, as specifically requested
     if (CONFIG_TC358743_INIT) {
