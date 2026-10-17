@@ -22,6 +22,7 @@ typedef uint8_t kvm_channel_t;
 typedef enum {
     KVM_ATX_TARGET_POWER = 0,
     KVM_ATX_TARGET_RESET,
+    KVM_ATX_TARGET_POWER_FORCE,
     KVM_ATX_TARGET_NONE
 } kvm_atx_target_t;
 
@@ -35,12 +36,18 @@ typedef enum {
     KVM_RESULT_ERR_INVALID_PARAM = -5
 } kvm_result_t;
 
+/* Hard Limits for Configuration (compile-time boundaries) */
+#define KVM_ATX_HARD_MAX_POWER_MS 500       /* TODO(hw-verify): Upper limit for normal power pulse */
+#define KVM_ATX_HARD_MAX_RESET_MS 200       /* TODO(hw-verify): Upper limit for reset pulse */
+#define KVM_ATX_HARD_MAX_FORCE_MS 5000      /* TODO(hw-verify): Upper limit for force power pulse */
+
 /* Configuration Parameters (with default suggestions in comments) */
 typedef struct {
     uint32_t led_stable_time_ms;         /* TODO(hw-verify): Time to wait for LED debounce */
     uint32_t switch_kvm_pulse_time_ms;   /* TODO(hw-verify): Length of KVM switch button press (100-200ms) */
     uint32_t switch_led_wait_timeout_ms; /* TODO(hw-verify): Timeout waiting for LED after button press */
     uint32_t switch_video_sync_timeout_ms;/* TODO(hw-verify): Timeout waiting for video sync after LED change */
+    uint32_t no_signal_settle_ms;        /* TODO(hw-verify): Time to wait for NO_SIGNAL to settle before un-locking ATX */
     uint32_t setup_time_ms;              /* TODO(hw-verify): Setup time for A0/A1 before E goes low */
 
     /* Max pulse lengths for ATX operations */
@@ -89,16 +96,22 @@ typedef enum {
 /* State Machine Context */
 typedef struct {
     kvm_logic_config_t config;
+    bool config_valid;
 
     kvm_logic_state_t state;
 
     /* Timers & history */
     uint64_t state_start_ms;
+    bool state_entered;
 
     kvm_channel_t target_channel;
     kvm_channel_t last_stable_led;
     uint8_t last_raw_led;
     uint64_t led_stable_start_ms;
+
+    /* Video tracking */
+    uint64_t no_signal_start_ms;
+    bool no_signal_active;
 
     /* ATX operation state */
     kvm_atx_target_t atx_target;
@@ -113,9 +126,15 @@ typedef struct {
 /* API */
 
 /**
- * @brief Initialize the KVM logic state machine.
+ * @brief Populate a config with suggested default values.
  */
-void kvm_logic_init(kvm_logic_t *logic, const kvm_logic_config_t *config);
+void kvm_logic_config_default(kvm_logic_config_t *config);
+
+/**
+ * @brief Initialize the KVM logic state machine.
+ * @return KVM_RESULT_OK if initialized, KVM_RESULT_ERR_INVALID_PARAM if config is null or invalid.
+ */
+kvm_result_t kvm_logic_init(kvm_logic_t *logic, const kvm_logic_config_t *config);
 
 /**
  * @brief Request a KVM channel switch.
