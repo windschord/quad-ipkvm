@@ -1,0 +1,9 @@
+menu "Net Ethernet Configuration"
+
+config NET_ETH_INIT
+    bool "Initialize Ethernet (net_eth)"
+    default n
+    help
+        Enable Ethernet initialization on startup.
+
+endmenu
