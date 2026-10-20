@@ -20,7 +20,7 @@ static void test_pattern_task(void* arg) {
         video_frame_t* frame = frame_hub_begin_publish(hub, size);
         if (frame) {
             memcpy(frame->data, data, size);
-            frame_hub_commit(hub, frame, 640, 480, esp_timer_get_time() / 1000);
+            frame_hub_commit(hub, frame, size, TEST_PATTERN_WIDTH, TEST_PATTERN_HEIGHT, esp_timer_get_time() / 1000);
         }
 
         current_frame = (current_frame + 1) % TEST_PATTERN_NUM_FRAMES;
