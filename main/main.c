@@ -18,7 +18,7 @@
 #include "driver/i2c_master.h"
 #include "frame_hub.h"
 #include "test_pattern_source.h"
-#include "esp_heap_caps.h"
+#include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -59,6 +59,11 @@ void app_main(void)
     }
 
     SemaphoreHandle_t hub_mutex = xSemaphoreCreateMutex();
+    if (!hub_mutex) {
+        ESP_LOGE(TAG, "Failed to create mutex for frame hub");
+        // We can just continue to let the rest init if they don't depend on it
+    } else {
+
     frame_hub_config_t hub_config = {
         .pool_size = 3,
         .max_clients = 8,
@@ -75,6 +80,7 @@ void app_main(void)
         test_pattern_source_start(hub);
     } else {
         ESP_LOGE(TAG, "Failed to create frame hub");
+    }
     }
 
     // Use a standard C `if` to guard the body, as specifically requested

@@ -9,11 +9,13 @@ typedef struct {
     int ref_count;
     uint64_t seq;
     int active;
+    int is_writing;
 } frame_slot_t;
 
 typedef struct {
     int id;
     int active;
+    int is_writing;
     int64_t last_seen_seq;
     frame_slot_t* held_slot;
 } client_state_t;
@@ -107,6 +109,11 @@ video_frame_t* frame_hub_begin_publish(frame_hub_t* hub, size_t required_size) {
     for (int i = 0; i < hub->config.pool_size; i++) {
         frame_slot_t* slot = &hub->pool[i];
 
+                if (slot->is_writing) {
+            if (hub->config.unlock_cb) hub->config.unlock_cb(hub->config.lock_ctx);
+            return NULL;
+        }
+
         // Cannot reuse referenced slots or the latest published slot
         if (slot->ref_count > 0 || slot == hub->latest_slot) {
             continue;
@@ -130,6 +137,7 @@ video_frame_t* frame_hub_begin_publish(frame_hub_t* hub, size_t required_size) {
     }
 
     selected_slot->active = 1;
+    selected_slot->is_writing = 1;
     // Don't update sequence here, update on commit.
 
     if (hub->config.unlock_cb) hub->config.unlock_cb(hub->config.lock_ctx);
@@ -150,10 +158,12 @@ void frame_hub_commit(frame_hub_t* hub, video_frame_t* frame, size_t size, uint3
         }
     }
 
-    if (!slot) {
+    if (!slot || !slot->is_writing) {
         if (hub->config.unlock_cb) hub->config.unlock_cb(hub->config.lock_ctx);
         return;
     }
+
+    slot->is_writing = 0;
 
     if (size > hub->config.max_frame_size || size == 0) {
         // Discard
@@ -170,6 +180,30 @@ void frame_hub_commit(frame_hub_t* hub, video_frame_t* frame, size_t size, uint3
         hub->latest_slot = slot;
         hub->stats.published_frames++;
     }
+
+    if (hub->config.unlock_cb) hub->config.unlock_cb(hub->config.lock_ctx);
+}
+
+void frame_hub_abort_publish(frame_hub_t* hub, video_frame_t* frame) {
+    if (!hub || !frame) return;
+
+    if (hub->config.lock_cb) hub->config.lock_cb(hub->config.lock_ctx);
+
+    frame_slot_t* slot = NULL;
+    for(int i=0; i<hub->config.pool_size; i++) {
+        if(&hub->pool[i].frame == frame) {
+            slot = &hub->pool[i];
+            break;
+        }
+    }
+
+    if (!slot || !slot->is_writing) {
+        if (hub->config.unlock_cb) hub->config.unlock_cb(hub->config.lock_ctx);
+        return;
+    }
+
+    slot->is_writing = 0;
+    slot->active = 0;
 
     if (hub->config.unlock_cb) hub->config.unlock_cb(hub->config.lock_ctx);
 }

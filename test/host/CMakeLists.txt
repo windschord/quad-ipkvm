@@ -73,5 +73,3 @@ foreach(test_source ${TEST_SOURCES})
 
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
-# Discover tests automatically already does the right thing for frame_hub, but we need to add the source to test_frame_hub
-# We will intercept the target link for test_frame_hub specifically.

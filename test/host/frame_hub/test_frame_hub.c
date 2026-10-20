@@ -378,6 +378,7 @@ static void run_fuzz_seed(uint32_t seed) {
     // pool slots: 0 to 4. Each has a ref count.
     int pool_ref_count[5] = {0, 0, 0, 0, 0};
     int pool_active[5] = {0, 0, 0, 0, 0}; // 1 if contains data
+    uint64_t pool_seq[5] = {0, 0, 0, 0, 0}; // Track exact seq of slot
     int pool_held_by_client[5][3] = {{0}}; // mapping slot -> client -> held
     int latest_pool_idx = -1;
 
@@ -418,14 +419,16 @@ static void run_fuzz_seed(uint32_t seed) {
 
             // Model calculation of available slot
             int selected_idx = -1;
+            uint64_t oldest_seq = UINT64_MAX;
             for (int p=0; p<5; p++) {
                 if (pool_ref_count[p] == 0 && p != latest_pool_idx) {
                     if (!pool_active[p]) {
                         selected_idx = p;
                         break;
                     }
-                    if (selected_idx == -1) {
-                        selected_idx = p; // simplified oldest tracking
+                    if (pool_seq[p] < oldest_seq) {
+                        oldest_seq = pool_seq[p];
+                        selected_idx = p;
                     }
                 }
             }
@@ -436,6 +439,7 @@ static void run_fuzz_seed(uint32_t seed) {
                 model_published++;
                 latest_pool_idx = selected_idx;
                 pool_active[latest_pool_idx] = 1;
+                pool_seq[latest_pool_idx] = model_seq;
 
                 // Fill pattern: use sequence number as pattern
                 for(int j=0; j<50; j++) f->data[j] = (uint8_t)(model_seq & 0xFF);
@@ -506,6 +510,53 @@ static void run_fuzz_seed(uint32_t seed) {
     hub = NULL;
 }
 
+void test_frame_hub_commit_misuse(void) {
+    frame_hub_config_t cfg = {
+        .pool_size = 3,
+        .max_clients = 2,
+        .max_frame_size = 100,
+        .alloc_cb = test_alloc,
+        .free_cb = test_free,
+    };
+    hub = frame_hub_create(&cfg);
+
+    // Test double begin_publish returns NULL
+    video_frame_t* f1 = frame_hub_begin_publish(hub, 50);
+    TEST_ASSERT_NOT_NULL(f1);
+    video_frame_t* f_double = frame_hub_begin_publish(hub, 50);
+    TEST_ASSERT_NULL(f_double);
+
+    // Commit
+    frame_hub_commit(hub, f1, 50, 640, 480, 1000);
+
+    frame_hub_stats_t s;
+    frame_hub_get_stats(hub, &s);
+    TEST_ASSERT_EQUAL(1, s.published_frames);
+
+    // Double commit (should be ignored)
+    frame_hub_commit(hub, f1, 50, 640, 480, 2000);
+    frame_hub_get_stats(hub, &s);
+    TEST_ASSERT_EQUAL(1, s.published_frames);
+
+    // Commit to non-begun slot
+    video_frame_t* f2 = frame_hub_begin_publish(hub, 50);
+    frame_hub_abort_publish(hub, f2);
+    frame_hub_commit(hub, f2, 50, 640, 480, 3000);
+    frame_hub_get_stats(hub, &s);
+    TEST_ASSERT_EQUAL(1, s.published_frames);
+
+    // Abort publish works and we can publish again
+    video_frame_t* f3 = frame_hub_begin_publish(hub, 50);
+    TEST_ASSERT_NOT_NULL(f3);
+    frame_hub_abort_publish(hub, f3);
+
+    video_frame_t* f4 = frame_hub_begin_publish(hub, 50);
+    TEST_ASSERT_NOT_NULL(f4);
+    frame_hub_commit(hub, f4, 50, 640, 480, 4000);
+    frame_hub_get_stats(hub, &s);
+    TEST_ASSERT_EQUAL(2, s.published_frames);
+}
+
 void test_frame_hub_fuzz(void) {
     uint32_t seeds[] = {
         123456789, 987654321, 111111111, 222222222,
@@ -530,6 +581,7 @@ int main(void) {
     RUN_TEST(test_frame_hub_size_alternation);
     RUN_TEST(test_frame_hub_slow_client);
     RUN_TEST(test_frame_hub_publish_abort);
+    RUN_TEST(test_frame_hub_commit_misuse);
     RUN_TEST(test_frame_hub_fuzz);
     return UNITY_END();
 }

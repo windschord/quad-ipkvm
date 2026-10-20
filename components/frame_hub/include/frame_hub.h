@@ -51,6 +51,7 @@ void frame_hub_destroy(frame_hub_t* hub);
 
 // Publisher API (assumed to be called by a single thread)
 video_frame_t* frame_hub_begin_publish(frame_hub_t* hub, size_t required_size);
+void frame_hub_abort_publish(frame_hub_t* hub, video_frame_t* frame);
 void frame_hub_commit(frame_hub_t* hub, video_frame_t* frame, size_t size, uint32_t width, uint32_t height, uint64_t timestamp_ms);
 
 // Client API
