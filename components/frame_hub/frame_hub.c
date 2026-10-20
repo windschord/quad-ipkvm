@@ -13,7 +13,8 @@ typedef struct {
 typedef struct {
     int client_id;
     bool active;
-    uint32_t last_seq_num;
+    uint64_t last_seq_num;
+    video_frame_t* held_frame;
 } client_state_t;
 
 struct frame_hub_s {
@@ -21,7 +22,7 @@ struct frame_hub_s {
     frame_buffer_t* pool;
     client_state_t* clients;
 
-    uint32_t current_seq_num;
+    uint64_t current_seq_num;
     int latest_buffer_idx;
 
     frame_hub_lock_fn lock;
@@ -32,7 +33,7 @@ struct frame_hub_s {
 };
 
 frame_hub_t* frame_hub_create(const frame_hub_config_t* config) {
-    if (!config || !config->alloc || !config->free || config->pool_size == 0 || config->max_clients == 0) {
+    if (!config || !config->alloc || !config->free || config->pool_size < 2 || config->max_clients == 0 || config->max_frame_size == 0) {
         return NULL;
     }
 
@@ -89,11 +90,19 @@ static void do_unlock(frame_hub_t* hub) {
 }
 
 video_frame_t* frame_hub_begin_publish(frame_hub_t* hub, size_t required_size) {
-    if (!hub || required_size == 0) return NULL;
+    if (!hub || required_size == 0 || required_size > hub->config.max_frame_size) {
+        if (hub) {
+            do_lock(hub);
+            hub->stats.dropped_frames++;
+            do_unlock(hub);
+        }
+        return NULL;
+    }
+
     do_lock(hub);
 
     int chosen_idx = -1;
-    uint32_t oldest_seq = 0xFFFFFFFF;
+    uint64_t oldest_seq = ~0ULL;
 
     // 1. Try to find a completely unused buffer
     for (size_t i = 0; i < hub->config.pool_size; ++i) {
@@ -127,6 +136,7 @@ video_frame_t* frame_hub_begin_publish(frame_hub_t* hub, size_t required_size) {
         buf->frame.data = (uint8_t*)hub->config.alloc(required_size);
         if (!buf->frame.data) {
             buf->allocated_size = 0;
+            hub->stats.dropped_frames++;
             do_unlock(hub);
             return NULL;
         }
@@ -135,12 +145,13 @@ video_frame_t* frame_hub_begin_publish(frame_hub_t* hub, size_t required_size) {
 
     buf->in_use = true;
     buf->is_latest = false;
+    // Don't reset buf->frame.size here, we'll wait for commit to set the actual size.
     do_unlock(hub);
 
     return &buf->frame;
 }
 
-void frame_hub_commit(frame_hub_t* hub, video_frame_t* frame, uint32_t width, uint32_t height, uint64_t timestamp_ms) {
+void frame_hub_commit(frame_hub_t* hub, video_frame_t* frame, size_t size, uint32_t width, uint32_t height, uint64_t timestamp_ms) {
     if (!hub || !frame) return;
     do_lock(hub);
 
@@ -154,18 +165,24 @@ void frame_hub_commit(frame_hub_t* hub, video_frame_t* frame, uint32_t width, ui
 
     if (buf_idx != -1) {
         frame_buffer_t* buf = &hub->pool[buf_idx];
-        buf->frame.width = width;
-        buf->frame.height = height;
-        buf->frame.timestamp_ms = timestamp_ms;
-        buf->frame.sequence_num = ++hub->current_seq_num;
+        if (size > buf->allocated_size) {
+            buf->in_use = false;
+            hub->stats.dropped_frames++;
+        } else {
+            buf->frame.size = size;
+            buf->frame.width = width;
+            buf->frame.height = height;
+            buf->frame.timestamp_ms = timestamp_ms;
+            buf->frame.sequence_num = ++hub->current_seq_num;
 
-        if (hub->latest_buffer_idx != -1) {
-             hub->pool[hub->latest_buffer_idx].is_latest = false;
+            if (hub->latest_buffer_idx != -1) {
+                 hub->pool[hub->latest_buffer_idx].is_latest = false;
+            }
+            hub->latest_buffer_idx = buf_idx;
+            buf->is_latest = true;
+            buf->in_use = false;
+            hub->stats.published_frames++;
         }
-        hub->latest_buffer_idx = buf_idx;
-        buf->is_latest = true;
-        buf->in_use = false;
-        hub->stats.published_frames++;
     }
 
     do_unlock(hub);
@@ -177,6 +194,7 @@ void frame_hub_abort_publish(frame_hub_t* hub, video_frame_t* frame) {
     for (size_t i = 0; i < hub->config.pool_size; ++i) {
         if (&hub->pool[i].frame == frame) {
             hub->pool[i].in_use = false;
+            hub->stats.dropped_frames++;
             break;
         }
     }
@@ -192,6 +210,7 @@ int frame_hub_register_client(frame_hub_t* hub) {
             hub->clients[i].active = true;
             hub->clients[i].client_id = i;
             hub->clients[i].last_seq_num = 0;
+            hub->clients[i].held_frame = NULL;
             hub->stats.active_clients++;
             client_id = i;
             break;
@@ -205,7 +224,16 @@ void frame_hub_unregister_client(frame_hub_t* hub, int client_id) {
     if (!hub || client_id < 0 || client_id >= (int)hub->config.max_clients) return;
     do_lock(hub);
     if (hub->clients[client_id].active) {
+        if (hub->clients[client_id].held_frame) {
+            for (size_t i = 0; i < hub->config.pool_size; ++i) {
+                if (&hub->pool[i].frame == hub->clients[client_id].held_frame) {
+                    if (hub->pool[i].ref_count > 0) hub->pool[i].ref_count--;
+                    break;
+                }
+            }
+        }
         hub->clients[client_id].active = false;
+        hub->clients[client_id].held_frame = NULL;
         hub->stats.active_clients--;
     }
     do_unlock(hub);
@@ -215,7 +243,7 @@ video_frame_t* frame_hub_get_latest_frame(frame_hub_t* hub, int client_id) {
     if (!hub || client_id < 0 || client_id >= (int)hub->config.max_clients) return NULL;
     do_lock(hub);
 
-    if (!hub->clients[client_id].active || hub->latest_buffer_idx == -1) {
+    if (!hub->clients[client_id].active || hub->latest_buffer_idx == -1 || hub->clients[client_id].held_frame != NULL) {
         do_unlock(hub);
         return NULL;
     }
@@ -225,6 +253,7 @@ video_frame_t* frame_hub_get_latest_frame(frame_hub_t* hub, int client_id) {
     if (latest_buf->frame.sequence_num > hub->clients[client_id].last_seq_num) {
         latest_buf->ref_count++;
         hub->clients[client_id].last_seq_num = latest_buf->frame.sequence_num;
+        hub->clients[client_id].held_frame = &latest_buf->frame;
         do_unlock(hub);
         return &latest_buf->frame;
     }
@@ -233,18 +262,27 @@ video_frame_t* frame_hub_get_latest_frame(frame_hub_t* hub, int client_id) {
     return NULL;
 }
 
-void frame_hub_release_frame(frame_hub_t* hub, video_frame_t* frame) {
-    if (!hub || !frame) return;
+int frame_hub_release_frame(frame_hub_t* hub, int client_id, video_frame_t* frame) {
+    if (!hub || !frame || client_id < 0 || client_id >= (int)hub->config.max_clients) return -1;
     do_lock(hub);
+    if (!hub->clients[client_id].active || hub->clients[client_id].held_frame != frame) {
+        do_unlock(hub);
+        return -1;
+    }
+
     for (size_t i = 0; i < hub->config.pool_size; ++i) {
         if (&hub->pool[i].frame == frame) {
             if (hub->pool[i].ref_count > 0) {
                 hub->pool[i].ref_count--;
             }
-            break;
+            hub->clients[client_id].held_frame = NULL;
+            do_unlock(hub);
+            return 0;
         }
     }
+
     do_unlock(hub);
+    return -1;
 }
 
 void frame_hub_get_stats(frame_hub_t* hub, frame_hub_stats_t* stats) {

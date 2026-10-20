@@ -1,4 +1,9 @@
 #pragma once
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -11,6 +16,10 @@ typedef struct {
     size_t size;
     uint32_t width;
     uint32_t height;
-    uint32_t sequence_num;
+    uint64_t sequence_num;
     uint64_t timestamp_ms;
 } video_frame_t;
+
+#ifdef __cplusplus
+}
+#endif

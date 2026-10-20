@@ -9,7 +9,8 @@ static frame_hub_config_t config = {
     .alloc = dummy_alloc,
     .free = dummy_free,
     .pool_size = 3,
-    .max_clients = 2
+    .max_clients = 2,
+    .max_frame_size = 1000
 };
 
 void test_frame_hub_lifecycle(void) {
@@ -27,7 +28,7 @@ void test_frame_hub_publish_and_subscribe(void) {
     video_frame_t* f1 = frame_hub_begin_publish(hub, 100);
     TEST_ASSERT_NOT_NULL(f1);
     f1->data[0] = 0xAA;
-    frame_hub_commit(hub, f1, 640, 480, 1000);
+    frame_hub_commit(hub, f1, 100, 640, 480, 1000);
 
     // Subscribe
     video_frame_t* latest1 = frame_hub_get_latest_frame(hub, client1);
@@ -39,7 +40,7 @@ void test_frame_hub_publish_and_subscribe(void) {
     video_frame_t* latest2 = frame_hub_get_latest_frame(hub, client1);
     TEST_ASSERT_NULL(latest2);
 
-    frame_hub_release_frame(hub, latest1);
+    frame_hub_release_frame(hub, client1, latest1);
 
     frame_hub_unregister_client(hub, client1);
     frame_hub_destroy(hub);
@@ -51,21 +52,21 @@ void test_frame_hub_pool_exhaustion(void) {
     int client_id = frame_hub_register_client(hub);
 
     // pool_size is 3. We hold 3 frames in reference, next publish should fail.
-    video_frame_t* f1 = frame_hub_begin_publish(hub, 100); frame_hub_commit(hub, f1, 10, 10, 1);
+    int c2 = frame_hub_register_client(hub);
+
+    video_frame_t* f1 = frame_hub_begin_publish(hub, 100); frame_hub_commit(hub, f1, 100, 10, 10, 1);
     video_frame_t* ref1 = frame_hub_get_latest_frame(hub, client_id);
 
-    video_frame_t* f2 = frame_hub_begin_publish(hub, 100); frame_hub_commit(hub, f2, 10, 10, 2);
-    video_frame_t* ref2 = frame_hub_get_latest_frame(hub, client_id);
+    video_frame_t* f2 = frame_hub_begin_publish(hub, 100); frame_hub_commit(hub, f2, 100, 10, 10, 2);
+    video_frame_t* ref2 = frame_hub_get_latest_frame(hub, c2);
 
-    video_frame_t* f3 = frame_hub_begin_publish(hub, 100); frame_hub_commit(hub, f3, 10, 10, 3);
-    video_frame_t* ref3 = frame_hub_get_latest_frame(hub, client_id);
+    video_frame_t* f3 = frame_hub_begin_publish(hub, 100); frame_hub_commit(hub, f3, 100, 10, 10, 3);
 
     video_frame_t* f4 = frame_hub_begin_publish(hub, 100);
     TEST_ASSERT_NULL(f4); // Should be exhausted
 
-    frame_hub_release_frame(hub, ref1);
-    frame_hub_release_frame(hub, ref2);
-    frame_hub_release_frame(hub, ref3);
+    frame_hub_release_frame(hub, client_id, ref1);
+    frame_hub_release_frame(hub, c2, ref2);
 
     video_frame_t* f5 = frame_hub_begin_publish(hub, 100);
     TEST_ASSERT_NOT_NULL(f5);

@@ -1,5 +1,9 @@
 #pragma once
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "video_source.h"
 
 typedef struct frame_hub_s frame_hub_t;
@@ -12,6 +16,7 @@ typedef struct {
     frame_hub_free_fn free;
     size_t pool_size;
     size_t max_clients;
+    size_t max_frame_size;
 } frame_hub_config_t;
 
 // Locking callbacks (for thread safety)
@@ -24,14 +29,14 @@ void frame_hub_set_lock_callbacks(frame_hub_t* hub, frame_hub_lock_fn lock, fram
 
 // Publish flow
 video_frame_t* frame_hub_begin_publish(frame_hub_t* hub, size_t required_size);
-void frame_hub_commit(frame_hub_t* hub, video_frame_t* frame, uint32_t width, uint32_t height, uint64_t timestamp_ms);
+void frame_hub_commit(frame_hub_t* hub, video_frame_t* frame, size_t size, uint32_t width, uint32_t height, uint64_t timestamp_ms);
 void frame_hub_abort_publish(frame_hub_t* hub, video_frame_t* frame);
 
 // Subscribe flow
 int frame_hub_register_client(frame_hub_t* hub);
 void frame_hub_unregister_client(frame_hub_t* hub, int client_id);
 video_frame_t* frame_hub_get_latest_frame(frame_hub_t* hub, int client_id);
-void frame_hub_release_frame(frame_hub_t* hub, video_frame_t* frame);
+int frame_hub_release_frame(frame_hub_t* hub, int client_id, video_frame_t* frame);
 
 typedef struct {
     uint32_t published_frames;
@@ -40,3 +45,7 @@ typedef struct {
 } frame_hub_stats_t;
 
 void frame_hub_get_stats(frame_hub_t* hub, frame_hub_stats_t* stats);
+
+#ifdef __cplusplus
+}
+#endif
