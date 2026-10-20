@@ -1,0 +1,7 @@
+<<<<<<< SEARCH
+        f.write(f'#define TEST_PATTERN_NUM_FRAMES {num_frames}\n\n')
+=======
+        f.write(f'#define TEST_PATTERN_NUM_FRAMES {num_frames}\n')
+        f.write(f'#define TEST_PATTERN_WIDTH 640\n')
+        f.write(f'#define TEST_PATTERN_HEIGHT 480\n\n')
+>>>>>>> REPLACE

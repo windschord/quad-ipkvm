@@ -2,6 +2,8 @@
 #pragma once
 
 #define TEST_PATTERN_NUM_FRAMES 8
+#define TEST_PATTERN_WIDTH 640
+#define TEST_PATTERN_HEIGHT 480
 
 static const unsigned char test_pattern_frame_0[] = {
     0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
