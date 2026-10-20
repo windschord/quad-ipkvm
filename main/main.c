@@ -1,15 +1,19 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include "esp_chip_info.h"
 #include "esp_log.h"
 #include "sdkconfig.h"
 
-// If not enabled, define it to 0 so `if (CONFIG_TC358743_INIT)` doesn't fail compilation
 #ifndef CONFIG_TC358743_INIT
 #define CONFIG_TC358743_INIT 0
 #endif
 
-// We deliberately include this unconditionally to ensure the header builds correctly regardless of toggle
+#ifndef CONFIG_NET_ETH_INIT
+#define CONFIG_NET_ETH_INIT 0
+#endif
+
 #include "tc358743.h"
+#include "net_eth.h"
 #include "driver/i2c_master.h"
 
 #include "frame_hub.h"
@@ -17,6 +21,7 @@
 
 static const char *TAG = "app_main";
 
+// TODO(hw-verify): allocate from PSRAM if available
 static void* idf_alloc(size_t size) { return malloc(size); }
 static void idf_free(void* ptr) { free(ptr); }
 
@@ -31,7 +36,8 @@ void app_main(void)
         .alloc = idf_alloc,
         .free = idf_free,
         .pool_size = 3,
-        .max_clients = 2
+        .max_clients = 2,
+        .max_frame_size = 512 * 1024
     };
     frame_hub_t* hub = frame_hub_create(&hub_config);
     if (hub) {
@@ -41,7 +47,14 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to create frame hub.");
     }
 
-    // Use a standard C `if` to guard the body, as specifically requested
+    if (CONFIG_NET_ETH_INIT) {
+        ESP_LOGI(TAG, "Starting Ethernet initialization...");
+        esp_err_t err = net_eth_init();
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "Ethernet initialization failed: %s", esp_err_to_name(err));
+        }
+    }
+
     if (CONFIG_TC358743_INIT) {
         ESP_LOGI(TAG, "Starting TC358743 initialization...");
 
