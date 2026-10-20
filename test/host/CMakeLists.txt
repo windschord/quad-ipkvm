@@ -62,6 +62,12 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE auth_logic auth_crypto_ref)
     endif()
 
+    if (test_source MATCHES "/frame_hub/")
+        target_sources(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/frame_hub/frame_hub.c)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/frame_hub/include)
+    endif()
+
+
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})
     target_link_options(${test_name} PRIVATE ${TEST_LINK_OPTIONS})
 
