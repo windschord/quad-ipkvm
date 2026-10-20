@@ -62,8 +62,16 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE auth_logic auth_crypto_ref)
     endif()
 
+    if (test_source MATCHES "/frame_hub/")
+        target_sources(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/frame_hub/frame_hub.c)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/frame_hub/include)
+    endif()
+
+
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})
     target_link_options(${test_name} PRIVATE ${TEST_LINK_OPTIONS})
 
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
+# Discover tests automatically already does the right thing for frame_hub, but we need to add the source to test_frame_hub
+# We will intercept the target link for test_frame_hub specifically.

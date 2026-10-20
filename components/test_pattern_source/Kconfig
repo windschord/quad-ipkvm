@@ -1,0 +1,10 @@
+menu "Test Pattern Source Configuration"
+
+config TEST_PATTERN_FPS
+    int "Test Pattern Frames Per Second"
+    default 10
+    range 1 60
+    help
+        Frames per second for the test pattern video source.
+
+endmenu

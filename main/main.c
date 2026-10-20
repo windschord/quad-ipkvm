@@ -16,8 +16,32 @@
 #include "tc358743.h"
 #include "net_eth.h"
 #include "driver/i2c_master.h"
+#include "frame_hub.h"
+#include "test_pattern_source.h"
+#include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "app_main";
+
+static void* app_alloc(size_t size, void* ctx) {
+    (void)ctx;
+    // TODO(hw-verify): allocate from PSRAM once confirmed available
+    return malloc(size);
+}
+
+static void app_free(void* ptr, void* ctx) {
+    (void)ctx;
+    free(ptr);
+}
+
+static void app_lock(void* ctx) {
+    xSemaphoreTake((SemaphoreHandle_t)ctx, portMAX_DELAY);
+}
+
+static void app_unlock(void* ctx) {
+    xSemaphoreGive((SemaphoreHandle_t)ctx);
+}
 
 void app_main(void)
 {
@@ -32,6 +56,25 @@ void app_main(void)
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
             ESP_LOGE(TAG, "Ethernet initialization failed: %s", esp_err_to_name(err));
         }
+    }
+
+    SemaphoreHandle_t hub_mutex = xSemaphoreCreateMutex();
+    frame_hub_config_t hub_config = {
+        .pool_size = 3,
+        .max_clients = 8,
+        .max_frame_size = 256 * 1024,
+        .alloc_cb = app_alloc,
+        .free_cb = app_free,
+        .lock_cb = app_lock,
+        .unlock_cb = app_unlock,
+        .lock_ctx = (void*)hub_mutex
+    };
+    frame_hub_t* hub = frame_hub_create(&hub_config);
+    if (hub) {
+        ESP_LOGI(TAG, "Starting test pattern source...");
+        test_pattern_source_start(hub);
+    } else {
+        ESP_LOGE(TAG, "Failed to create frame hub");
     }
 
     // Use a standard C `if` to guard the body, as specifically requested
