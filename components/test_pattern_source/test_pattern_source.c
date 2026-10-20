@@ -9,6 +9,9 @@
 #define CONFIG_TEST_PATTERN_FPS 10
 #endif
 
+static TaskHandle_t s_task_handle = NULL;
+static volatile int s_stop_requested = 0;
+
 static void test_pattern_task(void* arg) {
     frame_hub_t* hub = (frame_hub_t*)arg;
     int current_frame = 0;
@@ -16,7 +19,7 @@ static void test_pattern_task(void* arg) {
     const int fps = CONFIG_TEST_PATTERN_FPS;
     const int frame_delay_ms = 1000 / fps;
 
-    while (1) {
+    while (!s_stop_requested) {
         size_t size = test_pattern_frame_sizes[current_frame];
         const uint8_t* data = test_pattern_frames[current_frame];
 
@@ -29,18 +32,18 @@ static void test_pattern_task(void* arg) {
         current_frame = (current_frame + 1) % TEST_PATTERN_NUM_FRAMES;
         vTaskDelay(pdMS_TO_TICKS(frame_delay_ms));
     }
+    s_task_handle = NULL;
+    vTaskDelete(NULL);
 }
 
 void test_pattern_source_start(frame_hub_t* hub) {
-    if (!hub) return;
-    xTaskCreate(test_pattern_task, "test_pattern", 4096, hub, 5, NULL);
+    test_pattern_source_get()->start(test_pattern_source_get(), hub);
 }
-
-static TaskHandle_t s_task_handle = NULL;
 
 static int test_pattern_source_interface_start(const video_source_t *source, frame_hub_t *hub) {
     if (!hub) return -1;
     if (s_task_handle != NULL) return 0; // Already running
+    s_stop_requested = 0;
     if (xTaskCreate(test_pattern_task, "test_pattern", 4096, hub, 5, &s_task_handle) != pdPASS) {
         return -1;
     }
@@ -48,9 +51,15 @@ static int test_pattern_source_interface_start(const video_source_t *source, fra
 }
 
 static void test_pattern_source_interface_stop(const video_source_t *source) {
-    if (s_task_handle) {
-        vTaskDelete(s_task_handle);
-        s_task_handle = NULL;
+    if (!s_task_handle) return;
+
+    s_stop_requested = 1;
+    const int fps = CONFIG_TEST_PATTERN_FPS;
+    const int wait_ms = (1000 / fps) + 50;
+    int waited = 0;
+    while (s_task_handle != NULL && waited < wait_ms) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        waited += 10;
     }
 }
 

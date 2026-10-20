@@ -63,24 +63,23 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to create mutex for frame hub");
         // We can just continue to let the rest init if they don't depend on it
     } else {
-
-    frame_hub_config_t hub_config = {
-        .pool_size = 3,
-        .max_clients = 8,
-        .max_frame_size = 256 * 1024,
-        .alloc_cb = app_alloc,
-        .free_cb = app_free,
-        .lock_cb = app_lock,
-        .unlock_cb = app_unlock,
-        .lock_ctx = (void*)hub_mutex
-    };
-    frame_hub_t* hub = frame_hub_create(&hub_config);
-    if (hub) {
-        ESP_LOGI(TAG, "Starting test pattern source...");
-        test_pattern_source_start(hub);
-    } else {
-        ESP_LOGE(TAG, "Failed to create frame hub");
-    }
+        frame_hub_config_t hub_config = {
+            .pool_size = 3,
+            .max_clients = 8,
+            .max_frame_size = 256 * 1024,
+            .alloc_cb = app_alloc,
+            .free_cb = app_free,
+            .lock_cb = app_lock,
+            .unlock_cb = app_unlock,
+            .lock_ctx = (void*)hub_mutex
+        };
+        frame_hub_t* hub = frame_hub_create(&hub_config);
+        if (hub) {
+            ESP_LOGI(TAG, "Starting test pattern source...");
+            test_pattern_source_start(hub);
+        } else {
+            ESP_LOGE(TAG, "Failed to create frame hub");
+        }
     }
 
     // Use a standard C `if` to guard the body, as specifically requested

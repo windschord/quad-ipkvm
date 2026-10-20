@@ -1,3 +1,4 @@
+#include "video_source.h"
 #include "unity.h"
 #include "frame_hub.h"
 #include <stdlib.h>
@@ -510,6 +511,45 @@ static void run_fuzz_seed(uint32_t seed) {
     hub = NULL;
 }
 
+
+void test_frame_hub_commit_held_frame(void) {
+    frame_hub_config_t cfg = {
+        .pool_size = 3,
+        .max_clients = 2,
+        .max_frame_size = 100,
+        .alloc_cb = test_alloc,
+        .free_cb = test_free,
+    };
+    hub = frame_hub_create(&cfg);
+    int cid = frame_hub_register_client(hub);
+
+    video_frame_t* f1 = frame_hub_begin_publish(hub, 50);
+    frame_hub_commit(hub, f1, 50, 640, 480, 1000);
+
+    const video_frame_t* c1 = frame_hub_get_latest_frame(hub, cid);
+    TEST_ASSERT_NOT_NULL(c1);
+    TEST_ASSERT_EQUAL(50, c1->size);
+    TEST_ASSERT_EQUAL(0, c1->seq);
+
+    frame_hub_stats_t s;
+    frame_hub_get_stats(hub, &s);
+    TEST_ASSERT_EQUAL(1, s.published_frames);
+
+    // Attempt to commit to the HELD frame (this should be blocked by !is_writing)
+    // We cast away const just to simulate the misuse
+    frame_hub_commit(hub, (video_frame_t*)c1, 99, 10, 10, 2000);
+
+    frame_hub_get_stats(hub, &s);
+    // Should NOT increase
+    TEST_ASSERT_EQUAL(1, s.published_frames);
+
+    // Properties of held frame should NOT change
+    TEST_ASSERT_EQUAL(50, c1->size);
+    TEST_ASSERT_EQUAL(0, c1->seq);
+
+    frame_hub_release_frame(hub, cid, c1);
+}
+
 void test_frame_hub_commit_misuse(void) {
     frame_hub_config_t cfg = {
         .pool_size = 3,
@@ -569,6 +609,49 @@ void test_frame_hub_fuzz(void) {
     }
 }
 
+
+static int dummy_start(const video_source_t *source, frame_hub_t *hub) { (void)source;
+    if (!hub) return -1;
+    video_frame_t* f = frame_hub_begin_publish(hub, 50);
+    if (f) {
+        frame_hub_commit(hub, f, 50, 10, 10, 100);
+    }
+    return 0;
+}
+
+static void dummy_stop(const video_source_t *source) {
+    (void)source;
+}
+
+void test_frame_hub_video_source_contract(void) {
+    video_source_t src = {
+        .name = "dummy",
+        .start = dummy_start,
+        .stop = dummy_stop,
+        .ctx = NULL
+    };
+
+    frame_hub_config_t cfg = {
+        .pool_size = 3,
+        .max_clients = 2,
+        .max_frame_size = 100,
+        .alloc_cb = test_alloc,
+        .free_cb = test_free,
+    };
+    hub = frame_hub_create(&cfg);
+
+    TEST_ASSERT_EQUAL_STRING("dummy", src.name);
+
+    int res = src.start(&src, hub);
+    TEST_ASSERT_EQUAL(0, res);
+
+    frame_hub_stats_t s;
+    frame_hub_get_stats(hub, &s);
+    TEST_ASSERT_EQUAL(1, s.published_frames);
+
+    src.stop(&src);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_frame_hub_create_invalid_config);
@@ -581,6 +664,8 @@ int main(void) {
     RUN_TEST(test_frame_hub_size_alternation);
     RUN_TEST(test_frame_hub_slow_client);
     RUN_TEST(test_frame_hub_publish_abort);
+    RUN_TEST(test_frame_hub_commit_held_frame);
+    RUN_TEST(test_frame_hub_video_source_contract);
     RUN_TEST(test_frame_hub_commit_misuse);
     RUN_TEST(test_frame_hub_fuzz);
     return UNITY_END();
