@@ -55,6 +55,18 @@ ESP32-P4 chip revision: v1.3        ← app_main のログ。チップ rev が v
 
 **記入**: HW_VERIFY D1 に「チップ rev、IDF バージョン、日付」。
 
+## 段階 0b: PSRAM とフラッシュサイズの確認（任意・段階 1 以降と並行可）
+
+- フラッシュは、実機では 32MB ですが、現在のイメージヘッダは 2MB のままです（`sdkconfig.defaults` に設定が必要。Jules に依頼予定）。
+- PSRAM は有効になっていません。確認するには、次を試して、ブートログ（`PSRAM` / `spiram` / `heap` に関する行）を貼ってください。
+```sh
+idf.py menuconfig
+#   Component config → ESP PSRAM → [*] Support for external, SPI-connected RAM
+#   （モード・周波数などは、**既定値のまま**で一度試し、結果を貼ってください。推測で変更しないでください）
+idf.py -p <シリアルポート> flash monitor
+```
+- 期待する結果: PSRAM の容量が表示されて起動する。起動に失敗する、または容量が表示されない場合は、そのログを貼ってください（`TODO(hw-verify)`）。
+
 ## 段階 1: Ethernet（HW_VERIFY F1〜F6）
 
 LAN ケーブル（DHCP のあるルーター）を基板の RJ45 に接続します。
@@ -126,6 +138,10 @@ CSI_STATUS: ...  CSI_ERR: ...
 
 **HDMI を接続した場合**: `TMDS detected: yes` になるかを確認してください（映像信号があるか。EDID が相手に認識されたかの目安）。
 
+**診断ログの読み方（2026-10-21 の実機結果から）**:
+- `Chip ID`、`SYSCTL`、`HDMI SYS_STATUS` は実値として読んでよいです。`SYS_STATUS=0x09` は、DDC5V（相手が 5V を出している）と PHY_SCDT（信号の検出）が立っている状態で、`TMDS detected: no` のままでも、HDMI を接続したことは検出されています。
+- **`CSI_STATUS` / `CSI_ERR` は、CSI を開始する前は無効な値です。** 現状では PLL と CSI の設定をスキップしているため、CSI ブロック（0x04xx）の読み出し値が、直前に読んだレジスタの値の複製になることが確認されています（例: 直前が `SYS_STATUS=0x09` なら `0x0909`）。CSI 開始後に読み直して判断します。
+
 **記入**: HW_VERIFY E1（ピン表）、E3（アドレス・I2C 速度）、E4（RESET/INT が見えるか）。
 
 **貼ってほしい情報（失敗時）**: ログ全体と、ケーブルの接続（向き、使ったケーブルの型番）。
@@ -148,3 +164,6 @@ CSI_STATUS: ...  CSI_ERR: ...
 - 段階 0 の結果から、`sdkconfig.defaults` のフラッシュ/PSRAM 設定を決め、`frame_hub` の確保サイズ・確保元（PSRAM 優先）を設定可能にします（Jules に依頼）。
 - 段階 1 が通れば、P3-3 の実機確認（HW_VERIFY F5）に進めます。
 - 段階 2 が通れば、P2b（CSI でフレームを 1 枚取る）の実機デバッグに進めます。
+
+## 実施記録
+- **2026-10-21**（オーナー側 Claude の報告）: 段階 0 OK（チップ rev v1.3、ESP-IDF v6.0.1）、段階 1 OK（Link Up は起動後約 3.4 秒、DHCP 取得、ping 3/3。PHY アドレスと 100M/全二重はログに出ず未確認）、段階 2 OK（I2C 0x0F で応答、Chip ID 0x0000、EDID 書き込み成功。HDMI 接続時 `SYS_STATUS=0x09`）、段階 3 未実施（`frame_hub` の作成に失敗するため）。詳細は `docs/HW_VERIFY.md` の D1・E3・E4・E7・F1〜F6。
