@@ -43,6 +43,22 @@ void test_base64url_decode_reject_padding(void) {
     TEST_ASSERT_NOT_EQUAL_INT(0, http_guard_base64url_decode("Zg==", 4, buf, sizeof(buf), &out_len));
 }
 
+void test_base64url_decode_reject_invalid_length(void) {
+    uint8_t buf[32];
+    size_t out_len;
+    TEST_ASSERT_NOT_EQUAL_INT(0, http_guard_base64url_decode("Z", 1, buf, sizeof(buf), &out_len));
+    TEST_ASSERT_NOT_EQUAL_INT(0, http_guard_base64url_decode("Zm9vY", 5, buf, sizeof(buf), &out_len));
+}
+
+void test_base64url_decode_reject_non_canonical(void) {
+    uint8_t buf[32];
+    size_t out_len;
+    // "f" encoded is "Zg", where 'g' provides 6 bits (32), but only 4 are needed for the 8th bit of 'f'.
+    // If we use 'h' (33) instead of 'g' (32), it would mean the last 2 leftover bits are not 0.
+    TEST_ASSERT_EQUAL_INT(0, http_guard_base64url_decode("Zg", 2, buf, sizeof(buf), &out_len));
+    TEST_ASSERT_NOT_EQUAL_INT(0, http_guard_base64url_decode("Zh", 2, buf, sizeof(buf), &out_len));
+}
+
 void test_base64url_encode_rfc4648(void) {
     char buf[32];
     size_t out_len;
@@ -68,6 +84,8 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_base64url_decode_rfc4648);
     RUN_TEST(test_base64url_decode_reject_padding);
+    RUN_TEST(test_base64url_decode_reject_invalid_length);
+    RUN_TEST(test_base64url_decode_reject_non_canonical);
     RUN_TEST(test_base64url_encode_rfc4648);
     return UNITY_END();
 }

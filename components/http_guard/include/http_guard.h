@@ -10,6 +10,8 @@
 extern "C" {
 #endif
 
+#define HTTP_GUARD_COOKIE_NAME "__Host-session"
+
 // --- Base64URL ---
 
 int http_guard_base64url_decode(const char *src, size_t src_len, uint8_t *dst, size_t dst_len, size_t *out_len);
@@ -19,8 +21,9 @@ int http_guard_base64url_encode(const uint8_t *src, size_t src_len, char *dst, s
 
 int http_guard_extract_session_cookie(const char *cookie_header, size_t header_len, uint8_t token_out[32]);
 
-// --- Origin ---
+// --- Host & Origin ---
 
+bool http_guard_host_ok(const char *host, size_t host_len, const char *const *allowed_names, size_t allowed_count);
 bool http_guard_origin_ok(const char *origin, size_t origin_len, const char *host, size_t host_len);
 
 // --- JSON Parsing ---
@@ -55,6 +58,7 @@ typedef enum {
     HTTP_GUARD_PATH_SETUP,
     HTTP_GUARD_PATH_LOGIN,
     HTTP_GUARD_PATH_LOGOUT,
+    HTTP_GUARD_PATH_WS_VIDEO,
     HTTP_GUARD_PATH_OTHER
 } http_guard_path_e;
 
@@ -63,11 +67,13 @@ typedef enum {
     HTTP_GUARD_ACTION_401,
     HTTP_GUARD_ACTION_403_SETUP_REQUIRED,
     HTTP_GUARD_ACTION_403_ORIGIN,
-    HTTP_GUARD_ACTION_415,
-    HTTP_GUARD_ACTION_405
+    HTTP_GUARD_ACTION_403_HOST,
+    HTTP_GUARD_ACTION_405,
+    HTTP_GUARD_ACTION_409_ALREADY_SETUP,
+    HTTP_GUARD_ACTION_415
 } http_guard_action_e;
 
-http_guard_action_e http_guard_decide(auth_state_e state, http_guard_method_e method, http_guard_path_e path, bool has_valid_session, bool origin_ok, bool is_json);
+http_guard_action_e http_guard_decide(auth_state_e state, http_guard_method_e method, http_guard_path_e path, bool has_valid_session, bool origin_ok, bool is_json, bool host_ok);
 
 // --- Response ---
 

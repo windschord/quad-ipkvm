@@ -7,7 +7,7 @@ void tearDown(void) {}
 
 void test_cookie_valid_single(void) {
     uint8_t token[32];
-    const char *header = "session=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const char *header = "__Host-session=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     TEST_ASSERT_EQUAL_INT(0, http_guard_extract_session_cookie(header, strlen(header), token));
 
     uint8_t expected[32] = {0};
@@ -16,19 +16,19 @@ void test_cookie_valid_single(void) {
 
 void test_cookie_valid_with_others(void) {
     uint8_t token[32];
-    const char *header = "foo=bar; session=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; baz=qux";
+    const char *header = "foo=bar; __Host-session=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; baz=qux";
     TEST_ASSERT_EQUAL_INT(0, http_guard_extract_session_cookie(header, strlen(header), token));
 }
 
 void test_cookie_reject_duplicate(void) {
     uint8_t token[32];
-    const char *header = "session=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; session=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+    const char *header = "__Host-session=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; __Host-session=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
     TEST_ASSERT_NOT_EQUAL_INT(0, http_guard_extract_session_cookie(header, strlen(header), token));
 }
 
 void test_cookie_reject_wrong_size(void) {
     uint8_t token[32];
-    const char *header = "session=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const char *header = "__Host-session=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     TEST_ASSERT_NOT_EQUAL_INT(0, http_guard_extract_session_cookie(header, strlen(header), token));
 }
 
@@ -45,7 +45,7 @@ void test_cookie_empty(void) {
 
 void test_cookie_spaces(void) {
     uint8_t token[32];
-    const char *header = "  session = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA  ; ";
+    const char *header = "  __Host-session = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA  ; ";
     TEST_ASSERT_EQUAL_INT(0, http_guard_extract_session_cookie(header, strlen(header), token));
 }
 
