@@ -100,6 +100,7 @@ static const char* TAG = "tc358743";
 struct tc358743_dev_t {
     tc358743_config_t config;
     i2c_master_dev_handle_t i2c_dev;
+    bool csi_started;
 };
 
 // I2C 16-bit register read (Little Endian, as seen in Linux `i2c_rd16`)
@@ -511,6 +512,8 @@ tc358743_handle_t tc358743_init(const tc358743_config_t* config) {
         return NULL;
     }
 
+    dev->csi_started = false;
+
     // Bring up HPD to signal the source that we are ready
     ESP_LOGI(TAG, "Bringing up HPD...");
     err = tc_update8(dev, HPD_CTL, MASK_HPD_CTL0 | MASK_HPD_OUT0, MASK_HPD_CTL0 | MASK_HPD_OUT0);
@@ -561,14 +564,18 @@ void tc358743_dump_diagnostics(tc358743_handle_t dev) {
                  sys_status, (sys_status & 0x02) ? "yes" : "no", (sys_status & 0x80) ? "yes" : "no");
     }
 
-    uint16_t csi_status;
-    if (tc_read16(dev, CSI_STATUS, &csi_status) == ESP_OK) {
-        ESP_LOGI(TAG, "CSI_STATUS: 0x%04x", csi_status);
-    }
+    if (!dev->csi_started) {
+        ESP_LOGI(TAG, "CSI_STATUS/CSI_ERR: not read (CSI not started; values before CSI start are invalid)");
+    } else {
+        uint16_t csi_status;
+        if (tc_read16(dev, CSI_STATUS, &csi_status) == ESP_OK) {
+            ESP_LOGI(TAG, "CSI_STATUS: 0x%04x", csi_status);
+        }
 
-    uint16_t csi_err;
-    if (tc_read16(dev, CSI_ERR, &csi_err) == ESP_OK) {
-        ESP_LOGI(TAG, "CSI_ERR: 0x%04x", csi_err);
+        uint16_t csi_err;
+        if (tc_read16(dev, CSI_ERR, &csi_err) == ESP_OK) {
+            ESP_LOGI(TAG, "CSI_ERR: 0x%04x", csi_err);
+        }
     }
 
     ESP_LOGI(TAG, "--------------------------------");

@@ -19,6 +19,7 @@
 #include "frame_hub.h"
 #include "test_pattern_source.h"
 #include <stdlib.h>
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -26,8 +27,16 @@ static const char *TAG = "app_main";
 
 static void* app_alloc(size_t size, void* ctx) {
     (void)ctx;
-    // TODO(hw-verify): allocate from PSRAM once confirmed available
-    return malloc(size);
+    void* ptr = NULL;
+#ifdef CONFIG_FRAME_HUB_PREFER_SPIRAM
+#if CONFIG_FRAME_HUB_PREFER_SPIRAM
+    ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
+#endif
+    if (!ptr) {
+        ptr = malloc(size);
+    }
+    return ptr;
 }
 
 static void app_free(void* ptr, void* ctx) {
@@ -64,15 +73,28 @@ void app_main(void)
         // We can just continue to let the rest init if they don't depend on it
     } else {
         frame_hub_config_t hub_config = {
-            .pool_size = 3,
+            .pool_size = CONFIG_FRAME_HUB_POOL_SIZE,
             .max_clients = 8,
-            .max_frame_size = 256 * 1024,
+            .max_frame_size = CONFIG_FRAME_HUB_MAX_FRAME_KB * 1024,
             .alloc_cb = app_alloc,
             .free_cb = app_free,
             .lock_cb = app_lock,
             .unlock_cb = app_unlock,
             .lock_ctx = (void*)hub_mutex
         };
+
+        const char* prefer_spiram = "No";
+#ifdef CONFIG_FRAME_HUB_PREFER_SPIRAM
+#if CONFIG_FRAME_HUB_PREFER_SPIRAM
+        prefer_spiram = "Yes";
+#endif
+#endif
+
+        ESP_LOGI(TAG, "Creating frame hub: pool_size=%d, max_frame_size=%d KB, prefer_spiram=%s",
+                 CONFIG_FRAME_HUB_POOL_SIZE, CONFIG_FRAME_HUB_MAX_FRAME_KB, prefer_spiram);
+        ESP_LOGI(TAG, "Free 8-bit heap size: %d bytes", (int)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+
+        // TODO(hw-verify): PSRAM configuration is pending hardware verification
         frame_hub_t* hub = frame_hub_create(&hub_config);
         if (hub) {
             ESP_LOGI(TAG, "Starting test pattern source...");
