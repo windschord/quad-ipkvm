@@ -34,6 +34,13 @@ git checkout claude/brave-cori-5m9w1m
 
 ## 段階 0: ビルド・書き込み・起動（HW_VERIFY D1）
 
+> **設定を変えたら `sdkconfig` を作り直す**: `sdkconfig.defaults` は、`sdkconfig` が**まだ無いとき**にしか読まれません。すでに `sdkconfig` があると、`sdkconfig.defaults` の変更（フラッシュサイズなど）は反映されません。リポジトリを更新したあとは、次のようにしてください。
+> ```sh
+> rm -f sdkconfig
+> idf.py set-target esp32p4        # sdkconfig.defaults から sdkconfig を作り直す
+> idf.py menuconfig                # 段階ごとの有効化（NET_ETH_INIT など）は、作り直すと消えるので設定し直す
+> ```
+
 ```sh
 idf.py set-target esp32p4
 idf.py build
