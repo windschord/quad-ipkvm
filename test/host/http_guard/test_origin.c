@@ -57,6 +57,23 @@ void test_origin_reject_ipv6(void) {
     TEST_ASSERT_FALSE(http_guard_origin_ok(origin, strlen(origin), host, strlen(host)));
 }
 
+void test_origin_reject_prefix_suffix(void) {
+    const char *host = "example.com";
+    size_t hlen = strlen(host);
+
+    const char *o1 = "https://example.com.evil.com";
+    TEST_ASSERT_FALSE(http_guard_origin_ok(o1, strlen(o1), host, hlen));
+
+    const char *o2 = "https://example.comX";
+    TEST_ASSERT_FALSE(http_guard_origin_ok(o2, strlen(o2), host, hlen));
+
+    const char *o3 = "https://example.com:8443";
+    TEST_ASSERT_FALSE(http_guard_origin_ok(o3, strlen(o3), host, hlen));
+
+    const char *o4 = "https://example.co";
+    TEST_ASSERT_FALSE(http_guard_origin_ok(o4, strlen(o4), host, hlen));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_origin_valid);
@@ -67,5 +84,6 @@ int main(void) {
     RUN_TEST(test_origin_reject_userinfo);
     RUN_TEST(test_origin_reject_trailing_dot);
     RUN_TEST(test_origin_reject_ipv6);
+    RUN_TEST(test_origin_reject_prefix_suffix);
     return UNITY_END();
 }

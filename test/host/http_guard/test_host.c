@@ -40,11 +40,26 @@ void test_host_rejected(void) {
     TEST_ASSERT_FALSE(http_guard_host_ok("", 0, allowed, 1));
 }
 
+void test_host_ports(void) {
+    const char *allowed[] = {"example.com"};
+    // valid
+    TEST_ASSERT_TRUE(http_guard_host_ok("example.com:65535", 17, allowed, 1));
+    TEST_ASSERT_TRUE(http_guard_host_ok("example.com:80", 14, allowed, 1));
+
+    // invalid
+    TEST_ASSERT_FALSE(http_guard_host_ok("example.com:0", 13, allowed, 1));
+    TEST_ASSERT_FALSE(http_guard_host_ok("example.com:65536", 17, allowed, 1));
+    TEST_ASSERT_FALSE(http_guard_host_ok("example.com:99999", 17, allowed, 1));
+    TEST_ASSERT_FALSE(http_guard_host_ok("example.com:00080", 17, allowed, 1));
+    TEST_ASSERT_FALSE(http_guard_host_ok("example.com:01", 14, allowed, 1));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_host_ipv4);
     RUN_TEST(test_host_ipv4_invalid);
     RUN_TEST(test_host_allowed_names);
     RUN_TEST(test_host_rejected);
+    RUN_TEST(test_host_ports);
     return UNITY_END();
 }

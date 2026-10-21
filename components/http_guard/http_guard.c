@@ -219,6 +219,8 @@ bool http_guard_host_ok(const char *host, size_t host_len, const char *const *al
             port = port * 10 + (host[i] - '0');
         }
         if (port < 1 || port > 65535) return false;
+        if (port_len > 1 && host[colon_idx + 1] == '0') return false;
+        if (port_len > 1 && host[colon_idx + 1] == '0') return false;
     }
 
     if (name_len == 0) return false;
