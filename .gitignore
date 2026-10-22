@@ -3,3 +3,4 @@ build/
 test/host/build/
 
 build_host/
+build_test/
