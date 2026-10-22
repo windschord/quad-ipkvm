@@ -57,7 +57,10 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE tc358743_edid)
     endif()
 
-    # Conditionally link auth_logic and auth_crypto_ref for auth tests
+    if (test_source MATCHES "/http_guard/")
+        target_link_libraries(${test_name} PRIVATE http_guard auth_logic)
+    endif()
+
     if (test_source MATCHES "/auth_logic/")
         target_link_libraries(${test_name} PRIVATE auth_logic auth_crypto_ref)
     endif()
@@ -73,3 +76,6 @@ foreach(test_source ${TEST_SOURCES})
 
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
+
+# Setup http_guard component (pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/http_guard ${CMAKE_BINARY_DIR}/http_guard)
