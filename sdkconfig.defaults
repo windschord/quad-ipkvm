@@ -7,4 +7,5 @@ CONFIG_ESP32P4_REV_MIN_100=y
 
 CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
 
-# TODO(hw-verify): PSRAM mode and frequency pending hardware verification
+CONFIG_SPIRAM=y
+# TODO(hw-verify): 負荷時（映像バッファの連続書き込み、Ethernet、JPEG）の 200MHz の安定性は未確認

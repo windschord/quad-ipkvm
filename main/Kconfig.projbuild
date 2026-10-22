@@ -16,15 +16,15 @@ menu "Quad IP-KVM Configuration"
 
     config FRAME_HUB_MAX_FRAME_KB
         int "Frame Hub max frame size in KB"
+        default 256 if FRAME_HUB_PREFER_SPIRAM
         default 64
         range 1 4096
         help
-            Max frame size in KB. Test pattern JPEG is about 7KB. Real captures (1080p MJPEG)
-            will be larger. Increase this once PSRAM is enabled.
+            PSRAM が有効な既定では 256KB（1080p の MJPEG 1 枚の目安）。PSRAM が無いときは内蔵 RAM に収まる 64KB
 
     config FRAME_HUB_PREFER_SPIRAM
         bool "Prefer SPIRAM for Frame Hub buffers"
-        default n
+        default y
         depends on SPIRAM
         help
             If enabled, attempts to allocate frame buffers from SPIRAM first.
