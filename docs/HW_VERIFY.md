@@ -90,7 +90,7 @@ PHY は IP101GRI。B 章の GPIO 候補（ATX・パネル用）とは重複し�
 | F1 | 上の RMII 結線が回路図・実機と一致するか（目視読み取りの誤りがないか） | 回路図の拡大確認 / テスタ | RMII 結線は一致と判断（リンク確立で確認。2026-10-21、オーナー側 Claude の報告）。 |
 | F2 | PHY アドレス（PHY_AD0 は R65 で 3.3V にプルアップ、PHY_AD3 は R63 で GND へ。アドレスは 0 か 1 か不明。IDF の自動検出を使う） | P3-0 のログ | 未確認（既定のログレベルでは PHY アドレスが出ない。`net_eth` のリンクアップログに出す改修を依頼予定）。 |
 | F3 | REF_CLK が GPIO50 に入力される設定で、リンクが上がるか（クロックモード・リセットのタイミング） | P3-0 のログ | OK: REF_CLK GPIO50 入力でリンク確立（Link Up は起動後約 3.4 秒）。 |
-| F4 | DHCP で IP が取れるか、リンク速度（100M）・全二重 | P3-0 のログ | 一部 OK: DHCP 取得と PC からの ping 3/3 到達。100M / 全二重は未確認（ログに出ていない。上記と同じ改修で出す）。 |
+| F4 | DHCP で IP が取れるか、リンク速度（100M）・全二重 | P3-0 のログ | 一部 OK（2026-10-22、オーナー側 Claude の報告）: DHCP 取得、300 回 ping（約 5 分）で欠損 0%（平均 1.65ms、最大 75.5ms）、LAN ケーブルの抜き差しで `Link Down`（tick 24.5 秒）→ `Link Up`（38.5 秒）→ `Got IP`（39.6 秒）、再接続後も同じ IP、`Link Up` の約 1.5 秒後に ping が復帰。100M / 全二重はログに出ず未確認（P-BOOT-1 のログで確認予定）。 |
 | F5 | ブラウザ（自己署名の警告を受け入れて）でログイン画面が出るか、テストパターンが見えるか | P3-3 | |
 | F6 | 汎用 PHY ドライバ（`esp_eth_phy_new_generic`）で IP101GRI のリンク・オートネゴシエーションが正常か。動かない場合は、外部コンポーネント `espressif/ip101`（esp-eth-drivers）の導入に切り替える（レジストリ到達性・バージョンは要確認） | P3-0 のログ | OK: 汎用 PHY ドライバ（`esp_eth_phy_new_generic`）で IP101GRI のリンクと DHCP が動作。 |
 
@@ -101,3 +101,5 @@ PHY は IP101GRI。B 章の GPIO 候補（ATX・パネル用）とは重複し�
 | D1 | ESP-IDF 6.0.1 で rev v1.3 向けビルド・起動できるか | T0-1 の成果物を書き込み、ブートログのチップ rev を記録（フェーズ P1） | OK（オーナー側 Claude の報告、2026-10-21）: チップ rev v1.3、ESP-IDF v6.0.1、`app_main` まで到達、リブートなし。実機のフラッシュは 32MB だが、イメージヘッダは 2MB のまま（`sdkconfig.defaults` の設定が必要）。 |
 | D2 | `esp_video` / `esp_cam_sensor` が rev v1.3 で動くか | P2a/P2b の実機ログ | |
 | D3 | CI で使う ESP-IDF イメージのタグ（`v6.0.1` が存在するか） | T0-1 の PR で Jules が根拠を提示 | |
+| D4 | PSRAM（既定値のまま `SPIRAM=y`）で起動するか | `menuconfig` で有効化（BRINGUP 段階 0b） | OK（2026-10-22、オーナー側 Claude の報告）: HEX モード・200MHz・32MB（`vendor id 0x0d (AP)`、`density 0x07 (256 Mbit)`）、`SPI SRAM memory test OK`、`CONFIG_SPIRAM_USE_MALLOC=y` で `frame_hub`（256KiB × 3）の作成に成功、`Starting test pattern source...` を確認。起動が約 1.4 秒延びる（`SPIRAM_MEMTEST=y`）。**負荷時の 200MHz の安定性は未確認**（確認したのはメモリテストまで）。 |
+| D5 | PSA の PBKDF2-HMAC-SHA256 が既定設定で動くか、所要時間 | 使い捨てテストコード（コミットせず撤回）で計測 | OK（2026-10-22、オーナー側 Claude の報告）: `psa_crypto_init()`=0、標準ベクタ（反復 1 回・4096 回）と Python `hashlib.pbkdf2_hmac`（10000/50000/100000 回）に一致、`random` は 2 回とも 32 バイトで値が異なる。所要時間（`-Og`、360MHz、`MBEDTLS_HARDWARE_SHA=y`）: 10000 回 858ms、50000 回 4.42 秒、100000 回 8.70 秒（1 反復あたり約 86µs）。50000 回以上で `task_wdt: IDLE0`（既定 5 秒）が発動。`-O2` と `MBEDTLS_HARDWARE_SHA=n` での速度は未測定。 |
