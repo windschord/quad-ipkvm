@@ -1,3 +1,4 @@
+#include "sdkconfig.h"
 #include "web_server.h"
 #include "esp_log.h"
 #include "esp_https_server.h"
@@ -180,7 +181,7 @@ static esp_err_t setup_handler(httpd_req_t *req) {
     }
 
     if (req->content_len == 0 || req->content_len > 512) {
-        httpd_resp_send_err(req, req->content_len > 512 ? HTTPD_413_PAYLOAD_TOO_LARGE : HTTPD_411_LENGTH_REQUIRED, "Bad length");
+        httpd_resp_send_err(req, req->content_len > 512 ? HTTPD_413_CONTENT_TOO_LARGE : HTTPD_411_LENGTH_REQUIRED, "Bad length");
         return ESP_OK;
     }
 
@@ -201,7 +202,9 @@ static esp_err_t setup_handler(httpd_req_t *req) {
     if (xSemaphoreTake(s_pbkdf2_mutex, 0) != pdTRUE) {
         http_guard_clear_json_setup(&parsed);
         httpd_resp_set_hdr(req, "Retry-After", "1");
-        httpd_resp_send_err(req, HTTPD_503_SERVICE_UNAVAILABLE, "Server busy");
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_sendstr(req, "Server busy");
+        return ESP_OK;
         return ESP_OK;
     }
 
@@ -253,7 +256,7 @@ static esp_err_t login_handler(httpd_req_t *req) {
     }
 
     if (req->content_len == 0 || req->content_len > 512) {
-        httpd_resp_send_err(req, req->content_len > 512 ? HTTPD_413_PAYLOAD_TOO_LARGE : HTTPD_411_LENGTH_REQUIRED, "Bad length");
+        httpd_resp_send_err(req, req->content_len > 512 ? HTTPD_413_CONTENT_TOO_LARGE : HTTPD_411_LENGTH_REQUIRED, "Bad length");
         return ESP_OK;
     }
 
@@ -274,7 +277,9 @@ static esp_err_t login_handler(httpd_req_t *req) {
     if (xSemaphoreTake(s_pbkdf2_mutex, 0) != pdTRUE) {
         http_guard_clear_json_setup(&parsed);
         httpd_resp_set_hdr(req, "Retry-After", "1");
-        httpd_resp_send_err(req, HTTPD_503_SERVICE_UNAVAILABLE, "Server busy");
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_sendstr(req, "Server busy");
+        return ESP_OK;
         return ESP_OK;
     }
 
