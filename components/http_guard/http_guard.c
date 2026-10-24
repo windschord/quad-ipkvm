@@ -563,6 +563,9 @@ http_guard_action_e http_guard_decide(auth_state_e state, http_guard_method_e me
         if (path == HTTP_GUARD_PATH_STATUS) {
             return (method == HTTP_GUARD_METHOD_GET) ? HTTP_GUARD_ACTION_ALLOW : HTTP_GUARD_ACTION_405;
         }
+        if (path == HTTP_GUARD_PATH_STATIC) {
+            return (method == HTTP_GUARD_METHOD_GET) ? HTTP_GUARD_ACTION_ALLOW : HTTP_GUARD_ACTION_405;
+        }
         if (path == HTTP_GUARD_PATH_SETUP) {
             if (method != HTTP_GUARD_METHOD_POST) return HTTP_GUARD_ACTION_405;
             if (!origin_ok) return HTTP_GUARD_ACTION_403_ORIGIN;
@@ -573,6 +576,9 @@ http_guard_action_e http_guard_decide(auth_state_e state, http_guard_method_e me
     } else {
         // state == READY
         if (path == HTTP_GUARD_PATH_STATUS) {
+            return (method == HTTP_GUARD_METHOD_GET) ? HTTP_GUARD_ACTION_ALLOW : HTTP_GUARD_ACTION_405;
+        }
+        if (path == HTTP_GUARD_PATH_STATIC) {
             return (method == HTTP_GUARD_METHOD_GET) ? HTTP_GUARD_ACTION_ALLOW : HTTP_GUARD_ACTION_405;
         }
 

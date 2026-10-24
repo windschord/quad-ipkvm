@@ -59,6 +59,7 @@ typedef enum {
     HTTP_GUARD_PATH_LOGIN,
     HTTP_GUARD_PATH_LOGOUT,
     HTTP_GUARD_PATH_WS_VIDEO,
+    HTTP_GUARD_PATH_STATIC,
     HTTP_GUARD_PATH_OTHER
 } http_guard_path_e;
 
