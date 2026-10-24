@@ -76,6 +76,7 @@ idf.py -p <シリアルポート> flash monitor
 
 **期待するログ**:
 - 初回起動時: `Generated new certificate in N ms` が表示され、再起動せずに `Web server started successfully` となること。既定（`CONFIG_NET_ETH_INIT=n`）でも起動すること。
+- 初回起動時: `cert task stack high water mark: ... bytes free` が出力され、スタック空き量が確認できること。
 - 2 回目以降の起動: `Loaded certificate and key from NVS.` が表示されること。
 
 **貼ってほしい情報（失敗時）**: `Stack protection fault`（スタック不足）や `Invalid mbox`（初期化順序エラー）、その他のエラーログを含むシリアル出力全体。

@@ -34,6 +34,7 @@ typedef struct {
 static void cert_task(void *pvParameters) {
     cert_task_args_t *args = (cert_task_args_t *)pvParameters;
     args->result = web_cert_load_or_create(args->cert_pem, args->cert_len, args->key_pem, args->key_len);
+    ESP_LOGI(TAG, "cert task stack high water mark: %u bytes free", (unsigned)uxTaskGetStackHighWaterMark(NULL));
     xSemaphoreGive(args->done_sem);
     vTaskDelete(NULL);
 }

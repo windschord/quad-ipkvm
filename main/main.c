@@ -3,6 +3,8 @@
 #include "esp_log.h"
 #include "sdkconfig.h"
 #include "nvs_flash.h"
+#include "esp_netif.h"
+#include "esp_event.h"
 
 // If not enabled, define it to 0 so `if (CONFIG_TC358743_INIT)` doesn't fail compilation
 #ifndef CONFIG_TC358743_INIT
