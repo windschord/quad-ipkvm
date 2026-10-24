@@ -64,6 +64,23 @@ ESP32-P4 chip revision: v1.3        ← app_main のログ。チップ rev が v
 
 **記入**: HW_VERIFY D1 に「チップ rev、IDF バージョン、日付」。
 
+### 初回起動（NVS が空）の確認
+`sdkconfig` が無いクリーンな状態で、Web サーバーの証明書生成とネットワーク初期化が正しく行われるか確認します（CI では見つからなかった、メインタスクのスタック不足や初期化順序の不具合を修正しました）。
+
+```sh
+rm -f sdkconfig
+idf.py set-target esp32p4
+# 必要に応じて idf.py erase-flash を実行して NVS をクリア
+idf.py -p <シリアルポート> flash monitor
+```
+
+**期待するログ**:
+- 初回起動時: `Generated new certificate in N ms` が表示され、再起動せずに `Web server started successfully` となること。既定（`CONFIG_NET_ETH_INIT=n`）でも起動すること。
+- 初回起動時: `cert task stack high water mark: ... bytes free` が出力され、スタック空き量が確認できること。
+- 2 回目以降の起動: `Loaded certificate and key from NVS.` が表示されること。
+
+**貼ってほしい情報（失敗時）**: `Stack protection fault`（スタック不足）や `Invalid mbox`（初期化順序エラー）、その他のエラーログを含むシリアル出力全体。
+
 ## 段階 0b: PSRAM とフラッシュサイズの確認（任意・段階 1 以降と並行可）
 
 - フラッシュは、実機では 32MB ですが、現在のイメージヘッダは 2MB のままです（`sdkconfig.defaults` に設定が必要。Jules に依頼予定）。

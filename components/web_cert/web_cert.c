@@ -188,7 +188,7 @@ esp_err_t web_cert_load_or_create(char **cert_pem, size_t *cert_len, char **key_
     mbedtls_pk_free(&pk);
 
     uint64_t duration = (esp_timer_get_time() - start) / 1000;
-    ESP_LOGI(TAG, "Certificate generation took %llu ms", (unsigned long long)duration);
+    ESP_LOGI(TAG, "Generated new certificate in %llu ms", (unsigned long long)duration);
 
     // Verify pair
     mbedtls_x509_crt parse_crt;

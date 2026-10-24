@@ -10,6 +10,7 @@
 #include "web_status_map.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "esp_timer.h"
 #include "lwip/sockets.h"
 #include <string.h>
@@ -20,6 +21,23 @@ static const char *TAG = "web_server";
 static auth_logic_t s_auth_ctx;
 static SemaphoreHandle_t s_auth_mutex;
 static SemaphoreHandle_t s_pbkdf2_mutex; // For try-lock behavior
+
+typedef struct {
+    char **cert_pem;
+    size_t *cert_len;
+    char **key_pem;
+    size_t *key_len;
+    esp_err_t result;
+    SemaphoreHandle_t done_sem;
+} cert_task_args_t;
+
+static void cert_task(void *pvParameters) {
+    cert_task_args_t *args = (cert_task_args_t *)pvParameters;
+    args->result = web_cert_load_or_create(args->cert_pem, args->cert_len, args->key_pem, args->key_len);
+    ESP_LOGI(TAG, "cert task stack high water mark: %u bytes free", (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    xSemaphoreGive(args->done_sem);
+    vTaskDelete(NULL);
+}
 
 static esp_err_t load_auth_state(void) {
     nvs_handle_t handle;
@@ -454,7 +472,32 @@ esp_err_t web_server_start(void) {
     char *key_pem = NULL;
     size_t key_len = 0;
 
-    if (web_cert_load_or_create(&cert_pem, &cert_len, &key_pem, &key_len) != ESP_OK) {
+    cert_task_args_t cert_args = {
+        .cert_pem = &cert_pem,
+        .cert_len = &cert_len,
+        .key_pem = &key_pem,
+        .key_len = &key_len,
+        .result = ESP_FAIL,
+        .done_sem = xSemaphoreCreateBinary()
+    };
+
+    if (!cert_args.done_sem) {
+        ESP_LOGE(TAG, "Failed to create semaphore for cert task");
+        return ESP_FAIL;
+    }
+
+    if (xTaskCreate(cert_task, "web_cert", CONFIG_WEB_SERVER_CERT_TASK_STACK_SIZE, &cert_args, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create web_cert task");
+        vSemaphoreDelete(cert_args.done_sem);
+        return ESP_FAIL;
+    }
+
+    // Wait indefinitely for the task to finish to ensure it does not access out-of-scope variables
+    xSemaphoreTake(cert_args.done_sem, portMAX_DELAY);
+    esp_err_t cert_ret = cert_args.result;
+    vSemaphoreDelete(cert_args.done_sem);
+
+    if (cert_ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to load/create web certificate");
         return ESP_FAIL;
     }

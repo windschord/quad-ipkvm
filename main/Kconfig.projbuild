@@ -47,4 +47,12 @@ menu "Quad IP-KVM Configuration"
         range 10000 100000
         help
             The number of PBKDF2 iterations to use for the login password.
+
+    config WEB_SERVER_CERT_TASK_STACK_SIZE
+        int "Web Server Certificate Generation Task Stack Size"
+        default 16384
+        range 8192 32768
+        help
+            Stack size for the temporary task that generates the X.509 certificate.
+            Generation via PSA Crypto API requires significant stack space.
 endmenu
