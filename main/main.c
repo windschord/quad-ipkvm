@@ -2,6 +2,7 @@
 #include "esp_chip_info.h"
 #include "esp_log.h"
 #include "sdkconfig.h"
+#include "nvs_flash.h"
 
 // If not enabled, define it to 0 so `if (CONFIG_TC358743_INIT)` doesn't fail compilation
 #ifndef CONFIG_TC358743_INIT
@@ -20,7 +21,6 @@
 #include "test_pattern_source.h"
 #include <stdlib.h>
 #if CONFIG_WEB_SERVER_ENABLE
-#include "web_cert.h"
 #include "web_server.h"
 #endif
 #include "esp_heap_caps.h"
@@ -70,20 +70,10 @@ void app_main(void)
     } else if (ret != ESP_OK) {
         ESP_LOGE(TAG, "NVS flash init failed: %s", esp_err_to_name(ret));
     } else {
-        char *cert_pem = NULL;
-        size_t cert_len = 0;
-        char *key_pem = NULL;
-        size_t key_len = 0;
-        if (web_cert_load_or_create(&cert_pem, &cert_len, &key_pem, &key_len) == ESP_OK) {
-            if (web_server_start() == ESP_OK) {
-                ESP_LOGI(TAG, "Web server started successfully");
-            } else {
-                ESP_LOGE(TAG, "Web server failed to start");
-            }
-            free(cert_pem);
-            free(key_pem);
+        if (web_server_start() == ESP_OK) {
+            ESP_LOGI(TAG, "Web server started successfully");
         } else {
-            ESP_LOGE(TAG, "Failed to load/create web certificate. Web server not starting.");
+            ESP_LOGE(TAG, "Web server failed to start");
         }
     }
 #endif
