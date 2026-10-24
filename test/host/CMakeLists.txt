@@ -21,6 +21,8 @@ FetchContent_MakeAvailable(unity)
 # Setup kvm_logic component
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_logic ${CMAKE_BINARY_DIR}/kvm_logic)
 
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/web_server ${CMAKE_BINARY_DIR}/web_server)
+
 # Setup auth_logic component (pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/auth_logic ${CMAKE_BINARY_DIR}/auth_logic)
 
@@ -32,9 +34,6 @@ target_include_directories(tc358743_edid PUBLIC ${CMAKE_SOURCE_DIR}/../../compon
 add_library(auth_crypto_ref STATIC ${CMAKE_SOURCE_DIR}/auth_logic/auth_crypto_ref.c)
 target_include_directories(auth_crypto_ref PUBLIC ${CMAKE_SOURCE_DIR}/../../components/auth_logic/include)
 
-# Create a static library for web_status_map
-add_library(web_status_map STATIC ${CMAKE_SOURCE_DIR}/web_status_map/web_status_map.c)
-target_include_directories(web_status_map PUBLIC ${CMAKE_SOURCE_DIR}/web_status_map/include ${CMAKE_SOURCE_DIR}/../../components/auth_logic/include)
 
 # Discover tests automatically
 file(GLOB_RECURSE TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*/test_*.c" "${CMAKE_CURRENT_SOURCE_DIR}/test_*.c")
@@ -74,7 +73,7 @@ foreach(test_source ${TEST_SOURCES})
         target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/frame_hub/include)
     endif()
 
-    if (test_source MATCHES "/web_status_map/")
+    if (test_source MATCHES "/web_server/")
         target_link_libraries(${test_name} PRIVATE web_status_map)
     endif()
 

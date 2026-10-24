@@ -32,3 +32,17 @@ int web_status_map_setup(int auth_ret, const auth_logic_t *ctx) {
 
     return 400; // Bad request (weak password, etc)
 }
+
+int web_status_map_action_code(http_guard_action_e action) {
+    switch (action) {
+        case HTTP_GUARD_ACTION_ALLOW: return 200;
+        case HTTP_GUARD_ACTION_401: return 401;
+        case HTTP_GUARD_ACTION_403_SETUP_REQUIRED: return 403;
+        case HTTP_GUARD_ACTION_403_ORIGIN: return 403;
+        case HTTP_GUARD_ACTION_403_HOST: return 403;
+        case HTTP_GUARD_ACTION_405: return 405;
+        case HTTP_GUARD_ACTION_409_ALREADY_SETUP: return 409;
+        case HTTP_GUARD_ACTION_415: return 415;
+        default: return 500;
+    }
+}
