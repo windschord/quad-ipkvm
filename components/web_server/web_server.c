@@ -87,12 +87,13 @@ static uint32_t get_client_ip(httpd_req_t *req) {
                 memcpy(&v4, &in6->sin6_addr.s6_addr[12], 4);
                 return ntohl(v4);
             }
-            // Fallback fold
-            uint32_t fold = 0;
+            // Fallback fold using FNV-1a
+            uint32_t hash = 2166136261u;
             for (int i=0; i<16; i++) {
-                fold ^= in6->sin6_addr.s6_addr[i];
+                hash ^= in6->sin6_addr.s6_addr[i];
+                hash *= 16777619u;
             }
-            return fold;
+            return hash;
         }
     }
     return 0;
@@ -134,7 +135,7 @@ static bool check_host_origin(httpd_req_t *req, bool is_post) {
 }
 
 static bool get_session_token(httpd_req_t *req, uint8_t token[32]) {
-    char cookie_buf[128] = {0};
+    char cookie_buf[512] = {0};
     if (httpd_req_get_hdr_value_str(req, "Cookie", cookie_buf, sizeof(cookie_buf)) == ESP_OK) {
         return (http_guard_extract_session_cookie(cookie_buf, strlen(cookie_buf), token) == 0);
     }
@@ -144,10 +145,6 @@ static bool get_session_token(httpd_req_t *req, uint8_t token[32]) {
 
 static esp_err_t status_handler(httpd_req_t *req) {
     add_security_headers(req);
-    if (!check_host_origin(req, false)) {
-        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden Host/Origin");
-        return ESP_OK;
-    }
 
     uint8_t token[32];
     bool has_token = get_session_token(req, token);
@@ -160,7 +157,8 @@ static esp_err_t status_handler(httpd_req_t *req) {
     auth_state_e state = s_auth_ctx.state;
     xSemaphoreGive(s_auth_mutex);
 
-    http_guard_action_e action = http_guard_decide(state, HTTP_GUARD_METHOD_GET, HTTP_GUARD_PATH_STATUS, valid, true, false, true);
+    bool host_ok = check_host_origin(req, false);
+    http_guard_action_e action = http_guard_decide(state, HTTP_GUARD_METHOD_GET, HTTP_GUARD_PATH_STATUS, valid, host_ok, false, host_ok);
 
     if (action == HTTP_GUARD_ACTION_ALLOW) {
         char buf[256];
@@ -168,29 +166,44 @@ static esp_err_t status_handler(httpd_req_t *req) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, buf);
     } else {
-        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden");
+        int code = web_status_map_action_code(action);
+        if (code == 403) httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, http_guard_format_error(action));
+        else if (code == 405) httpd_resp_send_err(req, HTTPD_405_METHOD_NOT_ALLOWED, http_guard_format_error(action));
+        else httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Error");
     }
     return ESP_OK;
 }
 
 static esp_err_t setup_handler(httpd_req_t *req) {
     add_security_headers(req);
-    if (!check_host_origin(req, true)) {
-        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden Host/Origin");
-        return ESP_OK;
+    bool host_ok = check_host_origin(req, true);
+    char ctype[64];
+    bool is_json = false;
+    if (httpd_req_get_hdr_value_str(req, "Content-Type", ctype, sizeof(ctype)) == ESP_OK) {
+        if (strncmp(ctype, "application/json", 16) == 0) is_json = true;
     }
 
+
     if (req->content_len == 0 || req->content_len > 512) {
-        httpd_resp_send_err(req, req->content_len > 512 ? HTTPD_413_CONTENT_TOO_LARGE : HTTPD_411_LENGTH_REQUIRED, "Bad length");
+        if (req->content_len > 512) {
+            httpd_resp_send_err(req, HTTPD_413_CONTENT_TOO_LARGE, "Payload Too Large");
+        } else {
+            httpd_resp_send_err(req, HTTPD_411_LENGTH_REQUIRED, "Length Required");
+        }
         return ESP_OK;
     }
 
     char buf[513] = {0};
-    int ret = httpd_req_recv(req, buf, req->content_len);
-    if (ret <= 0) {
-        if (ret == HTTPD_SOCK_ERR_TIMEOUT) httpd_resp_send_408(req);
-        return ESP_FAIL;
+    size_t recv_all = 0;
+    while (recv_all < req->content_len) {
+        int ret = httpd_req_recv(req, buf + recv_all, req->content_len - recv_all);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) httpd_resp_send_408(req);
+            return ESP_FAIL;
+        }
+        recv_all += ret;
     }
+    int ret = recv_all;
 
     http_guard_json_setup_t parsed;
     if (http_guard_parse_json_password(buf, ret, &parsed) != 0) {
@@ -205,18 +218,30 @@ static esp_err_t setup_handler(httpd_req_t *req) {
         httpd_resp_set_status(req, "503 Service Unavailable");
         httpd_resp_sendstr(req, "Server busy");
         return ESP_OK;
-        return ESP_OK;
     }
 
     xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
 
-    http_guard_action_e action = http_guard_decide(s_auth_ctx.state, HTTP_GUARD_METHOD_POST, HTTP_GUARD_PATH_SETUP, false, true, true, true);
+    http_guard_action_e action = http_guard_decide(s_auth_ctx.state, HTTP_GUARD_METHOD_POST, HTTP_GUARD_PATH_SETUP, false, host_ok, is_json, host_ok);
 
     if (action != HTTP_GUARD_ACTION_ALLOW) {
         xSemaphoreGive(s_auth_mutex);
         xSemaphoreGive(s_pbkdf2_mutex);
         http_guard_clear_json_setup(&parsed);
-        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden");
+        int code = web_status_map_action_code(action);
+        if (code == 415) {
+            httpd_resp_set_status(req, "415 Unsupported Media Type");
+            httpd_resp_sendstr(req, http_guard_format_error(action));
+        } else if (code == 409) {
+            httpd_resp_set_status(req, "409 Conflict");
+            httpd_resp_sendstr(req, http_guard_format_error(action));
+        } else if (code == 403) {
+            httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, http_guard_format_error(action));
+        } else if (code == 405) {
+            httpd_resp_send_err(req, HTTPD_405_METHOD_NOT_ALLOWED, http_guard_format_error(action));
+        } else {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Error");
+        }
         return ESP_OK;
     }
 
@@ -225,6 +250,7 @@ static esp_err_t setup_handler(httpd_req_t *req) {
 
     if (auth_ret == 0) {
         if (save_auth_state() != ESP_OK) {
+            auth_logic_init(&s_auth_ctx, auth_crypto_mbedtls_get_interface(), &s_auth_ctx.config); // Reset to NEEDS_SETUP
             auth_ret = -1;
             status_code = 500;
         }
@@ -250,22 +276,34 @@ static esp_err_t setup_handler(httpd_req_t *req) {
 
 static esp_err_t login_handler(httpd_req_t *req) {
     add_security_headers(req);
-    if (!check_host_origin(req, true)) {
-        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden Host/Origin");
-        return ESP_OK;
+    bool host_ok = check_host_origin(req, true);
+    char ctype[64];
+    bool is_json = false;
+    if (httpd_req_get_hdr_value_str(req, "Content-Type", ctype, sizeof(ctype)) == ESP_OK) {
+        if (strncmp(ctype, "application/json", 16) == 0) is_json = true;
     }
 
+
     if (req->content_len == 0 || req->content_len > 512) {
-        httpd_resp_send_err(req, req->content_len > 512 ? HTTPD_413_CONTENT_TOO_LARGE : HTTPD_411_LENGTH_REQUIRED, "Bad length");
+        if (req->content_len > 512) {
+            httpd_resp_send_err(req, HTTPD_413_CONTENT_TOO_LARGE, "Payload Too Large");
+        } else {
+            httpd_resp_send_err(req, HTTPD_411_LENGTH_REQUIRED, "Length Required");
+        }
         return ESP_OK;
     }
 
     char buf[513] = {0};
-    int ret = httpd_req_recv(req, buf, req->content_len);
-    if (ret <= 0) {
-        if (ret == HTTPD_SOCK_ERR_TIMEOUT) httpd_resp_send_408(req);
-        return ESP_FAIL;
+    size_t recv_all = 0;
+    while (recv_all < req->content_len) {
+        int ret = httpd_req_recv(req, buf + recv_all, req->content_len - recv_all);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) httpd_resp_send_408(req);
+            return ESP_FAIL;
+        }
+        recv_all += ret;
     }
+    int ret = recv_all;
 
     http_guard_json_setup_t parsed; // reusing setup struct for parsing single password
     if (http_guard_parse_json_password(buf, ret, &parsed) != 0) {
@@ -280,7 +318,6 @@ static esp_err_t login_handler(httpd_req_t *req) {
         httpd_resp_set_status(req, "503 Service Unavailable");
         httpd_resp_sendstr(req, "Server busy");
         return ESP_OK;
-        return ESP_OK;
     }
 
     uint32_t ip = get_client_ip(req);
@@ -288,13 +325,23 @@ static esp_err_t login_handler(httpd_req_t *req) {
 
     xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
 
-    http_guard_action_e action = http_guard_decide(s_auth_ctx.state, HTTP_GUARD_METHOD_POST, HTTP_GUARD_PATH_LOGIN, false, true, true, true);
+    http_guard_action_e action = http_guard_decide(s_auth_ctx.state, HTTP_GUARD_METHOD_POST, HTTP_GUARD_PATH_LOGIN, false, host_ok, is_json, host_ok);
 
     if (action != HTTP_GUARD_ACTION_ALLOW) {
         xSemaphoreGive(s_auth_mutex);
         xSemaphoreGive(s_pbkdf2_mutex);
         http_guard_clear_json_setup(&parsed);
-        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden");
+        int code = web_status_map_action_code(action);
+        if (code == 415) {
+            httpd_resp_set_status(req, "415 Unsupported Media Type");
+            httpd_resp_sendstr(req, http_guard_format_error(action));
+        } else if (code == 403) {
+            httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, http_guard_format_error(action));
+        } else if (code == 405) {
+            httpd_resp_send_err(req, HTTPD_405_METHOD_NOT_ALLOWED, http_guard_format_error(action));
+        } else {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Error");
+        }
         return ESP_OK;
     }
 
@@ -322,7 +369,8 @@ static esp_err_t login_handler(httpd_req_t *req) {
     } else {
         if (status_code == 429) {
             httpd_resp_set_hdr(req, "Retry-After", "10");
-            httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Rate Limited"); // 429 using 401 string due to ESP limitations
+            httpd_resp_set_status(req, "429 Too Many Requests");
+            httpd_resp_sendstr(req, "Rate Limited");
         } else {
             httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Unauthorized");
         }
@@ -332,19 +380,28 @@ static esp_err_t login_handler(httpd_req_t *req) {
 
 static esp_err_t logout_handler(httpd_req_t *req) {
     add_security_headers(req);
-    if (!check_host_origin(req, true)) {
-        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden Host/Origin");
-        return ESP_OK;
-    }
+    bool host_ok = check_host_origin(req, true);
 
     uint8_t token[32];
     bool has_token = get_session_token(req, token);
 
-    if (has_token) {
-        xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
-        auth_logic_logout(&s_auth_ctx, token, sizeof(token));
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    http_guard_action_e action = http_guard_decide(s_auth_ctx.state, HTTP_GUARD_METHOD_POST, HTTP_GUARD_PATH_LOGOUT, has_token, host_ok, false, host_ok);
+
+    if (action != HTTP_GUARD_ACTION_ALLOW) {
         xSemaphoreGive(s_auth_mutex);
+        int code = web_status_map_action_code(action);
+        if (code == 403) httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, http_guard_format_error(action));
+        else if (code == 405) httpd_resp_send_err(req, HTTPD_405_METHOD_NOT_ALLOWED, http_guard_format_error(action));
+        else if (code == 401) httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, http_guard_format_error(action));
+        else httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Error");
+        return ESP_OK;
     }
+
+    if (has_token) {
+        auth_logic_logout(&s_auth_ctx, token, sizeof(token));
+    }
+    xSemaphoreGive(s_auth_mutex);
 
     // Expire cookie
     char cookie_str[128];
@@ -371,7 +428,11 @@ esp_err_t web_server_start(void) {
         return ESP_FAIL;
     }
 
-    load_auth_state();
+    esp_err_t err = load_auth_state();
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "Failed to load auth state (fail-closed): %s", esp_err_to_name(err));
+        return ESP_FAIL;
+    }
 
     httpd_ssl_config_t conf = HTTPD_SSL_CONFIG_DEFAULT();
     conf.httpd.max_open_sockets = 7; // Max clients + 1 for status, etc.
@@ -397,7 +458,10 @@ esp_err_t web_server_start(void) {
     esp_err_t ret = httpd_ssl_start(&server, &conf);
 
     free(cert_pem);
-    free(key_pem);
+    if (key_pem) {
+        mbedtls_platform_zeroize(key_pem, key_len);
+        free(key_pem);
+    }
 
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTPS server!");

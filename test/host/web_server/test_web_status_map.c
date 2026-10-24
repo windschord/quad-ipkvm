@@ -42,6 +42,28 @@ void test_login_rate_limited_different_ip(void) {
     TEST_ASSERT_EQUAL(401, web_status_map_login(-1, &ctx, 1234, 1000));
 }
 
+
+void test_login_wrong_password_state_ready(void) {
+    auth_logic_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.state = AUTH_STATE_READY;
+    TEST_ASSERT_EQUAL(401, web_status_map_login(-1, &ctx, 1234, 1000));
+}
+
+void test_setup_bad_request_needs_setup(void) {
+    auth_logic_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.state = AUTH_STATE_NEEDS_SETUP;
+    TEST_ASSERT_EQUAL(400, web_status_map_setup(-1, &ctx));
+}
+
+void test_setup_success_needs_setup(void) {
+    auth_logic_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.state = AUTH_STATE_NEEDS_SETUP;
+    TEST_ASSERT_EQUAL(200, web_status_map_setup(0, &ctx));
+}
+
 void test_login_unauthorized(void) {
     auth_logic_t ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -88,6 +110,9 @@ int main(void) {
     RUN_TEST(test_login_rate_limited_expired);
     RUN_TEST(test_login_rate_limited_different_ip);
     RUN_TEST(test_login_unauthorized);
+    RUN_TEST(test_login_wrong_password_state_ready);
+    RUN_TEST(test_setup_bad_request_needs_setup);
+    RUN_TEST(test_setup_success_needs_setup);
     RUN_TEST(test_setup_success);
     RUN_TEST(test_setup_forbidden);
     RUN_TEST(test_setup_bad_request);

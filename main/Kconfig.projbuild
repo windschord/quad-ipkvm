@@ -30,7 +30,6 @@ menu "Quad IP-KVM Configuration"
             If enabled, attempts to allocate frame buffers from SPIRAM first.
             Falls back to internal RAM if SPIRAM allocation fails.
 
-endmenu
 
     config WEB_SERVER_ENABLE
         bool "Enable HTTPS Web Server"
@@ -48,3 +47,4 @@ endmenu
         range 10000 100000
         help
             The number of PBKDF2 iterations to use for the login password.
+endmenu
