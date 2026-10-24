@@ -63,6 +63,16 @@ void app_main(void)
 
     ESP_LOGI(TAG, "ESP32-P4 chip revision: v%d.%d", chip_info.revision / 100, chip_info.revision % 100);
 
+    esp_err_t netif_ret = esp_netif_init();
+    if (netif_ret != ESP_OK && netif_ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(netif_ret));
+    }
+
+    esp_err_t event_ret = esp_event_loop_create_default();
+    if (event_ret != ESP_OK && event_ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s", esp_err_to_name(event_ret));
+    }
+
 #if CONFIG_WEB_SERVER_ENABLE
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -70,10 +80,16 @@ void app_main(void)
     } else if (ret != ESP_OK) {
         ESP_LOGE(TAG, "NVS flash init failed: %s", esp_err_to_name(ret));
     } else {
-        if (web_server_start() == ESP_OK) {
-            ESP_LOGI(TAG, "Web server started successfully");
+        if (netif_ret != ESP_OK && netif_ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "Web server not started because esp_netif_init failed");
+        } else if (event_ret != ESP_OK && event_ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "Web server not started because esp_event_loop_create_default failed");
         } else {
-            ESP_LOGE(TAG, "Web server failed to start");
+            if (web_server_start() == ESP_OK) {
+                ESP_LOGI(TAG, "Web server started successfully");
+            } else {
+                ESP_LOGE(TAG, "Web server failed to start");
+            }
         }
     }
 #endif
