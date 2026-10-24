@@ -19,6 +19,10 @@
 #include "frame_hub.h"
 #include "test_pattern_source.h"
 #include <stdlib.h>
+#if CONFIG_WEB_SERVER_ENABLE
+#include "web_cert.h"
+#include "web_server.h"
+#endif
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -58,6 +62,31 @@ void app_main(void)
     esp_chip_info(&chip_info);
 
     ESP_LOGI(TAG, "ESP32-P4 chip revision: v%d.%d", chip_info.revision / 100, chip_info.revision % 100);
+
+#if CONFIG_WEB_SERVER_ENABLE
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGE(TAG, "NVS flash initialization failed: %s. Not erasing NVS.", esp_err_to_name(ret));
+    } else if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "NVS flash init failed: %s", esp_err_to_name(ret));
+    } else {
+        char *cert_pem = NULL;
+        size_t cert_len = 0;
+        char *key_pem = NULL;
+        size_t key_len = 0;
+        if (web_cert_load_or_create(&cert_pem, &cert_len, &key_pem, &key_len) == ESP_OK) {
+            if (web_server_start() == ESP_OK) {
+                ESP_LOGI(TAG, "Web server started successfully");
+            } else {
+                ESP_LOGE(TAG, "Web server failed to start");
+            }
+            free(cert_pem);
+            free(key_pem);
+        } else {
+            ESP_LOGE(TAG, "Failed to load/create web certificate. Web server not starting.");
+        }
+    }
+#endif
 
     if (CONFIG_NET_ETH_INIT) {
         ESP_LOGI(TAG, "Starting Ethernet initialization...");

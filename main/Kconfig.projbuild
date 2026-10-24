@@ -31,3 +31,22 @@ menu "Quad IP-KVM Configuration"
             Falls back to internal RAM if SPIRAM allocation fails.
 
 endmenu
+
+    config WEB_SERVER_ENABLE
+        bool "Enable HTTPS Web Server"
+        default n
+        help
+            Enable the embedded HTTPS web server for management and KVM view.
+
+    config WEB_SERVER_ALLOWED_HOSTS
+        string "Allowed Host Header (comma separated)"
+        depends on WEB_SERVER_ENABLE
+        default "quad-ipkvm.local"
+
+    config WEB_SERVER_PBKDF2_ITERATIONS
+        int "PBKDF2 Iterations"
+        depends on WEB_SERVER_ENABLE
+        default 10000
+        range 10000 100000
+        help
+            The number of PBKDF2 iterations to use for the login password.
