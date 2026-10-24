@@ -91,6 +91,18 @@ void test_setup_bad_request(void) {
     TEST_ASSERT_EQUAL(400, web_status_map_setup(-1, &ctx));
 }
 
+
+void test_action_message(void) {
+    TEST_ASSERT_NULL(web_status_map_action_message(HTTP_GUARD_ACTION_ALLOW));
+    TEST_ASSERT_EQUAL_STRING("unauthorized", web_status_map_action_message(HTTP_GUARD_ACTION_401));
+    TEST_ASSERT_EQUAL_STRING("setup_required", web_status_map_action_message(HTTP_GUARD_ACTION_403_SETUP_REQUIRED));
+    TEST_ASSERT_EQUAL_STRING("forbidden_origin", web_status_map_action_message(HTTP_GUARD_ACTION_403_ORIGIN));
+    TEST_ASSERT_EQUAL_STRING("forbidden_host", web_status_map_action_message(HTTP_GUARD_ACTION_403_HOST));
+    TEST_ASSERT_EQUAL_STRING("method_not_allowed", web_status_map_action_message(HTTP_GUARD_ACTION_405));
+    TEST_ASSERT_EQUAL_STRING("already_setup", web_status_map_action_message(HTTP_GUARD_ACTION_409_ALREADY_SETUP));
+    TEST_ASSERT_EQUAL_STRING("unsupported_media_type", web_status_map_action_message(HTTP_GUARD_ACTION_415));
+}
+
 void test_action_map(void) {
     TEST_ASSERT_EQUAL(200, web_status_map_action_code(HTTP_GUARD_ACTION_ALLOW));
     TEST_ASSERT_EQUAL(401, web_status_map_action_code(HTTP_GUARD_ACTION_401));
@@ -116,6 +128,7 @@ int main(void) {
     RUN_TEST(test_setup_success);
     RUN_TEST(test_setup_forbidden);
     RUN_TEST(test_setup_bad_request);
+    RUN_TEST(test_action_message);
     RUN_TEST(test_action_map);
     return UNITY_END();
 }

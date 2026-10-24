@@ -143,6 +143,37 @@ static bool get_session_token(httpd_req_t *req, uint8_t token[32]) {
 }
 
 
+
+static esp_err_t send_action_error(httpd_req_t *req, http_guard_action_e action) {
+    int code = web_status_map_action_code(action);
+    const char *msg = web_status_map_action_message(action);
+    char buf[96];
+    if (msg) {
+        http_guard_format_error(msg, buf, sizeof(buf));
+    } else {
+        http_guard_format_error("error", buf, sizeof(buf));
+    }
+
+    const char *status_str = "500 Internal Server Error";
+    switch(code) {
+        case 401: status_str = "401 Unauthorized"; break;
+        case 403: status_str = "403 Forbidden"; break;
+        case 405:
+            status_str = "405 Method Not Allowed";
+            httpd_resp_set_hdr(req, "Allow", "GET, POST");
+            break;
+        case 409: status_str = "409 Conflict"; break;
+        case 415: status_str = "415 Unsupported Media Type"; break;
+        case 429: status_str = "429 Too Many Requests"; break;
+        case 503: status_str = "503 Service Unavailable"; break;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, status_str);
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
 static esp_err_t status_handler(httpd_req_t *req) {
     add_security_headers(req);
 
@@ -166,10 +197,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, buf);
     } else {
-        int code = web_status_map_action_code(action);
-        if (code == 403) httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, http_guard_format_error(action));
-        else if (code == 405) httpd_resp_send_err(req, HTTPD_405_METHOD_NOT_ALLOWED, http_guard_format_error(action));
-        else httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Error");
+        return send_action_error(req, action);
     }
     return ESP_OK;
 }
@@ -215,8 +243,11 @@ static esp_err_t setup_handler(httpd_req_t *req) {
     if (xSemaphoreTake(s_pbkdf2_mutex, 0) != pdTRUE) {
         http_guard_clear_json_setup(&parsed);
         httpd_resp_set_hdr(req, "Retry-After", "1");
+        char buf[96];
+        http_guard_format_error("server_busy", buf, sizeof(buf));
+        httpd_resp_set_type(req, "application/json");
         httpd_resp_set_status(req, "503 Service Unavailable");
-        httpd_resp_sendstr(req, "Server busy");
+        httpd_resp_sendstr(req, buf);
         return ESP_OK;
     }
 
@@ -228,21 +259,7 @@ static esp_err_t setup_handler(httpd_req_t *req) {
         xSemaphoreGive(s_auth_mutex);
         xSemaphoreGive(s_pbkdf2_mutex);
         http_guard_clear_json_setup(&parsed);
-        int code = web_status_map_action_code(action);
-        if (code == 415) {
-            httpd_resp_set_status(req, "415 Unsupported Media Type");
-            httpd_resp_sendstr(req, http_guard_format_error(action));
-        } else if (code == 409) {
-            httpd_resp_set_status(req, "409 Conflict");
-            httpd_resp_sendstr(req, http_guard_format_error(action));
-        } else if (code == 403) {
-            httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, http_guard_format_error(action));
-        } else if (code == 405) {
-            httpd_resp_send_err(req, HTTPD_405_METHOD_NOT_ALLOWED, http_guard_format_error(action));
-        } else {
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Error");
-        }
-        return ESP_OK;
+        return send_action_error(req, action);
     }
 
     int auth_ret = auth_logic_setup_password(&s_auth_ctx, parsed.password, parsed.password_len);
@@ -315,8 +332,11 @@ static esp_err_t login_handler(httpd_req_t *req) {
     if (xSemaphoreTake(s_pbkdf2_mutex, 0) != pdTRUE) {
         http_guard_clear_json_setup(&parsed);
         httpd_resp_set_hdr(req, "Retry-After", "1");
+        char buf[96];
+        http_guard_format_error("server_busy", buf, sizeof(buf));
+        httpd_resp_set_type(req, "application/json");
         httpd_resp_set_status(req, "503 Service Unavailable");
-        httpd_resp_sendstr(req, "Server busy");
+        httpd_resp_sendstr(req, buf);
         return ESP_OK;
     }
 
@@ -331,18 +351,7 @@ static esp_err_t login_handler(httpd_req_t *req) {
         xSemaphoreGive(s_auth_mutex);
         xSemaphoreGive(s_pbkdf2_mutex);
         http_guard_clear_json_setup(&parsed);
-        int code = web_status_map_action_code(action);
-        if (code == 415) {
-            httpd_resp_set_status(req, "415 Unsupported Media Type");
-            httpd_resp_sendstr(req, http_guard_format_error(action));
-        } else if (code == 403) {
-            httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, http_guard_format_error(action));
-        } else if (code == 405) {
-            httpd_resp_send_err(req, HTTPD_405_METHOD_NOT_ALLOWED, http_guard_format_error(action));
-        } else {
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Error");
-        }
-        return ESP_OK;
+        return send_action_error(req, action);
     }
 
     uint8_t token[32];
@@ -367,12 +376,18 @@ static esp_err_t login_handler(httpd_req_t *req) {
         httpd_resp_set_hdr(req, "Set-Cookie", cookie_str);
         httpd_resp_sendstr(req, "{}");
     } else {
+        char buf[96];
         if (status_code == 429) {
+            http_guard_format_error("rate_limited", buf, sizeof(buf));
             httpd_resp_set_hdr(req, "Retry-After", "10");
+            httpd_resp_set_type(req, "application/json");
             httpd_resp_set_status(req, "429 Too Many Requests");
-            httpd_resp_sendstr(req, "Rate Limited");
+            httpd_resp_sendstr(req, buf);
         } else {
-            httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Unauthorized");
+            http_guard_format_error("unauthorized", buf, sizeof(buf));
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_status(req, "401 Unauthorized");
+            httpd_resp_sendstr(req, buf);
         }
     }
     return ESP_OK;
@@ -390,12 +405,7 @@ static esp_err_t logout_handler(httpd_req_t *req) {
 
     if (action != HTTP_GUARD_ACTION_ALLOW) {
         xSemaphoreGive(s_auth_mutex);
-        int code = web_status_map_action_code(action);
-        if (code == 403) httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, http_guard_format_error(action));
-        else if (code == 405) httpd_resp_send_err(req, HTTPD_405_METHOD_NOT_ALLOWED, http_guard_format_error(action));
-        else if (code == 401) httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, http_guard_format_error(action));
-        else httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Error");
-        return ESP_OK;
+        return send_action_error(req, action);
     }
 
     if (has_token) {
