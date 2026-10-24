@@ -3,6 +3,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "mbedtls/x509_crt.h"
+#include "mbedtls/platform_util.h"
 #include "mbedtls/pk.h"
 #include "mbedtls/md.h"
 #include "psa/crypto.h"
@@ -10,6 +11,7 @@
 #include <string.h>
 
 static const char *TAG = "web_cert";
+
 
 static esp_err_t save_to_nvs(const char *cert_pem, const char *key_pem) {
     nvs_handle_t handle;
@@ -64,14 +66,22 @@ esp_err_t web_cert_load_or_create(char **cert_pem, size_t *cert_len, char **key_
     *cert_pem = NULL;
     *key_pem = NULL;
 
-    if (load_from_nvs(cert_pem, cert_len, key_pem, key_len) == ESP_OK) {
+    esp_err_t err = load_from_nvs(cert_pem, cert_len, key_pem, key_len);
+    if (err == ESP_OK) {
         ESP_LOGI(TAG, "Loaded certificate and key from NVS.");
         return ESP_OK;
     }
+    if (err != ESP_ERR_NVS_NOT_FOUND && err != ESP_ERR_NVS_INVALID_LENGTH) {
+        ESP_LOGE(TAG, "Failed to load certificate from NVS: %s", esp_err_to_name(err));
+        return err;
+    }
 
-    ESP_LOGI(TAG, "Certificate not found or could not be loaded. Generating new one...");
+    ESP_LOGI(TAG, "Certificate not found. Generating new one...");
 
-    psa_crypto_init();
+    if (psa_crypto_init() != PSA_SUCCESS) {
+        ESP_LOGE(TAG, "Failed to initialize PSA crypto");
+        return ESP_FAIL;
+    }
     // Timing start
     uint64_t start = esp_timer_get_time();
 
@@ -117,15 +127,24 @@ esp_err_t web_cert_load_or_create(char **cert_pem, size_t *cert_len, char **key_
          goto err_cleanup;
     }
 
-    // 10 years validity
-    if (mbedtls_x509write_crt_set_validity(&crt, "20230101000000", "20330101000000") != 0) {
+    // Fixed validity to 2036 as device has no RTC
+    if (mbedtls_x509write_crt_set_validity(&crt, "20250101000000", "20360101000000") != 0) {
          ESP_LOGE(TAG, "Failed to set validity");
          goto err_cleanup;
     }
 
     // Generate random serial
     unsigned char serial[16];
-    psa_generate_random(serial, sizeof(serial));
+    if (psa_generate_random(serial, sizeof(serial)) != PSA_SUCCESS) {
+        ESP_LOGE(TAG, "Failed to generate random serial");
+        goto err_cleanup;
+    }
+    serial[0] &= 0x7F; // ensure positive
+    bool all_zero = true;
+    for (int i=0; i<16; i++) {
+        if (serial[i] != 0) { all_zero = false; break; }
+    }
+    if (all_zero) serial[15] = 1;
     if (mbedtls_x509write_crt_set_serial_raw(&crt, serial, sizeof(serial)) != 0) {
          ESP_LOGE(TAG, "Failed to set serial");
          goto err_cleanup;
@@ -133,7 +152,7 @@ esp_err_t web_cert_load_or_create(char **cert_pem, size_t *cert_len, char **key_
 
     mbedtls_x509_san_list san_list;
     memset(&san_list, 0, sizeof(san_list));
-    san_list.node.type = 2; // MBEDTLS_X509_SAN_DNS_NAME (value 2)
+    san_list.node.type = MBEDTLS_X509_SAN_DNS_NAME;
     san_list.node.san.unstructured_name.p = (unsigned char *)"quad-ipkvm.local";
     san_list.node.san.unstructured_name.len = strlen("quad-ipkvm.local");
     san_list.next = NULL;
@@ -213,6 +232,6 @@ err_cleanup:
     mbedtls_pk_free(&pk);
 final_err:
     if (*cert_pem) { free(*cert_pem); *cert_pem = NULL; }
-    if (*key_pem) { free(*key_pem); *key_pem = NULL; }
+    if (*key_pem) { mbedtls_platform_zeroize(*key_pem, *key_len); free(*key_pem); *key_pem = NULL; }
     return ESP_FAIL;
 }

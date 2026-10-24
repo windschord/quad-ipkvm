@@ -14,28 +14,47 @@
 ### 2. 初回設定
 - **メソッド**: `POST`
 - **パス**: `/setup`
+- **Content-Type**: `application/json`
 - **認証**: 不要 (ただし、状態が `NEEDS_SETUP` である必要があります)
 - **リクエスト例**: `{"password": "MySuperSecretPassword"}`
 - **応答例**: `{}`
 - **ステータス**:
   - `200 OK` (成功時)
+  - `403 Forbidden` (不正な Host/Origin)
+  - `405 Method Not Allowed` (GET以外のメソッド)
+  - `401 Unauthorized` (セッションなし)
+  - `403 Forbidden` (不正な Host/Origin)
+  - `405 Method Not Allowed` (POST以外のメソッド)
   - `400 Bad Request` (パスワードが短い、弱い、不正な JSON)
-  - `403 Forbidden` (すでに設定済み、または不正な Host/Origin)
-  - `503 Service Unavailable` (現在パスワードハッシュ計算中。`Retry-After` を参照)
+  - `403 Forbidden` (不正な Host/Origin)
+  - `405 Method Not Allowed` (POST以外のメソッド)
+  - `409 Conflict` (すでに設定済み)
+  - `411 Length Required` (Content-Length ヘッダがない)
+  - `413 Payload Too Large` (リクエストボディが 512 バイトを超過)
+  - `415 Unsupported Media Type` (Content-Type が application/json でない)
+  - `503 Service Unavailable` (現在パスワードハッシュ計算中。`Retry-After: 1` を参照)
 
 ### 3. ログイン
 - **メソッド**: `POST`
 - **パス**: `/login`
+- **Content-Type**: `application/json`
 - **認証**: 不要 (状態が `READY` である必要があります)
 - **リクエスト例**: `{"password": "MySuperSecretPassword"}`
 - **応答例**: `{}`
   - 成功時には `Set-Cookie` でセッションが発行されます。
 - **ステータス**:
   - `200 OK` (成功時)
+  - `401 Unauthorized` (セッションなし)
+  - `403 Forbidden` (不正な Host/Origin)
+  - `405 Method Not Allowed` (POST以外のメソッド)
   - `401 Unauthorized` (パスワード間違いなど)
   - `429 Too Many Requests` (レート制限中。`Retry-After: 10` を参照)
   - `403 Forbidden` (不正な Host/Origin)
-  - `503 Service Unavailable` (現在パスワードハッシュ計算中。`Retry-After` を参照)
+  - `405 Method Not Allowed` (POST以外のメソッド)
+  - `411 Length Required` (Content-Length ヘッダがない)
+  - `413 Payload Too Large` (リクエストボディが 512 バイトを超過)
+  - `415 Unsupported Media Type` (Content-Type が application/json でない)
+  - `503 Service Unavailable` (現在パスワードハッシュ計算中。`Retry-After: 1` を参照)
 
 ### 4. ログアウト
 - **メソッド**: `POST`
@@ -45,6 +64,9 @@
 - **応答例**: `{}`
 - **ステータス**:
   - `200 OK` (成功時)
+  - `401 Unauthorized` (セッションなし)
+  - `403 Forbidden` (不正な Host/Origin)
+  - `405 Method Not Allowed` (POST以外のメソッド)
 
 ## セキュリティ上の前提
 - **ネットワーク環境**: 本システムは VPN などの安全な LAN 内で使用されることを前提としています。
@@ -66,12 +88,12 @@
 
 1. **初回設定**
 ```sh
-curl -k -c cookies.txt -H "Host: quad-ipkvm.local" -H "Origin: https://quad-ipkvm.local" -X POST https://quad-ipkvm.local/api/v1/auth/setup -d '{"password": "MySecurePassword123"}'
+curl -k -c cookies.txt -H "Host: quad-ipkvm.local" -H "Origin: https://quad-ipkvm.local" -H "Content-Type: application/json" -X POST https://quad-ipkvm.local/api/v1/auth/setup -d '{"password": "MySecurePassword123"}'
 ```
 
 2. **ログイン**
 ```sh
-curl -k -c cookies.txt -b cookies.txt -H "Host: quad-ipkvm.local" -H "Origin: https://quad-ipkvm.local" -X POST https://quad-ipkvm.local/api/v1/auth/login -d '{"password": "MySecurePassword123"}'
+curl -k -c cookies.txt -b cookies.txt -H "Host: quad-ipkvm.local" -H "Origin: https://quad-ipkvm.local" -H "Content-Type: application/json" -X POST https://quad-ipkvm.local/api/v1/auth/login -d '{"password": "MySecurePassword123"}'
 ```
 
 3. **状態取得**

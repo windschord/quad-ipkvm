@@ -46,3 +46,17 @@ int web_status_map_action_code(http_guard_action_e action) {
         default: return 500;
     }
 }
+
+const char *web_status_map_action_message(http_guard_action_e action) {
+    switch (action) {
+        case HTTP_GUARD_ACTION_ALLOW: return NULL;
+        case HTTP_GUARD_ACTION_401: return "unauthorized";
+        case HTTP_GUARD_ACTION_403_SETUP_REQUIRED: return "setup_required";
+        case HTTP_GUARD_ACTION_403_ORIGIN: return "forbidden_origin";
+        case HTTP_GUARD_ACTION_403_HOST: return "forbidden_host";
+        case HTTP_GUARD_ACTION_405: return "method_not_allowed";
+        case HTTP_GUARD_ACTION_409_ALREADY_SETUP: return "already_setup";
+        case HTTP_GUARD_ACTION_415: return "unsupported_media_type";
+        default: return "internal_error";
+    }
+}

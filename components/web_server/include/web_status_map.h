@@ -15,6 +15,7 @@ int web_status_map_setup(int auth_ret, const auth_logic_t *ctx);
 
 // Maps http_guard_action_e to HTTP status code
 int web_status_map_action_code(http_guard_action_e action);
+const char *web_status_map_action_message(http_guard_action_e action);
 
 #ifdef __cplusplus
 }
