@@ -12,6 +12,7 @@
 
 static const char *TAG = "web_cert";
 
+
 static esp_err_t save_to_nvs(const char *cert_pem, const char *key_pem) {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("web_cert", NVS_READWRITE, &handle);
