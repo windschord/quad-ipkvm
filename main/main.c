@@ -2,6 +2,7 @@
 #include "esp_chip_info.h"
 #include "esp_log.h"
 #include "sdkconfig.h"
+#include "nvs_flash.h"
 
 // If not enabled, define it to 0 so `if (CONFIG_TC358743_INIT)` doesn't fail compilation
 #ifndef CONFIG_TC358743_INIT
@@ -19,6 +20,9 @@
 #include "frame_hub.h"
 #include "test_pattern_source.h"
 #include <stdlib.h>
+#if CONFIG_WEB_SERVER_ENABLE
+#include "web_server.h"
+#endif
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -58,6 +62,21 @@ void app_main(void)
     esp_chip_info(&chip_info);
 
     ESP_LOGI(TAG, "ESP32-P4 chip revision: v%d.%d", chip_info.revision / 100, chip_info.revision % 100);
+
+#if CONFIG_WEB_SERVER_ENABLE
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGE(TAG, "NVS flash initialization failed: %s. Not erasing NVS.", esp_err_to_name(ret));
+    } else if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "NVS flash init failed: %s", esp_err_to_name(ret));
+    } else {
+        if (web_server_start() == ESP_OK) {
+            ESP_LOGI(TAG, "Web server started successfully");
+        } else {
+            ESP_LOGE(TAG, "Web server failed to start");
+        }
+    }
+#endif
 
     if (CONFIG_NET_ETH_INIT) {
         ESP_LOGI(TAG, "Starting Ethernet initialization...");
