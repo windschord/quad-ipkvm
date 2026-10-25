@@ -225,7 +225,8 @@ void test_oled_render_out_of_bounds_safe(void) {
     oled_fb_set_pixel(&g_fb_alloc->fb, -1, -1, true);
     oled_fb_set_pixel(&g_fb_alloc->fb, 128, 64, true);
     oled_fb_draw_hline(&g_fb_alloc->fb, -10, 200, 100);
-    oled_fb_invert_region(&g_fb_alloc->fb, -5, -5, 200, 100);
+    oled_fb_invert_region(&g_fb_alloc->fb, 10, 10, 2147483647, 5);
+    oled_fb_draw_text(&g_fb_alloc->fb, 2147483645, 60, "A");
     oled_fb_draw_text(&g_fb_alloc->fb, 120, 60, "Very Long String That Will Go Off Screen!!!!!");
 }
 

@@ -1,6 +1,6 @@
 #include <stdint.h>
 
-// 5x7 bitmap font, Public Domain.
+// 5x7 bitmap font
 // 95 ASCII characters (0x20 to 0x7E).
 // Each character is 5 bytes, where each byte represents a column of 8 pixels (LSB at top).
 // The cell size is effectively 6x8 because we'll add 1 pixel of spacing.

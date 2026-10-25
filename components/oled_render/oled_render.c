@@ -49,11 +49,15 @@ void oled_fb_draw_hline(oled_fb_t *fb, int x0, int x1, int y) {
 void oled_fb_invert_region(oled_fb_t *fb, int x, int y, int w, int h) {
     if (!fb) return;
     // Slow but simple implementation
-    for (int cy = y; cy < y + h; cy++) {
+    long long max_y = (long long)y + h;
+    long long max_x = (long long)x + w;
+    if (max_y > OLED_PAGES * 8) max_y = OLED_PAGES * 8;
+    if (max_x > OLED_WIDTH) max_x = OLED_WIDTH;
+    for (int cy = y; cy < max_y; cy++) {
         if (cy < 0 || cy >= OLED_PAGES * 8) continue;
         int page = cy / 8;
         uint8_t mask = (1 << (cy % 8));
-        for (int cx = x; cx < x + w; cx++) {
+        for (int cx = x; cx < max_x; cx++) {
             if (cx < 0 || cx >= OLED_WIDTH) continue;
             fb->data[page][cx] ^= mask;
         }
@@ -61,7 +65,7 @@ void oled_fb_invert_region(oled_fb_t *fb, int x, int y, int w, int h) {
 }
 
 static void draw_char(oled_fb_t *fb, int x, int y, char c) {
-    if (c < 0x20 || c > 0x7E) c = '?';
+    if ((unsigned char)c < 0x20 || (unsigned char)c > 0x7E) c = '?';
     int glyph_idx = c - 0x20;
 
     // Character cell is 5x7 plus 1 pixel spacing -> 6x8 cell usually
@@ -77,9 +81,9 @@ static void draw_char(oled_fb_t *fb, int x, int y, char c) {
 
 void oled_fb_draw_text(oled_fb_t *fb, int x, int y, const char *str) {
     if (!fb || !str) return;
-    int cx = x;
+    long long cx = x;
     while (*str) {
-        if (cx >= OLED_WIDTH) break;
+        if (cx + 5 >= OLED_WIDTH) break;
         draw_char(fb, cx, y, *str);
         cx += 6; // 5 px font + 1 px spacing
         str++;
