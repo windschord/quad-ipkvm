@@ -85,8 +85,8 @@ static void pbkdf2_worker_task(void *pvParameters) {
 
             if (msg.type == AUTH_JOB_TYPE_SETUP) {
                 auth_ret = auth_logic_setup_compute(auth_crypto_mbedtls_get_interface(), &msg.job.setup, msg.password, msg.password_len);
-                auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, msg.password_len); // dummy to ensure it's not optimized out, but secure_zero is better.
-                memset(msg.password, 0, sizeof(msg.password)); // secure clear
+                                auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
+                                memset(msg.password, 0, sizeof(msg.password));
 
                 xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
                 if (auth_ret == 0) {
@@ -107,11 +107,13 @@ static void pbkdf2_worker_task(void *pvParameters) {
 
             } else if (msg.type == AUTH_JOB_TYPE_LOGIN) {
                 int match = auth_logic_login_compute(auth_crypto_mbedtls_get_interface(), &msg.job.login, msg.password, msg.password_len);
-                memset(msg.password, 0, sizeof(msg.password)); // secure clear
+                auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
+                                memset(msg.password, 0, sizeof(msg.password));
 
+                uint64_t compute_now_ms = esp_timer_get_time() / 1000;
                 xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
-                auth_ret = auth_logic_login_finish(&s_auth_ctx, &msg.job.login, match, msg.client_ip, msg.now_ms, token);
-                status_code = web_status_map_login(auth_ret, &s_auth_ctx, msg.client_ip, msg.now_ms);
+                auth_ret = auth_logic_login_finish(&s_auth_ctx, &msg.job.login, match, msg.client_ip, compute_now_ms, token);
+                status_code = web_status_map_login(auth_ret, &s_auth_ctx, msg.client_ip, compute_now_ms);
                 xSemaphoreGive(s_auth_mutex);
             }
 
@@ -437,10 +439,10 @@ static esp_err_t setup_handler(httpd_req_t *req) {
         httpd_resp_set_type(req, "application/json");
         if (req->content_len > 512) {
             httpd_resp_set_status(req, "413 Payload Too Large");
-            httpd_resp_sendstr(req, "{"error":"payload_too_large"}");
+            httpd_resp_sendstr(req, "{\"error\":\"payload_too_large\"}");
         } else {
             httpd_resp_set_status(req, "411 Length Required");
-            httpd_resp_sendstr(req, "{"error":"length_required"}");
+            httpd_resp_sendstr(req, "{\"error\":\"length_required\"}");
         }
         return ESP_OK;
     }
@@ -459,11 +461,18 @@ static esp_err_t setup_handler(httpd_req_t *req) {
 
     http_guard_json_setup_t parsed;
     if (http_guard_parse_json_password(buf, ret, &parsed) != 0) {
+        auth_crypto_mbedtls_get_interface()->const_time_memcmp(buf, buf, sizeof(buf)); // dummy cmp to prevent optimization
+        memset(buf, 0, sizeof(buf));
         return send_bad_request(req, web_status_map_setup_error_code(400, NULL, NULL, 0));
     }
+    auth_crypto_mbedtls_get_interface()->const_time_memcmp(buf, buf, sizeof(buf)); // dummy cmp to prevent optimization
+        memset(buf, 0, sizeof(buf));
 
     // Check action before lock
-    http_guard_action_e action = http_guard_decide(s_auth_ctx.state, HTTP_GUARD_METHOD_POST, HTTP_GUARD_PATH_SETUP, false, host_ok, is_json, host_ok);
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    auth_state_e state = s_auth_ctx.state;
+    xSemaphoreGive(s_auth_mutex);
+    http_guard_action_e action = http_guard_decide(state, HTTP_GUARD_METHOD_POST, HTTP_GUARD_PATH_SETUP, false, host_ok, is_json, host_ok);
     if (action != HTTP_GUARD_ACTION_ALLOW) {
         http_guard_clear_json_setup(&parsed);
         return send_action_error(req, action);
@@ -495,24 +504,26 @@ static esp_err_t setup_handler(httpd_req_t *req) {
     xSemaphoreGive(s_auth_mutex);
 
     if (begin_ret != 0) {
-        memset(msg.password, 0, sizeof(msg.password));
+        auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
+                                memset(msg.password, 0, sizeof(msg.password));
         auth_worker_slot_release(&s_auth_worker_slot);
         if (status_code == 400) {
             return send_bad_request(req, error_code);
         } else if (status_code == 403) {
             httpd_resp_set_status(req, "403 Forbidden");
             httpd_resp_set_type(req, "application/json");
-            httpd_resp_sendstr(req, "{"error":"already_setup"}");
+            httpd_resp_sendstr(req, "{\"error\":\"already_setup\"}");
         } else {
             httpd_resp_set_status(req, "500 Internal Server Error");
             httpd_resp_set_type(req, "application/json");
-            httpd_resp_sendstr(req, "{"error":"internal_error"}");
+            httpd_resp_sendstr(req, "{\"error\":\"internal_error\"}");
         }
         return ESP_OK;
     }
 
     if (httpd_req_async_handler_begin(req, &msg.req) != ESP_OK) {
-        memset(msg.password, 0, sizeof(msg.password));
+        auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
+                                memset(msg.password, 0, sizeof(msg.password));
         auth_worker_slot_release(&s_auth_worker_slot);
         httpd_resp_set_hdr(req, "Retry-After", "1");
         char buf[96];
@@ -524,7 +535,8 @@ static esp_err_t setup_handler(httpd_req_t *req) {
     }
 
     if (xQueueSend(s_auth_worker_queue, &msg, 0) != pdTRUE) {
-        memset(msg.password, 0, sizeof(msg.password));
+        auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
+                                memset(msg.password, 0, sizeof(msg.password));
         httpd_req_async_handler_complete(msg.req);
         auth_worker_slot_release(&s_auth_worker_slot);
         httpd_resp_set_hdr(req, "Retry-After", "1");
@@ -536,6 +548,8 @@ static esp_err_t setup_handler(httpd_req_t *req) {
         return ESP_OK;
     }
 
+    auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
+                                memset(msg.password, 0, sizeof(msg.password));
     return ESP_OK;
 }
 
@@ -553,10 +567,10 @@ static esp_err_t login_handler(httpd_req_t *req) {
         httpd_resp_set_type(req, "application/json");
         if (req->content_len > 512) {
             httpd_resp_set_status(req, "413 Payload Too Large");
-            httpd_resp_sendstr(req, "{"error":"payload_too_large"}");
+            httpd_resp_sendstr(req, "{\"error\":\"payload_too_large\"}");
         } else {
             httpd_resp_set_status(req, "411 Length Required");
-            httpd_resp_sendstr(req, "{"error":"length_required"}");
+            httpd_resp_sendstr(req, "{\"error\":\"length_required\"}");
         }
         return ESP_OK;
     }
@@ -575,10 +589,17 @@ static esp_err_t login_handler(httpd_req_t *req) {
 
     http_guard_json_setup_t parsed; // reusing setup struct for parsing single password
     if (http_guard_parse_json_password(buf, ret, &parsed) != 0) {
+        auth_crypto_mbedtls_get_interface()->const_time_memcmp(buf, buf, sizeof(buf)); // dummy cmp to prevent optimization
+        memset(buf, 0, sizeof(buf));
         return send_bad_request(req, "bad_request");
     }
+    auth_crypto_mbedtls_get_interface()->const_time_memcmp(buf, buf, sizeof(buf)); // dummy cmp to prevent optimization
+        memset(buf, 0, sizeof(buf));
 
-    http_guard_action_e action = http_guard_decide(s_auth_ctx.state, HTTP_GUARD_METHOD_POST, HTTP_GUARD_PATH_LOGIN, false, host_ok, is_json, host_ok);
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    auth_state_e state = s_auth_ctx.state;
+    xSemaphoreGive(s_auth_mutex);
+    http_guard_action_e action = http_guard_decide(state, HTTP_GUARD_METHOD_POST, HTTP_GUARD_PATH_LOGIN, false, host_ok, is_json, host_ok);
     if (action != HTTP_GUARD_ACTION_ALLOW) {
         http_guard_clear_json_setup(&parsed);
         return send_action_error(req, action);
@@ -613,7 +634,8 @@ static esp_err_t login_handler(httpd_req_t *req) {
     xSemaphoreGive(s_auth_mutex);
 
     if (begin_ret != 0) {
-        memset(msg.password, 0, sizeof(msg.password));
+        auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
+                                memset(msg.password, 0, sizeof(msg.password));
         auth_worker_slot_release(&s_auth_worker_slot);
 
         char buf[96];
@@ -633,7 +655,8 @@ static esp_err_t login_handler(httpd_req_t *req) {
     }
 
     if (httpd_req_async_handler_begin(req, &msg.req) != ESP_OK) {
-        memset(msg.password, 0, sizeof(msg.password));
+        auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
+                                memset(msg.password, 0, sizeof(msg.password));
         auth_worker_slot_release(&s_auth_worker_slot);
         httpd_resp_set_hdr(req, "Retry-After", "1");
         char buf[96];
@@ -645,7 +668,8 @@ static esp_err_t login_handler(httpd_req_t *req) {
     }
 
     if (xQueueSend(s_auth_worker_queue, &msg, 0) != pdTRUE) {
-        memset(msg.password, 0, sizeof(msg.password));
+        auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
+                                memset(msg.password, 0, sizeof(msg.password));
         httpd_req_async_handler_complete(msg.req);
         auth_worker_slot_release(&s_auth_worker_slot);
         httpd_resp_set_hdr(req, "Retry-After", "1");
@@ -657,6 +681,8 @@ static esp_err_t login_handler(httpd_req_t *req) {
         return ESP_OK;
     }
 
+    auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
+                                memset(msg.password, 0, sizeof(msg.password));
     return ESP_OK;
 }
 
@@ -688,12 +714,15 @@ static esp_err_t logout_handler(httpd_req_t *req) {
     bool has_token = get_session_token(req, token);
 
     xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
-    http_guard_action_e action = http_guard_decide(s_auth_ctx.state, HTTP_GUARD_METHOD_POST, HTTP_GUARD_PATH_LOGOUT, has_token, host_ok, false, host_ok);
+    auth_state_e state = s_auth_ctx.state;
+    xSemaphoreGive(s_auth_mutex);
+    http_guard_action_e action = http_guard_decide(state, HTTP_GUARD_METHOD_POST, HTTP_GUARD_PATH_LOGOUT, has_token, host_ok, false, host_ok);
 
     if (action != HTTP_GUARD_ACTION_ALLOW) {
-        xSemaphoreGive(s_auth_mutex);
         return send_action_error(req, action);
     }
+
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
 
     if (has_token) {
         auth_logic_logout(&s_auth_ctx, token, sizeof(token));
