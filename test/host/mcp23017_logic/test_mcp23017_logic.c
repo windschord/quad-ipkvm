@@ -18,6 +18,7 @@ typedef struct {
     int inject_read_error_reg;
     int inject_write_ignore_reg;
     uint32_t read_count;
+    uint32_t read_regs_count;
 } fake_mcp_t;
 
 static fake_mcp_t g_fake;
@@ -29,6 +30,7 @@ static void reset_fake(void) {
     g_fake.reset_line_state = -1;
     g_fake.inject_read_error_reg = -1;
     g_fake.inject_write_ignore_reg = -1;
+    g_fake.read_regs_count = 0;
 }
 
 static int fake_set_reset_line(void* user, int level) {
@@ -94,6 +96,7 @@ static int fake_read_reg(void* user, uint8_t reg, uint8_t* value) {
 
 static int fake_read_regs(void* user, uint8_t start_reg, uint8_t* buf, uint8_t len) {
     fake_mcp_t* fake = (fake_mcp_t*)user;
+    fake->read_regs_count++;
     if (fake->inject_error) return -1;
     for (int i = 0; i < len; i++) {
         if (fake_read_reg(user, start_reg + i, &buf[i]) != 0) return -1;
@@ -488,11 +491,13 @@ static void test_failed_recovery_stops_processing(void) {
     TEST_ASSERT_TRUE(ctx.state.is_offline);
 
     uint32_t rc = g_fake.read_count;
+    uint32_t rrc = g_fake.read_regs_count;
     mcp23017_logic_poll(&ctx, 1050);
     TEST_ASSERT_TRUE(ctx.state.is_offline);
 
     // read_count shouldn't increment because recovery failed and returned early
     TEST_ASSERT_EQUAL(rc, g_fake.read_count);
+    TEST_ASSERT_EQUAL(rrc, g_fake.read_regs_count);
 }
 
 static void test_time_rollback_resets_retry(void) {
@@ -622,7 +627,6 @@ static void test_verify_read_error(void) {
     mcp23017_logic_poll(&ctx, 990);
 
     // An error here shouldn't instantly offline, it should just add to consecutive errors
-    // Wait, the logic implemented might handle this differently. Let's see:
     // If read_reg fails during verify, we call handle_error, which increments consecutive errors.
     // If consecutive_errors < max, is_offline remains false.
     TEST_ASSERT_FALSE(ctx.state.is_offline);
@@ -676,7 +680,6 @@ static void test_debounce_boundary(void) {
     g_fake.regs[MCP23017_REG_GPIOA] = 0xF0;
     mcp23017_logic_poll(&ctx, 0);
     // After 0, debounced state is actually updated when it hits 20ms of stable 0xF0!
-    // Since init state of state is all false (which means PRESSED in our logic since we didn't init it explicitly, wait, false in bool is 0.
     // If raw=false and b0 is true, it changes to true on poll(0).
     mcp23017_logic_poll(&ctx, 30); // let initial release settle
     mcp23017_event_t ev;
@@ -703,9 +706,6 @@ static void test_set_led_failed_does_not_count_error(void) {
     g_fake.inject_error = true;
     mcp23017_logic_set_led(&ctx, 0, true);
 
-    // Setting LED error shouldn't offline the device (requirement says read failure counts errors, wait, no, write failure counts errors too!)
-    // Wait, requirement: "連続エラーが設定回数（既定 5）以上で offline" - this includes set_led!
-    // My implementation counts errors on set_led too. Let's verify it counts.
     TEST_ASSERT_EQUAL(1, ctx.state.consecutive_errors);
 }
 
@@ -737,8 +737,7 @@ static void test_set_led_upper_bits_unaffected(void) {
     mcp23017_t ctx;
     mcp23017_logic_init(&ctx, &default_cfg);
 
-    // Fake something into shadow upper bits (normally shouldn't happen, but let's test it preserves upper)
-    // Wait, requirement says "OLATAの上位4ビットには触れない", but shadow_olata applies to the whole register.
+    // Set shadow upper bits to verify mask correctly isolates lower 4 bits
     // If we write to OLATA, the upper 4 bits should be 0, as we only control lower 4 bits for LEDs.
     // Actually the logic forces `new_olata &= 0x0F` or keeps `new_olata = ctx->state.shadow_olata & 0xF0` and writes.
     ctx.state.shadow_olata = 0x50; // set upper bits
@@ -792,11 +791,9 @@ static void test_set_leds_offline_no_write(void) {
 
     uint32_t wc = g_fake.write_count;
 
-    // Wait, test expected 14 but was 15.
     // Why was there a write?
     // Is the offline check missing from set_leds in the C code?
     // Let me check mcp23017_logic.c:
-    // Ah, wait. I mutated set_leds! I commented out the offline branch in set_leds!
     // And this test failed, meaning IT CAUGHT THE MUTANT!
     // Yes! The mutation testing was successful!
     // I need to UN-MUTATE the code.
@@ -868,10 +865,8 @@ static void test_verify_interval_timing(void) {
     // Pass first 100 polls cleanly
     for (int i = 0; i < 100; i++) mcp23017_logic_poll(&ctx, i * 10);
 
-    // Let's go to 199th poll
     for (int i = 100; i < 199; i++) mcp23017_logic_poll(&ctx, i * 10);
 
-    // Wait, the logic is: verify_counter is incremented each poll.
     // If it reaches verify_interval_polls (100), it runs verify.
     // So polls index 0..98 increment it to 99. Poll index 99 increments it to 100, and verifies!
     // So 1st verify is on the 100th poll (index 99, 990ms).
@@ -879,7 +874,6 @@ static void test_verify_interval_timing(void) {
     // The next loop does index 100..198. That is 99 polls. Counter is 99.
     // So the very next poll (index 199, 1990ms) is the 200th poll, and it WILL verify!
     // So if we inject before 1990ms, and call 1990ms, it SHOULD go offline immediately.
-    // Let's rewrite this part correctly.
     g_fake.regs[MCP23017_REG_IODIRA] = 0x00;
 
     // The NEXT poll is 1990ms. It is the 100th poll of this period, so it verifies!
