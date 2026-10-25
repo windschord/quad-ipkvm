@@ -205,7 +205,7 @@ Ethernet (段階 1) が通った状態で、Web ブラウザからアクセス�
 3. **ログアウトと再ログイン**
    - 「ログアウト」ボタンを押してログイン画面に戻ることを確認し、再度設定したパスワードでログインできることを確認します。
 4. **コマンドラインからの確認 (curl)**
-   - CSP と Cache-Control の確認: `curl -k -i https://<ESP の IP アドレス>/` を実行し、`Content-Security-Policy` ヘッダと `Cache-Control: no-store` ヘッダが付与されていることを確認します。
+   - CSP と Cache-Control の確認: `curl -k -i https://<ESP の IP アドレス>/` を実行し、`Content-Security-Policy` ヘッダと `Cache-Control: no-store` ヘッダが付与されていることを確認します。また、`Content-Security-Policy` ヘッダが 1 つだけであることを確認します。
    - 存在しないパスの確認: `curl -k -i https://<ESP の IP アドレス>/nonexistent` を実行し、ステータスが `404` であることを確認します。
    - メソッド不許可の確認: `curl -k -i -X POST https://<ESP の IP アドレス>/` を実行し、ステータスが `405` であることを確認します。
    - Host ヘッダ不一致の確認: `curl -k -i -H "Host: wrong-host" https://<ESP の IP アドレス>/` を実行し、ステータスが `403` であることを確認します。
