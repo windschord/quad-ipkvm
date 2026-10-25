@@ -286,6 +286,16 @@ static esp_err_t status_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// 400 with a JSON body whose "error" is a machine-readable code the page turns into a message.
+static esp_err_t send_bad_request(httpd_req_t *req, const char *code) {
+    char buf[96];
+    http_guard_format_error(code, buf, sizeof(buf));
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
 static esp_err_t setup_handler(httpd_req_t *req) {
     add_security_headers(req, NULL);
     bool host_ok = check_host_origin(req, true);
@@ -319,8 +329,7 @@ static esp_err_t setup_handler(httpd_req_t *req) {
 
     http_guard_json_setup_t parsed;
     if (http_guard_parse_json_password(buf, ret, &parsed) != 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad JSON");
-        return ESP_OK;
+        return send_bad_request(req, web_status_map_setup_error_code(400, NULL, NULL, 0));
     }
 
     // Acquire PBKDF2 lock
@@ -348,6 +357,8 @@ static esp_err_t setup_handler(httpd_req_t *req) {
 
     int auth_ret = auth_logic_setup_password(&s_auth_ctx, parsed.password, parsed.password_len);
     int status_code = web_status_map_setup(auth_ret, &s_auth_ctx);
+    // Must be taken before http_guard_clear_json_setup() wipes the password.
+    const char *error_code = web_status_map_setup_error_code(status_code, &s_auth_ctx, parsed.password, parsed.password_len);
 
     if (auth_ret == 0) {
         if (save_auth_state() != ESP_OK) {
@@ -367,7 +378,7 @@ static esp_err_t setup_handler(httpd_req_t *req) {
         if (status_code == 403) {
             httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Already setup");
         } else if (status_code == 400) {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad Request");
+            return send_bad_request(req, error_code);
         } else {
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal Error");
         }
