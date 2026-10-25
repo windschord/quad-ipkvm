@@ -82,7 +82,7 @@ foreach(test_source ${TEST_SOURCES})
     endif()
 
     if (test_source MATCHES "/web_assets/")
-        target_sources(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/web_server/web_assets.c)
+        target_sources(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/web_server/web_assets.c ${CMAKE_SOURCE_DIR}/../../components/web_server/web_headers.c)
         target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/web_server/include)
         target_compile_definitions(${test_name} PRIVATE WEB_ASSET_DIR="${CMAKE_SOURCE_DIR}/../../components/web_server/web")
     endif()

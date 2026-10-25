@@ -115,3 +115,19 @@ curl -k -b cookies.txt -H "Host: quad-ipkvm.local" https://quad-ipkvm.local/api/
 ```sh
 curl -k -c cookies.txt -b cookies.txt -H "Host: quad-ipkvm.local" -H "Origin: https://quad-ipkvm.local" -X POST https://quad-ipkvm.local/api/v1/auth/logout
 ```
+
+## レスポンスヘッダ
+各エンドポイントのレスポンスには、セキュリティ向上のため以下のヘッダが付与されます。
+また、レスポンス内で同一名のヘッダが重複して付与されることはありません。
+
+### 種類ごとのヘッダ
+- **静的ページ (/, /app.js, /app.css)**
+  - `Content-Security-Policy`: コンテンツの種類に応じて設定されます（例: HTML では `script-src 'self'`、`style-src 'self'`、`connect-src 'self'` を含み、`unsafe-inline` や `unsafe-eval` は含まれません）。
+  - `X-Content-Type-Options: nosniff`
+  - `Cache-Control: no-store`
+  - `Referrer-Policy: no-referrer`
+- **API およびエラー応答**
+  - `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`
+  - `X-Content-Type-Options: nosniff`
+  - `Cache-Control: no-store`
+  - `Referrer-Policy: no-referrer`
