@@ -37,14 +37,14 @@
 - **ステータス**:
   - `200 OK` (成功時)
   - `400 Bad Request` (パスワードが短い、弱い、不正な JSON。本文は下記の `error` コードを持つ JSON)
-  - `403 Forbidden` (不正な Host/Origin、または設定中の状態不整合エラー)
+  - `403 Forbidden` (不正な Host/Origin、または設定中の状態不整合エラー。本文: `{"error":"already_setup"}`)
   - `405 Method Not Allowed` (POST以外のメソッド)
   - `409 Conflict` (すでに設定済み (`READY` 状態))
-  - `411 Length Required` (Content-Length ヘッダがない)
-  - `413 Payload Too Large` (リクエストボディが 512 バイトを超過)
+  - `411 Length Required` (Content-Length ヘッダがない。本文: `{"error":"length_required"}`)
+  - `413 Payload Too Large` (リクエストボディが 512 バイトを超過。本文: `{"error":"payload_too_large"}`)
   - `415 Unsupported Media Type` (Content-Type が application/json でない)
-  - `500 Internal Server Error` (内部エラー)
-  - `503 Service Unavailable` (現在パスワードハッシュ計算中。`Retry-After: 1` を参照)
+  - `500 Internal Server Error` (内部エラー。本文: `{"error":"internal_error"}`)
+  - `503 Service Unavailable` (現在パスワードハッシュ計算中。`Retry-After: 1` を参照。本文: `{"error":"server_busy"}`)
 - **400 の本文**: `{"error":"<code>"}` (`Content-Type: application/json`)。複数の規則に当たる場合は、下表の上から順で最初のものを返します。
 
   | `error` | 意味 |
@@ -71,14 +71,14 @@
 - **ステータス**:
   - `200 OK` (成功時)
   - `400 Bad Request` (不正な JSON)
-  - `401 Unauthorized` (パスワード間違いなど)
+  - `401 Unauthorized` (パスワード間違いなど。本文: `{"error":"unauthorized"}`)
   - `403 Forbidden` (不正な Host/Origin、または `NEEDS_SETUP` 状態)
   - `405 Method Not Allowed` (POST以外のメソッド)
   - `411 Length Required` (Content-Length ヘッダがない)
   - `413 Payload Too Large` (リクエストボディが 512 バイトを超過)
   - `415 Unsupported Media Type` (Content-Type が application/json でない)
-  - `429 Too Many Requests` (レート制限中。`Retry-After: 10` を参照)
-  - `503 Service Unavailable` (現在パスワードハッシュ計算中。`Retry-After: 1` を参照)
+  - `429 Too Many Requests` (レート制限中。`Retry-After: 10` を参照。本文: `{"error":"rate_limited"}`)
+  - `503 Service Unavailable` (現在パスワードハッシュ計算中。`Retry-After: 1` を参照。本文: `{"error":"server_busy"}`)
 
 ### 4. ログアウト
 - **メソッド**: `POST`

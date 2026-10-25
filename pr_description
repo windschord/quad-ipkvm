@@ -1,0 +1,44 @@
+P3-3c-2: PBKDF2 の専用ワーカー化と JSON 応答の対応
+
+## 設計
+- `auth_worker_slot`: 非同期 API・排他のための純Cベースの状態保持器（ジョブの重複を防ぐ。同時1件）。
+- `pbkdf2_worker_task`: `auth_worker_slot` で守られた専用キュー（1スロット）を待ち受け、パスワードを `_compute` して非同期に応答を返す（httpd のスレッドプールをブロックしない）。
+- `setup_handler` / `login_handler`: 既存の httpd タスクで動作。 JSON・制約チェックを行い、`auth_worker_slot` を `try_acquire` できない場合は即座に `503 Service Unavailable`, `Retry-After: 1` などの JSON エラー応答を返し、成功すればキューに渡して `ESP_OK` で終了し HTTPD タスクを解放する。
+
+## 決めた内容と理由
+- **ワーカーのスタックサイズ**: Kconfigで `WEB_SERVER_PBKDF2_TASK_STACK_SIZE` を 8192 バイトに設定した。mbedTLS を用いた PSA / SHA256 等は `cert_task` の事例から 5.7KB ほど使用しているため、余裕を見て 8KB を既定値としている（高水準マークをログに出力して追跡できるようにしている）。
+- **優先度**: `4`。 `test_pattern` タスクが優先度 `5` であるため、映像処理などをブロックしないように優先度を下げるべきである。一方で、FreeRTOS のタイマタスク等の基本よりは高いため、HTTP 応答に極端な遅延が出ない妥協点として設定。
+- **タイムアウト**: 既存の `status_map` で返していた Retry-After をそのまま踏襲しつつ、 `503` の場合 `Retry-After: 1` とし、JSON で `{ "error": "server_busy" }` を返す。
+
+## ホストテスト（変異テスト）
+実装した `auth_worker_slot` と `web_status_map` に対してテストを追加・実行。
+
+| 変更箇所 | 落ちたテスト名 |
+|---|---|
+| `auth_worker_slot_try_acquire` の `slot->in_use = true;` を `false` に変更 | `test_auth_worker_slot` |
+| `web_status_map_login` の `return 401;` を `403` に変更 | `test_web_status_map` |
+
+## リソースの解放経路の確認
+すべての経路において、非同期ハンドル・パスワード文字列・スロットが解放または削除されることを確認しました：
+| 発生ポイント | 解放処理 |
+|---|---|
+| スロット獲得失敗（503） | 獲得前なのでスロット操作なし、パスワードはJSONパーサ後に `http_guard_clear_json_setup` で消去済み。 |
+| `auth_logic_*_begin` 失敗 (400, 429, 等) | `msg.password` を `memset` で消去、`auth_worker_slot_release` を呼び出し。 |
+| `httpd_req_async_handler_begin` 失敗 (503) | パスワードを消去、スロットを release して終了。 |
+| キューへの `xQueueSend` 失敗 | パスワードを消去、非同期ハンドルを `httpd_req_async_handler_complete` で閉じ、スロットを release。 |
+| ワーカーでの `_compute` 完了 | 成功・失敗にかかわらず `msg.password` を `memset` で消去。 最後に必ず非同期ハンドルを complete して、スロットを release。 |
+| 保存時の NVS 失敗 | フェイルクローズで状態と HTTP コードを上書き後、ワーカー内で complete・release を通過する。 |
+
+## 未確認一覧 (`TODO(hw-verify)`)
+- PBKDF2 実行中の `GET /api/v1/auth/status` の応答時間。
+- 映像配信中の影響の有無（タスク優先度4）。
+- `pbkdf2 worker stack high water mark` を通したスタックの空き。
+
+## オーナー向け実機確認手順
+1. **スタック使用量の確認**
+   - API を叩いて、シリアルログに `pbkdf2 worker stack high water mark: <空きバイト数> bytes free` が出力され、十分に空きがあるか。
+2. **同時アクセスのブロックテスト**
+   - 2 つのシェルを開き、ほぼ同時に `curl -k -X POST https://.../api/v1/auth/login -d '{"password":"123"}'` を実行する。
+   - 一方が直ちに `503 Service Unavailable`、 `Retry-After: 1` で JSON `{"error":"server_busy"}` を返すか。
+3. **計算中の状態確認**
+   - ログインまたはセットアップのリクエストの計算中に、別シェルから素早く `curl -k https://.../api/v1/auth/status` を実行し、ブロックされずにすぐに応答が返るか。
