@@ -111,6 +111,19 @@ void test_no_password_in_job(void) {
     TEST_ASSERT_EQUAL(0, found);
 }
 
+
+void test_setup_finish_protects_against_compute_failure(void) {
+    auth_setup_job_t job;
+    TEST_ASSERT_EQUAL(0, auth_logic_setup_begin(&ctx_new, "strongpassword123!", 18, &job));
+
+    // Simulate compute failure by zeroing out the hash manually, simulating what happens if pbkdf2 fails.
+    memset(job.computed_hash, 0, AUTH_LOGIC_HASH_LEN);
+
+    // Finish should fail and not transition to READY.
+    TEST_ASSERT_EQUAL(-1, auth_logic_setup_finish(&ctx_new, &job));
+    TEST_ASSERT_EQUAL(AUTH_STATE_NEEDS_SETUP, ctx_new.state);
+}
+
 void test_policy_in_setup_begin(void) {
     auth_setup_job_t job;
     // test short password
@@ -125,6 +138,7 @@ int main(void) {
     RUN_TEST(test_setup_finish_respects_state);
     RUN_TEST(test_compute_signature);
     RUN_TEST(test_no_password_in_job);
+    RUN_TEST(test_setup_finish_protects_against_compute_failure);
     RUN_TEST(test_policy_in_setup_begin);
     return UNITY_END();
 }

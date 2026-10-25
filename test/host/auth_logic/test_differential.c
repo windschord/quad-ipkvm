@@ -432,13 +432,32 @@ void test_differential_sequence(void) {
     assert_ctx_equal(&ref_ctx, &act_ctx);
     TEST_ASSERT_GREATER_THAN(0, act_ctx.rate_limits[found_idx].lockout_until_ms);
 
-    // Sequence 7: Crypto error
-    g_ref_random_should_fail = true; // Use this to simulate random failure inside new password creation
+    // Sequence 7: Crypto error on change password
+    g_ref_pbkdf2_should_fail = true;
     ret_ref = ref_auth_logic_change_password(&ref_ctx, pwd1, strlen(pwd1), "newpassword!123", 15, ip1, 10000);
     ret_act = auth_logic_change_password(&act_ctx, pwd1, strlen(pwd1), "newpassword!123", 15, ip1, 10000);
     TEST_ASSERT_EQUAL(ret_ref, ret_act);
     assert_ctx_equal(&ref_ctx, &act_ctx);
-    g_ref_random_should_fail = false;
+
+    // Sequence 8: Crypto error on login
+    ret_ref = ref_auth_logic_login(&ref_ctx, pwd1, strlen(pwd1), ip1, 11000, token1);
+    ret_act = auth_logic_login(&act_ctx, pwd1, strlen(pwd1), ip1, 11000, token2);
+    TEST_ASSERT_EQUAL(ret_ref, ret_act);
+    assert_ctx_equal(&ref_ctx, &act_ctx);
+    g_ref_pbkdf2_should_fail = false;
+
+    // Sequence 9: Crypto error on setup
+    auth_logic_init(&ref_ctx, &ref_crypto_if, &config);
+    ref_ctx.state = AUTH_STATE_NEEDS_SETUP;
+    auth_logic_init(&act_ctx, &ref_crypto_if, &config);
+    act_ctx.state = AUTH_STATE_NEEDS_SETUP;
+
+    g_ref_pbkdf2_should_fail = true;
+    ret_ref = ref_auth_logic_setup_password(&ref_ctx, pwd1, strlen(pwd1));
+    ret_act = auth_logic_setup_password(&act_ctx, pwd1, strlen(pwd1));
+    TEST_ASSERT_EQUAL(ret_ref, ret_act);
+    assert_ctx_equal(&ref_ctx, &act_ctx);
+    g_ref_pbkdf2_should_fail = false;
 
     // We can't easily trigger a pbkdf2 failure without changing the crypto_if struct mid-flight,
     // but the logic handles crypto failures via the ret check.

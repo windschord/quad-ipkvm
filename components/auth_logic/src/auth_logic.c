@@ -622,6 +622,16 @@ int auth_logic_setup_finish(auth_logic_t *ctx, const auth_setup_job_t *job) {
 
     if (ctx->state != AUTH_STATE_NEEDS_SETUP) return -1;
     if (ctx->generation != job->generation) return -1;
+    // Protection against finishing a job that failed during compute
+    bool all_zeros = true;
+    for (int i = 0; i < AUTH_LOGIC_HASH_LEN; i++) {
+        if (job->computed_hash[i] != 0) {
+            all_zeros = false;
+            break;
+        }
+    }
+    if (all_zeros) return -1;
+
 
     memcpy(ctx->salt, job->salt, AUTH_LOGIC_SALT_LEN);
     ctx->iterations = job->iterations;
