@@ -81,6 +81,10 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE ws_clients)
     endif()
 
+    if (test_source MATCHES "/ws_video_core/")
+        target_link_libraries(${test_name} PRIVATE ws_video_core)
+    endif()
+
     if (test_source MATCHES "/web_assets/")
         target_sources(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/web_server/web_assets.c)
         target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/web_server/include)
@@ -100,3 +104,10 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/http_guard ${CMAKE_BINARY_
 
 # Setup ws_clients component
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/ws_clients ${CMAKE_BINARY_DIR}/ws_clients)
+
+# Create a lightweight static library for frame_hub for host tests
+add_library(frame_hub STATIC ${CMAKE_SOURCE_DIR}/../../components/frame_hub/frame_hub.c)
+target_include_directories(frame_hub PUBLIC ${CMAKE_SOURCE_DIR}/../../components/frame_hub/include)
+
+# Setup ws_video_core component
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/ws_video_core ${CMAKE_BINARY_DIR}/ws_video_core)
