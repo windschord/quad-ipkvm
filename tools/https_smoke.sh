@@ -91,13 +91,16 @@ header_matches Content-Type "application/json"
 # shellcheck disable=SC2086
 fetch "GET /nonexistent" $RES "$BASE/nonexistent"
 status_is 404
+for h in $SEC_HEADERS; do header_once "$h"; done
 # shellcheck disable=SC2086
 fetch "POST / (method not allowed)" $RES -X POST -H "Origin: $BASE" "$BASE/"
 status_is 405
+for h in $SEC_HEADERS; do header_once "$h"; done
 
-# Host header checks.
+# Host header checks. Error responses must carry the security headers too (exactly once).
 fetch "GET / with Host: evil.example (must be rejected)" -H "Host: evil.example" "https://$IP/"
 status_is 403
+for h in $SEC_HEADERS; do header_once "$h"; done
 fetch "GET / with the IPv4 literal as Host (intended to be allowed, docs/HW_VERIFY.md D6)" "https://$IP/"
 status_is 200
 
