@@ -11,6 +11,11 @@
 - **応答**: 静的ファイル (HTML, JS, CSS)
   - `Content-Security-Policy` ヘッダと `Cache-Control: no-store` ヘッダが付与されます。
   - HTML や JS には秘密情報が含まれません。
+- **ステータス**:
+  - `200 OK` (成功時)
+  - `403 Forbidden` (不正な Host ヘッダ)
+  - `404 Not Found` (未登録の URI)
+  - `405 Method Not Allowed` (GET以外のメソッド)
 
 ### 1. 状態取得
 - **メソッド**: `GET`
@@ -20,6 +25,7 @@
 - **ステータス**:
   - `200 OK` (成功時)
   - `403 Forbidden` (不正な Host ヘッダ)
+  - `405 Method Not Allowed` (GET以外のメソッド)
 
 ### 2. 初回設定
 - **メソッド**: `POST`
@@ -31,7 +37,9 @@
 - **ステータス**:
   - `200 OK` (成功時)
   - `400 Bad Request` (パスワードが短い、弱い、不正な JSON)
-  - `403 Forbidden` (不正な Host/Origin、またはすでに設定済み (`READY` 状態))
+  - `403 Forbidden` (不正な Host/Origin、または設定中の状態不整合エラー)
+  - `405 Method Not Allowed` (POST以外のメソッド)
+  - `409 Conflict` (すでに設定済み (`READY` 状態))
   - `411 Length Required` (Content-Length ヘッダがない)
   - `413 Payload Too Large` (リクエストボディが 512 バイトを超過)
   - `415 Unsupported Media Type` (Content-Type が application/json でない)
@@ -51,6 +59,7 @@
   - `400 Bad Request` (不正な JSON)
   - `401 Unauthorized` (パスワード間違いなど)
   - `403 Forbidden` (不正な Host/Origin、または `NEEDS_SETUP` 状態)
+  - `405 Method Not Allowed` (POST以外のメソッド)
   - `411 Length Required` (Content-Length ヘッダがない)
   - `413 Payload Too Large` (リクエストボディが 512 バイトを超過)
   - `415 Unsupported Media Type` (Content-Type が application/json でない)
@@ -67,6 +76,7 @@
   - `200 OK` (成功時)
   - `401 Unauthorized` (セッションなし)
   - `403 Forbidden` (不正な Host/Origin)
+  - `405 Method Not Allowed` (POST以外のメソッド)
 
 ## セキュリティ上の前提
 - **ネットワーク環境**: 本システムは VPN などの安全な LAN 内で使用されることを前提としています。

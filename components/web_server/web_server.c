@@ -26,7 +26,7 @@ extern const unsigned char app_js_end[]   asm("_binary_app_js_end");
 extern const unsigned char app_css_start[] asm("_binary_app_css_start");
 extern const unsigned char app_css_end[]   asm("_binary_app_css_end");
 
-static const web_asset_t s_web_assets[] = {
+static web_asset_t s_web_assets[] = {
     { "/", "text/html", index_html_start, 0 },
     { "/app.js", "application/javascript", app_js_start, 0 },
     { "/app.css", "text/css", app_css_start, 0 }
@@ -34,10 +34,12 @@ static const web_asset_t s_web_assets[] = {
 static const size_t s_web_assets_count = sizeof(s_web_assets) / sizeof(s_web_assets[0]);
 
 static void init_web_assets_sizes(void) {
-    // We must cast away const to initialize the sizes, but only once at startup
-    ((web_asset_t*)&s_web_assets[0])->len = index_html_end - index_html_start;
-    ((web_asset_t*)&s_web_assets[1])->len = app_js_end - app_js_start;
-    ((web_asset_t*)&s_web_assets[2])->len = app_css_end - app_css_start;
+    static bool initialized = false;
+    if (initialized) return;
+    s_web_assets[0].len = index_html_end - index_html_start;
+    s_web_assets[1].len = app_js_end - app_js_start;
+    s_web_assets[2].len = app_css_end - app_css_start;
+    initialized = true;
 }
 
 static const char *TAG = "web_server";
@@ -520,6 +522,7 @@ esp_err_t web_server_start(void) {
     conf.httpd.max_open_sockets = 7; // Max clients + 1 for status, etc.
     conf.httpd.lru_purge_enable = true;
     conf.httpd.stack_size = 10240; // 10KB to ensure PBKDF2/mbedTLS have enough space
+    conf.httpd.max_uri_handlers = 16;
 
     char *cert_pem = NULL;
     size_t cert_len = 0;
@@ -583,13 +586,17 @@ esp_err_t web_server_start(void) {
     httpd_uri_t login_uri = { .uri = "/api/v1/auth/login", .method = HTTP_POST, .handler = login_handler, .user_ctx = NULL };
     httpd_uri_t logout_uri = { .uri = "/api/v1/auth/logout", .method = HTTP_POST, .handler = logout_handler, .user_ctx = NULL };
 
-    httpd_register_uri_handler(server, &static_root_uri);
-    httpd_register_uri_handler(server, &static_js_uri);
-    httpd_register_uri_handler(server, &static_css_uri);
-    httpd_register_uri_handler(server, &status_uri);
-    httpd_register_uri_handler(server, &setup_uri);
-    httpd_register_uri_handler(server, &login_uri);
-    httpd_register_uri_handler(server, &logout_uri);
+    if (httpd_register_uri_handler(server, &static_root_uri) != ESP_OK ||
+        httpd_register_uri_handler(server, &static_js_uri) != ESP_OK ||
+        httpd_register_uri_handler(server, &static_css_uri) != ESP_OK ||
+        httpd_register_uri_handler(server, &status_uri) != ESP_OK ||
+        httpd_register_uri_handler(server, &setup_uri) != ESP_OK ||
+        httpd_register_uri_handler(server, &login_uri) != ESP_OK ||
+        httpd_register_uri_handler(server, &logout_uri) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register URI handlers");
+        httpd_ssl_stop(server);
+        return ESP_FAIL;
+    }
 
     return ESP_OK;
 }

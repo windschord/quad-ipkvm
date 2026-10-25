@@ -2,6 +2,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
+
+#ifndef WEB_ASSET_DIR
+#define WEB_ASSET_DIR "../../components/web_server/web"
+#endif
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -21,29 +26,163 @@ static char *read_file(const char *path) {
     return buffer;
 }
 
-static const char* check_forbidden_patterns(const char *content) {
-    const char *script_tag = strstr(content, "<script>");
-    if (!script_tag) script_tag = strstr(content, "<script type");
-    if (script_tag) {
-        if (!strstr(script_tag, "src=")) return "Inline script found";
-    }
-    if (strstr(content, "style=")) return "Inline style attribute found";
-    if (strstr(content, "innerHTML")) return "innerHTML found";
-    if (strstr(content, "eval(")) return "eval found";
-    if (strstr(content, "document.write")) return "document.write found";
-    if (strstr(content, "http://")) return "http:// external resource found";
-    if (strstr(content, "https://")) return "https:// external resource found";
-    const char *handlers[] = {"onclick=", "onload=", "onerror=", "onsubmit="};
-    for (size_t i = 0; i < sizeof(handlers)/sizeof(handlers[0]); i++) {
-        if (strstr(content, handlers[i])) return "Event handler found";
+// Case-insensitive substring search
+static const char *my_strcasestr(const char *haystack, const char *needle) {
+    if (!*needle) return haystack;
+    for (const char *p = haystack; *p; p++) {
+        if (toupper((unsigned char)*p) == toupper((unsigned char)*needle)) {
+            const char *h = p, *n = needle;
+            while (*h && *n && toupper((unsigned char)*h) == toupper((unsigned char)*n)) {
+                h++; n++;
+            }
+            if (!*n) return p;
+        }
     }
     return NULL;
 }
 
+static const char* check_forbidden_patterns(const char *content, int is_js) {
+    // 1. Check <script> tags
+    const char *p = content;
+    while ((p = my_strcasestr(p, "<script")) != NULL) {
+        const char *end_tag = strchr(p, '>');
+        if (!end_tag) return "Unclosed <script tag";
+
+        // Find src= within the tag
+        const char *src = my_strcasestr(p, "src=");
+        if (!src || src > end_tag) {
+            return "Inline script found";
+        }
+
+        // Ensure the src value doesn't start with //, http://, or https://
+        // Look for quote
+        const char *quote = strchr(src, '"');
+        if (!quote) quote = strchr(src, '\'');
+        if (quote && quote < end_tag) {
+            quote++;
+            if (strncmp(quote, "//", 2) == 0) return "Protocol-relative URL in script src";
+            if (my_strcasestr(quote, "http://") == quote) return "http:// in script src";
+            if (my_strcasestr(quote, "https://") == quote) return "https:// in script src";
+        }
+
+        p = end_tag + 1;
+    }
+
+    // 2. Disallow <style tags
+    if (my_strcasestr(content, "<style")) return "<style tag found";
+
+    // 3. Disallow style= attribute
+    // Need to handle optional spaces like style =
+    p = content;
+    while ((p = my_strcasestr(p, "style")) != NULL) {
+        const char *tmp = p + 5;
+        while (*tmp == ' ' || *tmp == '\t') tmp++;
+        if (*tmp == '=') return "style= attribute found";
+        p = tmp;
+    }
+
+    // 4. Disallow on* attributes
+    p = content;
+    while ((p = my_strcasestr(p, "on")) != NULL) {
+        // Must be boundary-like to avoid matching inside strings, but for simplicity
+        // we check if it's followed by alphas and then '='
+        if (p == content || p[-1] == ' ' || p[-1] == '"' || p[-1] == '\'' || p[-1] == '<' || p[-1] == '\t' || p[-1] == '\n') {
+            const char *tmp = p + 2;
+            int has_alpha = 0;
+            while (isalpha((unsigned char)*tmp)) { tmp++; has_alpha = 1; }
+            if (has_alpha) {
+                while (*tmp == ' ' || *tmp == '\t') tmp++;
+                if (*tmp == '=') return "on* event handler found";
+            }
+        }
+        p += 2;
+    }
+
+    // 5. Disallow javascript:
+    if (my_strcasestr(content, "javascript:")) return "javascript: found";
+
+    // 6. Disallow protocol relative URLs (="//, '//, (//, url(//)
+    if (strstr(content, "=\"//")) return "=\"// found";
+    if (strstr(content, "='//")) return "='// found";
+    if (strstr(content, "('//")) return "('// found";
+    if (strstr(content, "(//")) return "(// found"; // covers url(// and Function(//
+
+    // 7. Disallow @import
+    if (my_strcasestr(content, "@import")) return "@import found";
+
+    // 8. Disallow http:// and https://
+    if (my_strcasestr(content, "http://")) return "http:// found";
+    if (my_strcasestr(content, "https://")) return "https:// found";
+
+    if (is_js) {
+        // JS specific checks
+        if (my_strcasestr(content, "innerHTML")) return "innerHTML found";
+        if (my_strcasestr(content, "outerHTML")) return "outerHTML found";
+        if (my_strcasestr(content, "insertAdjacentHTML")) return "insertAdjacentHTML found";
+
+        p = content;
+        while ((p = my_strcasestr(p, "eval")) != NULL) {
+            const char *tmp = p + 4;
+            while (*tmp == ' ' || *tmp == '\t') tmp++;
+            if (*tmp == '(') return "eval found";
+            p = tmp;
+        }
+
+        if (my_strcasestr(content, "Function(")) return "Function( found";
+
+        p = content;
+        while ((p = my_strcasestr(p, "setTimeout")) != NULL) {
+            const char *tmp = p + 10;
+            while (*tmp == ' ' || *tmp == '\t') tmp++;
+            if (*tmp == '(') {
+                tmp++;
+                while (*tmp == ' ' || *tmp == '\t') tmp++;
+                if (*tmp == '"' || *tmp == '\'') return "setTimeout with string found";
+            }
+            p = tmp;
+        }
+
+        p = content;
+        while ((p = my_strcasestr(p, "setInterval")) != NULL) {
+            const char *tmp = p + 11;
+            while (*tmp == ' ' || *tmp == '\t') tmp++;
+            if (*tmp == '(') {
+                tmp++;
+                while (*tmp == ' ' || *tmp == '\t') tmp++;
+                if (*tmp == '"' || *tmp == '\'') return "setInterval with string found";
+            }
+            p = tmp;
+        }
+
+        if (my_strcasestr(content, "document.write")) return "document.write found";
+        if (my_strcasestr(content, "console.")) return "console. found";
+
+        // fetch strict check - allow fetch(url) where url is variable since we use it in wrapper
+        p = content;
+        while ((p = my_strcasestr(p, "fetch(")) != NULL) {
+            const char *tmp = p + 6;
+            while (*tmp == ' ' || *tmp == '\t') tmp++;
+            if (*tmp == '"' || *tmp == '\'') {
+                tmp++;
+                if (strncmp(tmp, "/api/v1/auth/", 13) != 0) {
+                    return "fetch URL does not start with /api/v1/auth/";
+                }
+            } else if (strncmp(tmp, "url", 3) != 0) {
+                return "fetch called without string literal or 'url' variable";
+            }
+            p = tmp;
+        }
+    }
+
+    return NULL;
+}
+
 void test_index_html(void) {
-    char *html = read_file("../components/web_server/web/index.html");
-    TEST_ASSERT_NOT_NULL(html);
-    const char *err = check_forbidden_patterns(html);
+    char path[256];
+    snprintf(path, sizeof(path), "%s/index.html", WEB_ASSET_DIR);
+    char *html = read_file(path);
+    TEST_ASSERT_NOT_NULL_MESSAGE(html, path);
+    const char *err = check_forbidden_patterns(html, 0);
 
     int refs_ok = (strstr(html, "src=\"app.js\"") != NULL) && (strstr(html, "href=\"app.css\"") != NULL);
     free(html);
@@ -53,17 +192,21 @@ void test_index_html(void) {
 }
 
 void test_app_js(void) {
-    char *js = read_file("../components/web_server/web/app.js");
-    TEST_ASSERT_NOT_NULL(js);
-    const char *err = check_forbidden_patterns(js);
+    char path[256];
+    snprintf(path, sizeof(path), "%s/app.js", WEB_ASSET_DIR);
+    char *js = read_file(path);
+    TEST_ASSERT_NOT_NULL_MESSAGE(js, path);
+    const char *err = check_forbidden_patterns(js, 1);
     free(js);
     if (err) TEST_FAIL_MESSAGE(err);
 }
 
 void test_app_css(void) {
-    char *css = read_file("../components/web_server/web/app.css");
-    TEST_ASSERT_NOT_NULL(css);
-    const char *err = check_forbidden_patterns(css);
+    char path[256];
+    snprintf(path, sizeof(path), "%s/app.css", WEB_ASSET_DIR);
+    char *css = read_file(path);
+    TEST_ASSERT_NOT_NULL_MESSAGE(css, path);
+    const char *err = check_forbidden_patterns(css, 0);
     free(css);
     if (err) TEST_FAIL_MESSAGE(err);
 }
