@@ -378,6 +378,61 @@ void test_fuzz_invariants(void) {
     }
 }
 
+/* User verification tests */
+static int u_begins, u_closes, u_rel, u_unreg, u_vals; static bool u_valid_ret; static int u_next_seq; static video_frame_t u_fr; static bool u_held; static int u_begin_ret;
+static int u_h_reg(void*u){(void)u;return 7;}
+static void u_h_unreg(void*u,int id){(void)u;(void)id;u_unreg++;}
+static const video_frame_t* u_h_get(void*u,int id){(void)u;(void)id; if(u_held) return NULL; u_held=true; u_fr.seq=u_next_seq++; u_fr.data=(uint8_t*)"x"; u_fr.size=1; return &u_fr;}
+static void u_h_rel(void*u,int id,const video_frame_t*f){(void)u;(void)id;(void)f;u_held=false;u_rel++;}
+static int u_io_begin(void*u,ws_video_conn_t c,const uint8_t*d,size_t l){(void)u;(void)c;(void)d;(void)l;u_begins++;return u_begin_ret;}
+static void u_io_close(void*u,ws_video_conn_t c){(void)u;(void)c;u_closes++;}
+static bool u_io_val(void*u,const uint8_t t[32]){(void)u;(void)t;u_vals++;return u_valid_ret;}
+
+static void u_setUp(void){u_begins=u_closes=u_rel=u_unreg=u_vals=0;u_valid_ret=true;u_next_seq=1;u_held=false;u_begin_ret=0;
+ ws_video_core_config_t c={.max_clients=2,.session_check_interval_ms=1000,.hub_register=u_h_reg,.hub_unregister=u_h_unreg,.hub_get_latest=u_h_get,.hub_release=u_h_rel,.io_begin_send=u_io_begin,.io_request_close=u_io_close,.io_validate_session=u_io_val};
+ TEST_ASSERT_EQUAL(0, ws_video_core_init(&core,&c));}
+static void u_tearDown(void){ws_video_core_destroy(&core);}
+
+void test_no_send_after_session_invalid(void){
+  u_setUp();
+  uint8_t t[32]={1}; TEST_ASSERT_EQUAL(0, ws_video_core_on_connect(&core,(void*)1,10,t,0));
+  ws_video_core_tick(&core,10); TEST_ASSERT_EQUAL(1,u_begins); ws_video_core_on_send_done(&core,10,true);
+  u_valid_ret=false; ws_video_core_tick(&core,2000); TEST_ASSERT_EQUAL(1,u_closes);
+  int b=u_begins; ws_video_core_tick(&core,2010); ws_video_core_tick(&core,2020);
+  TEST_ASSERT_EQUAL_MESSAGE(b,u_begins,"frames still sent after session invalid / close requested");
+  u_tearDown();
+}
+
+void test_no_send_after_send_failure(void){
+  u_setUp();
+  uint8_t t[32]={1}; ws_video_core_on_connect(&core,(void*)1,10,t,0);
+  ws_video_core_tick(&core,10); ws_video_core_on_send_done(&core,10,false); TEST_ASSERT_EQUAL(1,u_closes);
+  int b=u_begins; ws_video_core_tick(&core,20); ws_video_core_tick(&core,30);
+  TEST_ASSERT_EQUAL_MESSAGE(b,u_begins,"frames still sent after send failure + close requested");
+  u_tearDown();
+}
+
+void test_no_send_after_begin_failure(void){
+  u_setUp();
+  uint8_t t[32]={1}; ws_video_core_on_connect(&core,(void*)1,10,t,0); u_begin_ret=-1;
+  ws_video_core_tick(&core,10); TEST_ASSERT_EQUAL(1,u_closes); int b=u_begins; ws_video_core_tick(&core,20);
+  TEST_ASSERT_EQUAL_MESSAGE(b,u_begins,"retry send after begin failure + close requested");
+  u_tearDown();
+}
+
+void test_no_send_after_client_data(void){
+  u_setUp();
+  uint8_t t[32]={1}; ws_video_core_on_connect(&core,(void*)1,10,t,0); ws_video_core_on_client_data(&core,10);
+  ws_video_core_tick(&core,10); TEST_ASSERT_EQUAL_MESSAGE(0,u_begins,"sent to a client that sent data (close requested)");
+  u_tearDown();
+}
+
+void test_init_rejects_null_callbacks(void){
+  ws_video_core_t c2; ws_video_core_config_t cfg={.max_clients=2,.session_check_interval_ms=1000};
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(0, ws_video_core_init(&c2,&cfg),"init accepted NULL callbacks");
+}
+
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_basic_connect_close);
@@ -390,5 +445,13 @@ int main(void) {
     RUN_TEST(test_hub_fail_full_dup);
     RUN_TEST(test_destroy_zeros_memory);
     RUN_TEST(test_fuzz_invariants);
+
+    // User validation tests
+    RUN_TEST(test_no_send_after_session_invalid);
+    RUN_TEST(test_no_send_after_send_failure);
+    RUN_TEST(test_no_send_after_begin_failure);
+    RUN_TEST(test_no_send_after_client_data);
+    RUN_TEST(test_init_rejects_null_callbacks);
+
     return UNITY_END();
 }

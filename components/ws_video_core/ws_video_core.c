@@ -1,9 +1,22 @@
 #include "ws_video_core.h"
 #include <string.h>
 
+static void do_request_close(ws_video_core_t* core, int slot) {
+    if (!core->close_requested[slot]) {
+        core->close_requested[slot] = true;
+        core->config.io_request_close(core->config.user_data, core->conns[slot]);
+    }
+}
+
 int ws_video_core_init(ws_video_core_t* core, const ws_video_core_config_t* config) {
     if (!core || !config) return -1;
     if (config->max_clients < 1 || config->max_clients > WS_CLIENTS_MAX) return -1;
+
+    // Check all 7 callbacks
+    if (!config->hub_register || !config->hub_unregister || !config->hub_get_latest || !config->hub_release ||
+        !config->io_begin_send || !config->io_request_close || !config->io_validate_session) {
+        return -1;
+    }
 
     memset(core, 0, sizeof(*core));
     core->config = *config;
@@ -54,6 +67,7 @@ int ws_video_core_on_connect(ws_video_core_t* core, ws_video_conn_t conn, int fd
     memcpy(core->tokens[slot], token, 32);
     core->current_frames[slot] = NULL;
     core->last_seqs[slot] = -1;
+    core->close_requested[slot] = false;
 
     return slot;
 }
@@ -89,7 +103,7 @@ void ws_video_core_on_send_done(ws_video_core_t* core, int fd, bool ok) {
     int hub_client_id = core->clients.clients[slot].hub_client_id;
     const video_frame_t* frame = core->current_frames[slot];
 
-    ws_clients_end_send(&core->clients, slot);
+     ws_clients_end_send(&core->clients, slot);
 
     if (frame) {
         core->config.hub_release(core->config.user_data, hub_client_id, frame);
@@ -97,7 +111,7 @@ void ws_video_core_on_send_done(ws_video_core_t* core, int fd, bool ok) {
     }
 
     if (!ok && core->clients.clients[slot].state == WS_CLIENT_ACTIVE) {
-        core->config.io_request_close(core->config.user_data, core->conns[slot]);
+        do_request_close(core, slot);
     }
 
     if (core->clients.clients[slot].state == WS_CLIENT_FREE) {
@@ -111,7 +125,7 @@ void ws_video_core_on_client_data(ws_video_core_t* core, int fd) {
     if (!core) return;
     int slot = ws_clients_find(&core->clients, fd);
     if (slot >= 0) {
-        core->config.io_request_close(core->config.user_data, core->conns[slot]);
+        do_request_close(core, slot);
     }
 }
 
@@ -120,6 +134,7 @@ void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
 
     for (int i = 0; i < core->config.max_clients; i++) {
         if (core->clients.clients[i].state != WS_CLIENT_ACTIVE) continue;
+        if (core->close_requested[i]) continue;
 
         // Session check
         if (ws_clients_session_due(&core->clients, i, now_ms, core->config.session_check_interval_ms)) {
@@ -127,7 +142,7 @@ void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
             ws_clients_session_checked(&core->clients, i, now_ms);
 
             if (!valid) {
-                core->config.io_request_close(core->config.user_data, core->conns[i]);
+                do_request_close(core, i);
                 continue;
             }
         }
@@ -157,7 +172,7 @@ void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
                 // Fail
                 core->config.hub_release(core->config.user_data, hub_client_id, frame);
                 ws_clients_end_send(&core->clients, i);
-                core->config.io_request_close(core->config.user_data, core->conns[i]);
+                do_request_close(core, i);
             }
         }
     }

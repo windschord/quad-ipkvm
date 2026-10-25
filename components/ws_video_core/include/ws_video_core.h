@@ -45,6 +45,7 @@ typedef struct {
     uint8_t tokens[WS_CLIENTS_MAX][32];
     const video_frame_t* current_frames[WS_CLIENTS_MAX];
     int64_t last_seqs[WS_CLIENTS_MAX];
+    bool close_requested[WS_CLIENTS_MAX];
 } ws_video_core_t;
 
 /**
