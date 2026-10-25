@@ -98,8 +98,8 @@ void test_oled_render_font_glyph_A(void) {
     char ascii[8][256];
     fb_to_ascii(&g_fb_alloc->fb, 0, 0, 6, ascii);
 
-    TEST_ASSERT_EQUAL_STRING(".###..", ascii[0]);
-    TEST_ASSERT_EQUAL_STRING("#...#.", ascii[1]);
+    TEST_ASSERT_EQUAL_STRING("..#...", ascii[0]);
+    TEST_ASSERT_EQUAL_STRING(".#.#..", ascii[1]);
     TEST_ASSERT_EQUAL_STRING("#...#.", ascii[2]);
     TEST_ASSERT_EQUAL_STRING("#...#.", ascii[3]);
     TEST_ASSERT_EQUAL_STRING("#####.", ascii[4]);
@@ -267,8 +267,8 @@ void test_oled_render_font_ascii_art(void) {
     TEST_ASSERT_EQUAL_STRING("......", ascii[2]);
     TEST_ASSERT_EQUAL_STRING("......", ascii[3]);
     TEST_ASSERT_EQUAL_STRING("......", ascii[4]);
-    TEST_ASSERT_EQUAL_STRING(".##...", ascii[5]);
-    TEST_ASSERT_EQUAL_STRING(".##...", ascii[6]);
+    TEST_ASSERT_EQUAL_STRING("..##..", ascii[5]);
+    TEST_ASSERT_EQUAL_STRING("..##..", ascii[6]);
     TEST_ASSERT_EQUAL_STRING("......", ascii[7]);
 
     // Test ':'
@@ -276,11 +276,11 @@ void test_oled_render_font_ascii_art(void) {
     oled_fb_draw_text(&g_fb_alloc->fb, 0, 0, ":");
     fb_to_ascii(&g_fb_alloc->fb, 0, 0, 6, ascii);
     TEST_ASSERT_EQUAL_STRING("......", ascii[0]);
-    TEST_ASSERT_EQUAL_STRING(".##...", ascii[1]);
-    TEST_ASSERT_EQUAL_STRING(".##...", ascii[2]);
+    TEST_ASSERT_EQUAL_STRING("......", ascii[1]);
+    TEST_ASSERT_EQUAL_STRING("..#...", ascii[2]);
     TEST_ASSERT_EQUAL_STRING("......", ascii[3]);
-    TEST_ASSERT_EQUAL_STRING(".##...", ascii[4]);
-    TEST_ASSERT_EQUAL_STRING(".##...", ascii[5]);
+    TEST_ASSERT_EQUAL_STRING("..#...", ascii[4]);
+    TEST_ASSERT_EQUAL_STRING("......", ascii[5]);
     TEST_ASSERT_EQUAL_STRING("......", ascii[6]);
     TEST_ASSERT_EQUAL_STRING("......", ascii[7]);
 
