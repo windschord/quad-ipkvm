@@ -1,5 +1,8 @@
 #include "../../../components/auth_logic/include/auth_logic.h"
 #include <string.h>
+
+bool g_ref_random_should_fail = false;
+bool g_ref_pbkdf2_should_fail = false;
 #include <stdlib.h>
 
 // --- SHA-256 ---
@@ -163,6 +166,7 @@ static int ref_hmac_sha256(const uint8_t *key, size_t keylen, const uint8_t *inp
 }
 
 static int ref_pbkdf2_hmac_sha256(const uint8_t *password, size_t plen, const uint8_t *salt, size_t slen, uint32_t iteration_count, uint32_t key_length, uint8_t *output) {
+    if (g_ref_pbkdf2_should_fail) return -1;
     uint32_t i, j, k;
     uint8_t U[32];
     uint8_t T[32];
@@ -199,7 +203,6 @@ static int ref_pbkdf2_hmac_sha256(const uint8_t *password, size_t plen, const ui
 }
 
 // Global flag to inject random failures during testing
-bool g_ref_random_should_fail = false;
 
 static int ref_random(uint8_t *output, size_t len) {
     if (g_ref_random_should_fail) return -1;

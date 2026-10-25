@@ -162,6 +162,7 @@ int auth_logic_load_state(auth_logic_t *ctx, const uint8_t *serialized, size_t l
     ctx->iterations = iterations;
     memcpy(ctx->hash, hash, AUTH_LOGIC_HASH_LEN);
     ctx->state = AUTH_STATE_READY;
+    ctx->generation++;
 
     return 0;
 }
@@ -193,71 +194,56 @@ int auth_logic_serialize_state(const auth_logic_t *ctx, uint8_t *serialized_out,
 }
 
 int auth_logic_setup_password(auth_logic_t *ctx, const char *password, size_t pwd_len) {
-    if (!ctx || !password) return -1;
-    if (ctx->state != AUTH_STATE_NEEDS_SETUP) return -1; // Prevent double setup
-
-    if (pwd_len < ctx->config.min_password_len || pwd_len > AUTH_LOGIC_MAX_PASSWORD_LEN) return -1;
-    if (is_weak_password(password, pwd_len)) return -1;
-
-    // Fail-closed random generation
-    if (ctx->crypto->random(ctx->salt, AUTH_LOGIC_SALT_LEN) != 0) {
-        memset(ctx->salt, 0, AUTH_LOGIC_SALT_LEN); // Clear partial data
+    auth_setup_job_t job;
+    if (auth_logic_setup_begin(ctx, password, pwd_len, &job) != 0) {
         return -1;
     }
 
-    ctx->iterations = ctx->config.pbkdf2_iterations;
-
-    int ret = ctx->crypto->pbkdf2_hmac_sha256((const uint8_t*)password, pwd_len, ctx->salt, AUTH_LOGIC_SALT_LEN, ctx->iterations, AUTH_LOGIC_HASH_LEN, ctx->hash);
-    if (ret != 0) {
-        memset(ctx->salt, 0, AUTH_LOGIC_SALT_LEN);
-        memset(ctx->hash, 0, AUTH_LOGIC_HASH_LEN);
+    if (auth_logic_setup_compute(ctx->crypto, &job, password, pwd_len) != 0) {
         return -1;
     }
 
-    ctx->state = AUTH_STATE_READY;
-    return 0;
+    return auth_logic_setup_finish(ctx, &job);
 }
 
 static bool check_rate_limit(auth_logic_t *ctx, uint32_t source_ip, uint64_t now_ms);
 static void record_rate_limit_failure(auth_logic_t *ctx, uint32_t source_ip, uint64_t now_ms);
 static void reset_rate_limit(auth_logic_t *ctx, uint32_t source_ip);
 
-static int verify_password_internal(auth_logic_t *ctx, const char *password, size_t pwd_len, uint32_t source_ip, uint64_t now_ms) {
-    if (pwd_len > AUTH_LOGIC_MAX_PASSWORD_LEN) {
-        if (!check_rate_limit(ctx, source_ip, now_ms)) return -1;
-        record_rate_limit_failure(ctx, source_ip, now_ms);
-        return -1;
-    }
 
-    if (!check_rate_limit(ctx, source_ip, now_ms)) {
-        return -1;
-    }
-
-    uint8_t computed_hash[AUTH_LOGIC_HASH_LEN];
-    int ret = ctx->crypto->pbkdf2_hmac_sha256((const uint8_t*)password, pwd_len, ctx->salt, AUTH_LOGIC_SALT_LEN, ctx->iterations, AUTH_LOGIC_HASH_LEN, computed_hash);
-    if (ret != 0) {
-        secure_zero(computed_hash, sizeof(computed_hash));
-        return -1;
-    }
-
-    if (ctx->crypto->const_time_memcmp(computed_hash, ctx->hash, AUTH_LOGIC_HASH_LEN) != 0) {
-        record_rate_limit_failure(ctx, source_ip, now_ms);
-        secure_zero(computed_hash, sizeof(computed_hash));
-        return -1;
-    }
-    secure_zero(computed_hash, sizeof(computed_hash));
-
-    reset_rate_limit(ctx, source_ip);
-    return 0;
-}
 
 int auth_logic_change_password(auth_logic_t *ctx, const char *old_pwd, size_t old_len, const char *new_pwd, size_t new_len, uint32_t source_ip, uint64_t now_ms) {
     if (!ctx || !old_pwd || !new_pwd) return -1;
     if (ctx->state != AUTH_STATE_READY) return -1;
 
-    if (verify_password_internal(ctx, old_pwd, old_len, source_ip, now_ms) != 0) {
+
+    if (old_len > AUTH_LOGIC_MAX_PASSWORD_LEN) {
+        if (!check_rate_limit(ctx, source_ip, now_ms)) return -1;
+        record_rate_limit_failure(ctx, source_ip, now_ms);
         return -1;
     }
+
+    auth_login_job_t login_job;
+    if (auth_logic_login_begin(ctx, source_ip, now_ms, &login_job) != 0) {
+        return -1;
+    }
+
+    int match = auth_logic_login_compute(ctx->crypto, &login_job, old_pwd, old_len);
+
+    if (match < 0) {
+        return -1;
+    }
+
+    if (ctx->generation != login_job.generation) {
+        return -1;
+    }
+
+    if (match != 1) {
+        record_rate_limit_failure(ctx, source_ip, now_ms);
+        return -1;
+    }
+
+    reset_rate_limit(ctx, source_ip);
 
     // Now validate and apply new password
     if (new_len < ctx->config.min_password_len || new_len > AUTH_LOGIC_MAX_PASSWORD_LEN) return -1;
@@ -278,6 +264,7 @@ int auth_logic_change_password(auth_logic_t *ctx, const char *old_pwd, size_t ol
     memcpy(ctx->salt, new_salt, AUTH_LOGIC_SALT_LEN);
     ctx->iterations = ctx->config.pbkdf2_iterations;
     memcpy(ctx->hash, new_hash, AUTH_LOGIC_HASH_LEN);
+    ctx->generation++;
 
     secure_zero(new_hash, sizeof(new_hash));
 
@@ -428,57 +415,23 @@ int auth_logic_login(auth_logic_t *ctx, const char *password, size_t pwd_len, ui
     if (!ctx || !password || !token_out) return -1;
     if (ctx->state != AUTH_STATE_READY) return -1;
 
-    if (verify_password_internal(ctx, password, pwd_len, source_ip, now_ms) != 0) {
+    if (pwd_len > AUTH_LOGIC_MAX_PASSWORD_LEN) {
+        if (!check_rate_limit(ctx, source_ip, now_ms)) return -1;
+        record_rate_limit_failure(ctx, source_ip, now_ms);
         return -1;
     }
 
-    // Generate token (fail-closed)
-    if (ctx->crypto->random(token_out, AUTH_LOGIC_TOKEN_LEN) != 0) {
+    auth_login_job_t job;
+    if (auth_logic_login_begin(ctx, source_ip, now_ms, &job) != 0) {
         return -1;
     }
 
-    // Compute hash for session table
-    uint8_t token_hash[AUTH_LOGIC_HASH_LEN];
-    if (ctx->crypto->sha256(token_out, AUTH_LOGIC_TOKEN_LEN, token_hash) != 0) {
-        secure_zero(token_out, AUTH_LOGIC_TOKEN_LEN); // Clear token if hash fails
+    int match = auth_logic_login_compute(ctx->crypto, &job, password, pwd_len);
+    if (match < 0) {
         return -1;
     }
 
-    // Find empty slot or evict oldest
-    int slot = -1;
-    uint64_t oldest_time = UINT64_MAX;
-    int oldest_idx = -1;
-
-    for (int i = 0; i < AUTH_LOGIC_SESSION_MAX; i++) {
-        if (!ctx->sessions[i].is_active) {
-            slot = i;
-            break;
-        }
-        // Also cleanup expired ones lazily
-        if (now_ms - ctx->sessions[i].last_used_ms > ctx->config.session_idle_timeout_ms ||
-            now_ms - ctx->sessions[i].created_ms > ctx->config.session_absolute_timeout_ms) {
-            ctx->sessions[i].is_active = false;
-            if (slot == -1) slot = i;
-        }
-
-        if (ctx->sessions[i].is_active && ctx->sessions[i].last_used_ms < oldest_time) {
-            oldest_time = ctx->sessions[i].last_used_ms;
-            oldest_idx = i;
-        }
-    }
-
-    if (slot == -1) {
-        slot = oldest_idx; // Evict oldest
-    }
-
-    ctx->sessions[slot].is_active = true;
-    ctx->sessions[slot].created_ms = now_ms;
-    ctx->sessions[slot].last_used_ms = now_ms;
-    memcpy(ctx->sessions[slot].token_hash, token_hash, AUTH_LOGIC_HASH_LEN);
-
-    secure_zero(token_hash, AUTH_LOGIC_HASH_LEN);
-
-    return 0;
+    return auth_logic_login_finish(ctx, &job, match, source_ip, now_ms, token_out);
 }
 
 int auth_logic_validate_session(auth_logic_t *ctx, const uint8_t *token, size_t token_len, uint64_t now_ms) {
@@ -530,4 +483,162 @@ void auth_logic_logout_all(auth_logic_t *ctx) {
         ctx->sessions[i].is_active = false;
         memset(ctx->sessions[i].token_hash, 0, AUTH_LOGIC_HASH_LEN);
     }
+}
+
+
+int auth_logic_login_begin(auth_logic_t *ctx, uint32_t source_ip, uint64_t now_ms, auth_login_job_t *job) {
+    if (!ctx || !job) return -1;
+    if (ctx->state != AUTH_STATE_READY) return -1;
+
+    if (!check_rate_limit(ctx, source_ip, now_ms)) {
+        return -1;
+    }
+
+    memcpy(job->salt, ctx->salt, AUTH_LOGIC_SALT_LEN);
+    job->iterations = ctx->iterations;
+    memcpy(job->expected_hash, ctx->hash, AUTH_LOGIC_HASH_LEN);
+    job->generation = ctx->generation;
+
+    return 0;
+}
+
+int auth_logic_login_compute(const auth_crypto_if_t *crypto, const auth_login_job_t *job, const char *password, size_t pwd_len) {
+    if (!crypto || !job || !password) return -1;
+
+    uint8_t computed_hash[AUTH_LOGIC_HASH_LEN];
+    int ret = crypto->pbkdf2_hmac_sha256((const uint8_t*)password, pwd_len, job->salt, AUTH_LOGIC_SALT_LEN, job->iterations, AUTH_LOGIC_HASH_LEN, computed_hash);
+    if (ret != 0) {
+        secure_zero(computed_hash, sizeof(computed_hash));
+        return -1;
+    }
+
+    int match = (crypto->const_time_memcmp(computed_hash, job->expected_hash, AUTH_LOGIC_HASH_LEN) == 0) ? 1 : 0;
+    secure_zero(computed_hash, sizeof(computed_hash));
+    return match;
+}
+
+int auth_logic_login_finish(auth_logic_t *ctx, const auth_login_job_t *job, int match, uint32_t source_ip, uint64_t now_ms, uint8_t *token_out) {
+    if (!ctx || !job || !token_out) return -1;
+
+    if (ctx->state != AUTH_STATE_READY) {
+        return -1;
+    }
+
+    if (ctx->generation != job->generation ||
+        ctx->crypto->const_time_memcmp(ctx->salt, job->salt, AUTH_LOGIC_SALT_LEN) != 0 ||
+        ctx->crypto->const_time_memcmp(ctx->hash, job->expected_hash, AUTH_LOGIC_HASH_LEN) != 0) {
+        return -1; // State mismatch. Concurrent setup or change_password occurred. Do not count as rate limit failure.
+    }
+
+    if (match != 1) {
+        record_rate_limit_failure(ctx, source_ip, now_ms);
+        return -1;
+    }
+
+    reset_rate_limit(ctx, source_ip);
+
+    // Generate token (fail-closed)
+    if (ctx->crypto->random(token_out, AUTH_LOGIC_TOKEN_LEN) != 0) {
+        return -1;
+    }
+
+    // Compute hash for session table
+    uint8_t token_hash[AUTH_LOGIC_HASH_LEN];
+    if (ctx->crypto->sha256(token_out, AUTH_LOGIC_TOKEN_LEN, token_hash) != 0) {
+        secure_zero(token_out, AUTH_LOGIC_TOKEN_LEN); // Clear token if hash fails
+        return -1;
+    }
+
+    // Find empty slot or evict oldest
+    int slot = -1;
+    uint64_t oldest_time = UINT64_MAX;
+    int oldest_idx = -1;
+
+    for (int i = 0; i < AUTH_LOGIC_SESSION_MAX; i++) {
+        if (!ctx->sessions[i].is_active) {
+            slot = i;
+            break;
+        }
+        // Also cleanup expired ones lazily
+        if (now_ms - ctx->sessions[i].last_used_ms > ctx->config.session_idle_timeout_ms ||
+            now_ms - ctx->sessions[i].created_ms > ctx->config.session_absolute_timeout_ms) {
+            ctx->sessions[i].is_active = false;
+            if (slot == -1) slot = i;
+        }
+
+        if (ctx->sessions[i].is_active && ctx->sessions[i].last_used_ms < oldest_time) {
+            oldest_time = ctx->sessions[i].last_used_ms;
+            oldest_idx = i;
+        }
+    }
+
+    if (slot == -1) {
+        slot = oldest_idx; // Evict oldest
+    }
+
+    ctx->sessions[slot].is_active = true;
+    ctx->sessions[slot].created_ms = now_ms;
+    ctx->sessions[slot].last_used_ms = now_ms;
+    memcpy(ctx->sessions[slot].token_hash, token_hash, AUTH_LOGIC_HASH_LEN);
+
+    secure_zero(token_hash, AUTH_LOGIC_HASH_LEN);
+
+    return 0;
+}
+
+int auth_logic_setup_begin(auth_logic_t *ctx, const char *password, size_t pwd_len, auth_setup_job_t *job) {
+    if (!ctx || !password || !job) return -1;
+    if (ctx->state != AUTH_STATE_NEEDS_SETUP) return -1; // Prevent double setup
+
+    if (pwd_len < ctx->config.min_password_len || pwd_len > AUTH_LOGIC_MAX_PASSWORD_LEN) return -1;
+    if (is_weak_password(password, pwd_len)) return -1;
+
+    // Fail-closed random generation
+    if (ctx->crypto->random(job->salt, AUTH_LOGIC_SALT_LEN) != 0) {
+        memset(job->salt, 0, AUTH_LOGIC_SALT_LEN); // Clear partial data
+        return -1;
+    }
+
+    job->iterations = ctx->config.pbkdf2_iterations;
+    job->generation = ctx->generation;
+
+    return 0;
+}
+
+int auth_logic_setup_compute(const auth_crypto_if_t *crypto, auth_setup_job_t *job, const char *password, size_t pwd_len) {
+    if (!crypto || !job || !password) return -1;
+
+    int ret = crypto->pbkdf2_hmac_sha256((const uint8_t*)password, pwd_len, job->salt, AUTH_LOGIC_SALT_LEN, job->iterations, AUTH_LOGIC_HASH_LEN, job->computed_hash);
+    if (ret != 0) {
+        memset(job->salt, 0, AUTH_LOGIC_SALT_LEN);
+        memset(job->computed_hash, 0, AUTH_LOGIC_HASH_LEN);
+        return -1;
+    }
+    return 0;
+}
+
+int auth_logic_setup_finish(auth_logic_t *ctx, const auth_setup_job_t *job) {
+    if (!ctx || !job) return -1;
+
+    if (ctx->state != AUTH_STATE_NEEDS_SETUP) return -1;
+    if (ctx->generation != job->generation) return -1;
+    // Protection against finishing a job that failed during compute
+    bool all_zeros = true;
+    for (int i = 0; i < AUTH_LOGIC_HASH_LEN; i++) {
+        if (job->computed_hash[i] != 0) {
+            all_zeros = false;
+            break;
+        }
+    }
+    if (all_zeros) return -1;
+
+
+    memcpy(ctx->salt, job->salt, AUTH_LOGIC_SALT_LEN);
+    ctx->iterations = job->iterations;
+    memcpy(ctx->hash, job->computed_hash, AUTH_LOGIC_HASH_LEN);
+
+    ctx->state = AUTH_STATE_READY;
+    ctx->generation++;
+
+    return 0;
 }
