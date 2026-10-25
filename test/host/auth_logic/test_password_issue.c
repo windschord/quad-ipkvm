@@ -14,9 +14,9 @@ void tearDown(void) {}
 // The tests below require auth_logic_password_issue() == AUTH_PASSWORD_OK to agree exactly with
 // "length is acceptable and this reference says the password is not weak".
 // Verify the copy with:
-//   git show de89316:components/auth_logic/src/auth_logic.c | sed -n '17,76p' \
-//     | sed 's/to_lower/ref_to_lower/g; s/is_weak_password/ref_is_weak_password/g' \
-//     | diff - <(sed -n '/^\/\/ BEGIN REFERENCE COPY$/,/^\/\/ END REFERENCE COPY$/p' <this file> | sed '1d;$d')
+// (one line each; no trailing backslashes, which would continue the comment and trip -Wcomment)
+//   git show de89316:components/auth_logic/src/auth_logic.c | sed -n '17,76p' | sed 's/to_lower/ref_to_lower/g; s/is_weak_password/ref_is_weak_password/g' > orig.txt
+//   sed -n '/^\/\/ BEGIN REFERENCE COPY$/,/^\/\/ END REFERENCE COPY$/p' <this file> | sed '1d;$d' > copy.txt && diff orig.txt copy.txt
 // ---------------------------------------------------------------------------------------------
 // BEGIN REFERENCE COPY
 static char ref_to_lower(char c) {
@@ -349,7 +349,7 @@ void test_agrees_with_previous_policy_on_random_samples(void) {
         auth_password_issue_e got = auth_logic_password_issue(&ctx, buf, len);
 
         char msg[96];
-        snprintf(msg, sizeof(msg), "sample %d mode %u len %zu min %u issue %d", n, mode, len, min_len, (int)got);
+        snprintf(msg, sizeof(msg), "sample %d mode %u len %zu min %u issue %d", n, (unsigned)mode, len, (unsigned)min_len, (int)got);
         TEST_ASSERT_EQUAL_MESSAGE(ref_ok, got == AUTH_PASSWORD_OK, msg);
 
         if (ref_ok) ok_count++;
