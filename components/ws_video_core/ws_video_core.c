@@ -85,7 +85,7 @@ void ws_video_core_on_close(ws_video_core_t* core, int fd) {
     if (!was_sending) {
         // Safe to unregister immediately
         core->config.hub_unregister(core->config.user_data, hub_client_id);
-        memset(core->tokens[slot], 0, 32);
+        memset(core->tokens[slot], 0, 32); core->close_requested[slot] = false;
     }
     // If it was sending, the state is now CLOSING. We will unregister in on_send_done.
 }
@@ -117,7 +117,7 @@ void ws_video_core_on_send_done(ws_video_core_t* core, int fd, bool ok) {
     if (core->clients.clients[slot].state == WS_CLIENT_FREE) {
         // Was CLOSING, now FREE. Time to unregister.
         core->config.hub_unregister(core->config.user_data, hub_client_id);
-        memset(core->tokens[slot], 0, 32);
+        memset(core->tokens[slot], 0, 32); core->close_requested[slot] = false;
     }
 }
 

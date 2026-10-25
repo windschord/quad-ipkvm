@@ -433,6 +433,12 @@ void test_init_rejects_null_callbacks(void){
 }
 
 
+
+void test_on_connect_rejection_unregisters_hub(void);
+void test_request_close_called_only_once(void);
+void test_slot_reuse_clears_close_requested(void);
+void test_init_rejects_each_null_callback(void);
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_basic_connect_close);
@@ -453,5 +459,113 @@ int main(void) {
     RUN_TEST(test_no_send_after_client_data);
     RUN_TEST(test_init_rejects_null_callbacks);
 
+    RUN_TEST(test_on_connect_rejection_unregisters_hub);
+    RUN_TEST(test_request_close_called_only_once);
+    RUN_TEST(test_slot_reuse_clears_close_requested);
+    RUN_TEST(test_init_rejects_each_null_callback);
+
     return UNITY_END();
+}
+
+// --- Additional edge case tests ---
+void test_on_connect_rejection_unregisters_hub(void) {
+    u_setUp();
+    uint8_t t[32] = {1};
+
+    // Fill up the max clients (2)
+    TEST_ASSERT_EQUAL(0, ws_video_core_on_connect(&core, (void*)1, 10, t, 0));
+    TEST_ASSERT_EQUAL(1, ws_video_core_on_connect(&core, (void*)2, 11, t, 0));
+
+    int pre_reg = u_h_reg(NULL) - 7 + 1; // Since mock returns 7, we can just use the counts
+    (void)pre_reg; // silence unused
+    int pre_unreg = u_unreg;
+
+    // Reject due to duplicate fd
+    TEST_ASSERT_EQUAL(-2, ws_video_core_on_connect(&core, (void*)3, 10, t, 0));
+    TEST_ASSERT_EQUAL(pre_unreg + 1, u_unreg);
+
+    pre_unreg = u_unreg;
+
+    // Reject due to full table
+    TEST_ASSERT_EQUAL(-1, ws_video_core_on_connect(&core, (void*)3, 12, t, 0));
+    TEST_ASSERT_EQUAL(pre_unreg + 1, u_unreg);
+
+    u_tearDown();
+}
+
+void test_request_close_called_only_once(void) {
+    u_setUp();
+    uint8_t t[32] = {1};
+    ws_video_core_on_connect(&core, (void*)1, 10, t, 0);
+
+    // Trigger close via timeout
+    u_valid_ret = false;
+    ws_video_core_tick(&core, 2000);
+
+    // Trigger tick a few times
+    ws_video_core_tick(&core, 2010);
+    ws_video_core_tick(&core, 2020);
+
+    // Trigger via on_client_data
+    ws_video_core_on_client_data(&core, 10);
+
+    // Trigger via on_send_done(false)
+    ws_video_core_on_send_done(&core, 10, false);
+
+    // Asserts
+    TEST_ASSERT_EQUAL(1, u_closes);
+
+    u_tearDown();
+}
+
+void test_slot_reuse_clears_close_requested(void) {
+    u_setUp();
+    uint8_t t[32] = {1};
+
+    // 1. Immediate close scenario
+    int slot1 = ws_video_core_on_connect(&core, (void*)1, 10, t, 0);
+    ws_video_core_on_client_data(&core, 10); // requests close
+    ws_video_core_on_close(&core, 10); // immediate close since not sending
+
+    int slot2 = ws_video_core_on_connect(&core, (void*)2, 11, t, 0);
+    TEST_ASSERT_EQUAL(slot1, slot2); // reused slot
+
+    int begins_before = u_begins;
+    ws_video_core_tick(&core, 10);
+    TEST_ASSERT_EQUAL(begins_before + 1, u_begins); // successfully sent
+
+    // 2. Deferred close scenario
+    int slot3 = ws_video_core_on_connect(&core, (void*)3, 12, t, 0);
+    ws_video_core_tick(&core, 20); // begin send
+    ws_video_core_on_client_data(&core, 12); // requests close
+    ws_video_core_on_close(&core, 12); // deferred close
+    ws_video_core_on_send_done(&core, 12, true); // actually frees
+    u_held = false;
+
+    int slot4 = ws_video_core_on_connect(&core, (void*)4, 13, t, 0);
+    TEST_ASSERT_EQUAL(slot3, slot4); // reused slot
+
+    begins_before = u_begins;
+    ws_video_core_tick(&core, 30);
+    TEST_ASSERT_EQUAL(begins_before + 1, u_begins); // successfully sent
+
+    u_tearDown();
+}
+
+void test_init_rejects_each_null_callback(void) {
+    for (int i = 0; i < 7; i++) {
+        ws_video_core_config_t cfg = {
+            .max_clients = 2,
+            .session_check_interval_ms = 1000,
+            .hub_register = (i == 0) ? NULL : u_h_reg,
+            .hub_unregister = (i == 1) ? NULL : u_h_unreg,
+            .hub_get_latest = (i == 2) ? NULL : u_h_get,
+            .hub_release = (i == 3) ? NULL : u_h_rel,
+            .io_begin_send = (i == 4) ? NULL : u_io_begin,
+            .io_request_close = (i == 5) ? NULL : u_io_close,
+            .io_validate_session = (i == 6) ? NULL : u_io_val
+        };
+        ws_video_core_t test_core;
+        TEST_ASSERT_EQUAL(-1, ws_video_core_init(&test_core, &cfg));
+    }
 }
