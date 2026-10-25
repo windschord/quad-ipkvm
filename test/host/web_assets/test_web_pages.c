@@ -211,10 +211,84 @@ void test_app_css(void) {
     if (err) TEST_FAIL_MESSAGE(err);
 }
 
+// Error codes the server returns for a rejected setup password (web_status_map_setup_error_code) and the
+// message the page must show for each of them.
+static const struct { const char *code; const char *message; } k_setup_errors[] = {
+    {"password_too_short",     "パスワードは 10 文字以上にしてください"},
+    {"password_too_long",      "パスワードは 128 バイト以下にしてください"},
+    {"password_contains_admin", "パスワードに「admin」を含めないでください"},
+    {"password_all_same",      "同じ文字だけの繰り返しは使えません"},
+    {"password_sequential",    "連番（0123456789 や abcdefghij など）は使えません"},
+    {"password_common",        "よく使われるパスワードは使えません"},
+    {"bad_request",            "リクエストが不正です"},
+};
+
+void test_app_js_shows_a_message_for_every_setup_error_code(void) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/app.js", WEB_ASSET_DIR);
+    char *js = read_file(path);
+    TEST_ASSERT_NOT_NULL_MESSAGE(js, path);
+    for (size_t i = 0; i < sizeof(k_setup_errors) / sizeof(k_setup_errors[0]); i++) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "app.js lacks the code %s", k_setup_errors[i].code);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(js, k_setup_errors[i].code), msg);
+        snprintf(msg, sizeof(msg), "app.js lacks the message for %s", k_setup_errors[i].code);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(js, k_setup_errors[i].message), msg);
+    }
+    free(js);
+}
+
+void test_app_js_pairs_each_code_with_its_own_message(void) {
+    // Guards against swapped messages: the message must follow its code on the same line.
+    char path[256];
+    snprintf(path, sizeof(path), "%s/app.js", WEB_ASSET_DIR);
+    char *js = read_file(path);
+    TEST_ASSERT_NOT_NULL_MESSAGE(js, path);
+    for (size_t i = 0; i < sizeof(k_setup_errors) / sizeof(k_setup_errors[0]); i++) {
+        const char *code = strstr(js, k_setup_errors[i].code);
+        TEST_ASSERT_NOT_NULL(code);
+        const char *eol = strchr(code, '\n');
+        const char *msg = strstr(code, k_setup_errors[i].message);
+        char text[96];
+        snprintf(text, sizeof(text), "message for %s is not on the same line as its code", k_setup_errors[i].code);
+        TEST_ASSERT_TRUE_MESSAGE(msg != NULL && (eol == NULL || msg < eol), text);
+    }
+    free(js);
+}
+
+void test_app_js_checks_the_password_length_in_bytes_before_sending(void) {
+    // The server rejects bodies whose password is longer than 128 bytes with a generic bad request, so the
+    // page reports the real reason itself (the limit is in bytes, not characters).
+    char path[256];
+    snprintf(path, sizeof(path), "%s/app.js", WEB_ASSET_DIR);
+    char *js = read_file(path);
+    TEST_ASSERT_NOT_NULL_MESSAGE(js, path);
+    TEST_ASSERT_NOT_NULL(strstr(js, "TextEncoder"));
+    TEST_ASSERT_NOT_NULL(strstr(js, "128"));
+    free(js);
+}
+
+void test_index_html_explains_the_password_rules(void) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/index.html", WEB_ASSET_DIR);
+    char *html = read_file(path);
+    TEST_ASSERT_NOT_NULL_MESSAGE(html, path);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(html,
+        "10 文字以上、128 バイト以下。連番、同じ文字の繰り返し、よく使われるパスワード、「admin」を含むものは使えません。"),
+        "setup form lacks the password rules");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(html, "id=\"setup-hint\""), "rules element id");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(html, "aria-describedby=\"setup-hint\""), "input is not linked to the rules");
+    free(html);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_index_html);
     RUN_TEST(test_app_js);
     RUN_TEST(test_app_css);
+    RUN_TEST(test_app_js_shows_a_message_for_every_setup_error_code);
+    RUN_TEST(test_app_js_pairs_each_code_with_its_own_message);
+    RUN_TEST(test_app_js_checks_the_password_length_in_bytes_before_sending);
+    RUN_TEST(test_index_html_explains_the_password_rules);
     return UNITY_END();
 }

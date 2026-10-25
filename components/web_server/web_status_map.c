@@ -33,6 +33,20 @@ int web_status_map_setup(int auth_ret, const auth_logic_t *ctx) {
     return 400; // Bad request (weak password, etc)
 }
 
+// RED stubs (TDD): replaced by the real implementation in the next commit.
+const char *web_status_map_password_issue_code(auth_password_issue_e issue) {
+    (void)issue;
+    return NULL;
+}
+
+const char *web_status_map_setup_error_code(int status_code, const auth_logic_t *ctx, const char *password, size_t password_len) {
+    (void)status_code;
+    (void)ctx;
+    (void)password;
+    (void)password_len;
+    return NULL;
+}
+
 int web_status_map_action_code(http_guard_action_e action) {
     switch (action) {
         case HTTP_GUARD_ACTION_ALLOW: return 200;

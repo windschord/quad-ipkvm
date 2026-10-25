@@ -75,6 +75,14 @@ static bool is_weak_password(const char *password, size_t len) {
     return false;
 }
 
+// RED stub (TDD): replaced by the real implementation in the next commit.
+auth_password_issue_e auth_logic_password_issue(const auth_logic_t *ctx, const char *password, size_t pwd_len) {
+    (void)ctx;
+    (void)password;
+    (void)pwd_len;
+    return AUTH_PASSWORD_OK;
+}
+
 void auth_logic_config_default(auth_logic_config_t *config) {
     if (!config) return;
     config->min_password_len = 10;
