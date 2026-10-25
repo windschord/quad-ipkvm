@@ -54,7 +54,8 @@ static int do_init_sequence(mcp23017_t* ctx) {
 }
 
 int mcp23017_logic_init(mcp23017_t* ctx, const mcp23017_config_t* cfg) {
-    if (!ctx || !cfg || !cfg->write_reg || !cfg->read_reg) return -1;
+    if (!ctx || !cfg) return -1;
+    if (!cfg->write_reg || !cfg->read_reg) return -1;
 
     memset(ctx, 0, sizeof(mcp23017_t));
     ctx->cfg = *cfg;
