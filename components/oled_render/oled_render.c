@@ -91,21 +91,34 @@ static void format_uptime(uint32_t seconds, char *buf, size_t size) {
     uint32_t h = (seconds % 86400) / 3600;
     uint32_t m = (seconds % 3600) / 60;
     uint32_t s = seconds % 60;
-    snprintf(buf, size, "%" PRIu32 "d %02" PRIu32 ":%02" PRIu32 ":%02" PRIu32 "", d, h, m, s);
+    snprintf(buf, size, "%" PRIu32 "d %02" PRIu32 ":%02" PRIu32 ":%02" PRIu32, d, h, m, s);
 }
 
 static void format_memory(uint32_t bytes, char *buf, size_t size) {
     if (bytes < 1024) {
         snprintf(buf, size, "%" PRIu32 " B", bytes);
-    } else if (bytes < 1024 * 1024) {
-        snprintf(buf, size, "%.1f KB", bytes / 1024.0f);
     } else {
-        snprintf(buf, size, "%.1f MB", bytes / 1048576.0f);
+        uint32_t div = 1024;
+        const char *unit = "KB";
+        uint32_t v_tenths = 0;
+        if (bytes < 1048525) {
+            div = 1024;
+            v_tenths = ((uint64_t)bytes * 10 + 512) / 1024;
+        } else {
+            div = 1048576;
+            unit = "MB";
+            v_tenths = ((uint64_t)bytes * 10 + 524288) / 1048576;
+        }
+        uint32_t major = v_tenths / 10;
+        uint32_t minor = v_tenths % 10;
+        if (major >= 1024 && div == 1024) { major = 1; minor = 0; unit = "MB"; }
+        snprintf(buf, size, "%" PRIu32 ".%" PRIu32 " %s", major, minor, unit);
     }
 }
 
 void oled_render_page(oled_fb_t *fb, int page_index, const oled_status_t *st) {
     if (!fb || !st) return;
+    if (page_index < 0 || page_index > 2) return;
     oled_fb_clear(fb);
 
     char buf[32];
