@@ -69,6 +69,7 @@ typedef struct {
 typedef struct {
     int (*write_reg)(void* user, uint8_t reg, uint8_t value);
     int (*read_reg)(void* user, uint8_t reg, uint8_t* value);
+    // Optional, can be NULL. If NULL, read_reg is used repeatedly.
     int (*read_regs)(void* user, uint8_t start_reg, uint8_t* buf, uint8_t len);
     int (*set_reset_line)(void* user, int level); // Optional, can be NULL
     void* user;
@@ -77,6 +78,7 @@ typedef struct {
     uint32_t debounce_ms; // Default 20
     uint32_t max_consecutive_errors; // Default 5
     uint32_t verify_interval_polls; // Default 100, 0 to disable
+    uint32_t retry_interval_ms; // Default 1000
 } mcp23017_config_t;
 
 typedef struct {
@@ -85,6 +87,7 @@ typedef struct {
     bool is_offline;
     uint32_t reinit_count;
     uint32_t verify_counter;
+    uint64_t last_reinit_attempt_ms;
 
     uint64_t btn_last_changed_ms[MCP23017_NUM_BUTTONS];
     bool btn_state_raw[MCP23017_NUM_BUTTONS];

@@ -16,17 +16,15 @@ static int read_reg(mcp23017_t* ctx, uint8_t reg, uint8_t* value) {
 
 static int do_init_sequence(mcp23017_t* ctx) {
     if (ctx->cfg.set_reset_line) {
-        ctx->cfg.set_reset_line(ctx->cfg.user, 1);
+        if (ctx->cfg.set_reset_line(ctx->cfg.user, 1) != 0) return -1;
     }
 
     // (2) Write IOCON
     uint8_t iocon = MCP23017_IOCON_MIRROR; // INTPOL=0, ODR=0, SEQOP=0
     if (write_reg(ctx, MCP23017_REG_IOCON, iocon) != 0) return -1;
 
-    // (3) Write OLATA with LED off values or shadow state if recovering
-    uint8_t target_olata = (ctx->state.reinit_count == 0) ? (ctx->cfg.led_active_high ? 0x00 : 0x0F) : ctx->state.shadow_olata;
-    if (write_reg(ctx, MCP23017_REG_OLATA, target_olata) != 0) return -1;
-    ctx->state.shadow_olata = target_olata;
+    // (3) Write OLATA with shadow state (initialized by init before calling this)
+    if (write_reg(ctx, MCP23017_REG_OLATA, ctx->state.shadow_olata) != 0) return -1;
 
     // (4) Configure pullups, polarity, interrupts
     if (write_reg(ctx, MCP23017_REG_GPPUA, GPPUA_EXPECTED) != 0) return -1;
@@ -56,13 +54,16 @@ static int do_init_sequence(mcp23017_t* ctx) {
 }
 
 int mcp23017_logic_init(mcp23017_t* ctx, const mcp23017_config_t* cfg) {
-    if (!ctx || !cfg || !cfg->write_reg || !cfg->read_reg || !cfg->read_regs) return -1;
+    if (!ctx || !cfg || !cfg->write_reg || !cfg->read_reg) return -1;
 
     memset(ctx, 0, sizeof(mcp23017_t));
     ctx->cfg = *cfg;
     if (ctx->cfg.debounce_ms == 0) ctx->cfg.debounce_ms = 20;
     if (ctx->cfg.max_consecutive_errors == 0) ctx->cfg.max_consecutive_errors = 5;
     if (ctx->cfg.verify_interval_polls == 0) ctx->cfg.verify_interval_polls = 100;
+    if (ctx->cfg.retry_interval_ms == 0) ctx->cfg.retry_interval_ms = 1000;
+
+    ctx->state.shadow_olata = ctx->cfg.led_active_high ? 0x00 : 0x0F;
 
     int ret = do_init_sequence(ctx);
     if (ret != 0) {
@@ -168,10 +169,16 @@ void mcp23017_logic_poll(mcp23017_t* ctx, uint64_t now_ms) {
         for (int i = 0; i < MCP23017_NUM_BUTTONS; i++) {
             ctx->state.btn_last_changed_ms[i] = now_ms;
         }
+        ctx->state.last_reinit_attempt_ms = now_ms;
     }
     ctx->state.last_poll_ms = now_ms;
 
     if (ctx->state.is_offline) {
+        if (now_ms - ctx->state.last_reinit_attempt_ms < ctx->cfg.retry_interval_ms) {
+            return;
+        }
+        ctx->state.last_reinit_attempt_ms = now_ms;
+
         if (do_init_sequence(ctx) == 0) {
             ctx->state.is_offline = false;
             ctx->state.consecutive_errors = 0;
@@ -187,14 +194,17 @@ void mcp23017_logic_poll(mcp23017_t* ctx, uint64_t now_ms) {
         ctx->state.verify_counter++;
         if (ctx->state.verify_counter >= ctx->cfg.verify_interval_polls) {
             ctx->state.verify_counter = 0;
-            uint8_t v1, v2;
+            uint8_t v1, v2, v3, v4;
             int r1 = read_reg(ctx, MCP23017_REG_IODIRA, &v1);
             int r2 = read_reg(ctx, MCP23017_REG_GPPUA, &v2);
-            if (r1 != 0 || r2 != 0) {
+            int r3 = read_reg(ctx, MCP23017_REG_IODIRB, &v3);
+            int r4 = read_reg(ctx, MCP23017_REG_GPPUB, &v4);
+            if (r1 != 0 || r2 != 0 || r3 != 0 || r4 != 0) {
                 handle_error(ctx);
                 return;
             }
-            if (v1 != IODIRA_EXPECTED || v2 != GPPUA_EXPECTED) {
+            if (v1 != IODIRA_EXPECTED || v2 != GPPUA_EXPECTED ||
+                v3 != IODIRB_EXPECTED || v4 != GPPUB_EXPECTED) {
                 // Unexpected reset
                 ctx->state.is_offline = true;
                 return;
@@ -203,9 +213,17 @@ void mcp23017_logic_poll(mcp23017_t* ctx, uint64_t now_ms) {
     }
 
     uint8_t buf[2];
-    if (ctx->cfg.read_regs(ctx->cfg.user, MCP23017_REG_GPIOA, buf, 2) != 0) {
-        handle_error(ctx);
-        return;
+    if (ctx->cfg.read_regs) {
+        if (ctx->cfg.read_regs(ctx->cfg.user, MCP23017_REG_GPIOA, buf, 2) != 0) {
+            handle_error(ctx);
+            return;
+        }
+    } else {
+        if (read_reg(ctx, MCP23017_REG_GPIOA, &buf[0]) != 0 ||
+            read_reg(ctx, MCP23017_REG_GPIOB, &buf[1]) != 0) {
+            handle_error(ctx);
+            return;
+        }
     }
     ctx->state.consecutive_errors = 0;
 
