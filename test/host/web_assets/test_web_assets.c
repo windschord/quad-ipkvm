@@ -30,6 +30,17 @@ void test_web_assets_find_exact(void) {
     res = web_assets_find(assets, assets_count, "/app.css");
     TEST_ASSERT_NOT_NULL(res);
     TEST_ASSERT_EQUAL_STRING("/app.css", res->path);
+
+    // Prefix match prohibition
+    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "/app"));
+    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "/app.j"));
+    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "/ap"));
+    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "/app.cs"));
+    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "/app?x=1"));
+
+    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "/app.jsx"));
+    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "/app.js.map"));
+    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "/app.js/x"));
 }
 
 void test_web_assets_find_query_string(void) {
@@ -42,6 +53,13 @@ void test_web_assets_find_query_string(void) {
     res = web_assets_find(assets, assets_count, "/app.js?cache=bust");
     TEST_ASSERT_NOT_NULL(res);
     TEST_ASSERT_EQUAL_STRING("/app.js", res->path);
+
+    // Fail closed on dangerous strings inside query params
+    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "/app.js?a=../"));
+    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "/app.js?a=%2e"));
+    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "/app.js?a=\\x"));
+    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "/app.js?a=//"));
+    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "/app.js?a#b"));
 }
 
 void test_web_assets_find_invalid(void) {
@@ -61,11 +79,18 @@ void test_web_assets_find_invalid(void) {
     TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "/app\\js"));
     TEST_ASSERT_NULL(web_assets_find(assets, assets_count, "//app.js"));
 
-    // Very long URI
+    // Very long URI boundary
     char long_uri[300];
     memset(long_uri, 'a', sizeof(long_uri));
-    long_uri[299] = '\0';
-    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, long_uri));
+
+    strcpy(long_uri, "/app.js?");
+    memset(long_uri + 8, 'a', 256 - 8);
+    long_uri[256] = '\0';
+    TEST_ASSERT_NOT_NULL(web_assets_find(assets, assets_count, long_uri)); // length 256
+
+    long_uri[256] = 'a';
+    long_uri[257] = '\0';
+    TEST_ASSERT_NULL(web_assets_find(assets, assets_count, long_uri)); // length 257
 
     // Edge cases
     TEST_ASSERT_NULL(web_assets_find(NULL, assets_count, "/"));

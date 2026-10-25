@@ -86,9 +86,6 @@ foreach(test_source ${TEST_SOURCES})
         target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/web_server/include)
     endif()
 
-    if (FALSE)
-        target_link_libraries(${test_name} PRIVATE ws_clients)
-    endif()
 
 
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})

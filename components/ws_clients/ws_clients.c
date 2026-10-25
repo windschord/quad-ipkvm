@@ -63,6 +63,7 @@ int ws_clients_remove(ws_clients_t *ctx, int slot) {
 
 bool ws_clients_try_begin_send(ws_clients_t *ctx, int slot) {
     if (!ctx || slot < 0 || slot >= ctx->max_clients) return false;
+    // Only active clients are checked. CLOSING and FREE return false.
     if (ctx->clients[slot].state != WS_CLIENT_ACTIVE) return false;
     if (ctx->clients[slot].is_sending) return false;
 

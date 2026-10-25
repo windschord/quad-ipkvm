@@ -56,6 +56,9 @@ void test_ws_clients_add_remove(void) {
     TEST_ASSERT_EQUAL(-1, ws_clients_remove(&ctx, -1));
     TEST_ASSERT_EQUAL(-1, ws_clients_remove(&ctx, 2)); // Out of bounds
     TEST_ASSERT_EQUAL(-1, ws_clients_remove(&ctx, 0)); // Already free
+
+    // Free slot check for find
+    TEST_ASSERT_EQUAL(-1, ws_clients_find(&ctx, -1));
 }
 
 void test_ws_clients_send_closing(void) {
@@ -75,9 +78,15 @@ void test_ws_clients_send_closing(void) {
     TEST_ASSERT_EQUAL(0, ws_clients_remove(&ctx, 0));
     TEST_ASSERT_EQUAL(WS_CLIENT_CLOSING, ctx.clients[0].state);
 
+    // Session due should be false for CLOSING
+    TEST_ASSERT_FALSE(ws_clients_session_due(&ctx, 0, 5000, 1000));
+
     // End send -> FREE
     TEST_ASSERT_EQUAL(0, ws_clients_end_send(&ctx, 0));
     TEST_ASSERT_EQUAL(WS_CLIENT_FREE, ctx.clients[0].state);
+
+    // Session due should be false for FREE
+    TEST_ASSERT_FALSE(ws_clients_session_due(&ctx, 0, 5000, 1000));
 
     // Invalid end send
     TEST_ASSERT_EQUAL(-1, ws_clients_end_send(&ctx, 0)); // Already free
@@ -105,6 +114,13 @@ void test_ws_clients_session(void) {
     // Giant interval, giant time, no wrap around panic
     ctx.clients[0].last_session_check_ms = UINT64_MAX - 5;
     TEST_ASSERT_FALSE(ws_clients_session_due(&ctx, 0, UINT64_MAX, UINT64_MAX));
+
+    // now == last and interval == 0
+    ctx.clients[0].last_session_check_ms = 5000;
+    TEST_ASSERT_TRUE(ws_clients_session_due(&ctx, 0, 5000, 0));
+
+    // now == last and interval > 0
+    TEST_ASSERT_FALSE(ws_clients_session_due(&ctx, 0, 5000, 1000));
 }
 
 static int iter_count = 0;
