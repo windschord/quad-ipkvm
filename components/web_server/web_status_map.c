@@ -33,18 +33,25 @@ int web_status_map_setup(int auth_ret, const auth_logic_t *ctx) {
     return 400; // Bad request (weak password, etc)
 }
 
-// RED stubs (TDD): replaced by the real implementation in the next commit.
 const char *web_status_map_password_issue_code(auth_password_issue_e issue) {
-    (void)issue;
+    switch (issue) {
+        case AUTH_PASSWORD_TOO_SHORT: return "password_too_short";
+        case AUTH_PASSWORD_TOO_LONG: return "password_too_long";
+        case AUTH_PASSWORD_CONTAINS_ADMIN: return "password_contains_admin";
+        case AUTH_PASSWORD_ALL_SAME: return "password_all_same";
+        case AUTH_PASSWORD_SEQUENTIAL: return "password_sequential";
+        case AUTH_PASSWORD_COMMON: return "password_common";
+        case AUTH_PASSWORD_OK: break;
+    }
     return NULL;
 }
 
 const char *web_status_map_setup_error_code(int status_code, const auth_logic_t *ctx, const char *password, size_t password_len) {
-    (void)status_code;
-    (void)ctx;
-    (void)password;
-    (void)password_len;
-    return NULL;
+    if (status_code != 400) return NULL;
+    if (!password) return "bad_request"; // the request body could not be parsed
+
+    const char *code = web_status_map_password_issue_code(auth_logic_password_issue(ctx, password, password_len));
+    return code ? code : "bad_request"; // rejected although the policy accepts it: some other setup failure
 }
 
 int web_status_map_action_code(http_guard_action_e action) {

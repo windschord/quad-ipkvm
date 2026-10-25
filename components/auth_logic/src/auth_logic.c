@@ -19,8 +19,10 @@ static char to_lower(char c) {
     return c;
 }
 
-static bool is_weak_password(const char *password, size_t len) {
-    if (len < AUTH_LOGIC_MIN_PASSWORD_LEN) return true;
+// First weakness rule the password violates, or AUTH_PASSWORD_OK. The checks are in the priority order
+// documented for auth_logic_password_issue(). Requires len <= AUTH_LOGIC_MAX_PASSWORD_LEN.
+static auth_password_issue_e weak_password_issue(const char *password, size_t len) {
+    if (len < AUTH_LOGIC_MIN_PASSWORD_LEN) return AUTH_PASSWORD_TOO_SHORT;
 
     // Check if it contains username (case insensitive)
     for (size_t i = 0; i <= len - 5; i++) {
@@ -29,7 +31,7 @@ static bool is_weak_password(const char *password, size_t len) {
             to_lower(password[i+2]) == 'm' &&
             to_lower(password[i+3]) == 'i' &&
             to_lower(password[i+4]) == 'n') {
-            return true;
+            return AUTH_PASSWORD_CONTAINS_ADMIN;
         }
     }
 
@@ -41,7 +43,7 @@ static bool is_weak_password(const char *password, size_t len) {
             break;
         }
     }
-    if (all_same) return true;
+    if (all_same) return AUTH_PASSWORD_ALL_SAME;
 
     // Check for sequential characters (up or down)
     bool seq_up = true;
@@ -50,7 +52,7 @@ static bool is_weak_password(const char *password, size_t len) {
         if (password[i] != password[i-1] + 1) seq_up = false;
         if (password[i] != password[i-1] - 1) seq_down = false;
     }
-    if (seq_up || seq_down) return true;
+    if (seq_up || seq_down) return AUTH_PASSWORD_SEQUENTIAL;
 
     // Common weak passwords (case-insensitive checking, >= 10 chars)
     const char* weak_list[] = {
@@ -69,18 +71,27 @@ static bool is_weak_password(const char *password, size_t len) {
     pwd_lower[len] = '\0';
 
     for (size_t i = 0; i < sizeof(weak_list)/sizeof(weak_list[0]); i++) {
-        if (strcmp(pwd_lower, weak_list[i]) == 0) return true;
+        if (strcmp(pwd_lower, weak_list[i]) == 0) return AUTH_PASSWORD_COMMON;
     }
 
-    return false;
+    return AUTH_PASSWORD_OK;
 }
 
-// RED stub (TDD): replaced by the real implementation in the next commit.
+static bool is_weak_password(const char *password, size_t len) {
+    return weak_password_issue(password, len) != AUTH_PASSWORD_OK;
+}
+
 auth_password_issue_e auth_logic_password_issue(const auth_logic_t *ctx, const char *password, size_t pwd_len) {
-    (void)ctx;
-    (void)password;
-    (void)pwd_len;
-    return AUTH_PASSWORD_OK;
+    if (!password) return AUTH_PASSWORD_TOO_SHORT;
+
+    // The configured minimum can only raise the floor of AUTH_LOGIC_MIN_PASSWORD_LEN (auth_logic_init rejects
+    // anything lower). This mirrors auth_logic_setup_password(): its length gate, then the weakness check.
+    size_t min_len = AUTH_LOGIC_MIN_PASSWORD_LEN;
+    if (ctx && ctx->config.min_password_len > min_len) min_len = ctx->config.min_password_len;
+
+    if (pwd_len < min_len) return AUTH_PASSWORD_TOO_SHORT;
+    if (pwd_len > AUTH_LOGIC_MAX_PASSWORD_LEN) return AUTH_PASSWORD_TOO_LONG;
+    return weak_password_issue(password, pwd_len);
 }
 
 void auth_logic_config_default(auth_logic_config_t *config) {
