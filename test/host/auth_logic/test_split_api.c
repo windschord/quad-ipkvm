@@ -32,6 +32,10 @@ void test_login_toctou(void) {
     // Simulate another change_password while compute was happening
     TEST_ASSERT_EQUAL(0, auth_logic_change_password(&ctx_new, "strongpassword123!", 18, "newstrongpassword123!", 21, 12345, 1500));
 
+    // Let's reset the hash and salt to match the original job so that ONLY generation check fails.
+    memcpy(ctx_new.salt, job.salt, AUTH_LOGIC_SALT_LEN);
+    memcpy(ctx_new.hash, job.expected_hash, AUTH_LOGIC_HASH_LEN);
+
     // Finish should now fail due to generation mismatch
     uint8_t token[AUTH_LOGIC_TOKEN_LEN];
     int ret = auth_logic_login_finish(&ctx_new, &job, match, 12345, 2000, token);
@@ -46,7 +50,9 @@ void test_setup_toctou(void) {
     // Simulate another setup finishing first
     TEST_ASSERT_EQUAL(0, auth_logic_setup_password(&ctx_new, "strongpassword123!", 18));
 
-    // Finish should fail because state is no longer NEEDS_SETUP (and generation mismatch)
+    // Fix the state back to NEEDS_SETUP so ONLY generation fails
+    ctx_new.state = AUTH_STATE_NEEDS_SETUP;
+    // Finish should fail because generation mismatch
     TEST_ASSERT_EQUAL(-1, auth_logic_setup_finish(&ctx_new, &job));
 }
 

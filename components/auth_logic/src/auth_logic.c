@@ -230,6 +230,10 @@ int auth_logic_change_password(auth_logic_t *ctx, const char *old_pwd, size_t ol
 
     int match = auth_logic_login_compute(ctx->crypto, &login_job, old_pwd, old_len);
 
+    if (match < 0) {
+        return -1;
+    }
+
     if (ctx->generation != login_job.generation) {
         return -1;
     }
@@ -409,6 +413,7 @@ static void reset_rate_limit(auth_logic_t *ctx, uint32_t source_ip) {
 
 int auth_logic_login(auth_logic_t *ctx, const char *password, size_t pwd_len, uint32_t source_ip, uint64_t now_ms, uint8_t *token_out) {
     if (!ctx || !password || !token_out) return -1;
+    if (ctx->state != AUTH_STATE_READY) return -1;
 
     if (pwd_len > AUTH_LOGIC_MAX_PASSWORD_LEN) {
         if (!check_rate_limit(ctx, source_ip, now_ms)) return -1;
@@ -515,8 +520,14 @@ int auth_logic_login_compute(const auth_crypto_if_t *crypto, const auth_login_jo
 int auth_logic_login_finish(auth_logic_t *ctx, const auth_login_job_t *job, int match, uint32_t source_ip, uint64_t now_ms, uint8_t *token_out) {
     if (!ctx || !job || !token_out) return -1;
 
-    if (ctx->generation != job->generation) {
-        return -1; // Generation mismatch. Concurrent setup or change_password occurred. Do not count as rate limit failure.
+    if (ctx->state != AUTH_STATE_READY) {
+        return -1;
+    }
+
+    if (ctx->generation != job->generation ||
+        ctx->crypto->const_time_memcmp(ctx->salt, job->salt, AUTH_LOGIC_SALT_LEN) != 0 ||
+        ctx->crypto->const_time_memcmp(ctx->hash, job->expected_hash, AUTH_LOGIC_HASH_LEN) != 0) {
+        return -1; // State mismatch. Concurrent setup or change_password occurred. Do not count as rate limit failure.
     }
 
     if (match != 1) {
