@@ -16,6 +16,7 @@
 #include <string.h>
 #include "auth_crypto_mbedtls.h"
 #include "web_assets.h"
+#include "web_headers.h"
 
 extern const unsigned char index_html_start[] asm("_binary_index_html_start");
 extern const unsigned char index_html_end[]   asm("_binary_index_html_end");
@@ -109,11 +110,21 @@ static esp_err_t save_auth_state(void) {
     return err;
 }
 
-static void add_security_headers(httpd_req_t *req) {
-    httpd_resp_set_hdr(req, "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
-    httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    httpd_resp_set_hdr(req, "Referrer-Policy", "no-referrer");
+static void add_security_headers(httpd_req_t *req, const char *content_type) {
+    web_header_t headers[4];
+    size_t count;
+
+    if (content_type) {
+        count = web_headers_get_static(content_type, headers, 4);
+    } else {
+        count = web_headers_get_api(headers, 4);
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        if (httpd_resp_set_hdr(req, headers[i].name, headers[i].value) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to set security header: %s", headers[i].name);
+        }
+    }
 }
 
 static uint32_t get_client_ip(httpd_req_t *req) {
@@ -219,8 +230,6 @@ static esp_err_t send_action_error(httpd_req_t *req, http_guard_action_e action)
 }
 
 static esp_err_t static_handler(httpd_req_t *req) {
-    add_security_headers(req);
-
     xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
     auth_state_e state = s_auth_ctx.state;
     xSemaphoreGive(s_auth_mutex);
@@ -229,25 +238,28 @@ static esp_err_t static_handler(httpd_req_t *req) {
     http_guard_action_e action = http_guard_decide(state, HTTP_GUARD_METHOD_GET, HTTP_GUARD_PATH_STATIC, false, host_ok, false, host_ok);
 
     if (action != HTTP_GUARD_ACTION_ALLOW) {
+        add_security_headers(req, NULL);
         return send_action_error(req, action);
     }
 
     const web_asset_t *asset = web_assets_find(s_web_assets, s_web_assets_count, req->uri);
     if (!asset) {
-        httpd_resp_send_404(req);
+        add_security_headers(req, NULL);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_sendstr(req, "{\"error\":\"not_found\"}");
         return ESP_OK;
     }
 
+    add_security_headers(req, asset->content_type);
     httpd_resp_set_type(req, asset->content_type);
-    httpd_resp_set_hdr(req, "Content-Security-Policy", web_assets_csp(asset->content_type));
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
     httpd_resp_send(req, (const char *)asset->data, asset->len);
     return ESP_OK;
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {
-    add_security_headers(req);
+    add_security_headers(req, NULL);
 
     uint8_t token[32];
     bool has_token = get_session_token(req, token);
@@ -274,8 +286,18 @@ static esp_err_t status_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// 400 with a JSON body whose "error" is a machine-readable code the page turns into a message.
+static esp_err_t send_bad_request(httpd_req_t *req, const char *code) {
+    char buf[96];
+    http_guard_format_error(code, buf, sizeof(buf));
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
 static esp_err_t setup_handler(httpd_req_t *req) {
-    add_security_headers(req);
+    add_security_headers(req, NULL);
     bool host_ok = check_host_origin(req, true);
     char ctype[64];
     bool is_json = false;
@@ -307,8 +329,7 @@ static esp_err_t setup_handler(httpd_req_t *req) {
 
     http_guard_json_setup_t parsed;
     if (http_guard_parse_json_password(buf, ret, &parsed) != 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad JSON");
-        return ESP_OK;
+        return send_bad_request(req, web_status_map_setup_error_code(400, NULL, NULL, 0));
     }
 
     // Acquire PBKDF2 lock
@@ -336,6 +357,8 @@ static esp_err_t setup_handler(httpd_req_t *req) {
 
     int auth_ret = auth_logic_setup_password(&s_auth_ctx, parsed.password, parsed.password_len);
     int status_code = web_status_map_setup(auth_ret, &s_auth_ctx);
+    // Must be taken before http_guard_clear_json_setup() wipes the password.
+    const char *error_code = web_status_map_setup_error_code(status_code, &s_auth_ctx, parsed.password, parsed.password_len);
 
     if (auth_ret == 0) {
         if (save_auth_state() != ESP_OK) {
@@ -355,7 +378,7 @@ static esp_err_t setup_handler(httpd_req_t *req) {
         if (status_code == 403) {
             httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Already setup");
         } else if (status_code == 400) {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad Request");
+            return send_bad_request(req, error_code);
         } else {
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal Error");
         }
@@ -364,7 +387,7 @@ static esp_err_t setup_handler(httpd_req_t *req) {
 }
 
 static esp_err_t login_handler(httpd_req_t *req) {
-    add_security_headers(req);
+    add_security_headers(req, NULL);
     bool host_ok = check_host_origin(req, true);
     char ctype[64];
     bool is_json = false;
@@ -465,8 +488,28 @@ static esp_err_t login_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static esp_err_t err_404_handler(httpd_req_t *req, httpd_err_code_t err) {
+    add_security_headers(req, NULL);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "404 Not Found");
+    httpd_resp_sendstr(req, "{\"error\":\"not_found\"}");
+    return ESP_OK;
+}
+
+static esp_err_t err_405_handler(httpd_req_t *req, httpd_err_code_t err) {
+    add_security_headers(req, NULL);
+    httpd_resp_set_type(req, "application/json");
+    const char *allow = web_headers_allow_for_uri(req->uri);
+    if (allow) {
+        httpd_resp_set_hdr(req, "Allow", allow);
+    }
+    httpd_resp_set_status(req, "405 Method Not Allowed");
+    httpd_resp_sendstr(req, "{\"error\":\"method_not_allowed\"}");
+    return ESP_OK;
+}
+
 static esp_err_t logout_handler(httpd_req_t *req) {
-    add_security_headers(req);
+    add_security_headers(req, NULL);
     bool host_ok = check_host_origin(req, true);
 
     uint8_t token[32];
@@ -594,6 +637,13 @@ esp_err_t web_server_start(void) {
         httpd_register_uri_handler(server, &login_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &logout_uri) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register URI handlers");
+        httpd_ssl_stop(server);
+        return ESP_FAIL;
+    }
+
+    if (httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, err_404_handler) != ESP_OK ||
+        httpd_register_err_handler(server, HTTPD_405_METHOD_NOT_ALLOWED, err_405_handler) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register error handlers");
         httpd_ssl_stop(server);
         return ESP_FAIL;
     }

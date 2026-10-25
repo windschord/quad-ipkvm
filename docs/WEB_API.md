@@ -36,7 +36,7 @@
 - **応答例**: `{}`
 - **ステータス**:
   - `200 OK` (成功時)
-  - `400 Bad Request` (パスワードが短い、弱い、不正な JSON)
+  - `400 Bad Request` (パスワードが短い、弱い、不正な JSON。本文は下記の `error` コードを持つ JSON)
   - `403 Forbidden` (不正な Host/Origin、または設定中の状態不整合エラー)
   - `405 Method Not Allowed` (POST以外のメソッド)
   - `409 Conflict` (すでに設定済み (`READY` 状態))
@@ -45,6 +45,20 @@
   - `415 Unsupported Media Type` (Content-Type が application/json でない)
   - `500 Internal Server Error` (内部エラー)
   - `503 Service Unavailable` (現在パスワードハッシュ計算中。`Retry-After: 1` を参照)
+- **400 の本文**: `{"error":"<code>"}` (`Content-Type: application/json`)。複数の規則に当たる場合は、下表の上から順で最初のものを返します。
+
+  | `error` | 意味 |
+  | --- | --- |
+  | `password_too_short` | 10 文字未満 (長さはバイト数で数える。設定された最小長がより長ければそちら) |
+  | `password_too_long` | 128 バイト超 (UTF-8 のバイト数。文字数ではない) |
+  | `password_contains_admin` | 大文字小文字を問わず `admin` を含む |
+  | `password_all_same` | 同じ文字だけの繰り返し |
+  | `password_sequential` | 連番 (`0123456789`、`9876543210`、`abcdefghij` など。`1234567890` は連番ではなく下の一覧で拒否される) |
+  | `password_common` | よく使われるパスワードの一覧に含まれる (大文字小文字を問わない) |
+  | `bad_request` | 本文が不正 (JSON として読めない、`password` キーがない、128 バイト超でパーサーが拒否した場合など)、またはその他の設定失敗 |
+
+  - 128 バイトを超えるパスワードはパーサーが先に拒否するため、HTTP では `password_too_long` ではなく `bad_request` になります。`password_too_long` は UI が送信前にバイト数を確認したときに表示するメッセージです。
+  - 拒否理由はパスワードの内容を含みません。応答にパスワードは含まれません。
 
 ### 3. ログイン
 - **メソッド**: `POST`
@@ -115,3 +129,19 @@ curl -k -b cookies.txt -H "Host: quad-ipkvm.local" https://quad-ipkvm.local/api/
 ```sh
 curl -k -c cookies.txt -b cookies.txt -H "Host: quad-ipkvm.local" -H "Origin: https://quad-ipkvm.local" -X POST https://quad-ipkvm.local/api/v1/auth/logout
 ```
+
+## レスポンスヘッダ
+各エンドポイントのレスポンスには、セキュリティ向上のため以下のヘッダが付与されます。
+また、レスポンス内で同一名のヘッダが重複して付与されることはありません。
+
+### 種類ごとのヘッダ
+- **静的ページ (/, /app.js, /app.css)**
+  - `Content-Security-Policy`: コンテンツの種類に応じて設定されます（例: HTML では `script-src 'self'`、`style-src 'self'`、`connect-src 'self'` を含み、`unsafe-inline` や `unsafe-eval` は含まれません）。
+  - `X-Content-Type-Options: nosniff`
+  - `Cache-Control: no-store`
+  - `Referrer-Policy: no-referrer`
+- **API およびエラー応答**
+  - `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`
+  - `X-Content-Type-Options: nosniff`
+  - `Cache-Control: no-store`
+  - `Referrer-Policy: no-referrer`

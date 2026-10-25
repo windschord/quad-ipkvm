@@ -85,8 +85,13 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE ws_video_core)
     endif()
 
+    if (test_source MATCHES "/oled_ui/")
+        target_link_libraries(${test_name} PRIVATE oled_ui)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/oled_ui/include)
+    endif()
+
     if (test_source MATCHES "/web_assets/")
-        target_sources(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/web_server/web_assets.c)
+        target_sources(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/web_server/web_assets.c ${CMAKE_SOURCE_DIR}/../../components/web_server/web_headers.c)
         target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/web_server/include)
         target_compile_definitions(${test_name} PRIVATE WEB_ASSET_DIR="${CMAKE_SOURCE_DIR}/../../components/web_server/web")
     endif()
@@ -118,3 +123,6 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/ws_video_core ${CMAKE_BINA
 
 # Setup mcp23017_logic component
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/mcp23017_logic ${CMAKE_BINARY_DIR}/mcp23017_logic)
+
+# Setup oled_ui component (pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/oled_ui ${CMAKE_BINARY_DIR}/oled_ui)
