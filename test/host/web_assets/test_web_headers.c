@@ -116,9 +116,44 @@ void test_web_headers_static(void) {
     }
 }
 
+void test_web_headers_allow_for_uri(void);
+void test_web_headers_allow_for_uri_mutations(void);
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_web_headers_api);
     RUN_TEST(test_web_headers_static);
+        RUN_TEST(test_web_headers_allow_for_uri);
+        RUN_TEST(test_web_headers_allow_for_uri_mutations);
     return UNITY_END();
+}
+
+void test_web_headers_allow_for_uri(void) {
+    TEST_ASSERT_EQUAL_STRING("GET", web_headers_allow_for_uri("/"));
+    TEST_ASSERT_EQUAL_STRING("GET", web_headers_allow_for_uri("/app.js"));
+    TEST_ASSERT_EQUAL_STRING("GET", web_headers_allow_for_uri("/app.css"));
+    TEST_ASSERT_EQUAL_STRING("GET", web_headers_allow_for_uri("/api/v1/auth/status"));
+
+    TEST_ASSERT_EQUAL_STRING("POST", web_headers_allow_for_uri("/api/v1/auth/setup"));
+    TEST_ASSERT_EQUAL_STRING("POST", web_headers_allow_for_uri("/api/v1/auth/login"));
+    TEST_ASSERT_EQUAL_STRING("POST", web_headers_allow_for_uri("/api/v1/auth/logout"));
+
+    // With query params
+    TEST_ASSERT_EQUAL_STRING("GET", web_headers_allow_for_uri("/?cache=123"));
+    TEST_ASSERT_EQUAL_STRING("POST", web_headers_allow_for_uri("/api/v1/auth/login?x=1"));
+
+    // Unregistered URIs
+    TEST_ASSERT_NULL(web_headers_allow_for_uri("/nonexistent"));
+    TEST_ASSERT_NULL(web_headers_allow_for_uri("/api/v1/unknown"));
+    TEST_ASSERT_NULL(web_headers_allow_for_uri(NULL));
+}
+
+void test_web_headers_allow_for_uri_mutations(void) {
+    // 1. Swap return values
+    // TEST_ASSERT_EQUAL_STRING("POST", web_headers_allow_for_uri("/")); // Fails if swapped
+
+    // 2. Return without removing query
+    // TEST_ASSERT_NULL(web_headers_allow_for_uri("/?cache=123")); // Fails if query not stripped
+
+    // 3. Unregistered returns non-null
+    // TEST_ASSERT_NOT_NULL(web_headers_allow_for_uri("/nonexistent")); // Fails if default is non-null
 }

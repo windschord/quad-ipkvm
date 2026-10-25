@@ -30,6 +30,14 @@ size_t web_headers_get_api(web_header_t *headers, size_t max_headers);
  */
 size_t web_headers_get_static(const char *content_type, web_header_t *headers, size_t max_headers);
 
+/**
+ * @brief Get allowed methods for a given URI.
+ *
+ * @param uri The request URI string.
+ * @return String representing allowed methods (e.g., "GET", "POST", "GET, POST"), or NULL if URI is not registered.
+ */
+const char *web_headers_allow_for_uri(const char *uri);
+
 #ifdef __cplusplus
 }
 #endif

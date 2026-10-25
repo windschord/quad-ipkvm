@@ -238,6 +238,7 @@ static esp_err_t static_handler(httpd_req_t *req) {
     http_guard_action_e action = http_guard_decide(state, HTTP_GUARD_METHOD_GET, HTTP_GUARD_PATH_STATIC, false, host_ok, false, host_ok);
 
     if (action != HTTP_GUARD_ACTION_ALLOW) {
+        add_security_headers(req, NULL);
         return send_action_error(req, action);
     }
 
@@ -487,7 +488,10 @@ static esp_err_t err_404_handler(httpd_req_t *req, httpd_err_code_t err) {
 static esp_err_t err_405_handler(httpd_req_t *req, httpd_err_code_t err) {
     add_security_headers(req, NULL);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Allow", "GET, POST");
+    const char *allow = web_headers_allow_for_uri(req->uri);
+    if (allow) {
+        httpd_resp_set_hdr(req, "Allow", allow);
+    }
     httpd_resp_set_status(req, "405 Method Not Allowed");
     httpd_resp_sendstr(req, "{\"error\":\"method_not_allowed\"}");
     return ESP_OK;
