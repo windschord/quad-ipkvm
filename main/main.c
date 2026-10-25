@@ -162,7 +162,9 @@ void app_main(void)
         tc358743_config_t config = {
             .i2c_bus = bus_handle,
             .i2c_addr = 0x0F,
-            .refclk_hz = 27000000, // TODO(hw-verify): X630 27MHz?
+            // X630 crystal is marked "27.000" (source: docs/HW_VERIFY.md E3).
+            // TODO(hw-verify): actual crystal frequency and its REFCLK connection are unverified (check schematic)
+            .refclk_hz = 27000000,
             .pll_prd = 0, // Unverified, triggers a warning and skips
             .pll_fbd = 0, // Unverified
             .enable_edid = true

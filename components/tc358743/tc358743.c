@@ -430,7 +430,7 @@ tc358743_handle_t tc358743_init(const tc358743_config_t* config) {
     if (!dev) return NULL;
     dev->config = *config;
 
-    // TODO(hw-verify): X630 CSI I2C address, usually 0x0F
+    // X630 TC358743 responded at 0x0F on hardware (source: docs/HW_VERIFY.md E3)
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = config->i2c_addr ? config->i2c_addr : 0x0F,
