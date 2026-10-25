@@ -31,6 +31,10 @@ typedef struct {
 /**
  * @brief Initialize the OLED UI state machine.
  *
+ * Note: Initialization starts the UI in the ON(page 0) state. It does not return a TURN_ON
+ * or REDRAW flag. Therefore, the caller must turn on the display and draw the first page
+ * immediately after this function returns successfully.
+ *
  * @param ui Pointer to the UI object.
  * @param config Configuration parameters.
  * @param now_ms Current time in milliseconds.

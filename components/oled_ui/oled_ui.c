@@ -51,7 +51,7 @@ uint32_t oled_ui_on_ip_acquired(oled_ui_t *ui, uint64_t now_ms) {
     if (!ui->is_on) {
         ui->is_on = true;
         flags = OLED_UI_FLAG_TURN_ON | OLED_UI_FLAG_REDRAW;
-    } else if (ui->current_page != 0) {
+    } else {
         flags = OLED_UI_FLAG_REDRAW;
     }
 

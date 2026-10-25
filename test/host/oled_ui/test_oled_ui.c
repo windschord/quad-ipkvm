@@ -91,19 +91,26 @@ void test_oled_ui_ip_acquired(void) {
     TEST_ASSERT_TRUE(oled_ui_is_on(&ui));
     TEST_ASSERT_EQUAL_UINT8(0, oled_ui_page(&ui));
 
-    // When ON, on page 2
+    // When ON, on page 2 (which is page 1 or more)
     ui.current_page = 2;
     flags = oled_ui_on_ip_acquired(&ui, 6000);
     TEST_ASSERT_EQUAL_UINT32(OLED_UI_FLAG_REDRAW, flags); // Changes page, so REDRAW
     TEST_ASSERT_TRUE(oled_ui_is_on(&ui));
     TEST_ASSERT_EQUAL_UINT8(0, oled_ui_page(&ui));
 
-    // When ON, on page 0
+    // When ON, on page 1
+    ui.current_page = 1;
     flags = oled_ui_on_ip_acquired(&ui, 7000);
-    TEST_ASSERT_EQUAL_UINT32(OLED_UI_FLAG_NONE, flags); // Does not change page, only resets timer
+    TEST_ASSERT_EQUAL_UINT32(OLED_UI_FLAG_REDRAW, flags);
     TEST_ASSERT_TRUE(oled_ui_is_on(&ui));
     TEST_ASSERT_EQUAL_UINT8(0, oled_ui_page(&ui));
-    TEST_ASSERT_EQUAL_UINT64(7000, ui.last_action_time_ms);
+
+    // When ON, on page 0
+    flags = oled_ui_on_ip_acquired(&ui, 8000);
+    TEST_ASSERT_EQUAL_UINT32(OLED_UI_FLAG_REDRAW, flags); // Should always REDRAW
+    TEST_ASSERT_TRUE(oled_ui_is_on(&ui));
+    TEST_ASSERT_EQUAL_UINT8(0, oled_ui_page(&ui));
+    TEST_ASSERT_EQUAL_UINT64(8000, ui.last_action_time_ms);
 }
 
 void test_oled_ui_tick_auto_off(void) {
@@ -246,7 +253,7 @@ void test_oled_ui_fuzzing(void) {
                 oracle.is_on = true;
                 oracle.page = 0;
                 expected_flags = OLED_UI_FLAG_TURN_ON | OLED_UI_FLAG_REDRAW;
-            } else if (oracle.page != 0) {
+            } else {
                 expected_flags = OLED_UI_FLAG_REDRAW;
             }
             oracle.page = 0;
