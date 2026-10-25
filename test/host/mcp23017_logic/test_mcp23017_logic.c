@@ -15,6 +15,8 @@ typedef struct {
 
     // For verifying invariant
     bool violated_invariant;
+    int inject_read_error_reg;
+    int inject_write_ignore_reg;
 } fake_mcp_t;
 
 static fake_mcp_t g_fake;
@@ -24,6 +26,8 @@ static void reset_fake(void) {
     g_fake.regs[MCP23017_REG_IODIRA] = 0xFF;
     g_fake.regs[MCP23017_REG_IODIRB] = 0xFF;
     g_fake.reset_line_state = -1;
+    g_fake.inject_read_error_reg = -1;
+    g_fake.inject_write_ignore_reg = -1;
 }
 
 static int fake_set_reset_line(void* user, int level) {
@@ -41,6 +45,7 @@ static int fake_set_reset_line(void* user, int level) {
 static int fake_write_reg(void* user, uint8_t reg, uint8_t value) {
     fake_mcp_t* fake = (fake_mcp_t*)user;
     if (fake->inject_error) return -1;
+    if (fake->inject_write_ignore_reg == reg) return 0;
     if (fake->write_count < 100) {
         fake->write_history[fake->write_count].reg = reg;
         fake->write_history[fake->write_count].val = value;
@@ -68,6 +73,7 @@ static int fake_write_reg(void* user, uint8_t reg, uint8_t value) {
 static int fake_read_reg(void* user, uint8_t reg, uint8_t* value) {
     fake_mcp_t* fake = (fake_mcp_t*)user;
     if (fake->inject_error) return -1;
+    if (fake->inject_write_ignore_reg == reg) return 0;
 
     if (fake->inject_reset) {
         // Simulate a reset by returning defaults
@@ -712,6 +718,270 @@ void test_poll_offline_failure_stops(void) {
 
     // Check it remains offline
     TEST_ASSERT_TRUE(ctx.state.is_offline);
+}
+
+
+void test_verify_mismatch_all_regs(void) {
+    uint8_t regs_to_test[] = {MCP23017_REG_IODIRA, MCP23017_REG_GPPUA, MCP23017_REG_IODIRB, MCP23017_REG_GPPUB};
+    for(int j = 0; j < 4; j++) {
+        mcp23017_t ctx;
+        mcp23017_logic_init(&ctx, &default_cfg);
+
+        for (int i = 0; i < 99; i++) mcp23017_logic_poll(&ctx, i * 10); // 990ms (index 98, i.e. 99 polls)
+
+        // At 980ms we did the 99th poll.
+        // 990ms will be the 100th poll which triggers verify.
+
+        g_fake.regs[regs_to_test[j]] = 0x00;
+
+        mcp23017_logic_poll(&ctx, 990);
+        TEST_ASSERT_TRUE(ctx.state.is_offline);
+    }
+}
+
+void test_verify_read_error_all_regs(void) {
+    uint8_t regs_to_test[] = {MCP23017_REG_IODIRA, MCP23017_REG_GPPUA, MCP23017_REG_IODIRB, MCP23017_REG_GPPUB};
+    for(int j = 0; j < 4; j++) {
+        mcp23017_t ctx;
+        mcp23017_logic_init(&ctx, &default_cfg);
+
+        for (int i = 0; i < 99; i++) mcp23017_logic_poll(&ctx, i * 10);
+
+        g_fake.inject_read_error_reg = regs_to_test[j];
+        mcp23017_logic_poll(&ctx, 990);
+
+        TEST_ASSERT_FALSE(ctx.state.is_offline);
+        TEST_ASSERT_EQUAL(1, ctx.state.consecutive_errors);
+        g_fake.inject_read_error_reg = -1;
+    }
+}
+
+void test_verify_interval_timing(void) {
+    mcp23017_t ctx;
+    mcp23017_logic_init(&ctx, &default_cfg);
+
+    // Pass first 100 polls cleanly
+    for (int i = 0; i < 100; i++) mcp23017_logic_poll(&ctx, i * 10);
+
+    // Let's go to 199th poll
+    for (int i = 100; i < 199; i++) mcp23017_logic_poll(&ctx, i * 10);
+
+    // Inject mismatch before 199th poll
+    g_fake.regs[MCP23017_REG_IODIRA] = 0x00;
+
+    // Poll 199
+    mcp23017_logic_poll(&ctx, 1990);
+    TEST_ASSERT_FALSE(ctx.state.is_offline);
+
+    // Poll 200
+    mcp23017_logic_poll(&ctx, 2000);
+    TEST_ASSERT_TRUE(ctx.state.is_offline);
+}
+
+void test_init_write_ignore(void) {
+    uint8_t regs_to_ignore[] = {MCP23017_REG_IODIRA, MCP23017_REG_GPPUA};
+    for (int j = 0; j < 2; j++) {
+        mcp23017_t ctx;
+        reset_fake();
+        g_fake.inject_write_ignore_reg = regs_to_ignore[j];
+
+        int ret = mcp23017_logic_init(&ctx, &default_cfg);
+        TEST_ASSERT_NOT_EQUAL(0, ret);
+        TEST_ASSERT_TRUE(ctx.state.is_offline);
+    }
+}
+
+void test_default_configs(void) {
+    mcp23017_t ctx;
+    mcp23017_config_t cfg = default_cfg;
+    cfg.debounce_ms = 0;
+    cfg.max_consecutive_errors = 0;
+    cfg.verify_interval_polls = 0;
+    cfg.retry_interval_ms = 0;
+
+    mcp23017_logic_init(&ctx, &cfg);
+
+    // Should use defaults: 20ms, 5 errs, 100 polls, 1000ms
+    TEST_ASSERT_EQUAL(20, ctx.cfg.debounce_ms);
+    TEST_ASSERT_EQUAL(5, ctx.cfg.max_consecutive_errors);
+    TEST_ASSERT_EQUAL(100, ctx.cfg.verify_interval_polls);
+    TEST_ASSERT_EQUAL(1000, ctx.cfg.retry_interval_ms);
+}
+
+void test_retry_interval_boundary(void) {
+    mcp23017_t ctx;
+    mcp23017_logic_init(&ctx, &default_cfg);
+
+    // Force offline
+    g_fake.inject_error = true;
+    for (int i = 0; i < 5; i++) mcp23017_logic_poll(&ctx, i * 10); // last attempt at 40ms
+    TEST_ASSERT_TRUE(ctx.state.is_offline);
+
+    g_fake.inject_error = false;
+    uint32_t wc = g_fake.write_count;
+
+    mcp23017_logic_poll(&ctx, 999);
+    TEST_ASSERT_EQUAL(wc, g_fake.write_count);
+    TEST_ASSERT_TRUE(ctx.state.is_offline);
+
+    mcp23017_logic_poll(&ctx, 1000);
+    TEST_ASSERT_TRUE(g_fake.write_count > wc); // Retried
+    TEST_ASSERT_FALSE(ctx.state.is_offline);
+}
+
+void test_independent_buttons_strict(void) {
+    mcp23017_t ctx;
+    mcp23017_logic_init(&ctx, &default_cfg);
+
+    uint8_t masks[5] = {
+        (1 << 4), // PANEL_0 (A4)
+        (1 << 5), // PANEL_1 (A5)
+        (1 << 6), // PANEL_2 (A6)
+        (1 << 7), // PANEL_3 (A7)
+        (1 << 0)  // DISPLAY (B0)
+    };
+    uint8_t ids[5] = {
+        MCP23017_BTN_PANEL_0,
+        MCP23017_BTN_PANEL_1,
+        MCP23017_BTN_PANEL_2,
+        MCP23017_BTN_PANEL_3,
+        MCP23017_BTN_DISPLAY
+    };
+
+    for (int i = 0; i < 5; i++) {
+        // Init state for button loop
+        g_fake.regs[MCP23017_REG_GPIOA] = 0xF0;
+        g_fake.regs[MCP23017_REG_GPIOB] = 0x01;
+        mcp23017_logic_poll(&ctx, i * 100 + 0);
+        mcp23017_logic_poll(&ctx, i * 100 + 30);
+
+        mcp23017_event_t ev;
+        while(mcp23017_logic_next_event(&ctx, &ev)); // empty queue
+
+        // Press target button
+        if (i < 4) {
+            g_fake.regs[MCP23017_REG_GPIOA] &= ~masks[i];
+        } else {
+            g_fake.regs[MCP23017_REG_GPIOB] &= ~masks[i];
+        }
+
+        mcp23017_logic_poll(&ctx, i * 100 + 40);
+        mcp23017_logic_poll(&ctx, i * 100 + 70); // > 20ms
+
+        TEST_ASSERT_TRUE(mcp23017_logic_next_event(&ctx, &ev));
+        TEST_ASSERT_EQUAL(ids[i], ev.button_id);
+        TEST_ASSERT_EQUAL(MCP23017_EVENT_PRESSED, ev.type);
+        TEST_ASSERT_FALSE(mcp23017_logic_next_event(&ctx, &ev)); // exactly 1 event
+
+        // Release target button
+        g_fake.regs[MCP23017_REG_GPIOA] = 0xF0;
+        g_fake.regs[MCP23017_REG_GPIOB] = 0x01;
+
+        mcp23017_logic_poll(&ctx, i * 100 + 80);
+        mcp23017_logic_poll(&ctx, i * 100 + 110);
+
+        TEST_ASSERT_TRUE(mcp23017_logic_next_event(&ctx, &ev));
+        TEST_ASSERT_EQUAL(ids[i], ev.button_id);
+        TEST_ASSERT_EQUAL(MCP23017_EVENT_RELEASED, ev.type);
+        TEST_ASSERT_FALSE(mcp23017_logic_next_event(&ctx, &ev)); // exactly 1 event
+    }
+}
+
+void test_recovery_conditions(void) {
+    mcp23017_t ctx;
+    mcp23017_logic_init(&ctx, &default_cfg);
+
+    // Error until offline
+    g_fake.inject_error = true;
+    for (int i = 0; i < 5; i++) mcp23017_logic_poll(&ctx, i * 10);
+
+    // Let's test that during failed recovery poll, GPIO read isn't called, no events
+    uint32_t wc = g_fake.write_count;
+    mcp23017_logic_poll(&ctx, 1050);
+    // it tries to reinit, fails, writes nothing to fake because fake_write_reg returns -1 immediately if inject_error
+    TEST_ASSERT_EQUAL(wc, g_fake.write_count);
+
+    g_fake.inject_error = false;
+    mcp23017_logic_poll(&ctx, 2100); // Wait another interval
+
+    TEST_ASSERT_FALSE(ctx.state.is_offline);
+    TEST_ASSERT_EQUAL(0, ctx.state.consecutive_errors);
+    TEST_ASSERT_EQUAL(1, ctx.state.reinit_count);
+
+    // Now trigger max-1 errors, should not go offline
+    g_fake.inject_error = true;
+    for (int i = 0; i < 4; i++) mcp23017_logic_poll(&ctx, 2200 + i * 10);
+    TEST_ASSERT_FALSE(ctx.state.is_offline);
+}
+
+void test_read_regs_success_clears_error(void) {
+    mcp23017_t ctx;
+    mcp23017_logic_init(&ctx, &default_cfg);
+
+    g_fake.inject_error = true;
+    for (int i = 0; i < 4; i++) mcp23017_logic_poll(&ctx, i * 10);
+    TEST_ASSERT_EQUAL(4, ctx.state.consecutive_errors);
+
+    g_fake.inject_error = false;
+    mcp23017_logic_poll(&ctx, 40); // Success
+    TEST_ASSERT_EQUAL(0, ctx.state.consecutive_errors);
+
+    g_fake.inject_error = true;
+    for (int i = 0; i < 4; i++) mcp23017_logic_poll(&ctx, 50 + i * 10);
+    TEST_ASSERT_FALSE(ctx.state.is_offline); // Never hit 5
+}
+
+void test_read_fallback_success_clears_error(void) {
+    mcp23017_t ctx;
+    mcp23017_config_t cfg = default_cfg;
+    cfg.read_regs = NULL;
+    mcp23017_logic_init(&ctx, &cfg);
+
+    g_fake.inject_error = true;
+    for (int i = 0; i < 4; i++) mcp23017_logic_poll(&ctx, i * 10);
+
+    g_fake.inject_error = false;
+    mcp23017_logic_poll(&ctx, 40); // Success
+    TEST_ASSERT_EQUAL(0, ctx.state.consecutive_errors);
+
+    // Test GPIOB read error alone increments counter
+    g_fake.inject_read_error_reg = MCP23017_REG_GPIOB;
+    mcp23017_logic_poll(&ctx, 50);
+    TEST_ASSERT_EQUAL(1, ctx.state.consecutive_errors);
+}
+
+void test_queue_wrap_around(void) {
+    mcp23017_t ctx;
+    mcp23017_logic_init(&ctx, &default_cfg);
+
+    g_fake.regs[MCP23017_REG_GPIOA] = 0xF0;
+    mcp23017_logic_poll(&ctx, 0);
+
+    // We will push and pop 40 events
+    for (int i = 0; i < 40; i++) {
+        g_fake.regs[MCP23017_REG_GPIOA] = (i % 2 == 0) ? 0xE0 : 0xF0;
+        mcp23017_logic_poll(&ctx, i * 40 + 10);
+        mcp23017_logic_poll(&ctx, i * 40 + 35); // triggers event
+
+        mcp23017_event_t ev;
+        TEST_ASSERT_TRUE(mcp23017_logic_next_event(&ctx, &ev));
+        TEST_ASSERT_EQUAL(MCP23017_BTN_PANEL_0, ev.button_id);
+        TEST_ASSERT_EQUAL((i % 2 == 0) ? MCP23017_EVENT_PRESSED : MCP23017_EVENT_RELEASED, ev.type);
+        TEST_ASSERT_FALSE(mcp23017_logic_next_event(&ctx, &ev)); // empty
+    }
+}
+
+void test_set_led_success_clears_error(void) {
+    mcp23017_t ctx;
+    mcp23017_logic_init(&ctx, &default_cfg);
+
+    g_fake.inject_error = true;
+    mcp23017_logic_set_led(&ctx, 0, true);
+    TEST_ASSERT_EQUAL(1, ctx.state.consecutive_errors);
+
+    g_fake.inject_error = false;
+    mcp23017_logic_set_led(&ctx, 0, false);
+    TEST_ASSERT_EQUAL(0, ctx.state.consecutive_errors);
 }
 
 int main(void) {
