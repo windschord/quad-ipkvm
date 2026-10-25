@@ -52,7 +52,9 @@ void oled_fb_draw_text(oled_fb_t *fb, int x, int y, const char *str);
 void oled_fb_draw_hline(oled_fb_t *fb, int x0, int x1, int y);
 void oled_fb_invert_region(oled_fb_t *fb, int x, int y, int w, int h);
 
-// Render specific pages
+// Render specific pages.
+// page_index must be 0, 1, or 2. If out of bounds (e.g. -1, 3), it does nothing (no clear, no drawing).
+// Text drawing truncates strings so that any character which doesn't fully fit horizontally (cx + 5 >= OLED_WIDTH) will NOT be drawn.
 // page: 0, 1, or 2
 void oled_render_page(oled_fb_t *fb, int page_index, const oled_status_t *st);
 

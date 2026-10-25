@@ -656,6 +656,177 @@ void test_oled_render_truncation_exact(void) {
     }
 }
 
+
+void test_oled_render_set_pixel_bounds_and_off(void) {
+    alloc_guarded_fb();
+    oled_fb_clear(&g_fb_alloc->fb);
+
+    // (a) x >= OLED_WIDTH
+    oled_fb_set_pixel(&g_fb_alloc->fb, 128, 0, true);
+    oled_fb_set_pixel(&g_fb_alloc->fb, 128, 63, true);
+    // (b) y >= OLED_PAGES*8
+    oled_fb_set_pixel(&g_fb_alloc->fb, 0, 64, true);
+    oled_fb_set_pixel(&g_fb_alloc->fb, 127, 64, true);
+    // negative bounds
+    oled_fb_set_pixel(&g_fb_alloc->fb, -1, 0, true);
+    oled_fb_set_pixel(&g_fb_alloc->fb, 0, -1, true);
+    // corners
+    oled_fb_set_pixel(&g_fb_alloc->fb, -1, -1, true);
+    oled_fb_set_pixel(&g_fb_alloc->fb, 128, 64, true);
+
+    // verify nothing was written
+    for (int p = 0; p < OLED_PAGES; p++) {
+        for (int x = 0; x < OLED_WIDTH; x++) {
+            TEST_ASSERT_EQUAL_UINT8(0, g_fb_alloc->fb.data[p][x]);
+        }
+    }
+
+    // Test turning pixel off
+    oled_fb_set_pixel(&g_fb_alloc->fb, 10, 10, true);
+    TEST_ASSERT_TRUE(g_fb_alloc->fb.data[1][10] & (1 << 2));
+    oled_fb_set_pixel(&g_fb_alloc->fb, 10, 10, false);
+    TEST_ASSERT_EQUAL_UINT8(0, g_fb_alloc->fb.data[1][10]);
+}
+
+void test_oled_render_draw_hline_clamp(void) {
+    alloc_guarded_fb();
+    oled_fb_clear(&g_fb_alloc->fb);
+
+    // x1 >= OLED_WIDTH clamp
+    oled_fb_draw_hline(&g_fb_alloc->fb, 0, 200, 5);
+    for (int x = 0; x < OLED_WIDTH; x++) {
+        TEST_ASSERT_EQUAL_UINT8((1 << 5), g_fb_alloc->fb.data[0][x]);
+    }
+    // ensure next page is empty
+    for (int x = 0; x < OLED_WIDTH; x++) {
+        TEST_ASSERT_EQUAL_UINT8(0, g_fb_alloc->fb.data[1][x]);
+    }
+
+    oled_fb_clear(&g_fb_alloc->fb);
+
+    // x0 < 0 clamp
+    oled_fb_draw_hline(&g_fb_alloc->fb, -50, 10, 5);
+    for (int x = 0; x <= 10; x++) {
+        TEST_ASSERT_EQUAL_UINT8((1 << 5), g_fb_alloc->fb.data[0][x]);
+    }
+    for (int x = 11; x < OLED_WIDTH; x++) {
+        TEST_ASSERT_EQUAL_UINT8(0, g_fb_alloc->fb.data[0][x]);
+    }
+
+    // out of bounds y
+    oled_fb_draw_hline(&g_fb_alloc->fb, 0, 10, -1);
+    oled_fb_draw_hline(&g_fb_alloc->fb, 0, 10, 64);
+    // guards checked in teardown
+}
+
+void test_oled_render_invert_region_bounds(void) {
+    alloc_guarded_fb();
+    oled_fb_clear(&g_fb_alloc->fb);
+
+    // normal invert
+    oled_fb_invert_region(&g_fb_alloc->fb, 10, 8, 20, 8); // x:10-29, y:8-15 (page 1)
+
+    for (int p = 0; p < OLED_PAGES; p++) {
+        for (int x = 0; x < OLED_WIDTH; x++) {
+            if (p == 1 && x >= 10 && x < 30) {
+                TEST_ASSERT_EQUAL_UINT8(0xFF, g_fb_alloc->fb.data[p][x]);
+            } else {
+                TEST_ASSERT_EQUAL_UINT8(0, g_fb_alloc->fb.data[p][x]);
+            }
+        }
+    }
+
+    // invert again restores it
+    oled_fb_invert_region(&g_fb_alloc->fb, 10, 8, 20, 8);
+    for (int p = 0; p < OLED_PAGES; p++) {
+        for (int x = 0; x < OLED_WIDTH; x++) {
+            TEST_ASSERT_EQUAL_UINT8(0, g_fb_alloc->fb.data[p][x]);
+        }
+    }
+
+    // w or h <= 0 does nothing
+    oled_fb_invert_region(&g_fb_alloc->fb, 10, 8, 0, 5);
+    oled_fb_invert_region(&g_fb_alloc->fb, 10, 8, 5, 0);
+    oled_fb_invert_region(&g_fb_alloc->fb, 10, 8, -5, 5);
+    for (int p = 0; p < OLED_PAGES; p++) {
+        for (int x = 0; x < OLED_WIDTH; x++) {
+            TEST_ASSERT_EQUAL_UINT8(0, g_fb_alloc->fb.data[p][x]);
+        }
+    }
+
+    // y goes off screen bottom
+    oled_fb_invert_region(&g_fb_alloc->fb, 10, 60, 5, 100);
+    // if y goes past 64, it shouldn't overwrite guards.
+    // just check a pixel that should be inverted
+    TEST_ASSERT_TRUE(g_fb_alloc->fb.data[7][10] != 0);
+}
+
+void test_oled_render_page_out_of_bounds_neg1(void) {
+    alloc_guarded_fb();
+    oled_fb_clear(&g_fb_alloc->fb);
+    oled_fb_set_pixel(&g_fb_alloc->fb, 5, 5, true);
+
+    oled_status_t st = {0};
+    oled_render_page(&g_fb_alloc->fb, -1, &st);
+    oled_render_page(&g_fb_alloc->fb, 3, &st);
+
+    // buffer should be unchanged
+    TEST_ASSERT_TRUE(g_fb_alloc->fb.data[0][5] != 0);
+}
+
+void test_oled_render_memory_rounding(void) {
+    alloc_guarded_fb();
+    oled_status_t st = {0};
+    char readback[64];
+
+    uint32_t mems[] = {1126, 1075, 1153024, 1536};
+    const char *exp_mems[] = {"1.1 KB", "1.0 KB", "1.1 MB", "1.5 KB"};
+
+    for (int i = 0; i < 4; i++) {
+        st.free_memory_bytes = mems[i];
+        oled_render_page(&g_fb_alloc->fb, 2, &st);
+        fb_read_text(&g_fb_alloc->fb, 36, 32, readback, sizeof(readback));
+        TEST_ASSERT_EQUAL_STRING(exp_mems[i], readback);
+    }
+}
+
+void test_oled_render_header_hline_full(void) {
+    alloc_guarded_fb();
+    oled_status_t st = {0};
+
+    oled_render_page(&g_fb_alloc->fb, 0, &st);
+    // page 1 contains y=9 (bit 1)
+    for (int x = 0; x < OLED_WIDTH; x++) {
+        TEST_ASSERT_TRUE((g_fb_alloc->fb.data[1][x] & (1 << 1)) != 0);
+    }
+}
+
+void test_oled_render_hostname_empty(void) {
+    alloc_guarded_fb();
+    oled_status_t st = {0};
+    st.hostname = "";
+    oled_render_page(&g_fb_alloc->fb, 0, &st);
+    char readback[64];
+    fb_read_text(&g_fb_alloc->fb, 36, 32, readback, sizeof(readback));
+    TEST_ASSERT_EQUAL_STRING("-", readback);
+}
+
+void test_oled_render_truncation_bound(void) {
+    alloc_guarded_fb();
+    oled_fb_clear(&g_fb_alloc->fb);
+
+    // "ABC" x=117 -> A(117), B(123), C(129). B at 123 needs 5px (123,124,125,126,127). cx+5=128 >= 128 (true), so B won't be drawn!
+    // Wait, if cx=123, cx+5=128. 128 >= 128 is true. So "B" is NOT drawn.
+    // "A" is drawn.
+    oled_fb_draw_text(&g_fb_alloc->fb, 117, 0, "ABC");
+    char readback[64];
+    fb_read_text(&g_fb_alloc->fb, 117, 0, readback, sizeof(readback));
+    TEST_ASSERT_EQUAL_STRING("A", readback);
+
+    // ensure col 123 is empty
+    TEST_ASSERT_EQUAL_UINT8(0, g_fb_alloc->fb.data[0][123]);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_oled_render_font_glyph_A);
@@ -671,6 +842,15 @@ int main(void) {
     RUN_TEST(test_oled_render_diff_basic);
     RUN_TEST(test_oled_render_diff_full);
     RUN_TEST(test_oled_render_out_of_bounds_safe);
+    RUN_TEST(test_oled_render_set_pixel_bounds_and_off);
+    RUN_TEST(test_oled_render_draw_hline_clamp);
+    RUN_TEST(test_oled_render_invert_region_bounds);
+    RUN_TEST(test_oled_render_page_out_of_bounds_neg1);
+    RUN_TEST(test_oled_render_memory_rounding);
+    RUN_TEST(test_oled_render_header_hline_full);
+    RUN_TEST(test_oled_render_hostname_empty);
+    RUN_TEST(test_oled_render_truncation_bound);
+
     RUN_TEST(test_oled_render_font_all_glyphs_distinct);
     RUN_TEST(test_oled_render_font_non_ascii);
     RUN_TEST(test_oled_render_truncation_exact);
@@ -678,10 +858,14 @@ int main(void) {
     RUN_TEST(test_oled_render_diff_various);
     return UNITY_END();
 }
-// mutation tests manually verified:
-// 1. Invert bit direction in page format -> test_oled_render_font_glyph_A fails.
-// 2. Out of bounds column write -> test_oled_render_out_of_bounds_safe fails.
-// 3. Truncation length -> changed cx condition to >= 150, test_oled_render_out_of_bounds_safe catches the overwrite.
-// 4. Uptime carry over -> changing % 60 to % 59 in format_uptime causes golden test failure.
-// 5. KB/MB rounding -> changing boundaries causes golden test failure.
-// 6. diff max x minus 1 -> test_oled_render_diff_basic fails.
+// 追加した変異テストの手動検証結果:
+// 1. set_pixel の x >= OLED_WIDTH 除去 -> test_oled_render_set_pixel_bounds_and_off で範囲外書き込みを検出。
+// 2. set_pixel の y >= OLED_PAGES*8 除去 -> 同テストでガード領域破損を検出。
+// 3. draw_hline の x1 >= OLED_WIDTH 除去 -> test_oled_render_draw_hline_clamp で次ページのはみ出し検出。
+// 4. draw_hline の x0 < 0 除去 -> 同テストでガード領域の無変化検証が失敗（クランプされないためはみ出し）。
+// 5. invert_region で cx <= max_x に変異 -> test_oled_render_invert_region_bounds で外側の列まで反転し失敗。
+// 6. 範囲外ページ番号 -1 -> test_oled_render_page_out_of_bounds_neg1 で変更がないことを確認。
+// 7. メモリ表示の四捨五入 -> test_oled_render_memory_rounding で 1.1 KB 等の境界チェックにより検出。
+// 8. 区切りの水平線全列 -> test_oled_render_header_hline_full で y=9 が 127 列まで引かれているか確認。
+// 9. ホスト名の空文字列 -> test_oled_render_hostname_empty で "-" となることを確認。
+// 10. 切り詰めの境界 cx + 5 >= OLED_WIDTH -> test_oled_render_truncation_bound で画面端に文字が欠けて描画されないことを確認。
