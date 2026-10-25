@@ -131,7 +131,7 @@ void app_main(void)
                  CONFIG_FRAME_HUB_POOL_SIZE, CONFIG_FRAME_HUB_MAX_FRAME_KB, prefer_spiram);
         ESP_LOGI(TAG, "Free 8-bit heap size: %d bytes", (int)heap_caps_get_free_size(MALLOC_CAP_8BIT));
 
-        // TODO(hw-verify): PSRAM configuration is pending hardware verification
+        // PSRAM verified on hardware: every frame_hub allocation lands in external RAM (source: docs/HW_VERIFY.md D4)
         frame_hub_t* hub = frame_hub_create(&hub_config);
         if (hub) {
             ESP_LOGI(TAG, "Starting test pattern source...");
