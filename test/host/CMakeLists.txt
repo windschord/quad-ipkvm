@@ -91,7 +91,9 @@ foreach(test_source ${TEST_SOURCES})
         target_compile_definitions(${test_name} PRIVATE WEB_ASSET_DIR="${CMAKE_SOURCE_DIR}/../../components/web_server/web")
     endif()
 
-
+    if (test_source MATCHES "/oled_render/")
+        target_link_libraries(${test_name} PRIVATE oled_render)
+    endif()
 
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})
     target_link_options(${test_name} PRIVATE ${TEST_LINK_OPTIONS})
@@ -111,3 +113,6 @@ target_include_directories(frame_hub PUBLIC ${CMAKE_SOURCE_DIR}/../../components
 
 # Setup ws_video_core component
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/ws_video_core ${CMAKE_BINARY_DIR}/ws_video_core)
+
+# Setup oled_render component
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/oled_render ${CMAKE_BINARY_DIR}/oled_render)
