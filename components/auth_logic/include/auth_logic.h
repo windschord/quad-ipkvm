@@ -95,12 +95,42 @@ typedef struct {
     uint32_t global_lockout_count;
     uint64_t global_lockout_until_ms;
 
+    uint32_t generation;
+
     const auth_crypto_if_t *crypto;
     auth_logic_config_t config;
 } auth_logic_t;
 
 
 // --- API ---
+
+// --- Split APIs for lock-free computation ---
+
+typedef struct {
+    uint8_t salt[AUTH_LOGIC_SALT_LEN];
+    uint32_t iterations;
+    uint8_t expected_hash[AUTH_LOGIC_HASH_LEN];
+    uint32_t generation;
+} auth_login_job_t;
+
+typedef struct {
+    uint8_t salt[AUTH_LOGIC_SALT_LEN];
+    uint32_t iterations;
+    uint32_t generation;
+    uint8_t computed_hash[AUTH_LOGIC_HASH_LEN];
+} auth_setup_job_t;
+
+// Login
+int auth_logic_login_begin(auth_logic_t *ctx, uint32_t source_ip, uint64_t now_ms, auth_login_job_t *job);
+int auth_logic_login_compute(const auth_crypto_if_t *crypto, const auth_login_job_t *job, const char *password, size_t pwd_len);
+int auth_logic_login_finish(auth_logic_t *ctx, const auth_login_job_t *job, int match, uint32_t source_ip, uint64_t now_ms, uint8_t *token_out);
+
+// Setup
+int auth_logic_setup_begin(auth_logic_t *ctx, const char *password, size_t pwd_len, auth_setup_job_t *job);
+int auth_logic_setup_compute(const auth_crypto_if_t *crypto, auth_setup_job_t *job, const char *password, size_t pwd_len);
+int auth_logic_setup_finish(auth_logic_t *ctx, const auth_setup_job_t *job);
+
+
 
 // Initialize the logic module. Must be called first. Returns 0 on success.
 int auth_logic_init(auth_logic_t *ctx, const auth_crypto_if_t *crypto, const auth_logic_config_t *config);
