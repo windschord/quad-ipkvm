@@ -1,5 +1,6 @@
 #include "oled_render.h"
 #include <string.h>
+#include <inttypes.h>
 #include <stdio.h>
 
 extern const uint8_t font5x7_data[95][5];
@@ -90,12 +91,12 @@ static void format_uptime(uint32_t seconds, char *buf, size_t size) {
     uint32_t h = (seconds % 86400) / 3600;
     uint32_t m = (seconds % 3600) / 60;
     uint32_t s = seconds % 60;
-    snprintf(buf, size, "%ud %02u:%02u:%02u", d, h, m, s);
+    snprintf(buf, size, "%" PRIu32 "d %02" PRIu32 ":%02" PRIu32 ":%02" PRIu32 "", d, h, m, s);
 }
 
 static void format_memory(uint32_t bytes, char *buf, size_t size) {
     if (bytes < 1024) {
-        snprintf(buf, size, "%u B", bytes);
+        snprintf(buf, size, "%" PRIu32 " B", bytes);
     } else if (bytes < 1024 * 1024) {
         snprintf(buf, size, "%.1f KB", bytes / 1024.0f);
     } else {
@@ -136,7 +137,7 @@ void oled_render_page(oled_fb_t *fb, int page_index, const oled_status_t *st) {
         if (st->link_speed_mbps == 0) {
             oled_fb_draw_text(fb, 36, 42, "DOWN");
         } else {
-            snprintf(buf, sizeof(buf), "%uM", st->link_speed_mbps);
+            snprintf(buf, sizeof(buf), "%" PRIu32 "M", st->link_speed_mbps);
             oled_fb_draw_text(fb, 36, 42, buf);
         }
     } else if (page_index == 1) {
@@ -164,7 +165,7 @@ void oled_render_page(oled_fb_t *fb, int page_index, const oled_status_t *st) {
 
         // Client count
         oled_fb_draw_text(fb, 0, 32, "Clients:");
-        snprintf(buf, sizeof(buf), "%u", st->client_count);
+        snprintf(buf, sizeof(buf), "%" PRIu32, st->client_count);
         oled_fb_draw_text(fb, 54, 32, buf);
 
     } else if (page_index == 2) {
