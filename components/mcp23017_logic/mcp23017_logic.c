@@ -184,7 +184,6 @@ void mcp23017_logic_poll(mcp23017_t* ctx, uint64_t now_ms) {
             ctx->state.is_offline = false;
             ctx->state.consecutive_errors = 0;
             ctx->state.reinit_count++;
-            write_reg(ctx, MCP23017_REG_OLATA, ctx->state.shadow_olata);
         } else {
             return;
         }

@@ -17,6 +17,7 @@ typedef struct {
     bool violated_invariant;
     int inject_read_error_reg;
     int inject_write_ignore_reg;
+    uint32_t read_count;
 } fake_mcp_t;
 
 static fake_mcp_t g_fake;
@@ -72,6 +73,8 @@ static int fake_write_reg(void* user, uint8_t reg, uint8_t value) {
 
 static int fake_read_reg(void* user, uint8_t reg, uint8_t* value) {
     fake_mcp_t* fake = (fake_mcp_t*)user;
+    fake->read_count++;
+
     if (fake->inject_error) return -1;
     if (fake->inject_read_error_reg == reg) return -1;
 
@@ -436,16 +439,9 @@ static void test_queue_exact_overflow(void) {
         mcp23017_logic_poll(&ctx, i * 40 + 35); // trigger debounce
     }
 
-    // Actually we only pushed 15 events in this loop.
-    // Wait, at i=0..14 we pushed 15 events.
-    // Is the queue size 15 or 16?
-    // It's 16 size array. Head and tail. When head+1 % 16 == tail, it's full.
-    // That means it holds exactly 15 events before overflowing.
-    // So pushing 15 events makes it full, but DOES NOT overflow yet!
-    TEST_ASSERT_EQUAL(0, ctx.state.event_overflow_count);
+                            TEST_ASSERT_EQUAL(0, ctx.state.event_overflow_count);
 
-    // 16th event should overflow!
-    g_fake.regs[MCP23017_REG_GPIOA] = 0xF0; // release
+        g_fake.regs[MCP23017_REG_GPIOA] = 0xF0; // release
     mcp23017_logic_poll(&ctx, 15 * 40 + 10);
     mcp23017_logic_poll(&ctx, 15 * 40 + 35);
 
@@ -455,6 +451,92 @@ static void test_queue_exact_overflow(void) {
     mcp23017_event_t ev;
     TEST_ASSERT_TRUE(mcp23017_logic_next_event(&ctx, &ev));
     TEST_ASSERT_EQUAL(MCP23017_EVENT_PRESSED, ev.type); // first was press
+}
+
+
+static void test_verify_interval_timing_strict(void) {
+    mcp23017_t ctx;
+    mcp23017_logic_init(&ctx, &default_cfg);
+
+    for (int i = 0; i < 150; i++) mcp23017_logic_poll(&ctx, i * 10);
+
+    // Inject mismatch at 150th poll
+    g_fake.regs[MCP23017_REG_IODIRA] = 0x00;
+
+    // Poll 151 (does not verify)
+    mcp23017_logic_poll(&ctx, 1500);
+    TEST_ASSERT_FALSE(ctx.state.is_offline);
+
+    // Restore and go to 198
+    g_fake.regs[MCP23017_REG_IODIRA] = 0xFF;     g_fake.regs[MCP23017_REG_IODIRA] = 0xF0;
+    for (int i = 151; i < 199; i++) mcp23017_logic_poll(&ctx, i * 10);
+
+    // Inject at 199
+                g_fake.regs[MCP23017_REG_IODIRA] = 0x00;
+
+    // Poll 200 triggers verify
+    mcp23017_logic_poll(&ctx, 1990);
+    TEST_ASSERT_TRUE(ctx.state.is_offline);
+}
+
+static void test_failed_recovery_stops_processing(void) {
+    mcp23017_t ctx;
+    mcp23017_logic_init(&ctx, &default_cfg);
+
+    g_fake.inject_error = true;
+    for (int i = 0; i < 5; i++) mcp23017_logic_poll(&ctx, i * 10);
+    TEST_ASSERT_TRUE(ctx.state.is_offline);
+
+    uint32_t rc = g_fake.read_count;
+    mcp23017_logic_poll(&ctx, 1050);
+    TEST_ASSERT_TRUE(ctx.state.is_offline);
+
+    // read_count shouldn't increment because recovery failed and returned early
+    TEST_ASSERT_EQUAL(rc, g_fake.read_count);
+}
+
+static void test_time_rollback_resets_retry(void) {
+    mcp23017_t ctx;
+    mcp23017_logic_init(&ctx, &default_cfg);
+
+    g_fake.inject_error = true;
+    for (int i = 0; i < 5; i++) mcp23017_logic_poll(&ctx, i * 10); // offline at 40
+    TEST_ASSERT_TRUE(ctx.state.is_offline);
+
+    // Rollback to 0
+    mcp23017_logic_poll(&ctx, 0);
+
+    // 999 ms from 0 is 999
+    g_fake.inject_error = false;
+    uint32_t wc = g_fake.write_count;
+
+    mcp23017_logic_poll(&ctx, 999);
+    TEST_ASSERT_EQUAL(wc, g_fake.write_count);
+
+    mcp23017_logic_poll(&ctx, 1000);
+    TEST_ASSERT_TRUE(g_fake.write_count > wc);
+    TEST_ASSERT_FALSE(ctx.state.is_offline);
+}
+
+static void test_recovery_clears_error_counter(void) {
+    mcp23017_t ctx;
+    mcp23017_logic_init(&ctx, &default_cfg);
+
+    g_fake.inject_error = true;
+    for (int i = 0; i < 5; i++) mcp23017_logic_poll(&ctx, i * 10);
+    TEST_ASSERT_TRUE(ctx.state.is_offline);
+
+    // Recover
+    g_fake.inject_error = false;
+    mcp23017_logic_poll(&ctx, 1050);
+    TEST_ASSERT_FALSE(ctx.state.is_offline);
+
+    // Immediately fail 4 times
+    g_fake.inject_error = true;
+    for (int i = 0; i < 4; i++) mcp23017_logic_poll(&ctx, 1060 + i * 10);
+
+    // Should NOT be offline
+    TEST_ASSERT_FALSE(ctx.state.is_offline);
 }
 
 static void test_verify_failures(void) {
@@ -737,9 +819,7 @@ static void test_poll_offline_failure_stops(void) {
     uint32_t wc = g_fake.write_count;
     mcp23017_logic_poll(&ctx, 1050); // Try reinit, but inject_error is true
 
-    // Reinit fails at IOCON, so write_count only increases by 1 (IOCON write fails, though fake writes it and returns error)
-    // Actually fake_write_reg returns -1 immediately if inject_error is true, so write_count doesn't increment!
-    TEST_ASSERT_EQUAL(wc, g_fake.write_count);
+            TEST_ASSERT_EQUAL(wc, g_fake.write_count);
 
     // Check it remains offline
     TEST_ASSERT_TRUE(ctx.state.is_offline);
@@ -830,8 +910,7 @@ static void test_default_configs(void) {
 
     mcp23017_logic_init(&ctx, &cfg);
 
-    // Should use defaults: 20ms, 5 errs, 100 polls, 1000ms
-    TEST_ASSERT_EQUAL(20, ctx.cfg.debounce_ms);
+        TEST_ASSERT_EQUAL(20, ctx.cfg.debounce_ms);
     TEST_ASSERT_EQUAL(5, ctx.cfg.max_consecutive_errors);
     TEST_ASSERT_EQUAL(100, ctx.cfg.verify_interval_polls);
     TEST_ASSERT_EQUAL(1000, ctx.cfg.retry_interval_ms);
@@ -924,11 +1003,9 @@ static void test_recovery_conditions(void) {
     g_fake.inject_error = true;
     for (int i = 0; i < 5; i++) mcp23017_logic_poll(&ctx, i * 10);
 
-    // Let's test that during failed recovery poll, GPIO read isn't called, no events
-    uint32_t wc = g_fake.write_count;
+        uint32_t wc = g_fake.write_count;
     mcp23017_logic_poll(&ctx, 1050);
-    // it tries to reinit, fails, writes nothing to fake because fake_write_reg returns -1 immediately if inject_error
-    TEST_ASSERT_EQUAL(wc, g_fake.write_count);
+        TEST_ASSERT_EQUAL(wc, g_fake.write_count);
 
     g_fake.inject_error = false;
     mcp23017_logic_poll(&ctx, 2100); // Wait another interval
@@ -973,8 +1050,7 @@ static void test_read_fallback_success_clears_error(void) {
     mcp23017_logic_poll(&ctx, 40); // Success
     TEST_ASSERT_EQUAL(0, ctx.state.consecutive_errors);
 
-    // Test GPIOB read error alone increments counter
-    g_fake.inject_read_error_reg = MCP23017_REG_GPIOB;
+        g_fake.inject_read_error_reg = MCP23017_REG_GPIOB;
     mcp23017_logic_poll(&ctx, 50);
     TEST_ASSERT_EQUAL(1, ctx.state.consecutive_errors);
 }
@@ -1000,32 +1076,6 @@ static void test_queue_wrap_around(void) {
         TEST_ASSERT_EQUAL(MCP23017_BTN_PANEL_0, ev.button_id);
         TEST_ASSERT_EQUAL((i % 2 == 0) ? MCP23017_EVENT_PRESSED : MCP23017_EVENT_RELEASED, ev.type);
 
-        // Wait! We changed from 0xF0 -> 0xE0, which fires PRESSED.
-        // What if another button changed? We only manipulated bit 4.
-        // Wait, did we manipulate bits correctly? 0xE0 is 1110 0000.
-        // 0xF0 is 1111 0000.
-        // A0-A3 are outputs, A4-A7 are inputs.
-        // So A5, A6, A7 are 1 (released) in both.
-        // So only A4 changes.
-        // Oh! Wait! button_id 4 is DISPLAY (B0).
-        // It failed with Expected -1 Was 4. So button_id is 4!
-        // Why did B0 fire?
-        // Ah! We didn't set GPIOB in this loop!
-        // g_fake.regs[MCP23017_REG_GPIOB] is left as whatever it was, but actually we didn't touch it.
-        // Wait, what does read_regs do? It reads GPIOA AND GPIOB.
-        // If we don't set GPIOB in this test explicitly, it should just remain the default 0xFF.
-        // But wait! Is B0 changing?
-        // Wait, in `test_queue_wrap_around`, we did:
-        // `g_fake.regs[MCP23017_REG_GPIOA] = 0xF0;`
-        // We DID NOT set GPIOB. So GPIOB is 0xFF.
-        // `0xFF` means B0 is 1 (released).
-        // Then at i=0, we change GPIOA to 0xE0. GPIOB is STILL 0xFF.
-        // Why would B0 fire an event?
-        // Ah! In `test_queue_wrap_around`, the first `poll(0)` saw B0 raw state as Released (1).
-        // And debounced state is initialized to 0 (Pressed) by memset!
-        // So after 20ms of stable 1, B0 debounces to Released!
-        // This generates exactly 1 event for B0 at 20ms!
-        // And it only happens once at the beginning of the loop!
 
         while (mcp23017_logic_next_event(&ctx, &ev)) {
             if (ev.button_id == MCP23017_BTN_DISPLAY && ev.type == MCP23017_EVENT_RELEASED && i == 0) {
@@ -1092,5 +1142,10 @@ int main(void) {
     RUN_TEST(test_read_fallback_success_clears_error);
     RUN_TEST(test_queue_wrap_around);
     RUN_TEST(test_set_led_success_clears_error);
+
+    RUN_TEST(test_verify_interval_timing_strict);
+    RUN_TEST(test_failed_recovery_stops_processing);
+    RUN_TEST(test_time_rollback_resets_retry);
+    RUN_TEST(test_recovery_clears_error_counter);
     return UNITY_END();
 }
