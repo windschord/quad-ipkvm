@@ -77,6 +77,16 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE web_status_map)
     endif()
 
+    if (test_source MATCHES "/ws_clients/")
+        target_link_libraries(${test_name} PRIVATE ws_clients)
+    endif()
+
+    if (test_source MATCHES "/web_assets/")
+        target_sources(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/web_server/web_assets.c)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/web_server/include)
+    endif()
+
+
 
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})
     target_link_options(${test_name} PRIVATE ${TEST_LINK_OPTIONS})
@@ -86,3 +96,6 @@ endforeach()
 
 # Setup http_guard component (pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/http_guard ${CMAKE_BINARY_DIR}/http_guard)
+
+# Setup ws_clients component
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/ws_clients ${CMAKE_BINARY_DIR}/ws_clients)

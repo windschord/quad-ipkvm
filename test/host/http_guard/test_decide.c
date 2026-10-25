@@ -10,6 +10,7 @@ static http_guard_action_e expected_decide(auth_state_e state, http_guard_method
 
     if (state == AUTH_STATE_NEEDS_SETUP) {
         if (path == HTTP_GUARD_PATH_STATUS) return (method == HTTP_GUARD_METHOD_GET) ? HTTP_GUARD_ACTION_ALLOW : HTTP_GUARD_ACTION_405;
+        if (path == HTTP_GUARD_PATH_STATIC) return (method == HTTP_GUARD_METHOD_GET) ? HTTP_GUARD_ACTION_ALLOW : HTTP_GUARD_ACTION_405;
         if (path == HTTP_GUARD_PATH_SETUP) {
             if (method != HTTP_GUARD_METHOD_POST) return HTTP_GUARD_ACTION_405;
             if (!origin_ok) return HTTP_GUARD_ACTION_403_ORIGIN;
@@ -19,6 +20,7 @@ static http_guard_action_e expected_decide(auth_state_e state, http_guard_method
         return HTTP_GUARD_ACTION_403_SETUP_REQUIRED;
     } else { // AUTH_STATE_READY
         if (path == HTTP_GUARD_PATH_STATUS) return (method == HTTP_GUARD_METHOD_GET) ? HTTP_GUARD_ACTION_ALLOW : HTTP_GUARD_ACTION_405;
+        if (path == HTTP_GUARD_PATH_STATIC) return (method == HTTP_GUARD_METHOD_GET) ? HTTP_GUARD_ACTION_ALLOW : HTTP_GUARD_ACTION_405;
         if (path == HTTP_GUARD_PATH_SETUP) return HTTP_GUARD_ACTION_409_ALREADY_SETUP;
         if (path == HTTP_GUARD_PATH_LOGIN) {
             if (method != HTTP_GUARD_METHOD_POST) return HTTP_GUARD_ACTION_405;
@@ -58,12 +60,12 @@ static http_guard_action_e expected_decide(auth_state_e state, http_guard_method
 void test_exhaustive_matrix_and_invariants(void) {
     auth_state_e states[] = {AUTH_STATE_NEEDS_SETUP, AUTH_STATE_READY};
     http_guard_method_e methods[] = {HTTP_GUARD_METHOD_GET, HTTP_GUARD_METHOD_POST, HTTP_GUARD_METHOD_OTHER};
-    http_guard_path_e paths[] = {HTTP_GUARD_PATH_STATUS, HTTP_GUARD_PATH_SETUP, HTTP_GUARD_PATH_LOGIN, HTTP_GUARD_PATH_LOGOUT, HTTP_GUARD_PATH_WS_VIDEO, HTTP_GUARD_PATH_OTHER};
+    http_guard_path_e paths[] = {HTTP_GUARD_PATH_STATUS, HTTP_GUARD_PATH_SETUP, HTTP_GUARD_PATH_LOGIN, HTTP_GUARD_PATH_LOGOUT, HTTP_GUARD_PATH_WS_VIDEO, HTTP_GUARD_PATH_STATIC, HTTP_GUARD_PATH_OTHER};
     bool bools[] = {false, true};
 
     for (int is = 0; is < 2; is++) {
         for (int im = 0; im < 3; im++) {
-            for (int ip = 0; ip < 6; ip++) {
+            for (int ip = 0; ip < 7; ip++) {
                 for (int iv = 0; iv < 2; iv++) {
                     for (int io = 0; io < 2; io++) {
                         for (int ij = 0; ij < 2; ij++) {
@@ -90,11 +92,11 @@ void test_exhaustive_matrix_and_invariants(void) {
 
                                 if (host_ok) {
                                     if (state == AUTH_STATE_NEEDS_SETUP && actual == HTTP_GUARD_ACTION_ALLOW) {
-                                        TEST_ASSERT_TRUE(path == HTTP_GUARD_PATH_STATUS || path == HTTP_GUARD_PATH_SETUP);
+                                        TEST_ASSERT_TRUE(path == HTTP_GUARD_PATH_STATUS || path == HTTP_GUARD_PATH_SETUP || path == HTTP_GUARD_PATH_STATIC);
                                     }
 
                                     if (state == AUTH_STATE_READY && actual == HTTP_GUARD_ACTION_ALLOW) {
-                                        if (path != HTTP_GUARD_PATH_STATUS && path != HTTP_GUARD_PATH_LOGIN) {
+                                        if (path != HTTP_GUARD_PATH_STATUS && path != HTTP_GUARD_PATH_LOGIN && path != HTTP_GUARD_PATH_STATIC) {
                                             TEST_ASSERT_TRUE(has_valid_session);
                                         }
                                     }
