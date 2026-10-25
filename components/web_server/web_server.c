@@ -15,6 +15,30 @@
 #include "lwip/sockets.h"
 #include <string.h>
 #include "auth_crypto_mbedtls.h"
+#include "web_assets.h"
+
+extern const unsigned char index_html_start[] asm("_binary_index_html_start");
+extern const unsigned char index_html_end[]   asm("_binary_index_html_end");
+
+extern const unsigned char app_js_start[] asm("_binary_app_js_start");
+extern const unsigned char app_js_end[]   asm("_binary_app_js_end");
+
+extern const unsigned char app_css_start[] asm("_binary_app_css_start");
+extern const unsigned char app_css_end[]   asm("_binary_app_css_end");
+
+static const web_asset_t s_web_assets[] = {
+    { "/", "text/html", index_html_start, 0 },
+    { "/app.js", "application/javascript", app_js_start, 0 },
+    { "/app.css", "text/css", app_css_start, 0 }
+};
+static const size_t s_web_assets_count = sizeof(s_web_assets) / sizeof(s_web_assets[0]);
+
+static void init_web_assets_sizes(void) {
+    // We must cast away const to initialize the sizes, but only once at startup
+    ((web_asset_t*)&s_web_assets[0])->len = index_html_end - index_html_start;
+    ((web_asset_t*)&s_web_assets[1])->len = app_js_end - app_js_start;
+    ((web_asset_t*)&s_web_assets[2])->len = app_css_end - app_css_start;
+}
 
 static const char *TAG = "web_server";
 
@@ -189,6 +213,34 @@ static esp_err_t send_action_error(httpd_req_t *req, http_guard_action_e action)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, status_str);
     httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+static esp_err_t static_handler(httpd_req_t *req) {
+    add_security_headers(req);
+
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    auth_state_e state = s_auth_ctx.state;
+    xSemaphoreGive(s_auth_mutex);
+
+    bool host_ok = check_host_origin(req, false);
+    http_guard_action_e action = http_guard_decide(state, HTTP_GUARD_METHOD_GET, HTTP_GUARD_PATH_STATIC, false, host_ok, false, host_ok);
+
+    if (action != HTTP_GUARD_ACTION_ALLOW) {
+        return send_action_error(req, action);
+    }
+
+    const web_asset_t *asset = web_assets_find(s_web_assets, s_web_assets_count, req->uri);
+    if (!asset) {
+        httpd_resp_send_404(req);
+        return ESP_OK;
+    }
+
+    httpd_resp_set_type(req, asset->content_type);
+    httpd_resp_set_hdr(req, "Content-Security-Policy", web_assets_csp(asset->content_type));
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    httpd_resp_send(req, (const char *)asset->data, asset->len);
     return ESP_OK;
 }
 
@@ -444,6 +496,8 @@ static esp_err_t logout_handler(httpd_req_t *req) {
 esp_err_t web_server_start(void) {
     ESP_LOGI(TAG, "Starting web server...");
 
+    init_web_assets_sizes();
+
     s_auth_mutex = xSemaphoreCreateMutex();
     s_pbkdf2_mutex = xSemaphoreCreateMutex();
 
@@ -521,11 +575,17 @@ esp_err_t web_server_start(void) {
         return ret;
     }
 
+    httpd_uri_t static_root_uri = { .uri = "/", .method = HTTP_GET, .handler = static_handler, .user_ctx = NULL };
+    httpd_uri_t static_js_uri = { .uri = "/app.js", .method = HTTP_GET, .handler = static_handler, .user_ctx = NULL };
+    httpd_uri_t static_css_uri = { .uri = "/app.css", .method = HTTP_GET, .handler = static_handler, .user_ctx = NULL };
     httpd_uri_t status_uri = { .uri = "/api/v1/auth/status", .method = HTTP_GET, .handler = status_handler, .user_ctx = NULL };
     httpd_uri_t setup_uri = { .uri = "/api/v1/auth/setup", .method = HTTP_POST, .handler = setup_handler, .user_ctx = NULL };
     httpd_uri_t login_uri = { .uri = "/api/v1/auth/login", .method = HTTP_POST, .handler = login_handler, .user_ctx = NULL };
     httpd_uri_t logout_uri = { .uri = "/api/v1/auth/logout", .method = HTTP_POST, .handler = logout_handler, .user_ctx = NULL };
 
+    httpd_register_uri_handler(server, &static_root_uri);
+    httpd_register_uri_handler(server, &static_js_uri);
+    httpd_register_uri_handler(server, &static_css_uri);
     httpd_register_uri_handler(server, &status_uri);
     httpd_register_uri_handler(server, &setup_uri);
     httpd_register_uri_handler(server, &login_uri);

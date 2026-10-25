@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quad IP-KVM</title>
+    <link rel="stylesheet" href="app.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Quad IP-KVM</h1>
+        <div id="error-message" class="error-hidden"></div>
+        <div id="view-setup" class="view-hidden">
+            <h2>初期設定</h2>
+            <form id="form-setup">
+                <label for="setup-password">パスワード</label>
+                <input type="password" id="setup-password" required>
+                <label for="setup-password-confirm">パスワード（確認）</label>
+                <input type="password" id="setup-password-confirm" required>
+                <button type="submit">設定する</button>
+            </form>
+        </div>
+        <div id="view-login" class="view-hidden">
+            <h2>ログイン</h2>
+            <form id="form-login">
+                <label for="login-password">パスワード</label>
+                <input type="password" id="login-password" required>
+                <button type="submit">ログイン</button>
+            </form>
+        </div>
+        <div id="view-dashboard" class="view-hidden">
+            <h2>ログイン済み</h2>
+            <button id="btn-logout">ログアウト</button>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
