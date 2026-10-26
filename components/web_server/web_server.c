@@ -73,6 +73,7 @@ typedef struct {
 static esp_err_t send_bad_request(httpd_req_t *req, const char *code);
 static esp_err_t send_action_error(httpd_req_t *req, http_guard_action_e action);
 static esp_err_t save_auth_state(void);
+static void add_security_headers(httpd_req_t *req, const char *content_type);
 
 static void pbkdf2_worker_task(void *pvParameters) {
     auth_worker_msg_t msg;

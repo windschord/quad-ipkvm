@@ -55,7 +55,7 @@ void test_auth_worker_slot_try_acquire(void) {
 
 int main(void) {
     UNITY_BEGIN();
-        RUN_TEST(test_auth_worker_slot_try_acquire);
+    RUN_TEST(test_auth_worker_slot_try_acquire);
     RUN_TEST(test_auth_worker_slot_null);
     RUN_TEST(test_auth_worker_slot_double_release);
     RUN_TEST(test_auth_worker_slot_repeat);
