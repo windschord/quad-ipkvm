@@ -64,6 +64,10 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE http_guard auth_logic)
     endif()
 
+    if (test_source MATCHES "/auth_worker_slot/")
+        target_link_libraries(${test_name} PRIVATE auth_worker_slot)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/auth_worker_slot/include)
+    endif()
     if (test_source MATCHES "/auth_logic/")
         target_link_libraries(${test_name} PRIVATE auth_logic auth_crypto_ref)
     endif()
@@ -126,3 +130,6 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/mcp23017_logic ${CMAKE_BIN
 
 # Setup oled_ui component (pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/oled_ui ${CMAKE_BINARY_DIR}/oled_ui)
+
+# Setup auth_worker_slot component (pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/auth_worker_slot ${CMAKE_BINARY_DIR}/auth_worker_slot)

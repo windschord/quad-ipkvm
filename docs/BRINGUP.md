@@ -213,3 +213,7 @@ Ethernet (段階 1) が通った状態で、Web ブラウザからアクセス�
 ## 実施記録
 - **2026-10-21**（オーナー側 Claude の報告）: 段階 0 OK（チップ rev v1.3、ESP-IDF v6.0.1）、段階 1 OK（Link Up は起動後約 3.4 秒、DHCP 取得、ping 3/3。PHY アドレスと 100M/全二重はログに出ず未確認）、段階 2 OK（I2C 0x0F で応答、Chip ID 0x0000、EDID 書き込み成功。HDMI 接続時 `SYS_STATUS=0x09`）、段階 3 未実施（`frame_hub` の作成に失敗するため）。詳細は `docs/HW_VERIFY.md` の D1・E3・E4・E7・F1〜F6。
 - **2026-10-22**（オーナー側 Claude の報告）: 段階 0b OK（PSRAM を**既定値のまま**有効化。HEX・200MHz・32MB、メモリテスト OK、`frame_hub` の作成と `Starting test pattern source...` を確認）、段階 1 の抜き差し・300 回 ping OK、PBKDF2 の動作と所要時間（`docs/HW_VERIFY.md` D5）。シリアルの取得は、RTS でリセットしてから読む方法が確実（`monitor` は TTY が必要）。F2・F4（PHY アドレス、100M/全二重）は、P-BOOT-1 のログで確認する。
+
+## ワーカーのスタックのログの読み方
+- 起動やジョブ完了のたびに `pbkdf2 worker stack high water mark: <空きバイト数> bytes free` というログが出ます。
+- この値が `0` に近い場合はスタックが不足しており、増やす必要があります。
