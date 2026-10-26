@@ -86,8 +86,7 @@ static void pbkdf2_worker_task(void *pvParameters) {
 
             if (msg.type == AUTH_JOB_TYPE_SETUP) {
                 auth_ret = auth_logic_setup_compute(auth_crypto_mbedtls_get_interface(), &msg.job.setup, msg.password, msg.password_len);
-                                auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
-                                memset(msg.password, 0, sizeof(msg.password));
+                mbedtls_platform_zeroize(msg.password, sizeof(msg.password));
 
                 xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
                 if (auth_ret == 0) {
@@ -108,8 +107,7 @@ static void pbkdf2_worker_task(void *pvParameters) {
 
             } else if (msg.type == AUTH_JOB_TYPE_LOGIN) {
                 int match = auth_logic_login_compute(auth_crypto_mbedtls_get_interface(), &msg.job.login, msg.password, msg.password_len);
-                auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
-                                memset(msg.password, 0, sizeof(msg.password));
+                mbedtls_platform_zeroize(msg.password, sizeof(msg.password));
 
                 uint64_t compute_now_ms = esp_timer_get_time() / 1000;
                 xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
@@ -462,12 +460,10 @@ static esp_err_t setup_handler(httpd_req_t *req) {
 
     http_guard_json_setup_t parsed;
     if (http_guard_parse_json_password(buf, ret, &parsed) != 0) {
-        auth_crypto_mbedtls_get_interface()->const_time_memcmp(buf, buf, sizeof(buf)); // dummy cmp to prevent optimization
-        memset(buf, 0, sizeof(buf));
+        mbedtls_platform_zeroize(buf, sizeof(buf));
         return send_bad_request(req, web_status_map_setup_error_code(400, NULL, NULL, 0));
     }
-    auth_crypto_mbedtls_get_interface()->const_time_memcmp(buf, buf, sizeof(buf)); // dummy cmp to prevent optimization
-        memset(buf, 0, sizeof(buf));
+    mbedtls_platform_zeroize(buf, sizeof(buf));
 
     // Check action before lock
     xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
@@ -505,8 +501,7 @@ static esp_err_t setup_handler(httpd_req_t *req) {
     xSemaphoreGive(s_auth_mutex);
 
     if (begin_ret != 0) {
-        auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
-                                memset(msg.password, 0, sizeof(msg.password));
+        mbedtls_platform_zeroize(msg.password, sizeof(msg.password));
         auth_worker_slot_release(&s_auth_worker_slot);
         if (status_code == 400) {
             return send_bad_request(req, error_code);
@@ -523,8 +518,7 @@ static esp_err_t setup_handler(httpd_req_t *req) {
     }
 
     if (httpd_req_async_handler_begin(req, &msg.req) != ESP_OK) {
-        auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
-                                memset(msg.password, 0, sizeof(msg.password));
+        mbedtls_platform_zeroize(msg.password, sizeof(msg.password));
         auth_worker_slot_release(&s_auth_worker_slot);
         httpd_resp_set_hdr(req, "Retry-After", "1");
         char buf[96];
@@ -536,8 +530,7 @@ static esp_err_t setup_handler(httpd_req_t *req) {
     }
 
     if (xQueueSend(s_auth_worker_queue, &msg, 0) != pdTRUE) {
-        auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
-                                memset(msg.password, 0, sizeof(msg.password));
+        mbedtls_platform_zeroize(msg.password, sizeof(msg.password));
         httpd_req_async_handler_complete(msg.req);
         auth_worker_slot_release(&s_auth_worker_slot);
         httpd_resp_set_hdr(req, "Retry-After", "1");
@@ -549,8 +542,7 @@ static esp_err_t setup_handler(httpd_req_t *req) {
         return ESP_OK;
     }
 
-    auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
-                                memset(msg.password, 0, sizeof(msg.password));
+    mbedtls_platform_zeroize(msg.password, sizeof(msg.password));
     return ESP_OK;
 }
 
@@ -590,12 +582,10 @@ static esp_err_t login_handler(httpd_req_t *req) {
 
     http_guard_json_setup_t parsed; // reusing setup struct for parsing single password
     if (http_guard_parse_json_password(buf, ret, &parsed) != 0) {
-        auth_crypto_mbedtls_get_interface()->const_time_memcmp(buf, buf, sizeof(buf)); // dummy cmp to prevent optimization
-        memset(buf, 0, sizeof(buf));
+        mbedtls_platform_zeroize(buf, sizeof(buf));
         return send_bad_request(req, "bad_request");
     }
-    auth_crypto_mbedtls_get_interface()->const_time_memcmp(buf, buf, sizeof(buf)); // dummy cmp to prevent optimization
-        memset(buf, 0, sizeof(buf));
+    mbedtls_platform_zeroize(buf, sizeof(buf));
 
     xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
     auth_state_e state = s_auth_ctx.state;
@@ -635,8 +625,7 @@ static esp_err_t login_handler(httpd_req_t *req) {
     xSemaphoreGive(s_auth_mutex);
 
     if (begin_ret != 0) {
-        auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
-                                memset(msg.password, 0, sizeof(msg.password));
+        mbedtls_platform_zeroize(msg.password, sizeof(msg.password));
         auth_worker_slot_release(&s_auth_worker_slot);
 
         char buf[96];
@@ -656,8 +645,7 @@ static esp_err_t login_handler(httpd_req_t *req) {
     }
 
     if (httpd_req_async_handler_begin(req, &msg.req) != ESP_OK) {
-        auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
-                                memset(msg.password, 0, sizeof(msg.password));
+        mbedtls_platform_zeroize(msg.password, sizeof(msg.password));
         auth_worker_slot_release(&s_auth_worker_slot);
         httpd_resp_set_hdr(req, "Retry-After", "1");
         char buf[96];
@@ -669,8 +657,7 @@ static esp_err_t login_handler(httpd_req_t *req) {
     }
 
     if (xQueueSend(s_auth_worker_queue, &msg, 0) != pdTRUE) {
-        auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
-                                memset(msg.password, 0, sizeof(msg.password));
+        mbedtls_platform_zeroize(msg.password, sizeof(msg.password));
         httpd_req_async_handler_complete(msg.req);
         auth_worker_slot_release(&s_auth_worker_slot);
         httpd_resp_set_hdr(req, "Retry-After", "1");
@@ -682,8 +669,7 @@ static esp_err_t login_handler(httpd_req_t *req) {
         return ESP_OK;
     }
 
-    auth_crypto_mbedtls_get_interface()->const_time_memcmp(msg.password, msg.password, sizeof(msg.password)); // dummy cmp to prevent optimization
-                                memset(msg.password, 0, sizeof(msg.password));
+    mbedtls_platform_zeroize(msg.password, sizeof(msg.password));
     return ESP_OK;
 }
 
