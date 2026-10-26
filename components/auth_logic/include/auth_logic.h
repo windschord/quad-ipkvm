@@ -144,6 +144,24 @@ int auth_logic_load_state(auth_logic_t *ctx, const uint8_t *serialized, size_t l
 // Save current password state to serialized format. Returns 0 on success.
 int auth_logic_serialize_state(const auth_logic_t *ctx, uint8_t *serialized_out, size_t max_len, size_t *out_len);
 
+// Why a password is rejected by the password policy (first violated rule, fixed priority order).
+typedef enum {
+    AUTH_PASSWORD_OK = 0,
+    AUTH_PASSWORD_TOO_SHORT,       // shorter than the minimum length (or NULL)
+    AUTH_PASSWORD_TOO_LONG,        // longer than AUTH_LOGIC_MAX_PASSWORD_LEN bytes
+    AUTH_PASSWORD_CONTAINS_ADMIN,  // contains "admin" (case-insensitive)
+    AUTH_PASSWORD_ALL_SAME,        // one character repeated
+    AUTH_PASSWORD_SEQUENTIAL,      // ascending or descending run of characters
+    AUTH_PASSWORD_COMMON,          // in the list of common passwords (case-insensitive)
+} auth_password_issue_e;
+
+// Check a candidate password against the same policy that auth_logic_setup_password() applies.
+// Returns AUTH_PASSWORD_OK exactly when auth_logic_setup_password() would not reject the password
+// because of its length or weakness. When several rules apply, the first one in this order is returned:
+// too short, too long, contains admin, all same, sequential, common. `ctx` may be NULL (the default
+// minimum length is used). Pure function: does not modify `ctx`.
+auth_password_issue_e auth_logic_password_issue(const auth_logic_t *ctx, const char *password, size_t pwd_len);
+
 // Set initial password. Only works if in NEEDS_SETUP state. Transitions to READY on success.
 int auth_logic_setup_password(auth_logic_t *ctx, const char *password, size_t pwd_len);
 

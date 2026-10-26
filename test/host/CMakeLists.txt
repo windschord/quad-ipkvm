@@ -64,6 +64,10 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE http_guard auth_logic)
     endif()
 
+    if (test_source MATCHES "/auth_worker_slot/")
+        target_link_libraries(${test_name} PRIVATE auth_worker_slot)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/auth_worker_slot/include)
+    endif()
     if (test_source MATCHES "/auth_logic/")
         target_link_libraries(${test_name} PRIVATE auth_logic auth_crypto_ref)
     endif()
@@ -85,8 +89,13 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE ws_video_core)
     endif()
 
+    if (test_source MATCHES "/oled_ui/")
+        target_link_libraries(${test_name} PRIVATE oled_ui)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/oled_ui/include)
+    endif()
+
     if (test_source MATCHES "/web_assets/")
-        target_sources(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/web_server/web_assets.c)
+        target_sources(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/web_server/web_assets.c ${CMAKE_SOURCE_DIR}/../../components/web_server/web_headers.c)
         target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/web_server/include)
         target_compile_definitions(${test_name} PRIVATE WEB_ASSET_DIR="${CMAKE_SOURCE_DIR}/../../components/web_server/web")
     endif()
@@ -94,6 +103,12 @@ foreach(test_source ${TEST_SOURCES})
     if (test_source MATCHES "/oled_render/")
         target_link_libraries(${test_name} PRIVATE oled_render)
     endif()
+
+    if (test_source MATCHES "/mcp23017_logic/")
+        target_link_libraries(${test_name} PRIVATE mcp23017_logic)
+    endif()
+
+
 
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})
     target_link_options(${test_name} PRIVATE ${TEST_LINK_OPTIONS})
@@ -116,3 +131,12 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/ws_video_core ${CMAKE_BINA
 
 # Setup oled_render component
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/oled_render ${CMAKE_BINARY_DIR}/oled_render)
+
+# Setup mcp23017_logic component
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/mcp23017_logic ${CMAKE_BINARY_DIR}/mcp23017_logic)
+
+# Setup oled_ui component (pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/oled_ui ${CMAKE_BINARY_DIR}/oled_ui)
+
+# Setup auth_worker_slot component (pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/auth_worker_slot ${CMAKE_BINARY_DIR}/auth_worker_slot)

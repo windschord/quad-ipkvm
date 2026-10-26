@@ -12,6 +12,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const loginPassword = document.getElementById('login-password');
     const btnLogout = document.getElementById('btn-logout');
 
+    // Messages for the "error" codes POST /api/v1/auth/setup returns with 400 (docs/WEB_API.md).
+    const SETUP_ERRORS = {
+        password_too_short: 'パスワードは 10 文字以上にしてください',
+        password_too_long: 'パスワードは 128 バイト以下にしてください',
+        password_contains_admin: 'パスワードに「admin」を含めないでください',
+        password_all_same: '同じ文字だけの繰り返しは使えません',
+        password_sequential: '連番（0123456789 や abcdefghij など）は使えません',
+        password_common: 'よく使われるパスワードは使えません',
+        bad_request: 'リクエストが不正です'
+    };
+    // The server limit is in bytes of the UTF-8 encoded password, not in characters.
+    const MAX_PASSWORD_BYTES = 128;
+
     function showError(msg) {
         elError.textContent = msg;
         elError.classList.remove('error-hidden');
@@ -50,7 +63,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function doAuthAction(url, data, successCallback) {
+    async function doAuthAction(url, data, successCallback, errorMessages) {
         hideError();
         try {
             const res = await fetch(url, {
@@ -71,7 +84,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                     try {
                         const errData = await res.json();
-                        if (errData.error) msg += ': ' + errData.error;
+                        if (errData.error) {
+                            if (errorMessages && Object.prototype.hasOwnProperty.call(errorMessages, errData.error)) {
+                                msg = errorMessages[errData.error];
+                            } else {
+                                msg += ': ' + errData.error;
+                            }
+                        }
                     } catch (e) {}
                 }
                 throw new Error(msg);
@@ -88,6 +107,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const conf = setupPasswordConfirm.value;
         if (pwd !== conf) {
             showError('パスワードが一致しません');
+            return;
+        }
+        if (new TextEncoder().encode(pwd).length > MAX_PASSWORD_BYTES) {
+            showError(SETUP_ERRORS.password_too_long);
             return;
         }
         setupPassword.value = '';
@@ -107,7 +130,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 await fetchStatus();
             }
-        });
+        }, SETUP_ERRORS);
     });
 
     formLogin.addEventListener('submit', (e) => {

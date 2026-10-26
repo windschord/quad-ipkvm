@@ -14,7 +14,8 @@
             <h2>初期設定</h2>
             <form id="form-setup">
                 <label for="setup-password">パスワード</label>
-                <input type="password" id="setup-password" required>
+                <input type="password" id="setup-password" aria-describedby="setup-hint" required>
+                <p class="hint" id="setup-hint">10 文字以上、128 バイト以下。連番、同じ文字の繰り返し、よく使われるパスワード、「admin」を含むものは使えません。</p>
                 <label for="setup-password-confirm">パスワード（確認）</label>
                 <input type="password" id="setup-password-confirm" required>
                 <button type="submit">設定する</button>

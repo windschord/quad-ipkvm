@@ -1,7 +1,8 @@
 #!/bin/bash
 # Read-only HTTPS smoke test for a running quad-ipkvm device.
 #
-# Sends only GET requests and one harmless POST (no setup, no login), so it does not change the device state.
+# Sends only GET requests and harmless POSTs (no login, and setup only with passwords the policy rejects),
+# so it does not change the device state.
 # Checks the status codes and, above all, that each security header appears exactly ONCE per response.
 # (ESP-IDF's httpd_resp_set_hdr appends instead of replacing, so a handler that sets a header twice sends
 # two headers, and a duplicated Content-Security-Policy makes the browser enforce both policies.)
@@ -15,7 +16,7 @@
 set -u
 
 if [ $# -lt 1 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 fi
 
@@ -103,6 +104,32 @@ status_is 403
 for h in $SEC_HEADERS; do header_once "$h"; done
 fetch "GET / with the IPv4 literal as Host (intended to be allowed, docs/HW_VERIFY.md D6)" "https://$IP/"
 status_is 200
+
+# Setup rejection reasons. Only while the device is in needs_setup, and only with passwords the policy
+# rejects, so no password is ever set and the device state does not change. Once the device is set up
+# (state "ready") POST /setup answers 409 and this part is skipped.
+# shellcheck disable=SC2086
+fetch "GET /api/v1/auth/status (is the device in needs_setup?)" $RES "$BASE/api/v1/auth/status"
+if grep -q '"state":"needs_setup"' "$TMP/b"; then
+    # setup_rejects <label> <password> <expected error code>
+    setup_rejects() {
+        # shellcheck disable=SC2086
+        fetch "POST /api/v1/auth/setup ($1, expect $3)" $RES -X POST -H "Origin: $BASE" \
+            -H "Content-Type: application/json" --data "{\"password\":\"$2\"}" "$BASE/api/v1/auth/setup"
+        status_is 400
+        header_matches Content-Type "application/json"
+        if grep -q "\"error\":\"$3\"" "$TMP/b"; then pass "error code $3"; else fail "error code $3 expected, body: $(head -c 80 "$TMP/b")"; fi
+        for h in $SEC_HEADERS; do header_once "$h"; done
+    }
+    setup_rejects "9 characters" "abcd12345" password_too_short
+    setup_rejects "contains admin" "MyAdmin2468x" password_contains_admin
+    setup_rejects "same character" "aaaaaaaaaa" password_all_same
+    setup_rejects "sequential" "abcdefghij" password_sequential
+    # 1234567890 is not a run (9 is followed by 0); the common-password list rejects it.
+    setup_rejects "common password" "1234567890" password_common
+else
+    printf 'Skipping the setup rejection checks (the device is not in needs_setup).\n'
+fi
 
 printf '\n%s\n' "failed checks: $FAILS"
 exit "$FAILS"
