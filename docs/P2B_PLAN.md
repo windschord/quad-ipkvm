@@ -97,4 +97,5 @@
 - `docs/P2B_PREP.md`（PLL の式と候補、ESP-IDF v6.0.1 の CSI / ISP / JPEG / PPA の API と rev v1.3 の制約）。
 - ESP-IDF v6.0.1: `components/esp_driver_cam/csi/`（`esp_cam_ctlr_csi.c` / `.h` に電源の記述がないこと）、`docs/en/api-reference/peripherals/ldo_regulator.rst`（`chan_id` は回路図で決める）。
 - ESP-KVM の README と `docs/HOW-IT-WORKS.md`（公開されている説明のみ。コードは読んでいない）。
+- `docs/P2B_TC358743_REFERENCE.md`（東芝の機能仕様書が入手できないため、p4kvm・ESP-KVM・Espressif・Linux ドライバから集めた**事実のノート**。値の出典、ライセンス、食い違い、この計画書との差分を含む。コードは複製しない）。
 - `docs/ESP32-P4-ETH-schematic.pdf`（`VDD_MIPI_DPHY` と `ESP_LDO_VO1`〜`VO4` のネット名の存在のみ確認）。
