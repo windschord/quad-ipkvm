@@ -116,9 +116,7 @@ static const char* check_forbidden_patterns(const char *content, int is_js) {
 
 
     if (is_js) {
-        if (my_strcasestr(content, "ws://")) return "ws:// is forbidden, please construct it dynamically or use wss:// only";
-        // Prompt says: test/host/web_assets/test_web_pages.c の禁止パターンの検査を更新する（ws:// の禁止、location.host の使用、WebSocket の wss の確認など）
-        // Wait, "location.host の使用" might mean "assert that location.host is USED". Let's put that in a separate test.
+        if (my_strcasestr(content, "ws://")) return "ws:// found (the viewer must use wss:// only)";
 
         // JS specific checks
         if (my_strcasestr(content, "innerHTML")) return "innerHTML found";

@@ -67,19 +67,31 @@ menu "Quad IP-KVM Configuration"
         int "Max simultaneous WS clients"
         default 2
         range 1 8
+        help
+            Maximum number of simultaneous WebSocket video viewers (WS /video).
+            Each client is sent from the single httpd task, so keep this small.
 
     config WEB_SERVER_WS_TICK_MS
         int "WS Tick interval (ms)"
         default 20
         range 5 200
+        help
+            Interval at which the ws_video task offers the latest frame to each client.
 
     config WEB_SERVER_WS_TASK_STACK_SIZE
         int "WS Task Stack Size"
         default 4096
         range 2048 16384
+        help
+            Stack size in bytes of the ws_video task.
+            TODO(hw-verify): confirm the stack high water mark on the device.
 
     config WEB_SERVER_SEND_WAIT_TIMEOUT
         int "WS Send wait timeout (s)"
         default 2
         range 1 10
+        help
+            send_wait_timeout of the HTTPS server. WebSocket frames are sent inside the httpd task,
+            so a stalled client blocks the whole HTTP server for up to this many seconds per send.
+            TODO(hw-verify): measure the stall with a slow client.
 endmenu

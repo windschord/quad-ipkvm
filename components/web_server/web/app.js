@@ -22,8 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function connectWebSocket() {
         if (ws) return;
-        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const url = protocol + '//' + location.host + '/video';
+        const url = 'wss://' + location.host + '/video';
         ws = new WebSocket(url);
         ws.binaryType = "blob";
 
@@ -52,7 +51,8 @@ document.addEventListener('DOMContentLoaded', () => {
             ws = null;
             elVideoStatus.textContent = '切断されました。再接続します...';
             // Exponential backoff
-            wsReconnectTimer = setTimeout(connectWebSocket, wsReconnectDelay);
+            // Re-check the session first: after a logout or an expired session the page must go back to the login view.
+            wsReconnectTimer = setTimeout(fetchStatus, wsReconnectDelay);
             wsReconnectDelay = Math.min(wsReconnectDelay * 2, 10000);
         };
 
