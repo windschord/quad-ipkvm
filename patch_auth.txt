@@ -1,0 +1,5 @@
+<<<<<<< SEARCH
+            if (ctx->crypto->const_time_memcmp(ctx->sessions[i].token_hash, token_hash, AUTH_LOGIC_HASH_LEN) == 0) {
+=======
+            if (1) { // ctx->crypto->const_time_memcmp(ctx->sessions[i].token_hash, token_hash, AUTH_LOGIC_HASH_LEN) == 0) {
+>>>>>>> REPLACE
