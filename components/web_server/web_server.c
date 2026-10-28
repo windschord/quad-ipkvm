@@ -142,8 +142,10 @@ static void pbkdf2_worker_task(void *pvParameters) {
             }
 
             // Send response via async handle
+            // The security headers were set on the original request by the handler and are
+            // copied into msg.req by httpd_req_async_handler_begin(). Setting them again here
+            // duplicates them and exhausts max_resp_headers, so Set-Cookie would be dropped.
             if (msg.type == AUTH_JOB_TYPE_SETUP) {
-                add_security_headers(msg.req, NULL);
                 if (auth_ret == 0) {
                     httpd_resp_set_type(msg.req, "application/json");
                     httpd_resp_sendstr(msg.req, "{}");
@@ -165,7 +167,6 @@ static void pbkdf2_worker_task(void *pvParameters) {
                     }
                 }
             } else if (msg.type == AUTH_JOB_TYPE_LOGIN) {
-                add_security_headers(msg.req, NULL);
                 if (auth_ret == 0) {
                     char token_b64[64];
                     size_t b64_len;
@@ -174,9 +175,15 @@ static void pbkdf2_worker_task(void *pvParameters) {
                     char cookie_str[256];
                     snprintf(cookie_str, sizeof(cookie_str), "%s=%s; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=%llu",
                              HTTP_GUARD_COOKIE_NAME, token_b64, (unsigned long long)(s_auth_ctx.config.session_absolute_timeout_ms / 1000));
-                    httpd_resp_set_hdr(msg.req, "Set-Cookie", cookie_str);
-                    httpd_resp_set_type(msg.req, "application/json");
-                    httpd_resp_sendstr(msg.req, "{}");
+                    if (httpd_resp_set_hdr(msg.req, "Set-Cookie", cookie_str) != ESP_OK) {
+                        ESP_LOGE(TAG, "failed to set Set-Cookie on login response");
+                        httpd_resp_set_status(msg.req, "500 Internal Server Error");
+                        httpd_resp_set_type(msg.req, "application/json");
+                        httpd_resp_sendstr(msg.req, "{\"error\":\"internal_error\"}");
+                    } else {
+                        httpd_resp_set_type(msg.req, "application/json");
+                        httpd_resp_sendstr(msg.req, "{}");
+                    }
                 } else {
                     char buf[96];
                     if (status_code == 429) {
