@@ -114,7 +114,12 @@ static const char* check_forbidden_patterns(const char *content, int is_js) {
     if (my_strcasestr(content, "http://")) return "http:// found";
     if (my_strcasestr(content, "https://")) return "https:// found";
 
+
     if (is_js) {
+        if (my_strcasestr(content, "ws://")) return "ws:// is forbidden, please construct it dynamically or use wss:// only";
+        // Prompt says: test/host/web_assets/test_web_pages.c の禁止パターンの検査を更新する（ws:// の禁止、location.host の使用、WebSocket の wss の確認など）
+        // Wait, "location.host の使用" might mean "assert that location.host is USED". Let's put that in a separate test.
+
         // JS specific checks
         if (my_strcasestr(content, "innerHTML")) return "innerHTML found";
         if (my_strcasestr(content, "outerHTML")) return "outerHTML found";
@@ -201,6 +206,17 @@ void test_app_js(void) {
     if (err) TEST_FAIL_MESSAGE(err);
 }
 
+
+void test_app_js_websocket_rules(void) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/app.js", WEB_ASSET_DIR);
+    char *js = read_file(path);
+    TEST_ASSERT_NOT_NULL_MESSAGE(js, path);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(js, "location.host"), "location.host must be used to construct WS URL");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(js, "wss:"), "wss: schema must be checked or used");
+    free(js);
+}
+
 void test_app_css(void) {
     char path[256];
     snprintf(path, sizeof(path), "%s/app.css", WEB_ASSET_DIR);
@@ -285,6 +301,7 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_index_html);
     RUN_TEST(test_app_js);
+    RUN_TEST(test_app_js_websocket_rules);
     RUN_TEST(test_app_css);
     RUN_TEST(test_app_js_shows_a_message_for_every_setup_error_code);
     RUN_TEST(test_app_js_pairs_each_code_with_its_own_message);

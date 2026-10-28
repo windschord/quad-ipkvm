@@ -8,7 +8,8 @@ extern "C" {
 
 #include "frame_hub.h"
 
-esp_err_t web_server_start(frame_hub_t *hub);
+struct frame_hub_t;
+esp_err_t web_server_start(struct frame_hub_t *hub);
 
 #ifdef __cplusplus
 }
