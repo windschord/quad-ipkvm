@@ -62,3 +62,24 @@ menu "Quad IP-KVM Configuration"
         help
             Stack size for the worker task that computes PBKDF2 hashes.
             Needs enough for mbedTLS PBKDF2 context.
+
+    config WEB_SERVER_WS_MAX_CLIENTS
+        int "Max simultaneous WS clients"
+        default 2
+        range 1 8
+
+    config WEB_SERVER_WS_TICK_MS
+        int "WS Tick interval (ms)"
+        default 20
+        range 5 200
+
+    config WEB_SERVER_WS_TASK_STACK_SIZE
+        int "WS Task Stack Size"
+        default 4096
+        range 2048 16384
+
+    config WEB_SERVER_SEND_WAIT_TIMEOUT
+        int "WS Send wait timeout (s)"
+        default 2
+        range 1 10
+endmenu
