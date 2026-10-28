@@ -12,6 +12,69 @@ document.addEventListener('DOMContentLoaded', () => {
     const loginPassword = document.getElementById('login-password');
     const btnLogout = document.getElementById('btn-logout');
 
+    const elVideo = document.getElementById('video');
+    const elVideoStatus = document.getElementById('video-status');
+    let ws = null;
+    let wsReconnectTimer = null;
+    let wsReconnectDelay = 1000;
+    let isDecoding = false;
+    let ctx = elVideo.getContext('2d');
+
+    function connectWebSocket() {
+        if (ws) return;
+        const url = 'wss://' + location.host + '/video';
+        ws = new WebSocket(url);
+        ws.binaryType = "blob";
+
+        ws.onopen = () => {
+            elVideoStatus.textContent = '接続完了 / 受信中';
+            wsReconnectDelay = 1000; // reset
+        };
+
+        ws.onmessage = async (e) => {
+            if (isDecoding) return;
+            isDecoding = true;
+            try {
+                const bmp = await createImageBitmap(e.data);
+                elVideo.width = bmp.width;
+                elVideo.height = bmp.height;
+                ctx.drawImage(bmp, 0, 0);
+                bmp.close();
+            } catch (err) {
+                // Decode error handled
+            } finally {
+                isDecoding = false;
+            }
+        };
+
+        ws.onclose = () => {
+            ws = null;
+            elVideoStatus.textContent = '切断されました。再接続します...';
+            // Exponential backoff
+            // Re-check the session first: after a logout or an expired session the page must go back to the login view.
+            wsReconnectTimer = setTimeout(fetchStatus, wsReconnectDelay);
+            wsReconnectDelay = Math.min(wsReconnectDelay * 2, 10000);
+        };
+
+        ws.onerror = (e) => {
+            // WS Error handled
+        };
+    }
+
+    function disconnectWebSocket() {
+        if (wsReconnectTimer) {
+            clearTimeout(wsReconnectTimer);
+            wsReconnectTimer = null;
+        }
+        if (ws) {
+            ws.onclose = null; // Prevent reconnect logic
+            ws.close();
+            ws = null;
+        }
+        elVideoStatus.textContent = '切断されました';
+    }
+
+
     // Messages for the "error" codes POST /api/v1/auth/setup returns with 400 (docs/WEB_API.md).
     const SETUP_ERRORS = {
         password_too_short: 'パスワードは 10 文字以上にしてください',
@@ -48,11 +111,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             if (data.state === 'needs_setup') {
+                disconnectWebSocket();
                 showView(viewSetup);
             } else if (data.state === 'ready') {
                 if (data.authenticated) {
                     showView(viewDashboard);
+                    connectWebSocket();
                 } else {
+                    disconnectWebSocket();
                     showView(viewLogin);
                 }
             } else {

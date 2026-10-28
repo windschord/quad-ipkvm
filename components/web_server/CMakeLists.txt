@@ -7,7 +7,7 @@ else()
     idf_component_register(
         SRCS "web_server.c" "web_status_map.c" "web_assets.c" "web_headers.c"
         INCLUDE_DIRS "include"
-        REQUIRES esp_https_server nvs_flash mbedtls esp_timer web_cert auth_logic auth_crypto_mbedtls http_guard esp_hw_support net_eth lwip auth_worker_slot
+        REQUIRES esp_https_server nvs_flash mbedtls esp_timer web_cert auth_logic auth_crypto_mbedtls http_guard esp_hw_support net_eth lwip auth_worker_slot ws_video_core frame_hub ws_clients
         EMBED_FILES "web/index.html" "web/app.js" "web/app.css"
     )
 endif()

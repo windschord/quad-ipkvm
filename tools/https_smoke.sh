@@ -131,5 +131,21 @@ else
     printf 'Skipping the setup rejection checks (the device is not in needs_setup).\n'
 fi
 
+# WebSocket upgrade checks (negative only: no login is performed, so no session cookie exists).
+# An upgrade without a valid session must never succeed (101). The server may also close the connection
+# without any HTTP response (curl reports status 000); that counts as rejected too.
+# ws_upgrade_rejected <label> <origin>
+ws_upgrade_rejected() {
+    local code
+    printf '%s\n' "$1"
+    # shellcheck disable=SC2086
+    code=$(curl -k -s -m 5 --http1.1 $RES -o /dev/null -w '%{http_code}' \
+        -H "Upgrade: websocket" -H "Connection: Upgrade" -H "Sec-WebSocket-Version: 13" \
+        -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Origin: $2" "$BASE/video")
+    if [ "$code" = "101" ]; then fail "WS upgrade succeeded without a session (101)"; else pass "WS upgrade not accepted (status ${code:-none})"; fi
+}
+ws_upgrade_rejected "WS upgrade on /video without a session (Origin: $BASE)" "$BASE"
+ws_upgrade_rejected "WS upgrade on /video without a session (Origin: https://evil.example)" "https://evil.example"
+
 printf '\n%s\n' "failed checks: $FAILS"
 exit "$FAILS"
