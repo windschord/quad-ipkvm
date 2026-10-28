@@ -81,6 +81,8 @@ docs/             # HANDOFF.md, PLAN.md, HW_VERIFY.md, 各フェーズの結果�
 
 ## 4.4 OLED 表示と I/O エキスパンダ（オーナー合意 2026-10-25）
 
+> OLED-3（IDF との結合）の設計と、ESP-IDF v6.0.1 で確認した事実、判断が必要な点は **`docs/OLED3_PLAN.md`**。
+
 HANDOFF の範囲に、**状態表示用の OLED** と、パネル用の **I/O エキスパンダ（MCP23017）**を追加する。**電気的な数値（I2C アドレス、電源電圧、プルアップ、端子の電流）は、実機で確認するまで確定しない**（`TODO(hw-verify)`、`docs/HW_VERIFY.md` G 章）。
 
 ### 部品と接続
