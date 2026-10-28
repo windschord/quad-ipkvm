@@ -6,7 +6,9 @@
 extern "C" {
 #endif
 
-esp_err_t web_server_start(void);
+#include "frame_hub.h"
+
+esp_err_t web_server_start(frame_hub_t *hub);
 
 #ifdef __cplusplus
 }

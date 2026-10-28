@@ -58,3 +58,8 @@ button:hover {
     margin-bottom: 15px;
     border-radius: 4px;
 }
+
+#video {
+    max-width: 100%;
+    border: 1px solid #ccc;
+}

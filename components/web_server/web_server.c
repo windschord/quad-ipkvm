@@ -13,7 +13,12 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+
+#include "ws_video_core.h"
 #include "esp_timer.h"
+#include <inttypes.h>
+
+
 #include "lwip/sockets.h"
 #include <string.h>
 #include "auth_crypto_mbedtls.h"
@@ -49,6 +54,20 @@ static const char *TAG = "web_server";
 
 static auth_logic_t s_auth_ctx;
 static SemaphoreHandle_t s_auth_mutex;
+
+static ws_video_core_t s_ws_core;
+static SemaphoreHandle_t s_ws_mutex;
+static TaskHandle_t s_ws_task;
+
+static void ws_video_task(void *pvParameters) {
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_WEB_SERVER_WS_TICK_MS));
+        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+        ws_video_core_tick(&s_ws_core, esp_timer_get_time() / 1000);
+        xSemaphoreGive(s_ws_mutex);
+    }
+}
+
 static auth_worker_slot_t s_auth_worker_slot;
 static QueueHandle_t s_auth_worker_queue;
 
@@ -693,6 +712,164 @@ static esp_err_t err_405_handler(httpd_req_t *req, httpd_err_code_t err) {
     return ESP_OK;
 }
 
+
+static int ws_video_hub_register(void* user_data) {
+    frame_hub_t *hub = (frame_hub_t *)user_data;
+    if (!hub) return -1;
+    return frame_hub_register_client(hub);
+}
+
+static void ws_video_hub_unregister(void* user_data, int hub_client_id) {
+    frame_hub_t *hub = (frame_hub_t *)user_data;
+    if (hub) frame_hub_unregister_client(hub, hub_client_id);
+}
+
+static const video_frame_t* ws_video_hub_get_latest(void* user_data, int hub_client_id) {
+    frame_hub_t *hub = (frame_hub_t *)user_data;
+    if (!hub) return NULL;
+    return frame_hub_get_latest_frame(hub, hub_client_id);
+}
+
+static void ws_video_hub_release(void* user_data, int hub_client_id, const video_frame_t* frame) {
+    frame_hub_t *hub = (frame_hub_t *)user_data;
+    if (hub) frame_hub_release_frame(hub, hub_client_id, frame);
+}
+
+static void ws_video_send_done_cb(esp_err_t err, int socket, void *arg) {
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    ws_video_core_on_send_done(&s_ws_core, socket, err == ESP_OK);
+    xSemaphoreGive(s_ws_mutex);
+}
+
+static int ws_video_io_begin_send(void* user_data, ws_video_conn_t conn, const uint8_t* data, size_t len) {
+    httpd_handle_t server = (httpd_handle_t)user_data;
+    int fd = (int)(intptr_t)conn;
+    httpd_ws_frame_t ws_pkt = {
+        .payload = (uint8_t*)data,
+        .len = len,
+        .type = HTTPD_WS_TYPE_BINARY,
+        .final = true
+    };
+    esp_err_t ret = httpd_ws_send_data_async(server, fd, &ws_pkt, ws_video_send_done_cb, NULL);
+    return (ret == ESP_OK) ? 0 : -1;
+}
+
+static void ws_video_io_request_close(void* user_data, ws_video_conn_t conn) {
+    httpd_handle_t server = (httpd_handle_t)user_data;
+    int fd = (int)(intptr_t)conn;
+    httpd_sess_trigger_close(server, fd);
+}
+
+static bool ws_video_io_validate_session(void* user_data, const uint8_t token[32]) {
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    bool valid = (auth_logic_validate_session(&s_auth_ctx, token, 32, esp_timer_get_time() / 1000) == 0);
+    xSemaphoreGive(s_auth_mutex);
+    return valid;
+}
+
+static esp_err_t ws_video_pre_handshake_cb(httpd_req_t *req) {
+    bool host_ok = check_host_origin(req, false); // GET but check host
+
+    // Strictly enforce origin matching for WebSocket upgrade (CSWSH protection)
+    bool origin_ok = false;
+    char origin_buf[64] = {0};
+    if (httpd_req_get_hdr_value_str(req, "Origin", origin_buf, sizeof(origin_buf)) == ESP_OK) {
+        char host_buf[64] = {0};
+        if (httpd_req_get_hdr_value_str(req, "Host", host_buf, sizeof(host_buf)) == ESP_OK) {
+            char expected_origin[128];
+            snprintf(expected_origin, sizeof(expected_origin), "https://%s", host_buf);
+            if (strcmp(origin_buf, expected_origin) == 0) {
+                origin_ok = true;
+            }
+        }
+    }
+
+    uint8_t token[32];
+    bool has_token = get_session_token(req, token);
+
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    bool valid = false;
+    if (has_token) {
+        valid = (auth_logic_validate_session(&s_auth_ctx, token, sizeof(token), esp_timer_get_time() / 1000) == 0);
+    }
+    auth_state_e state = s_auth_ctx.state;
+    xSemaphoreGive(s_auth_mutex);
+
+    http_guard_action_e action = http_guard_decide(state, HTTP_GUARD_METHOD_GET, HTTP_GUARD_PATH_WS_VIDEO, valid, origin_ok, false, host_ok);
+
+    if (action != HTTP_GUARD_ACTION_ALLOW) {
+        ESP_LOGE(TAG, "WS Upgrade rejected: action=%d", action);
+        return ESP_FAIL; // Connection will be closed, fail-closed
+    }
+
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    int active_clients = ws_clients_count(&s_ws_core.clients);
+    xSemaphoreGive(s_ws_mutex);
+
+    if (active_clients >= CONFIG_WEB_SERVER_WS_MAX_CLIENTS) {
+        ESP_LOGE(TAG, "WS Upgrade rejected: Max clients reached");
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
+    uint8_t token[32];
+    if (!get_session_token(req, token)) {
+        return ESP_FAIL;
+    }
+
+    int fd = httpd_req_to_sockfd(req);
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    int ret = ws_video_core_on_connect(&s_ws_core, (ws_video_conn_t)(intptr_t)fd, fd, token, esp_timer_get_time() / 1000);
+    xSemaphoreGive(s_ws_mutex);
+
+    if (ret != 0) {
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t ws_video_handler(httpd_req_t *req) {
+    if (req->method == HTTP_GET) {
+        ESP_LOGI(TAG, "WS client handshaked");
+        return ESP_OK;
+    }
+
+    httpd_ws_frame_t ws_pkt;
+    memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
+    ws_pkt.type = HTTPD_WS_TYPE_TEXT;
+
+    esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    if (ws_pkt.len) {
+        uint8_t *buf = calloc(1, ws_pkt.len + 1);
+        if (buf) {
+            ws_pkt.payload = buf;
+            ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
+            free(buf);
+        }
+    }
+
+    int fd = httpd_req_to_sockfd(req);
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    ws_video_core_on_client_data(&s_ws_core, fd);
+    xSemaphoreGive(s_ws_mutex);
+
+    return ESP_OK;
+}
+
+static void ws_video_close_fn(httpd_handle_t handle, int sockfd) {
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    ws_video_core_on_close(&s_ws_core, sockfd);
+    xSemaphoreGive(s_ws_mutex);
+    close(sockfd);
+}
+
 static esp_err_t logout_handler(httpd_req_t *req) {
     add_security_headers(req, NULL);
     bool host_ok = check_host_origin(req, true);
@@ -732,6 +909,30 @@ esp_err_t web_server_start(void) {
 
     init_web_assets_sizes();
 
+    s_ws_mutex = xSemaphoreCreateMutex();
+    ws_video_core_config_t ws_config = {
+        .max_clients = CONFIG_WEB_SERVER_WS_MAX_CLIENTS,
+        .session_check_interval_ms = 5000,
+        .hub_register = ws_video_hub_register,
+        .hub_unregister = ws_video_hub_unregister,
+        .hub_get_latest = ws_video_hub_get_latest,
+        .hub_release = ws_video_hub_release,
+        .io_begin_send = ws_video_io_begin_send,
+        .io_request_close = ws_video_io_request_close,
+        .io_validate_session = ws_video_io_validate_session,
+        .user_data = hub
+    };
+    if (ws_video_core_init(&s_ws_core, &ws_config) != 0) {
+        ESP_LOGE(TAG, "Failed to initialize ws_video_core");
+        return ESP_FAIL;
+    }
+
+    if (xTaskCreate(ws_video_task, "ws_video", CONFIG_WEB_SERVER_WS_TASK_STACK_SIZE, NULL, 4, &s_ws_task) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create ws_video task");
+        return ESP_FAIL;
+    }
+
+
     s_auth_mutex = xSemaphoreCreateMutex();
     auth_worker_slot_init(&s_auth_worker_slot);
     s_auth_worker_queue = xQueueCreate(1, sizeof(auth_worker_msg_t));
@@ -760,13 +961,19 @@ esp_err_t web_server_start(void) {
         return ESP_FAIL;
     }
 
+
     httpd_ssl_config_t conf = HTTPD_SSL_CONFIG_DEFAULT();
-    conf.httpd.max_open_sockets = 7; // Max clients + 1 for status, etc.
+    conf.httpd.max_open_sockets = CONFIG_WEB_SERVER_WS_MAX_CLIENTS + 5; // Max clients + 5 for status, API etc.
     conf.httpd.lru_purge_enable = true;
     conf.httpd.stack_size = 10240; // 10KB to ensure PBKDF2/mbedTLS have enough space
-    conf.httpd.max_uri_handlers = 16;
-
-    char *cert_pem = NULL;
+    conf.httpd.max_uri_handlers = 17; // Increased for WS
+    conf.httpd.send_wait_timeout = CONFIG_WEB_SERVER_SEND_WAIT_TIMEOUT;
+    conf.httpd.close_fn = ws_video_close_fn;
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    conf.httpd.ws_pre_handshake_cb = ws_video_pre_handshake_cb;
+    conf.httpd.ws_post_handshake_cb = ws_video_post_handshake_cb;
+#endif
+char *cert_pem = NULL;
     size_t cert_len = 0;
     char *key_pem = NULL;
     size_t key_len = 0;
@@ -820,6 +1027,11 @@ esp_err_t web_server_start(void) {
         return ret;
     }
 
+
+    if (hub) {
+        s_ws_core.config.user_data = server; // Set server handle for io functions to use
+    }
+
     httpd_uri_t static_root_uri = { .uri = "/", .method = HTTP_GET, .handler = static_handler, .user_ctx = NULL };
     httpd_uri_t static_js_uri = { .uri = "/app.js", .method = HTTP_GET, .handler = static_handler, .user_ctx = NULL };
     httpd_uri_t static_css_uri = { .uri = "/app.css", .method = HTTP_GET, .handler = static_handler, .user_ctx = NULL };
@@ -828,19 +1040,29 @@ esp_err_t web_server_start(void) {
     httpd_uri_t login_uri = { .uri = "/api/v1/auth/login", .method = HTTP_POST, .handler = login_handler, .user_ctx = NULL };
     httpd_uri_t logout_uri = { .uri = "/api/v1/auth/logout", .method = HTTP_POST, .handler = logout_handler, .user_ctx = NULL };
 
+    httpd_uri_t ws_video_uri = {
+        .uri = "/video",
+        .method = HTTP_GET,
+        .handler = ws_video_handler,
+        .user_ctx = NULL,
+        .is_websocket = true,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = NULL
+    };
+
     if (httpd_register_uri_handler(server, &static_root_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &static_js_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &static_css_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &status_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &setup_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &login_uri) != ESP_OK ||
-        httpd_register_uri_handler(server, &logout_uri) != ESP_OK) {
+        httpd_register_uri_handler(server, &logout_uri) != ESP_OK ||
+        (hub && httpd_register_uri_handler(server, &ws_video_uri) != ESP_OK)) {
         ESP_LOGE(TAG, "Failed to register URI handlers");
         httpd_ssl_stop(server);
         return ESP_FAIL;
     }
-
-    if (httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, err_404_handler) != ESP_OK ||
+if (httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, err_404_handler) != ESP_OK ||
         httpd_register_err_handler(server, HTTPD_405_METHOD_NOT_ALLOWED, err_405_handler) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register error handlers");
         httpd_ssl_stop(server);

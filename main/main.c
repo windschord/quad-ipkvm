@@ -87,11 +87,8 @@ void app_main(void)
         } else if (event_ret != ESP_OK && event_ret != ESP_ERR_INVALID_STATE) {
             ESP_LOGE(TAG, "Web server not started because esp_event_loop_create_default failed");
         } else {
-            if (web_server_start() == ESP_OK) {
-                ESP_LOGI(TAG, "Web server started successfully");
-            } else {
-                ESP_LOGE(TAG, "Web server failed to start");
-            }
+            // Deferred web_server_start to be called after frame hub is created.
+            // If frame hub fails, web_server_start is called with NULL.
         }
     }
 #endif
@@ -141,6 +138,17 @@ void app_main(void)
         } else {
             ESP_LOGE(TAG, "Failed to create frame hub");
         }
+#if CONFIG_WEB_SERVER_ENABLE
+        if (netif_ret == ESP_OK || netif_ret == ESP_ERR_INVALID_STATE) {
+            if (event_ret == ESP_OK || event_ret == ESP_ERR_INVALID_STATE) {
+                if (web_server_start(hub) == ESP_OK) {
+                    ESP_LOGI(TAG, "Web server started successfully");
+                } else {
+                    ESP_LOGE(TAG, "Web server failed to start");
+                }
+            }
+        }
+#endif
     }
 
     // Use a standard C `if` to guard the body, as specifically requested

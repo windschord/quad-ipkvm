@@ -133,3 +133,20 @@ fi
 
 printf '\n%s\n' "failed checks: $FAILS"
 exit "$FAILS"
+
+echo "--- WS Upgrade Check ---"
+WS_NOAUTH=$(curl -k -s -o /dev/null -w "%{http_code}" --http1.1 -H "Upgrade: websocket" -H "Connection: Upgrade" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" -H "Origin: https://${HOST}" --max-time 3 https://${HOST}/video)
+if [ "$WS_NOAUTH" = "101" ]; then
+    echo "FAIL: Unauthenticated WS Upgrade succeeded"
+    exit 1
+else
+    echo "PASS: Unauthenticated WS Upgrade failed"
+fi
+
+WS_BAD_ORIGIN=$(curl -k -s -o /dev/null -w "%{http_code}" --http1.1 -H "Upgrade: websocket" -H "Connection: Upgrade" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" -H "Origin: https://evil.com" -b session.cookie --max-time 3 https://${HOST}/video)
+if [ "$WS_BAD_ORIGIN" = "101" ]; then
+    echo "FAIL: Bad Origin WS Upgrade succeeded"
+    exit 1
+else
+    echo "PASS: Bad Origin WS Upgrade failed"
+fi
