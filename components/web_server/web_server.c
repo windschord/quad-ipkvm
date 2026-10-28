@@ -56,14 +56,12 @@ static auth_logic_t s_auth_ctx;
 static SemaphoreHandle_t s_auth_mutex;
 
 static ws_video_core_t s_ws_core;
-static struct {
+// Shared context for the ws_video_core callbacks (the core hands the same user_data to all of them).
+typedef struct {
     frame_hub_t *hub;
     httpd_handle_t server;
-} s_ws_ctx;
-static struct {
-    frame_hub_t *hub;
-    httpd_handle_t server;
-} s_ws_ctx;
+} ws_ctx_t;
+static ws_ctx_t s_ws_ctx;
 static SemaphoreHandle_t s_ws_mutex;
 static TaskHandle_t s_ws_task;
 
@@ -722,24 +720,24 @@ static esp_err_t err_405_handler(httpd_req_t *req, httpd_err_code_t err) {
 
 
 static int ws_video_hub_register(void* user_data) {
-    frame_hub_t *hub = user_data ? ((struct { frame_hub_t *hub; httpd_handle_t server; } *)user_data)->hub : NULL;
+    frame_hub_t *hub = user_data ? ((ws_ctx_t *)user_data)->hub : NULL;
     if (!hub) return -1;
     return frame_hub_register_client(hub);
 }
 
 static void ws_video_hub_unregister(void* user_data, int hub_client_id) {
-    frame_hub_t *hub = user_data ? ((struct { frame_hub_t *hub; httpd_handle_t server; } *)user_data)->hub : NULL;
+    frame_hub_t *hub = user_data ? ((ws_ctx_t *)user_data)->hub : NULL;
     if (hub) frame_hub_unregister_client(hub, hub_client_id);
 }
 
 static const video_frame_t* ws_video_hub_get_latest(void* user_data, int hub_client_id) {
-    frame_hub_t *hub = user_data ? ((struct { frame_hub_t *hub; httpd_handle_t server; } *)user_data)->hub : NULL;
+    frame_hub_t *hub = user_data ? ((ws_ctx_t *)user_data)->hub : NULL;
     if (!hub) return NULL;
     return frame_hub_get_latest_frame(hub, hub_client_id);
 }
 
 static void ws_video_hub_release(void* user_data, int hub_client_id, const video_frame_t* frame) {
-    frame_hub_t *hub = user_data ? ((struct { frame_hub_t *hub; httpd_handle_t server; } *)user_data)->hub : NULL;
+    frame_hub_t *hub = user_data ? ((ws_ctx_t *)user_data)->hub : NULL;
     if (hub) frame_hub_release_frame(hub, hub_client_id, frame);
 }
 
@@ -750,7 +748,7 @@ static void ws_video_send_done_cb(esp_err_t err, int socket, void *arg) {
 }
 
 static int ws_video_io_begin_send(void* user_data, ws_video_conn_t conn, const uint8_t* data, size_t len) {
-    httpd_handle_t server = user_data ? ((struct { frame_hub_t *hub; httpd_handle_t server; } *)user_data)->server : NULL;
+    httpd_handle_t server = user_data ? ((ws_ctx_t *)user_data)->server : NULL;
     if (!server) return -1;
     int fd = (int)(intptr_t)conn;
     httpd_ws_frame_t ws_pkt = {
@@ -764,8 +762,8 @@ static int ws_video_io_begin_send(void* user_data, ws_video_conn_t conn, const u
 }
 
 static void ws_video_io_request_close(void* user_data, ws_video_conn_t conn) {
-    httpd_handle_t server = user_data ? ((struct { frame_hub_t *hub; httpd_handle_t server; } *)user_data)->server : NULL;
-    if (!server) return -1;
+    httpd_handle_t server = user_data ? ((ws_ctx_t *)user_data)->server : NULL;
+    if (!server) return;
     int fd = (int)(intptr_t)conn;
     httpd_sess_trigger_close(server, fd);
 }
