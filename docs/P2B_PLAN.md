@@ -51,7 +51,7 @@
 
 | 順位 | 案 | 内容 | 理由 |
 |---|---|---|---|
-| **1（おすすめ）** | **公式 API を使った段階実行 + 値は Linux ドライバを参照して導く** | (1) PHY の電源 → (2) TC358743 の PLL と CSI の起動（レーンレート 972Mbps = `pll_prd=4`、`pll_fbd=144`。最初のモードは 720p60 UYVY）→ (3) `esp_cam_ctlr` で 1 フレームを PSRAM に取り込み、生データの統計で検証 → (4) JPEG（経路 B → A の順に実験）→ (5) `video_source_t` として `frame_hub` に publish。タイミング値は、Linux ドライバの 594Mbps / 972Mbps の値を**参照のみ**で読み、MIPI D-PHY の仕様と突き合わせて**自分で書き直す**（根拠を文書に残す） | 実績のある値（Linux、Raspberry Pi）に基づくので、試行錯誤が少ない。公式 API が使えれば、レジスタ直接設定のリスクを避けられる。段階ごとに、I2C のエラーカウンタや生データで**失敗箇所を特定できる** |
+| **1（おすすめ）** | **公式 API を使った段階実行 + 値は Linux ドライバを参照して導く** | (1) PHY の電源 → (2) TC358743 の PLL と CSI の起動（最初のモードは 720p60 UYVY。`P2B_PREP.md` §2-3 の表どおり、レーンレート 445.5Mbps = `pll_prd=4`、`pll_fbd=66`。972Mbps（`fbd=144`）は 1080p50 など後のモードの候補）→ (3) `esp_cam_ctlr` で 1 フレームを PSRAM に取り込み、生データの統計で検証 → (4) JPEG（経路 C か A から実験。B は第 1 フレームが取れたあとの最適化として試す）→ (5) `video_source_t` として `frame_hub` に publish。タイミング値は、Linux ドライバの 594Mbps / 972Mbps の値を**参照のみ**で読み、MIPI D-PHY の仕様と突き合わせて**自分で書き直す**（根拠を文書に残す）。参照できる表は 594 / 972Mbps のみで、445.5Mbps の値は D-PHY の仕様から導く（Q3）。導けないときは、720p60 を 972Mbps で送る案（参照できる値が使える）に切り替えることを、実機で検討する [未検証] | 実績のある値（Linux、Raspberry Pi）に基づくので、試行錯誤が少ない。公式 API が使えれば、レジスタ直接設定のリスクを避けられる。段階ごとに、I2C のエラーカウンタや生データで**失敗箇所を特定できる** |
 | 2 | 1 の方針で、**最初のモードを 1080p30 RGB888（経路 C）** にする | 色の並べ替えの問題（UYVY ↔ YVYU）を避け、JPEG の `RGB888` 入力へ直接渡す | 色の経路の未確認（Q5）が最小。ただし 1080p30 の RGB888 は 749Mbps/レーンで余裕が小さく、フレームも大きい（約 6MB）。fps が出ない見込み |
 | 3 | 1 の方針で、**最初から PPA で RGB に変換する経路 A** にする | UYVY → PPA（RGB565/RGB888）→ JPEG | PPA の UYVY 入力は公式に対応しており、確実。ただし他の人の実測で 1080p で約 104 ms の変換が掛かっており、fps が下がる |
 | 4 | **レジスタ直接設定（`MIPI_CSI_BRIDGE`）から始める** | ESP-KVM / p4kvm が行った方法を読み、自分で書く | v6.0.1 の公式 API で足りるか未確認のまま、非公開の領域に手を出すことになる。**公式 API が動かなかったときの退路**として取っておく |
@@ -62,17 +62,17 @@
 
 ## 6. 作業の分割
 
-依存関係: P2b-0 / P2b-1 / P2b-2 は並行できる。P2b-3 は P2b-1・P2b-2 のあと。P2b-4 以降は実機での確認とセット。
+依存関係: P2b-0 / P2b-1 は並行できる。P2b-2 は、実装だけなら P2b-0 と並行できる（**Q1 の確認までは Kconfig で無効にし、既定値を入れない**。有効化と既定値の設定は Q1 のあと）。P2b-3 は P2b-0（Q1・Q2）、P2b-1、P2b-2 のあと。P2b-4 以降は実機での確認とセット。
 
 | ID | 内容 | 担当 | 依存 | 触るところ | 完了条件 |
 |---|---|---|---|---|---|
-| **P2b-0** | 机上の確認: Q1（`VDD_MIPI_DPHY` の給電元）、Q7（TC358743 のテストパターンの有無）、Q8 の依頼、E1・E2 のケーブル | 実機担当 + オーナー | なし | `docs/HW_VERIFY.md` | 各項目の結果が `HW_VERIFY` に記録される |
+| **P2b-0** | 机上の確認（Q1・Q7・Q8）と実物の確認（Q2: E1・E2 のケーブルの入手・向き・ピン対応。導通確認と実際の挿入を含む）: Q1（`VDD_MIPI_DPHY` の給電元）、Q7（TC358743 のテストパターンの有無）、Q8 の依頼、Q2 | 実機担当 + オーナー | なし | `docs/HW_VERIFY.md` | 各項目の結果が `HW_VERIFY` に記録される |
 | **P2b-1** | `tc358743_pll_calc`（純 C）: `refclk` とレーンレートから、`pll_prd` / `pll_fbd` / `FRS` を求める。範囲外・不整合は失敗を返す | Jules | なし | `components/tc358743/`（新規ファイル）、`test/host/tc358743/` | `P2B_PREP.md` §2-3 の表（720p60 / 1080p30 / 1080p50 の `fbd`）をホストテストで再現。変異テスト |
 | **P2b-2** | PHY 電源 `mipi_phy_power`（IDF）: `esp_ldo_acquire_channel` で PHY を給電。**チャンネル番号と電圧は Kconfig（既定値は Q1 の確認後に決める。それまでは無効）** | Jules | P2b-0（Q1） | `components/mipi_phy_power/`（新規）、`main/Kconfig.projbuild` | `idf-build` が緑。実機で `VDD_MIPI_DPHY` の電圧を測れる状態 |
-| **P2b-3** | `tc358743_start_csi(mode)`: PLL と CSI の起動手順（P2b-1 の計算 + 参照して導いたタイミング値）、`CSI_CONFW`、出力形式、HPD。診断ログ（CSI のステータス・エラー）が実値になるか確認できる | Jules → 実機 | P2b-1, P2b-2 | `components/tc358743/` | `idf-build` が緑。実機で、CSI のステータスが「受信中」になる（`BRINGUP` 段階 3） |
+| **P2b-3** | `tc358743_start_csi(mode)`: PLL と CSI の起動手順（P2b-1 の計算 + 参照して導いたタイミング値）、`CSI_CONFW`、出力形式、HPD。診断ログ（CSI のステータス・エラー）が実値になるか確認できる | Jules → 実機 | P2b-0（Q1・Q2。実機での確認は、ケーブルと PHY の電源が揃ってから）, P2b-1, P2b-2 | `components/tc358743/` | `idf-build` が緑。実機で、CSI のステータスが「受信中」になる（`BRINGUP` 段階 3） |
 | **P2b-4** | `csi_capture`（IDF）: `esp_cam_ctlr_csi` で 2 レーン・UYVY の 1 フレームを PSRAM に取り込む。受信完了のコールバック、統計（フレーム数・エラー数）、解像度変更の検出の骨格 | Jules → 実機 | P2b-3 | `components/csi_capture/`（新規） | `idf-build` が緑。実機で、1 フレームが取れ、生データの統計（ゼロ以外の画素など）が妥当 |
-| **P2b-5** | JPEG 化の経路の実験（経路 B → A → C）。結果を `HW_VERIFY` に記録。確定した経路を `csi_capture` に組み込む | Jules → 実機 | P2b-4 | `components/csi_capture/` | 取り込んだ画面が JPEG として正しい色・向きで保存/表示できる |
-| **P2b-6** | `csi_video_source`（`video_source_t` の実装）: 取り込み → JPEG → `frame_hub` への publish。`Kconfig` で `test_pattern_source` と切り替え | Jules → 実機 | P2b-5 | `components/csi_video_source/`（新規）、`main/main.c`、`main/Kconfig.projbuild` | ブラウザ（`#51` のビューア）に PC の画面が映る |
+| **P2b-5** | JPEG 化の経路の実験（`P2B_PREP.md` §3-6 に従い、**経路 C か A から**。UYVY と JPEG の `YVYU` の並びが未確認のため、経路 B は第 1 フレームが取れたあと、fps 改善のために試す。切り替え条件: C / A で色が正しく、fps が足りないときだけ B を試す）。結果を `HW_VERIFY` に記録。確定した経路を `csi_capture` に組み込む | Jules → 実機 | P2b-4 | `components/csi_capture/` | 取り込んだ画面が JPEG として正しい色・向きで保存/表示できる |
+| **P2b-6** | `csi_video_source`（`video_source_t` の実装）: 取り込み → JPEG → `frame_hub` への publish。`Kconfig` で `test_pattern_source` と切り替え | Jules → 実機 | P2b-5 | `components/csi_video_source/`（新規）、`main/main.c`、`main/Kconfig.projbuild` | `Kconfig` の設定に応じて、`app_main` が使う `video_source_t`（`test_pattern_source` / `csi_video_source`）を選び、選んだソースの `start` を呼ぶ。ブラウザ（`#51` のビューア）に PC の画面が映る |
 | **P2b-7** | 解像度変更への追従（再同期）、`HW_VERIFY` の更新 | Jules → 実機 | P2b-6 | 同上 | PC 側で解像度を変えても、映像が復帰する |
 
 ### 6.1 実機担当の作業（P2b-0 と、各段階の確認）
