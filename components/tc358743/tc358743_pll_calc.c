@@ -18,7 +18,7 @@ bool tc358743_required_lane_rate_kbps(uint32_t h_active, uint32_t v_active, uint
     uint64_t total_bits_per_sec_x1000 = (uint64_t)h_active * v_active * fps_x1000 * bpp;
 
     // Check for overflow on the uint64_t multiplication (unlikely but safe)
-    if (total_bits_per_sec_x1000 / bpp / fps_x1000 / v_active != h_active) {
+    if (h_active > 65535 || v_active > 65535 || fps_x1000 > 1000000 || bpp > 64) {
         return false;
     }
 

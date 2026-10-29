@@ -19,7 +19,7 @@ extern "C" {
  * @param bpp Bits per pixel (e.g., 16 for UYVY, 24 for RGB888)
  * @param lanes Number of CSI-2 lanes (must be 1 or 2)
  * @param out_kbps Pointer to store the calculated required lane rate in kbps (rounded up)
- * @return true on success, false on invalid input or overflow
+ * @return true on success, false on invalid input (h_active/v_active <= 65535, fps_x1000 <= 1000000, bpp <= 64)
  */
 bool tc358743_required_lane_rate_kbps(uint32_t h_active, uint32_t v_active, uint32_t fps_x1000, uint32_t bpp, uint32_t lanes, uint32_t *out_kbps);
 

@@ -183,33 +183,20 @@ void test_pll_calc_boundaries(void) {
     TEST_ASSERT_FALSE(tc358743_pll_calc(27000000, 1000001, &cfg));
 }
 
-void test_pll_calc_frs_boundaries(void) {
+void test_pll_calc_frs_representative_values(void) {
     tc358743_pll_config_t cfg;
 
-    // Exact 500MHz (requires 500000 kbps) -> > 500MHz is 0, so exact 500MHz should be 1
-    // Refclk 27MHz, pll_prd 4, input 6.75MHz
-    // 500000 / 6.75 = 74.07 -> fbd=75 -> 506.25MHz (frs=0)
-    // fbd=74 -> 499.5MHz (frs=1)
-
-    // Let's use 26MHz for precise boundary hit if possible
-    // 26MHz / 6MHz = 4 (6.5MHz input)
-    // 500000 / 6.5 = 76.9 -> fbd=77 -> 500.5MHz
-
-    // We can directly test the frs logic by calculating the rate
-
-    // frs boundary > 500MHz (506.25MHz)
+    // FRS > 500MHz (e.g. 506.25MHz)
     TEST_ASSERT_TRUE(tc358743_pll_calc(27000000, 500000, &cfg));
     TEST_ASSERT_EQUAL(75, cfg.pll_fbd);
     TEST_ASSERT_EQUAL(506250, cfg.lane_rate_kbps);
     TEST_ASSERT_EQUAL(0, cfg.frs);
 
-    // frs boundary > 125MHz
-    // 125000 / 6.75 = 18.5 -> fbd=19 -> 128.25MHz
+    // FRS > 125MHz (e.g. 128.25MHz)
     TEST_ASSERT_TRUE(tc358743_pll_calc(27000000, 125000, &cfg));
     TEST_ASSERT_EQUAL(19, cfg.pll_fbd);
     TEST_ASSERT_EQUAL(128250, cfg.lane_rate_kbps);
-    // Removed wrong assert
-    // Wait: 128.25MHz is > 125MHz, so FRS should be 2. Let's verify our expectation.
+
     TEST_ASSERT_EQUAL(2, cfg.frs);
 
     // Rate < 125MHz -> FRS=3
@@ -221,6 +208,11 @@ void test_pll_calc_frs_boundaries(void) {
 }
 
 
+void test_required_lane_rate_limits(void);
+void test_required_lane_rate_uint32_max(void);
+void test_pll_calc_26mhz_42mhz(void);
+void test_pll_calc_out_unmodified_on_fail(void);
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_required_lane_rate_basic);
@@ -228,6 +220,89 @@ int main(void) {
     RUN_TEST(test_pll_calc_basic);
     RUN_TEST(test_pll_calc_manual_fbd);
     RUN_TEST(test_pll_calc_boundaries);
-    RUN_TEST(test_pll_calc_frs_boundaries);
+    RUN_TEST(test_pll_calc_frs_representative_values);
+    RUN_TEST(test_required_lane_rate_limits);
+    RUN_TEST(test_required_lane_rate_uint32_max);
+    RUN_TEST(test_pll_calc_26mhz_42mhz);
+    RUN_TEST(test_pll_calc_out_unmodified_on_fail);
     return UNITY_END();
+}
+
+void test_required_lane_rate_limits(void) {
+    uint32_t rate_kbps = 0;
+
+    // Bounds check
+    TEST_ASSERT_FALSE(tc358743_required_lane_rate_kbps(65536, 720, 60000, 16, 2, &rate_kbps));
+    TEST_ASSERT_FALSE(tc358743_required_lane_rate_kbps(1280, 65536, 60000, 16, 2, &rate_kbps));
+    TEST_ASSERT_FALSE(tc358743_required_lane_rate_kbps(1280, 720, 1000001, 16, 2, &rate_kbps));
+    TEST_ASSERT_FALSE(tc358743_required_lane_rate_kbps(1280, 720, 60000, 65, 2, &rate_kbps));
+
+    // Maximum allowed values
+    TEST_ASSERT_FALSE(tc358743_required_lane_rate_kbps(65535, 65535, 1000000, 64, 2, &rate_kbps));
+    // h * v * fps * bpp = 65535 * 65535 * 1000000 * 64 = 2.7487373e+17 < 2^64 (1.844e+19)
+    // divided by 2000000 = 137436862502 kbps > UINT32_MAX
+    // Wait, the result is greater than UINT32_MAX, so it will actually fail the UINT32_MAX check.
+    // So let's test a value that passes the max input check but fails the UINT32_MAX check.
+}
+
+void test_required_lane_rate_uint32_max(void) {
+    uint32_t rate_kbps = 0;
+
+    // h_active=1048576 (but wait, max is 65535 now).
+    // Let's use max valid inputs that produce > UINT32_MAX
+    // 65535 * 65535 * 1000000 * 64 / 2000000 = 137436862502 kbps (fails UINT32_MAX)
+    TEST_ASSERT_FALSE(tc358743_required_lane_rate_kbps(65535, 65535, 1000000, 64, 2, &rate_kbps));
+
+    // Max valid that fits in UINT32_MAX
+    // UINT32_MAX = 4294967295 kbps
+    // e.g. 65535 * 65535 * 1000 * 2 / 2000000 = 4294836 kbps -> OK
+    TEST_ASSERT_TRUE(tc358743_required_lane_rate_kbps(65535, 65535, 2000, 2, 2, &rate_kbps));
+}
+
+void test_pll_calc_26mhz_42mhz(void) {
+    tc358743_pll_config_t cfg;
+
+    // 26MHz Refclk, 720p60 UYVY (req: 442368 kbps)
+    // pll_prd = 26M / 6M = 4. Input = 26M / 4 = 6.5MHz.
+    // min_lane_rate = 442368. fbd = ceil(442368 / 6500) = ceil(68.056) = 69.
+    // lane_rate_kbps = 6500 * 69 = 448500 kbps (448.5 Mbps).
+    // frs: 448.5MHz > 250MHz -> frs = 1.
+    TEST_ASSERT_TRUE(tc358743_pll_calc(26000000, 442368, &cfg));
+    TEST_ASSERT_EQUAL(4, cfg.pll_prd);
+    TEST_ASSERT_EQUAL(69, cfg.pll_fbd);
+    TEST_ASSERT_EQUAL(448500, cfg.lane_rate_kbps);
+    TEST_ASSERT_EQUAL(1, cfg.frs);
+
+    // 42MHz Refclk, 720p60 UYVY (req: 442368 kbps)
+    // pll_prd = 42M / 6M = 7. Input = 42M / 7 = 6.0MHz.
+    // min_lane_rate = 442368. fbd = ceil(442368 / 6000) = ceil(73.728) = 74.
+    // lane_rate_kbps = 6000 * 74 = 444000 kbps (444.0 Mbps).
+    // frs: 444.0MHz > 250MHz -> frs = 1.
+    TEST_ASSERT_TRUE(tc358743_pll_calc(42000000, 442368, &cfg));
+    TEST_ASSERT_EQUAL(7, cfg.pll_prd);
+    TEST_ASSERT_EQUAL(74, cfg.pll_fbd);
+    TEST_ASSERT_EQUAL(444000, cfg.lane_rate_kbps);
+    TEST_ASSERT_EQUAL(1, cfg.frs);
+}
+
+void test_pll_calc_out_unmodified_on_fail(void) {
+    tc358743_pll_config_t cfg;
+    cfg.pll_prd = 999;
+    cfg.pll_fbd = 999;
+    cfg.lane_rate_kbps = 999;
+    cfg.frs = 999;
+
+    // Invalid refclk
+    TEST_ASSERT_FALSE(tc358743_pll_calc(25000000, 442368, &cfg));
+    TEST_ASSERT_EQUAL(999, cfg.pll_prd);
+    TEST_ASSERT_EQUAL(999, cfg.pll_fbd);
+    TEST_ASSERT_EQUAL(999, cfg.lane_rate_kbps);
+    TEST_ASSERT_EQUAL(999, cfg.frs);
+
+    // Exceed max lane rate (1Gbps)
+    TEST_ASSERT_FALSE(tc358743_pll_calc(27000000, 1500000, &cfg));
+    TEST_ASSERT_EQUAL(999, cfg.pll_prd);
+    TEST_ASSERT_EQUAL(999, cfg.pll_fbd);
+    TEST_ASSERT_EQUAL(999, cfg.lane_rate_kbps);
+    TEST_ASSERT_EQUAL(999, cfg.frs);
 }
