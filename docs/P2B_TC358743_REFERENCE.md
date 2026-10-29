@@ -58,7 +58,7 @@
 | 3f | CSI 送信側 | `SYSCTL.CTXRST` ブロックリセット → 使わないレーンを `D?W_CNTRL` で LANEDISABLE → タイミング 9 レジスタ → `HSTXVREGEN` → `TXOPTIONCNTRL`=0 → `STARTCNTRL`=1 → `CSI_START`=1 → `CSI_CONFW` を 4 回 | p4kvm `tc358743.c:554-604`; Linux `tc358743.c:803-865` |
 | 3g | 出力色形式 | 既定は RGB888（3 章参照）。UYVY は後から切り替え | p4kvm `tc358743.c:519-534,694-695` |
 | 3h | 割り込み | `INTSTATUS`=0xFFFF、`INTMASK`=0xFCFF（HDMI と CSI のみ許可） | p4kvm `tc358743.c:697-698` |
-| 4 | （P4 側、p4kvm）バッファ確保 → `esp_cam_new_csi_ctlr` → コールバック登録 → `esp_cam_ctlr_enable` → ISP プロセッサ作成 → `ISP.cntl.isp_en=0` → MIPI_CSI_BRIDGE 設定。**HDMI 出力を有効にする前**に行う | p4kvm `capture_hw.c:215-285` |
+| 4 | （P4 側、p4kvm）バッファ確保 → `esp_cam_new_csi_ctlr` → コールバック登録 → `esp_cam_ctlr_enable` → ISP プロセッサ作成 → `ISP.cntl.isp_en=0` → MIPI_CSI_BRIDGE 設定 | **HDMI 出力を有効にする前**に行う | p4kvm `capture_hw.c:215-285` |
 | 5 | HDMI 出力有効化 | `enable_stream(true)`（`VI_MUTE`=AUTO_MUTE(0xC0)、`CONFCTL.VBUFEN/ABUFEN` セット）→ **150 ms** → `HPD_OUT0`=1 → **50 ms** → `CSI_START`=1 を**再書き込み**（「CONFCTL が映像を有効にした後で書き直さないと CSI TX が idle のままの基板がある」とコメント） | p4kvm `tc358743.c:705-717,366-376` |
 | 6 | HDMI ロック待ち | `SYS_STATUS`(0x8520) を 50 ms 刻みで最大 **5000 ms**。TMDS(0x02) と SYNC(0x80) の両方が立つまで。**タイムアウトしても続行** | p4kvm `capture_hw.c:68-82,287` |
 | 7 | CSI 受信開始 | MIPI_CSI_BRIDGE を再設定 → `esp_cam_ctlr_start` | p4kvm `capture_hw.c:289-290` |
@@ -252,7 +252,7 @@ Espressif `esp_cam_sensor` の順序は p4kvm と同一（`init_streaming` → `
 
 - 取得順序: LDO 取得 → リセットパルス → I2C → TC358743 の初期化 → CSI 作成（ハンドルは解放しない）。
 - `esp_ldo_acquire_channel` の説明: 「`chan_id` は回路図で決めよ（例: LDO_VO1 なら 1）」（`esp_ldo_regulator.h:26,40`）。
-- **本プロジェクトの突き合わせ**: ボードの `VDD_MIPI_DPHY` は ESP_LDO_VO3（chan_id 3）、候補は 2500 mV。→ **p4kvm / espkvm の値（chan 3、2500 mV）と一致**。ただし 2 つの実装は同じ系統（espkvm は p4kvm の派生）で、**独立した確認ではない**。電圧の最終確認は回路図とチップのデータシート（`TODO(hw-verify)` のまま）。
+- **本プロジェクトの突き合わせ**: ボードの `VDD_MIPI_DPHY` が `ESP_LDO_VO3`（chan_id 3）に接続されることは、実機担当が回路図の PDF の目視で確認した（`HW_VERIFY` E9、PR #54。この調査の担当者は確認していない）。電圧は候補 2500 mV（データシート v0.7 は rev v3.x 向けで、**rev v1.3 への適用は未確認**）。→ **p4kvm / espkvm の値（chan 3、2500 mV）と一致**。ただし 2 つの実装は同じ系統（espkvm は p4kvm の派生）で、**独立した確認ではない**。電圧の最終確認は実機での測定（`TODO(hw-verify)` のまま）。
 - 参考（別用途）: microSD の IO 電源は LDO_VO4（P4-ETH と Function EV）。MIPI とは別チャンネル（espkvm `docs/PORTING.md:141-146`）。
 
 ---
@@ -264,7 +264,7 @@ Espressif `esp_cam_sensor` の順序は p4kvm と同一（`init_streaming` → `
 | **p4kvm（rev v1.3）** | RGB888、0x24、24bpp、バッファ 2 面 | `cache_msync (M2C)` → `jpeg_encoder_process`、`src_type = RGB888`、`sub_sample = YUV420`、既定品質 70 | **なし**（rev 3+ で「希望的に」可能と書くだけ）。README: 「**YUV は JPEG エンコーダとうまく動かないので、CSI 経路は RGB888 固定**」 | `capture_mjpeg.c:95-125`; `README.md:68-69` |
 | **espkvm、rev < 3.0（Waveshare P4-ETH など）** | RGB888、0x24 | 〃（`capture_pixfmt.c:17-29`、`capture_mjpeg.c:246-250,262`） | **PPA（SRM）で RGB888 → YUV420**（BT.601 リミテッド、拡大縮小なし、出力は 16 の倍数に切り上げた高さ）→ H.264 エンコーダ（入力形式 `O_UYY_E_VYY`）。PPA で YUV420 に変換しながら拡大縮小すると**ブロッキング呼び出しが戻らない** | `capture_h264.c:1100-1161`、`capture_pixfmt.c:17-29`、`HARDWARE-NOTES.md:493-519` |
 | espkvm、rev ≥ 3.0 | UYVY、0x1E、16bpp、host_cm の 8 ビットスワップ | `src_type = YUV422`、**`sub_sample = YUV422`**（YUV420 にすると色が崩れる） | `ESP_H264_RAW_FMT_UYVY` 直結（PPA なし） | `capture_pixfmt.c:32-61` |
-| espkvm、rev < 3.0 + LT6911D（M5Stack、チップ rev v1.3） | YUV422、0x1E | **PPA を「ARGB8888 と偽る」ことで 4 バイトを逆順に並べ替え**（`rgb_swap`）→ JPEG（YUV422）。MJPEG のみ。H.264 は CPU で並べ替え、1280x720 まで | `capture_pixfmt.c:63-88`、`HARDWARE-NOTES.md:223-298,707-733` |
+| espkvm、rev < 3.0 + LT6911D（M5Stack、チップ rev v1.3） | YUV422、0x1E | **PPA を「ARGB8888 と偽る」ことで 4 バイトを逆順に並べ替え**（`rgb_swap`）→ JPEG（YUV422）。MJPEG のみ | H.264 は CPU で並べ替え、1280x720 まで | `capture_pixfmt.c:63-88`、`HARDWARE-NOTES.md:223-298,707-733` |
 | Espressif | RGB888 または UYVY（上記 4-2 の注意つき） | — | — | — |
 
 - チップ rev v1.3 で動くか: **p4kvm と espkvm は rev v1.3 実機で動作**と自称（p4kvm `README.md:68`、espkvm `HARDWARE-NOTES.md:15`「ESP32-P4 rev v1.3」、`sdkconfig.defaults:7-11` で `CONFIG_ESP32P4_SELECTS_REV_LESS_V3` / `REV_MIN_100`）。rev < 3 と ≥ 3 のイメージは**互換性が無い**（`HARDWARE-NOTES.md:567-574`）。
