@@ -19,6 +19,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(unity)
 
 # Setup kvm_logic component
+add_subdirectory(../../components/mipi_phy_power mipi_phy_power)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_logic ${CMAKE_BINARY_DIR}/kvm_logic)
 
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/web_server ${CMAKE_BINARY_DIR}/web_server)
@@ -55,6 +56,10 @@ foreach(test_source ${TEST_SOURCES})
     add_executable(${test_name} ${test_source})
     # Link kvm_logic for all, and conditionally link tc358743_edid for its tests
     target_link_libraries(${test_name} PRIVATE unity kvm_logic)
+
+    if (test_source MATCHES "/mipi_phy_power/")
+        target_link_libraries(${test_name} PRIVATE mipi_phy_power)
+    endif()
 
     if (test_source MATCHES "test_edid.c")
         target_link_libraries(${test_name} PRIVATE tc358743_edid)

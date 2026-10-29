@@ -17,6 +17,7 @@
 
 // We deliberately include this unconditionally to ensure the header builds correctly regardless of toggle
 #include "tc358743.h"
+#include "mipi_phy_power.h"
 #include "net_eth.h"
 #include "driver/i2c_master.h"
 #include "frame_hub.h"
@@ -154,6 +155,13 @@ void app_main(void)
     // Use a standard C `if` to guard the body, as specifically requested
     if (CONFIG_TC358743_INIT) {
         ESP_LOGI(TAG, "Starting TC358743 initialization...");
+
+        if (CONFIG_MIPI_PHY_POWER_ENABLE) {
+            esp_err_t power_err = mipi_phy_power_enable();
+            if (power_err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to enable MIPI PHY power: %s", esp_err_to_name(power_err));
+            }
+        }
 
         i2c_master_bus_config_t i2c_bus_config = {
             .i2c_port = 0,

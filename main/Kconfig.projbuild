@@ -7,6 +7,27 @@ menu "Quad IP-KVM Configuration"
             Enable this to initialize the TC358743 HDMI-CSI bridge during app_main.
             Requires proper I2C connections on the hardware.
 
+    config MIPI_PHY_POWER_ENABLE
+        bool "Enable MIPI PHY power"
+        default n
+        help
+            Enable LDO power for the MIPI D-PHY.
+            If disabled, the LDO is not touched and initialization logs "Disabled by Kconfig".
+
+    config MIPI_PHY_LDO_CHAN
+        int "MIPI PHY LDO Channel"
+        default 3
+        range 3 3
+
+    config MIPI_PHY_LDO_MV
+        int "MIPI PHY LDO Voltage (mV)"
+        default 2500
+        range 2250 2750
+        help
+            Recommended voltage based on v0.7 datasheet.
+            TODO(hw-verify): Applicability to rev v1.3 is unverified.
+
+
     config FRAME_HUB_POOL_SIZE
         int "Frame Hub pool size"
         default 3
