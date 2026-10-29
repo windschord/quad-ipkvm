@@ -4,6 +4,8 @@
 
 事実の区別は `P2B_PREP.md` と同じ: **[出典]** 一次情報で確認、**[参照]** 他のプロジェクトを読んで確認（コードは複製しない）、**[計算]** 計算値、**[推測]**、**[未確認]**。電気的な数値は、確認するまで確定しない（`TODO(hw-verify)`）。
 
+**改訂（2026-10-29）**: 東芝の機能仕様書は入手できない（オーナーの回答）ため、公開実装（p4kvm・ESP-KVM・Espressif `esp_cam_sensor`・Linux ドライバ）を参考に進める。読んだ結果は `docs/P2B_TC358743_REFERENCE.md` にある（値の出典、ライセンス、食い違い）。**最初のカメラモードを、公開実装で動作実績のある「972Mbps・2 レーン・RGB888（JPEG に直結）」に変更**した（オーナーの決定）。以前の「720p60 UYVY・445.5Mbps」は、後続の実験（P2b-8）に回す。
+
 ---
 
 ## 1. 目標と完了条件
@@ -12,6 +14,7 @@
 - **完了条件（HANDOFF 5 章のフェーズ 2 + P3 との結合）**:
   1. PC 直結（KVM なし）で、**ブラウザに PC の画面が映る**（MJPEG、`wss`）。
   2. 取り込んだ 1 フレームを、JPEG として確認できる（ブラウザ、または保存）。
+  4. **最初のモード**: 972Mbps・2 レーン・RGB888。2 レーン × 972Mbps の RGB888 は 81Mpixel/s が上限なので、**EDID は 720p60 と 1080p30 以下だけを広告**する（1080p60 などを広告すると、フレームが 1 枚も来ない黒画面になる [参照: ノート 7 章の 4]）。
   3. **PC 側の解像度を変えても追従する**（少なくとも、再取り込みでき、黒画面のまま固まらない）。
 - **範囲外**: H.264（P7）、KVM 経由（P5）、HID（P4）、音声。
 
@@ -19,61 +22,62 @@
 
 | もの | 状態 |
 |---|---|
-| `components/tc358743`（P2a） | I2C 0x0F で応答、チップ ID 検証、EDID 書き込み（成功）、診断ログ。**PLL（`tc_set_pll`）と CSI の設定（`tc_set_csi`）は、`pll_prd` / `pll_fbd` / CSI タイミングが未指定のとき「UNVERIFIED」の警告を出してスキップする骨格のみ**。`CSI_CONFW`（色形式・レーン数）は未実装（`TODO(hw-verify)`） |
+| `components/tc358743`（P2a） | I2C 0x0F で応答、チップ ID 検証、EDID 書き込み（成功）、診断ログ。**PLL（`tc_set_pll`）と CSI の設定（`tc_set_csi`）は、`pll_prd` / `pll_fbd` / CSI タイミングが未指定のとき「UNVERIFIED」の警告を出してスキップする骨格のみ**。`CSI_CONFW`（CSI 制御レジスタへの間接書き込み口。**色形式ではない**）の 4 回の書き込みは未実装（`TODO(hw-verify)`）。出力色形式は `CONFCTL` / `VOUT_SET2` / `VI_REP` で決まる（ノート 3-4） |
 | `frame_hub` / `video_source_t`（`start` / `stop`） | あり。`test_pattern_source` が `video_source_t` を実装して、JPEG を一定の fps で publish している |
 | 配信（`WS /video` + ビューア） | あり（`#51`）。実機での確認は、これから |
 | 実機（X630 + ESP32-P4-ETH、rev v1.3） | I2C は応答。**CSI のケーブル（22pin ↔ 15pin）の接続と、CSI の物理的な受信は、まだ試していない**（`HW_VERIFY` E1・E2、`BRINGUP` 段階 2 までが完了） |
 
 ## 3. 新しく分かったこと（この計画の作成時に確認）
 
-1. **ESP-IDF v6.0.1 の `esp_cam_ctlr_csi` のドライバは、MIPI の PHY の電源を扱わない** [出典: `components/esp_driver_cam/csi/src/esp_cam_ctlr_csi.c` と `esp_cam_ctlr_csi.h` に、LDO・電源に関する記述がない]。ESP32-P4 は MIPI の D-PHY を内蔵の LDO（`esp_ldo_regulator`）から給電でき、`esp_ldo_acquire_channel` の `chan_id` は「**回路図とチップのデータシートで決める**」と IDF のドキュメントにある [出典: `docs/en/api-reference/peripherals/ldo_regulator.rst`]。**アプリ側で、PHY の電源を有効にする必要がある**見込み。
-   - 本ボードの回路図（`docs/ESP32-P4-ETH-schematic.pdf`）には `VDD_MIPI_DPHY` と `ESP_LDO_VO1`〜`VO4` のネットが載っている。**`VDD_MIPI_DPHY` がどの LDO に繋がるかは、テキスト抽出では確認できなかった** [未確認]。標準的な構成は VO3（電圧は 2.5V 前後）と記憶しているが、**電圧は推測で確定しない**。→ **P2b-0 で確認**。
-2. **ESP-KVM の README は、「TC358743 の起動手順（PLL の分周、MIPI のタイミングカウンタ、HPD と CSI 送信器を立ち上げる順序）」と「`esp_cam_ctlr` API が公開しない `MIPI_CSI_BRIDGE` レジスタの直接設定」が、最も難しい部分だったと記している** [参照: ESP-KVM の README の Credits]。ただし、それが当時の ESP-IDF のバージョンの話か、v6.0.1 でも必要かは **[未確認]**。v6.0.1 の `esp_cam_ctlr_csi_config_t` には、`data_type`（独自のデータタイプ）、入出力の色形式、`byte_swap_en` などの設定がある [出典: `P2B_PREP.md` §3-1]。**まず公式 API で試し、足りなければレジスタを直接設定する**（§5 の選択肢 1 と 4）。
-3. **他の人の実測（参考値）**: 同じ ESP32-P4-ETH（rev v1.3）で、1080p の MJPEG は約 20 fps、H.264 は約 7 fps（PPA の色変換が約 104 ms 掛かるため）[参照: ESP-KVM の `docs/HOW-IT-WORKS.md`]。MJPEG を主とする方針（HANDOFF 4 章）と整合する。1080p50 を既定の EDID にして、エンコーダが 1 フレームおきに取る、という運用もしている [参照]。**自機では未検証**。
+1. **ESP-IDF v6.0.1 の `esp_cam_ctlr_csi` のドライバは、MIPI の PHY の電源を扱わない** [出典: `components/esp_driver_cam/csi/src/esp_cam_ctlr_csi.c` と `esp_cam_ctlr_csi.h` に、LDO・電源に関する記述がない]。アプリ側で、内蔵 LDO（`esp_ldo_acquire_channel`）から PHY を給電する必要がある。
+   - 本ボードの `VDD_MIPI_DPHY`（U6 のピン 41）は、**`ESP_LDO_VO3`（`chan_id = 3`）に接続されている**（実機担当が回路図の PDF を目視で確認。`HW_VERIFY` E9、PR #54）。電圧はデータシート v0.7 で推奨 2.25 / 2.5 / 2.75V（最大 2.75V）だが、**v0.7 は rev v3.x 向けで、rev v1.3 への適用は未確認**。p4kvm・ESP-KVM は、chan 3・2500mV を、**リセットの前**に取得している [参照。同系統の実装で、独立した確認ではない]。→ Kconfig の既定は 2500mV、**有効化は既定で無効**、初回は実機で電圧を測ってから有効にする（P2b-2）。
+2. **TC358743 の起動手順と、ESP32-P4 側の CSI 設定は、公開実装から事実を集めた**（`P2B_TC358743_REFERENCE.md`）。p4kvm・ESP-KVM は **972Mbps・2 レーン・RGB888（データタイプ 0x24）** で rev v1.3 実機で動かしている。Linux の CSI タイミング表は **594 / 972Mbps のみ**で、計算式はない。p4kvm・ESP-KVM の 972Mbps の値は、Linux の表と一致する。P4 側は、公式 API（`esp_cam_ctlr_csi`）に加えて、`MIPI_CSI_BRIDGE` と `ISP.cntl.isp_en = 0` を**直接書いている**。v6.0.1 の公式 API が既に設定するもの（幅・高さ、データタイプの範囲 0x12〜0x2F）を除くと、追加分は `has_hsync_e`、`vadr_num_check`、データタイプの絞り込み、`int_clr` の 4 つ。**それが v6.0.1 で必要かは、どの資料にも記述がなく未確認**。→ **まず公式 API で試し、足りなければ、この 4 つを直接設定する**（§5 の案 1 と 4）。
+3. **他の人の実測（参考値。自機では未検証）**: 同じ ESP32-P4-ETH（rev v1.3）+ Geekworm C790（TC358743、2 レーン、972Mbps）で、**1080p の MJPEG が約 20 fps**（RGB888 を JPEG エンコーダに直結）、H.264 は約 5〜7 fps（PPA の変換が掛かる）[参照: ESP-KVM の `docs/HARDWARE-NOTES.md`]。MJPEG を主とする方針（HANDOFF 4 章）と整合する。「1080p50 を既定の EDID にする」運用は **rev 3.x（UYVY）のみ**で、rev v1.3 には当てはまらない（rev v1.3 の RGB888 は 1080p30 まで）。Geekworm の X630 の商品説明は「最大 1080p/25fps」[参照: mzyy94 氏のブログが引用]。
 4. **`video_source_t`（`start` / `stop`）はすでにある**。実ソースは、これを実装して `frame_hub` に JPEG を publish すれば、P3 の配信がそのまま使える（P3 の 4.2 章の「映像ソースの抽象化」の狙いどおり）。
 
 ## 4. 未確定の点（P2b の着手前に決める・確かめる）
 
 | # | 点 | 確かめる方法 | 担当 |
 |---|---|---|---|
-| Q1 | `VDD_MIPI_DPHY` の給電元（LDO のチャンネル番号と電圧） | 回路図の該当ページを目視（PDF を画像にして読む）、チップのデータシートの `VDD_MIPI_DPHY` の推奨電圧 | 実機担当（机上） |
+| Q1 | `VDD_MIPI_DPHY` の給電元 | **確認済み**: `ESP_LDO_VO3`（`chan_id = 3`）（回路図の目視、`HW_VERIFY` E9）。**電圧は 2500mV が候補**（データシート v0.7 は rev v3.x 向け。rev v1.3 は未確認）→ 実機で測る（P2b-2） | 実機担当 |
 | Q2 | 22pin ↔ 15pin ケーブルの入手と、向き・ピン対応（`HW_VERIFY` E1・E2） | 導通確認、ケーブルを実際に挿す | オーナー |
-| Q3 | TC358743 の CSI のタイミング値（`LINEINITCNT` 等）と、起動手順の順序 | §5 の選択肢 | — |
-| Q4 | **TC358743 の出力形式の選択**（UYVY か RGB888）と、`CSI_CONFW` の値 | Linux ドライバの該当部分の参照（複製しない）、実機で確認 | — |
-| Q5 | **JPEG への入力経路**（`P2B_PREP.md` §3-6 の A / B / C） | 実機での実験（取り込んだ生フレームを使う） | — |
-| Q6 | CSI から ISP を通す必要があるか（`bypass_isp` で足りるか） | 実機での実験 | — |
-| Q7 | HDMI を接続しない状態の検証手段（TC358743 の内蔵テストパターン）があるか | データシート（レジスタ表は公開版に無い）、Linux ドライバの該当の有無 | 実機担当（机上） |
-| Q8 | Toshiba の機能仕様書（Rev 0.60）の入手可否 | オーナー | オーナー |
+| Q3 | TC358743 の CSI のタイミング値と起動手順 | **972Mbps の値は、Linux の表と p4kvm・ESP-KVM で一致**（ノート 3-2）。起動手順もノート 2 章。他のレートの値はない → 実機で確認 | — |
+| Q4 | **TC358743 の出力形式** | **RGB888 に決定**（公開実績あり）。設定は `CONFCTL.YCBCRFMT` / `VOUT_SET2` / `VI_REP`（ノート 3-4）。`CSI_CONFW` は色形式ではない（CSI 制御レジスタへの間接書き込み口） | — |
+| Q5 | **JPEG への入力経路** | **経路 C（RGB888 を JPEG エンコーダに直結）に決定**（公開実績あり。メモリ上は BGR の並び）。UYVY の経路（A / B）は P2b-8 の実験 | — |
+| Q6 | CSI から ISP を通す必要があるか | 公開実装は `bypass_isp = true` の ISP プロセッサを作り、`ISP.cntl.isp_en = 0` を書く。**作らなくても動くかは未確認** → 実機で、まず同じ構成で試す | — |
+| Q7 | HDMI を接続しない状態の検証手段（TC358743 の内蔵テストパターン） | **「無い、または不明」**（公開データシートにも Linux ドライバにも記述なし）。Linux のヘッダに `CONFCTL.YCBCRFMT = 0x80`「COLORBAR」の定義があるが、使った実装はない → 実機で試す価値あり | 実機担当 |
+| Q8 | Toshiba の機能仕様書（Rev 0.60）の入手可否 | **入手できない**（オーナーの回答）。公開実装を参考にする。流出した資料（TC358749XBG の V074 等）は、取得も参照もしない | — |
 
 ## 5. 判断が必要な点: P2b の進め方（選択肢。おすすめ順）
 
-「CSI のタイミング値と起動手順（Q3）、色の経路（Q4・Q5）が未確認のまま、どう進めるか」。
+「東芝の機能仕様書が入手できない中で、どう進めるか」。**オーナーの決定（2026-10-29）: 案 1（公開実績のある 972Mbps・RGB888）で進める。**
 
 | 順位 | 案 | 内容 | 理由 |
 |---|---|---|---|
-| **1（おすすめ）** | **公式 API を使った段階実行 + 値は Linux ドライバを参照して導く** | (1) PHY の電源 → (2) TC358743 の PLL と CSI の起動（最初のモードは 720p60 UYVY。`P2B_PREP.md` §2-3 の表どおり、レーンレート 445.5Mbps = `pll_prd=4`、`pll_fbd=66`。972Mbps（`fbd=144`）は 1080p50 など後のモードの候補）→ (3) `esp_cam_ctlr` で 1 フレームを PSRAM に取り込み、生データの統計で検証 → (4) JPEG（経路 C か A から実験。B は第 1 フレームが取れたあとの最適化として試す）→ (5) `video_source_t` として `frame_hub` に publish。タイミング値は、Linux ドライバの 594Mbps / 972Mbps の値を**参照のみ**で読み、MIPI D-PHY の仕様と突き合わせて**自分で書き直す**（根拠を文書に残す）。参照できる表は 594 / 972Mbps のみで、445.5Mbps の値は D-PHY の仕様から導く（Q3）。導けないときは、720p60 を 972Mbps で送る案（参照できる値が使える）に切り替えることを、実機で検討する [未検証] | 実績のある値（Linux、Raspberry Pi）に基づくので、試行錯誤が少ない。公式 API が使えれば、レジスタ直接設定のリスクを避けられる。段階ごとに、I2C のエラーカウンタや生データで**失敗箇所を特定できる** |
-| 2 | 1 の方針で、**最初のモードを 1080p30 RGB888（経路 C）** にする | 色の並べ替えの問題（UYVY ↔ YVYU）を避け、JPEG の `RGB888` 入力へ直接渡す | 色の経路の未確認（Q5）が最小。ただし 1080p30 の RGB888 は 749Mbps/レーンで余裕が小さく、フレームも大きい（約 6MB）。fps が出ない見込み |
-| 3 | 1 の方針で、**最初から PPA で RGB に変換する経路 A** にする | UYVY → PPA（RGB565/RGB888）→ JPEG | PPA の UYVY 入力は公式に対応しており、確実。ただし他の人の実測で 1080p で約 104 ms の変換が掛かっており、fps が下がる |
+| **1（決定）** | **公式 API を使った段階実行 + 公開実績のある 972Mbps・2 レーン・RGB888（JPEG に直結）** | (1) PHY の電源（P2b-2）→ (2) TC358743 の PLL（`pll_prd=4`、`pll_fbd=144`、`FRS=0`）と CSI の起動（タイミング値は Linux の 972Mbps の表。起動順はノート 2 章）→ (3) `esp_cam_ctlr` で RGB888 の 1 フレームを PSRAM に取り込み、生データの統計で検証 → (4) RGB888 を JPEG エンコーダに直結 → (5) `video_source_t` として `frame_hub` に publish。EDID は 720p60 / 1080p30 以下だけを広告。**値・順序は、公開実装を参照のみで読み、自分で書き直す**（コードは複製しない。根拠をコメントと文書に残す）。公式 API で足りないとき（`has_hsync_e`、`vadr_num_check`、データタイプの絞り込み、`int_clr`）だけ `MIPI_CSI_BRIDGE` を直接設定する | rev v1.3 実機で動いた公開実績があるのは、この組み合わせだけで、未知の要素が最小。映らなかったとき、原因を切り分けられる。1080p で約 20 fps（MJPEG）の実測が公開されている |
+| 2 | 1 の後の実験: **972Mbps のまま、UYVY（16bpp）にする（P2b-8）** | `VOUT_SET2` / `VI_REP` / `CONFCTL` を UYVY に。rev < 3 では、DMA が 32 ビットワード内でバイトを逆順に書くため、JPEG の `YUV422` 入力に渡す前に並べ替えが要る（PPA で 4 バイト反転 → JPEG。別チップの LT6911D では動いた） | 帯域は余裕が増える（121.5Mpixel/s）が、**rev v1.3 で TC358743 の UYVY を JPEG に渡した公開実装は見つからなかった**。1 要素ずつ変えるため、案 1 で fps の基準値が取れてから |
+| 3 | 2 の後の実験: **レートを 972Mbps から変える（445.5Mbps 等）** | `tc358743_pll_calc`（6.75MHz 刻みの `fbd`）で作る。FRS が 0 以外になる | **公開実装は、594 / 972Mbps 以外で動かしていない**（Linux の表も 2 つだけ）。タイミング値は D-PHY の仕様から導く必要があり、6.75MHz 刻みの `fbd` が有効かも未確認 |
 | 4 | **レジスタ直接設定（`MIPI_CSI_BRIDGE`）から始める** | ESP-KVM / p4kvm が行った方法を読み、自分で書く | v6.0.1 の公式 API で足りるか未確認のまま、非公開の領域に手を出すことになる。**公式 API が動かなかったときの退路**として取っておく |
 | 5 | **実機でタイミング値を探索する** | LINEINITCNT などを変えながら、CSI のエラーカウンタが 0 になる組を探す | 参照できる値が無いときの最後の手段。時間が掛かり、再現性の根拠が弱い |
-| 6 | **Toshiba の機能仕様書の入手を待つ** | 入手できれば、レジスタの意味から導く | 最も確実だが、入手できる見込みが立たない。待つ間、作業が止まる。**並行して依頼しておく**（Q8） |
+| 6 | **Toshiba の機能仕様書の入手を待つ** | 入手できれば、レジスタの意味から導く | **入手できない**（オーナーの回答）ため採らない。オーナーが問い合わせる分には並行してよい |
 
-**おすすめは 1**。案 2・3 は、1 の (4) の色の経路の実験で試す候補。4 は 1 が行き詰まったときの退路、5・6 はそれぞれ補助の手段。
+**決定は 1**。2・3 は、1 で 1 フレームが映り、fps の基準値が取れたあとに、1 要素ずつ試す実験（P2b-8）。4 は 1 が行き詰まったとき（公式 API で足りない）の退路、5 は最後の手段。6 は、機能仕様書が入手できないため、採らない。
 
 ## 6. 作業の分割
 
-依存関係: P2b-0 / P2b-1 は並行できる。P2b-2 は、実装だけなら P2b-0 と並行できる（**Q1 の確認までは Kconfig で無効にし、既定値を入れない**。有効化と既定値の設定は Q1 のあと）。P2b-3 は P2b-0（Q1・Q2）、P2b-1、P2b-2 のあと。P2b-4 以降は実機での確認とセット。
+依存関係: P2b-0 / P2b-1 は並行できる。P2b-2 は、実装だけなら P2b-0 と並行できる（**Q1 の確認までは Kconfig で無効にし、既定値を入れない**。有効化と既定値の設定は Q1 のあと）。P2b-3 は P2b-0（Q1・Q2）、P2b-1、P2b-2 のあと。P2b-4 以降は実機での確認とセット。P2b-8 は、P2b-6 で映像が映り、fps の基準値が取れてから。
 
 | ID | 内容 | 担当 | 依存 | 触るところ | 完了条件 |
 |---|---|---|---|---|---|
 | **P2b-0** | 机上の確認（Q1・Q7・Q8）と実物の確認（Q2: E1・E2 のケーブルの入手・向き・ピン対応。導通確認と実際の挿入を含む）: Q1（`VDD_MIPI_DPHY` の給電元）、Q7（TC358743 のテストパターンの有無）、Q8 の依頼、Q2 | 実機担当 + オーナー | なし | `docs/HW_VERIFY.md` | 各項目の結果が `HW_VERIFY` に記録される |
-| **P2b-1** | `tc358743_pll_calc`（純 C）: `refclk` とレーンレートから、`pll_prd` / `pll_fbd` / `FRS` を求める。範囲外・不整合は失敗を返す | Jules | なし | `components/tc358743/`（新規ファイル）、`test/host/tc358743/` | `P2B_PREP.md` §2-3 の表（720p60 / 1080p30 / 1080p50 の `fbd`）をホストテストで再現。変異テスト |
+| **P2b-1** | `tc358743_pll_calc`（純 C）: `refclk` とレーンレートから、`pll_prd` / `pll_fbd` / `FRS` を求める。範囲外・不整合は失敗を返す（**実装済み。PR #56**） | Jules | なし | `components/tc358743/`（新規ファイル）、`test/host/tc358743/` | `P2B_PREP.md` §2-3 の表の `fbd` と、**972Mbps で `fbd = 144`、594Mbps で `fbd = 88`** をホストテストで再現。変異テスト。**この計算は、6.75MHz 刻みの任意の `fbd` を返す。Linux・p4kvm・ESP-KVM の式は整数除算（27MHz の倍数に丸まる）で、P2b の最初のモード（972Mbps）では結果が一致する** |
 | **P2b-2** | PHY 電源 `mipi_phy_power`（IDF）: `esp_ldo_acquire_channel` で PHY を給電。**チャンネル番号と電圧は Kconfig（既定値は Q1 の確認後に決める。それまでは無効）** | Jules | P2b-0（Q1） | `components/mipi_phy_power/`（新規）、`main/Kconfig.projbuild` | `idf-build` が緑。実機で `VDD_MIPI_DPHY` の電圧を測れる状態 |
-| **P2b-3** | `tc358743_start_csi(mode)`: PLL と CSI の起動手順（P2b-1 の計算 + 参照して導いたタイミング値）、`CSI_CONFW`、出力形式、HPD。診断ログ（CSI のステータス・エラー）が実値になるか確認できる | Jules → 実機 | P2b-0（Q1・Q2。実機での確認は、ケーブルと PHY の電源が揃ってから）, P2b-1, P2b-2 | `components/tc358743/` | `idf-build` が緑。実機で、CSI のステータスが「受信中」になる（`BRINGUP` 段階 3） |
-| **P2b-4** | `csi_capture`（IDF）: `esp_cam_ctlr_csi` で 2 レーン・UYVY の 1 フレームを PSRAM に取り込む。受信完了のコールバック、統計（フレーム数・エラー数）、解像度変更の検出の骨格 | Jules → 実機 | P2b-3 | `components/csi_capture/`（新規） | `idf-build` が緑。実機で、1 フレームが取れ、生データの統計（ゼロ以外の画素など）が妥当 |
-| **P2b-5** | JPEG 化の経路の実験（`P2B_PREP.md` §3-6 に従い、**経路 C か A から**。UYVY と JPEG の `YVYU` の並びが未確認のため、経路 B は第 1 フレームが取れたあと、fps 改善のために試す。切り替え条件: C / A で色が正しく、fps が足りないときだけ B を試す）。結果を `HW_VERIFY` に記録。確定した経路を `csi_capture` に組み込む | Jules → 実機 | P2b-4 | `components/csi_capture/` | 取り込んだ画面が JPEG として正しい色・向きで保存/表示できる |
+| **P2b-3** | `tc358743_start_csi(mode)`: **972Mbps・2 レーン・RGB888**。ノート 2 章の起動順（HPD Low → 初期設定 → EDID → ストリーム停止 → PLL → CSI（`CTXRST`、未使用レーンの `LANEDISABLE`、タイミング 9 レジスタ、`HSTXVREGEN`、`TXOPTIONCNTRL`、`STARTCNTRL`、`CSI_START`、`CSI_CONFW` の 4 回の書き込み）→ 出力色形式（RGB888: `VOUT_SET2` / `VI_REP` / `CONFCTL`）→ `enable_stream(true)` → 150ms → HPD High → 50ms → `CSI_START` の再書き込み → `SYS_STATUS` の TMDS と SYNC を待つ）。`FIFOCTL` は 374（Linux のコメント。1 行が 374 ワード未満の入力は調整が要る）。**EDID は 720p60 / 1080p30 以下だけを広告**（既存の `tc358743_edid.c` を確認し、広告するモードを絞る）。`TXOPTIONCNTRL` を連続クロックにするかは、Linux と公開実装で食い違う（ノート 9-1）→ 実機で確認（`TODO(hw-verify)`）。診断ログ（CSI のステータス・エラー）が実値になる | Jules → 実機 | P2b-0（Q1・Q2。実機での確認は、ケーブルと PHY の電源が揃ってから）, P2b-1, P2b-2 | `components/tc358743/` | `idf-build` が緑。実機で、CSI のステータスが「受信中」になる（`BRINGUP` 段階 3）。`MIPI_CSI_HOST.phy_rx.phy_rxclkactivehs`（クロックレーンが HS か）で、ソースがレーンを駆動しているかを切り分けられる |
+| **P2b-4** | `csi_capture`（IDF）: `esp_cam_ctlr_csi` で 2 レーン・**RGB888（データタイプ 0x24）**の 1 フレームを PSRAM に取り込む。`lane_bit_rate_mbps = 972`（TC358743 と一致）、`bk_buffer_dis = true`（自前バッファ。ドライバのバックアップバッファは確保・解放で PSRAM が断片化する）、`byte_swap_en = false`、ISP は `bypass_isp = true` で作り `isp_en = 0`。公式 API で受信できないときだけ、`MIPI_CSI_BRIDGE` の 4 項目（`has_hsync_e`、`vadr_num_check`、データタイプの絞り込み、`int_clr`）を直接設定する。受信完了のコールバック、統計（フレーム数・エラー数）、解像度変更の検出の骨格。**バッファは最大モード用に 1 回だけ確保する**（期待より多くのバイトが来ると、バッファを超えて PSRAM に書き込み、ブートループになることがある [参照: ノート 7 章の 14]） | Jules → 実機 | P2b-3 | `components/csi_capture/`（新規） | `idf-build` が緑。実機で、1 フレームが取れ、生データの統計（ゼロ以外の画素など）が妥当 |
+| **P2b-5** | JPEG 化: **RGB888 を JPEG エンコーダの `RGB888` 入力に直結**（経路 C。メモリ上は BGR の並びで来るため、`P2B_PREP.md` §3-3 の入力形式の定義と、色が正しいことを、実機で確認する。`sub_sample` は YUV420 [参照]）。品質の既定は 70 [参照]。`cache_msync`（M2C）を忘れない。結果を `HW_VERIFY` に記録。UYVY の経路（A / B）は P2b-8 | Jules → 実機 | P2b-4 | `components/csi_capture/` | 取り込んだ画面が JPEG として正しい色・向きで保存/表示できる |
 | **P2b-6** | `csi_video_source`（`video_source_t` の実装）: 取り込み → JPEG → `frame_hub` への publish。`Kconfig` で `test_pattern_source` と切り替え | Jules → 実機 | P2b-5 | `components/csi_video_source/`（新規）、`main/main.c`、`main/Kconfig.projbuild` | `Kconfig` の設定に応じて、`app_main` が使う `video_source_t`（`test_pattern_source` / `csi_video_source`）を選び、選んだソースの `start` を呼ぶ。ブラウザ（`#51` のビューア）に PC の画面が映る |
-| **P2b-7** | 解像度変更への追従（再同期）、`HW_VERIFY` の更新 | Jules → 実機 | P2b-6 | 同上 | PC 側で解像度を変えても、映像が復帰する |
+| **P2b-7** | 解像度変更への追従: **`esp_cam_ctlr` は転送長を作成時に固定するので、解像度が変わったら作り直す**（バッファは最大モード用に確保済みのものを使う）。解像度の読み取りは、モード変化の数 ms は不定なので、200ms ごとに読み、同じ値が 2 回続いたら採用する [参照: ESP-KVM]。信号が無いときは、HPD の再接続（10s → 20s → 40s）。`HW_VERIFY` の更新 | Jules → 実機 | P2b-6 | 同上 | PC 側で解像度を変えても、映像が復帰する |
+| **P2b-8** | **後続の実験（案 2・3）**: 972Mbps のまま UYVY にする（`VOUT_SET2` / `VI_REP` / `CONFCTL`、データタイプ 0x1E、JPEG の `YUV422` 入力、PPA での 4 バイト反転）。続いて、レートを変える（445.5Mbps 等）。**1 要素ずつ**。fps と PSRAM の負荷を、P2b-6 の基準値と比べる | Jules → 実機 | P2b-6（基準値） | `components/csi_capture/` | 結果を `HW_VERIFY` に記録（動かなくても、分かったことを記録する） |
 
 ### 6.1 実機担当の作業（P2b-0 と、各段階の確認）
 - P2b-0: 上の表。Q1 は **回路図の PDF を画像にして、`VDD_MIPI_DPHY` のネットがどの LDO（`ESP_LDO_VO?`）に繋がるかを、目視で確認**し、チップのデータシートの `VDD_MIPI_DPHY` の推奨電圧を記録する。
@@ -86,9 +90,12 @@
 
 ## 7. リスク
 
-- **CSI のタイミング・起動手順が合わず、黒画面のまま**になる（最大のリスク。ESP-KVM も最難関と記している）。→ 段階実行と、エラーカウンタによる切り分け（§5 の 1）。
+- **CSI のタイミング・起動手順が合わず、黒画面のまま**になる（最大のリスク。ESP-KVM も最難関と記している）。→ 段階実行と、エラーカウンタ・`phy_rxclkactivehs` による切り分け（§5 の 1）。**レジスタを 1 つ間違えても黒画面になり、デバッグ手段が少ない**（ESP-KVM の記述）。
+- **帯域を超える EDID**: 972Mbps × 2 レーンの RGB888 は 81Mpixel/s が上限。1080p60 や 1280x1024@60 を広告すると、「フレームが減る」のではなく**フレームが 1 枚も来ない**。HDMI スプリッタ・モニターの EDID に引きずられることもある。→ EDID は 720p60 / 1080p30 以下に絞る（P2b-3）。
+- **X630 の前提が未確認**: レーン数と基準クロック（`HW_VERIFY` E1・E3）。972Mbps の前提が崩れうる。商品説明は「最大 1080p/25fps」。→ 実機で最初に確認（`TODO(hw-verify)`）。
+- **再起動時のハング**: CSI の DMA は PSRAM にほぼ常時書き込むため、`esp_restart()` の途中で AXI の書き込みが切れ、次の起動が無言でハングすることがある [参照: ESP-KVM]。→ 再起動の前に CSI を止める。
 - **rev v1.3 の制約**: CSI の色変換と入力側の入れ替えが使えない [出典: `P2B_PREP.md` §3-1]。色の経路が限定され、fps が下がる可能性（他の人の実測では 1080p MJPEG が約 20 fps）。
-- **PSRAM の帯域**: 1080p の生フレーム（UYVY で約 4MB）を CSI が書き込み、JPEG エンコーダと PPA が読む。`frame_hub`、HTTPS の送信と競合する。→ 実測が必要。
+- **PSRAM の帯域と量**: 1080p の生フレーム（RGB888 で約 6.2MB、2 面で約 12.4MB）を CSI が書き込み、JPEG エンコーダが読む。`frame_hub`、HTTPS の送信と競合する。→ 実測が必要。
 - **PHY の電源の誤り**: 電圧を間違えると、動かないだけでなく、チップに負荷を掛けうる。→ Q1 の確認前は、Kconfig で無効にし、既定値を推測で入れない。
 - **I2C バスの共有**（OLED、MCP23017 の追加。`PLAN.md` 4.4）: TC358743 のポーリングと競合しないこと。
 
@@ -96,6 +103,7 @@
 
 - `docs/P2B_PREP.md`（PLL の式と候補、ESP-IDF v6.0.1 の CSI / ISP / JPEG / PPA の API と rev v1.3 の制約）。
 - ESP-IDF v6.0.1: `components/esp_driver_cam/csi/`（`esp_cam_ctlr_csi.c` / `.h` に電源の記述がないこと）、`docs/en/api-reference/peripherals/ldo_regulator.rst`（`chan_id` は回路図で決める）。
-- ESP-KVM の README と `docs/HOW-IT-WORKS.md`（公開されている説明のみ。コードは読んでいない）。
+- ESP-KVM の README と `docs/HOW-IT-WORKS.md`、`docs/HARDWARE-NOTES.md`（公開されている説明）。**コードは、2026-10-29 に、参考として読んだ**（p4kvm・ESP-KVM・Espressif は Apache-2.0。コードは複製せず、値・順序・式の事実だけを使う）。Linux の `tc358743.c`（GPL-2.0）は参照のみ。
+- mzyy94 氏のブログ（https://www.mzyy94.com/blog/2022/03/01/hdmi-input-board-with-audio/）: 音声（I2S）が中心で、CSI の値は載っていない。機能仕様書が NDA 下の資料であること、Linux ドライバと Raspberry Pi の overlay が事実上の基準であること、X630 が「最大 1080p/25fps」とされていることだけを参照した。
 - `docs/P2B_TC358743_REFERENCE.md`（東芝の機能仕様書が入手できないため、p4kvm・ESP-KVM・Espressif・Linux ドライバから集めた**事実のノート**。値の出典、ライセンス、食い違い、この計画書との差分を含む。コードは複製しない）。
 - `docs/ESP32-P4-ETH-schematic.pdf`（`VDD_MIPI_DPHY` と `ESP_LDO_VO1`〜`VO4` のネット名の存在のみ確認）。
