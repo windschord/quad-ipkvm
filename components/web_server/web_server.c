@@ -1090,3 +1090,25 @@ esp_err_t web_server_start(frame_hub_t *hub) {
 
     return ESP_OK;
 }
+
+bool web_server_needs_setup(void)
+{
+    if (!s_auth_mutex) {
+        return false;
+    }
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    bool needs_setup = (s_auth_ctx.state == AUTH_STATE_NEEDS_SETUP);
+    xSemaphoreGive(s_auth_mutex);
+    return needs_setup;
+}
+
+int web_server_ws_client_count(void)
+{
+    if (!s_ws_mutex) {
+        return 0;
+    }
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    int active_clients = ws_clients_count(&s_ws_core.clients);
+    xSemaphoreGive(s_ws_mutex);
+    return active_clients;
+}

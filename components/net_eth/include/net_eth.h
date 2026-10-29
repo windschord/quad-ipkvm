@@ -20,6 +20,16 @@ typedef enum {
 esp_err_t net_eth_init(void);
 
 /**
+ * @brief Get the IP address as a string
+ */
+bool net_eth_get_ip_str(char *buf, size_t len);
+
+/**
+ * @brief Get the link speed in Mbps
+ */
+int net_eth_get_speed_mbps(void);
+
+/**
  * @brief Get the current Ethernet state
  */
 net_eth_state_t net_eth_get_state(void);

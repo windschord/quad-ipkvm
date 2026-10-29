@@ -1,5 +1,6 @@
 #include "net_eth.h"
 #include "esp_log.h"
+#include "net_eth_util.h"
 #include "esp_eth.h"
 #include "esp_eth_mac_esp.h"
 #include "esp_eth_phy.h"
@@ -30,6 +31,10 @@ static const char *TAG = "net_eth";
 // exact lock-free exclusion is not strictly required here.
 static volatile net_eth_state_t s_eth_state = NET_ETH_STATE_DOWN;
 static volatile net_eth_cb_t s_eth_cb = NULL;
+
+static esp_eth_handle_t s_eth_handle = NULL;
+static uint32_t s_ip_addr = 0;
+
 
 net_eth_state_t net_eth_get_state(void)
 {
@@ -81,6 +86,7 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
     case ETHERNET_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "Ethernet Link Down");
         update_state(NET_ETH_STATE_DOWN);
+        s_ip_addr = 0;
         break;
     case ETHERNET_EVENT_START:
         ESP_LOGI(TAG, "Ethernet Started");
@@ -88,6 +94,7 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
     case ETHERNET_EVENT_STOP:
         ESP_LOGI(TAG, "Ethernet Stopped");
         update_state(NET_ETH_STATE_DOWN);
+        s_ip_addr = 0;
         break;
     default:
         break;
@@ -107,11 +114,13 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
     ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&ip_info->gw));
     ESP_LOGI(TAG, "~~~~~~~~~~~");
 
+    s_ip_addr = ip_info->ip.addr;
     update_state(NET_ETH_STATE_GOT_IP);
 }
 
 esp_err_t net_eth_init(void)
 {
+    s_eth_handle = NULL;
     static bool s_is_initialized = false;
     esp_err_t ret;
 
@@ -185,6 +194,7 @@ esp_err_t net_eth_init(void)
 
     esp_eth_config_t eth_config = ETH_DEFAULT_CONFIG(mac, phy);
     ret = esp_eth_driver_install(&eth_config, &eth_handle);
+    if (ret == ESP_OK) s_eth_handle = eth_handle;
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_eth_driver_install failed: %s", esp_err_to_name(ret));
         goto err_driver;
@@ -248,6 +258,30 @@ err_phy:
     if (mac) mac->del(mac);
 err_mac:
     if (eth_netif) esp_netif_destroy(eth_netif);
+    s_eth_handle = NULL;
     s_is_initialized = false;
     return ret;
+}
+
+bool net_eth_get_ip_str(char *buf, size_t len)
+{
+    if (s_eth_state != NET_ETH_STATE_GOT_IP || s_ip_addr == 0) {
+        if (buf && len > 0) {
+            buf[0] = '\0';
+        }
+        return false;
+    }
+    return net_eth_ip4_to_str(s_ip_addr, buf, len);
+}
+
+int net_eth_get_speed_mbps(void)
+{
+    if (!s_eth_handle || (s_eth_state != NET_ETH_STATE_LINK_UP && s_eth_state != NET_ETH_STATE_GOT_IP)) {
+        return 0;
+    }
+    eth_speed_t speed = ETH_SPEED_10M;
+    if (esp_eth_ioctl(s_eth_handle, ETH_CMD_G_SPEED, &speed) == ESP_OK) {
+        return speed == ETH_SPEED_100M ? 100 : 10;
+    }
+    return 0;
 }
