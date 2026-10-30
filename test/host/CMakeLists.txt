@@ -30,6 +30,10 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/auth_logic ${CMAKE_BINARY_
 add_library(tc358743_edid STATIC ${CMAKE_SOURCE_DIR}/../../components/tc358743/tc358743_edid.c)
 target_include_directories(tc358743_edid PUBLIC ${CMAKE_SOURCE_DIR}/../../components/tc358743/include)
 
+# Create a static library for pll calc test
+add_library(tc358743_pll_calc STATIC ${CMAKE_SOURCE_DIR}/../../components/tc358743/tc358743_pll_calc.c)
+target_include_directories(tc358743_pll_calc PUBLIC ${CMAKE_SOURCE_DIR}/../../components/tc358743/include)
+
 # Create a static library for auth test reference crypto
 add_library(auth_crypto_ref STATIC ${CMAKE_SOURCE_DIR}/auth_logic/auth_crypto_ref.c)
 target_include_directories(auth_crypto_ref PUBLIC ${CMAKE_SOURCE_DIR}/../../components/auth_logic/include)
@@ -61,6 +65,10 @@ foreach(test_source ${TEST_SOURCES})
 
     if (test_source MATCHES "test_edid.c")
         target_link_libraries(${test_name} PRIVATE tc358743_edid)
+    endif()
+
+    if (test_source MATCHES "test_pll_calc.c")
+        target_link_libraries(${test_name} PRIVATE tc358743_pll_calc)
     endif()
 
     if (test_source MATCHES "/http_guard/")
