@@ -56,7 +56,7 @@ esp_err_t mipi_phy_power_enable(void) {
     ESP_LOGI(TAG, "Enabled PHY power: chan_id=%d, voltage_mv=%d", chan_id, voltage_mv);
     return ESP_OK;
 #else
-    ESP_LOGI(TAG, "無効（Kconfig）");
+    ESP_LOGI(TAG, "disabled by Kconfig");
     return ESP_ERR_NOT_SUPPORTED;
 #endif
 }
