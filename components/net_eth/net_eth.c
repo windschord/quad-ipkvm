@@ -33,7 +33,7 @@ static volatile net_eth_state_t s_eth_state = NET_ETH_STATE_DOWN;
 static volatile net_eth_cb_t s_eth_cb = NULL;
 
 static esp_eth_handle_t s_eth_handle = NULL;
-static uint32_t s_ip_addr = 0;
+static volatile uint32_t s_ip_addr = 0;
 
 
 net_eth_state_t net_eth_get_state(void)
@@ -120,13 +120,13 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
 
 esp_err_t net_eth_init(void)
 {
-    s_eth_handle = NULL;
     static bool s_is_initialized = false;
     esp_err_t ret;
 
     if (s_is_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
+    s_eth_handle = NULL;
 
     // Initialize network interface
     ret = esp_netif_init();
@@ -194,11 +194,11 @@ esp_err_t net_eth_init(void)
 
     esp_eth_config_t eth_config = ETH_DEFAULT_CONFIG(mac, phy);
     ret = esp_eth_driver_install(&eth_config, &eth_handle);
-    if (ret == ESP_OK) s_eth_handle = eth_handle;
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_eth_driver_install failed: %s", esp_err_to_name(ret));
         goto err_driver;
     }
+    s_eth_handle = eth_handle;
 
     // Attach Ethernet driver to TCP/IP stack
     glue = esp_eth_new_netif_glue(eth_handle);
