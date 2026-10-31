@@ -115,6 +115,7 @@ static esp_err_t tc_read16(tc358743_handle_t dev, uint16_t reg, uint16_t* val) {
     }
     return err;
 }
+#endif
 
 // I2C 8-bit register read
 static esp_err_t tc_read8(tc358743_handle_t dev, uint16_t reg, uint8_t* val) {
@@ -163,6 +164,7 @@ static esp_err_t tc_sleep_mode(tc358743_handle_t dev, bool sleep) {
 }
 
 // Setup PLL matching Linux driver logic
+#if 0
 static esp_err_t tc_set_pll(tc358743_handle_t dev) {
     if (!dev->config.pll_prd || !dev->config.pll_fbd) {
         ESP_LOGW(TAG, "UNVERIFIED PLL parameters. Skipping PLL configuration (requires hw-verify).");
@@ -212,6 +214,7 @@ static esp_err_t tc_set_pll(tc358743_handle_t dev) {
 
     return ESP_OK;
 }
+#endif
 
 // Source: tc358743_regs.h CLW_CNTRL
 #define CLW_CNTRL                             0x0140
@@ -255,6 +258,7 @@ static esp_err_t tc_set_pll(tc358743_handle_t dev) {
 static esp_err_t tc_reset(tc358743_handle_t dev, uint16_t mask);
 
 // Setup CSI matching Linux driver logic
+#if 0
 static esp_err_t tc_set_csi(tc358743_handle_t dev) {
     esp_err_t err = tc_reset(dev, MASK_CTXRST);
     if (err != ESP_OK) return err;
@@ -317,18 +321,21 @@ static esp_err_t tc_set_csi(tc358743_handle_t dev) {
 
     return ESP_OK;
 }
+#endif
 
 static esp_err_t tc_write8(tc358743_handle_t dev, uint16_t reg, uint8_t val) {
     uint8_t tx[3] = { reg >> 8, reg & 0xFF, val };
     return i2c_master_transmit(dev->i2c_dev, tx, 3, -1);
 }
 
+#if 0
 static esp_err_t tc_update16(tc358743_handle_t dev, uint16_t reg, uint16_t mask, uint16_t val) {
     uint16_t cur;
     esp_err_t err = tc_read16(dev, reg, &cur);
     if (err != ESP_OK) return err;
     return tc_write16(dev, reg, (cur & ~mask) | val);
 }
+#endif
 
 static esp_err_t tc_update8(tc358743_handle_t dev, uint16_t reg, uint8_t mask, uint8_t val) {
     uint8_t cur;
@@ -351,6 +358,7 @@ static esp_err_t tc_reset(tc358743_handle_t dev, uint16_t mask) {
 }
 
 // Set reference clock (from tc358743_set_ref_clk)
+#if 0
 static esp_err_t tc_set_ref_clk(tc358743_handle_t dev) {
     uint32_t refclk_hz = dev->config.refclk_hz ? dev->config.refclk_hz : 27000000;
     if (refclk_hz != 26000000 && refclk_hz != 27000000 && refclk_hz != 42000000) {
@@ -371,8 +379,10 @@ static esp_err_t tc_set_ref_clk(tc358743_handle_t dev) {
 
     return err;
 }
+#endif
 
 // --- EDID Programming ---
+#if 0
 static esp_err_t tc_write_edid(tc358743_handle_t dev) {
     if (!dev->config.enable_edid) return ESP_OK;
 
@@ -418,6 +428,7 @@ static esp_err_t tc_write_edid(tc358743_handle_t dev) {
     ESP_LOGI(TAG, "EDID programmed successfully");
     return err;
 }
+#endif
 
 
 static bool esp_io_write8(void* ctx, uint16_t reg, uint8_t val) {
