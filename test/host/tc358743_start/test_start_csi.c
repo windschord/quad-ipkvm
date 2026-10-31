@@ -260,11 +260,223 @@ void test_unsupported_rejection(void) {
     TEST_ASSERT_EQUAL(0, g_ctx.count);
 }
 
+// ---- 追加: 書き込み列の固定（回帰の仕様）と I2C 失敗の伝播 ----
+// 期待値は docs/P2B_TC358743_REFERENCE.md の起動手順（972Mbps・2 レーン・RGB888・非連続クロック）に
+// 基づく。EDID RAM (0x8C00 以降) の中身は test_edid.c で検証するので、ここでは除外する。
+#define GOLD_DELAY 0xFFFFu
+#define GOLD_GPIO  0xFFFEu
+typedef struct { uint16_t reg; uint32_t val; } gold_t;
+
+static const gold_t k_gold_972[] = {
+    { GOLD_GPIO, 1u },
+    { GOLD_GPIO, 0u },
+    { GOLD_DELAY, 10u },
+    { GOLD_GPIO, 1u },
+    { GOLD_DELAY, 200u },
+    { 0x8544, 0x0u },
+    { GOLD_DELAY, 20u },
+    { 0x0002, 0xC00u },
+    { 0x0002, 0xF00u },
+    { 0x0002, 0xC00u },
+    { 0x0002, 0xC00u },
+    { 0x0006, 0x176u },
+    { 0x8540, 0x8Cu },
+    { 0x8541, 0xAu },
+    { 0x8531, 0x0u },
+    { 0x85AA, 0xEu },
+    { 0x85AB, 0x1u },
+    { 0x85AC, 0xF6u },
+    { 0x85AD, 0x6u },
+    { 0x8630, 0xB0u },
+    { 0x8631, 0x1Eu },
+    { 0x8632, 0x4u },
+    { 0x8670, 0x1u },
+    { 0x0028, 0x1A5u },
+    { 0x002A, 0x1A5u },
+    { 0x8534, 0x0u },
+    { 0x8532, 0x80u },
+    { 0x8533, 0x0u },
+    { 0x8536, 0x40u },
+    { 0x853F, 0xAu },
+    { 0x8546, 0x2Du },
+    { 0x8552, 0x0u },
+    { 0x85AF, 0x0u },
+    { 0x8534, 0x1u },
+    { 0x8543, 0x2u },
+    { 0x8560, 0x2u },
+    { 0x8570, 0x0u },
+    { 0x8573, 0x1u },
+    { 0x8574, 0x8u },
+    { 0x85C7, 0x0u },
+    { 0x85CA, 0x0u },
+    { 0x85CB, 0x1u },
+    { 0x85C7, 0x2u },
+    { GOLD_DELAY, 10u },
+    { 0x857F, 0xD0u },
+    { 0x0004, 0x0u },
+    { 0x0002, 0xC01u },
+    { 0x0020, 0x308Fu },
+    { 0x0022, 0x3u },
+    { GOLD_DELAY, 1u },
+    { 0x0022, 0x13u },
+    { 0x0002, 0xC00u },
+    { 0x0002, 0xE00u },
+    { 0x0002, 0xC00u },
+    { 0x014C, 0x1u },
+    { 0x0150, 0x1u },
+    { 0x0210, 0x1B58u },
+    { 0x0214, 0x7u },
+    { 0x0218, 0x2806u },
+    { 0x021C, 0x0u },
+    { 0x0220, 0x806u },
+    { 0x0224, 0x4268u },
+    { 0x0228, 0x8u },
+    { 0x022C, 0x5u },
+    { 0x0230, 0x0u },
+    { 0x0234, 0x7u },
+    { 0x0238, 0x0u },
+    { 0x0204, 0x1u },
+    { 0x0518, 0x1u },
+    { 0x0500, 0xA3008082u },
+    { 0x0500, 0xB4000312u },
+    { 0x0500, 0xD5000012u },
+    { 0x0500, 0xA6000004u },
+    { 0x8573, 0x1u },
+    { 0x8576, 0x0u },
+    { 0x0004, 0x0u },
+    { 0x0014, 0xFFFFu },
+    { 0x0016, 0xFCFFu },
+    { 0x857F, 0xC0u },
+    { 0x0004, 0x3u },
+    { GOLD_DELAY, 150u },
+    { 0x8544, 0x1u },
+    { GOLD_DELAY, 50u },
+    { 0x0518, 0x1u },
+};
+
+static int collect_seq(gold_t* out, int max) {
+    int n = 0;
+    for (int i = 0; i < g_ctx.count && n < max; i++) {
+        const op_record_t* op = &g_ctx.ops[i];
+        if (op->type == 'W') {
+            if (op->reg >= 0x8C00) continue;
+            out[n].reg = op->reg; out[n].val = op->val; n++;
+        } else if (op->type == 'D') {
+            out[n].reg = GOLD_DELAY; out[n].val = op->ms; n++;
+        } else if (op->type == 'G') {
+            out[n].reg = GOLD_GPIO; out[n].val = op->level ? 1 : 0; n++;
+        }
+    }
+    return n;
+}
+
+void test_golden_972_write_sequence(void) {
+    tc358743_mode_t mode = { .lane_rate_mbps = 972, .lanes = 2, .format = TC358743_FORMAT_RGB888, .continuous_clock = false };
+    bool locked = false;
+    TEST_ASSERT_TRUE(tc358743_start_sequence(&fake_ops, &mode, TC358743_EDID_PROFILE_720P_60, &locked));
+    gold_t got[MAX_OPS];
+    int n = collect_seq(got, MAX_OPS);
+    int expect_n = (int)(sizeof(k_gold_972) / sizeof(k_gold_972[0]));
+    TEST_ASSERT_EQUAL_INT(expect_n, n);
+    for (int i = 0; i < n; i++) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "index %d", i);
+        TEST_ASSERT_EQUAL_HEX16_MESSAGE(k_gold_972[i].reg, got[i].reg, msg);
+        TEST_ASSERT_EQUAL_HEX32_MESSAGE(k_gold_972[i].val, got[i].val, msg);
+    }
+}
+
+static uint32_t last_write_val(uint16_t reg, bool* found) {
+    uint32_t v = 0;
+    *found = false;
+    for (int i = 0; i < g_ctx.count; i++) {
+        if (g_ctx.ops[i].type == 'W' && g_ctx.ops[i].reg == reg) { v = g_ctx.ops[i].val; *found = true; }
+    }
+    return v;
+}
+
+void test_continuous_clock_sets_txoptioncntrl(void) {
+    tc358743_mode_t mode = { .lane_rate_mbps = 972, .lanes = 2, .format = TC358743_FORMAT_RGB888, .continuous_clock = true };
+    bool locked = false, found = false;
+    TEST_ASSERT_TRUE(tc358743_start_sequence(&fake_ops, &mode, TC358743_EDID_PROFILE_720P_60, &locked));
+    TEST_ASSERT_EQUAL_HEX32(0x1, last_write_val(0x0238, &found));
+    TEST_ASSERT_TRUE(found);
+}
+
+void test_594_register_set(void) {
+    tc358743_mode_t mode = { .lane_rate_mbps = 594, .lanes = 2, .format = TC358743_FORMAT_RGB888, .continuous_clock = false };
+    bool locked = false, found = false;
+    TEST_ASSERT_TRUE(tc358743_start_sequence(&fake_ops, &mode, TC358743_EDID_PROFILE_720P_60, &locked));
+    TEST_ASSERT_EQUAL_HEX32(0x0E80, last_write_val(0x0210, &found));  // LINEINITCNT
+    TEST_ASSERT_EQUAL_HEX32(0x0003, last_write_val(0x0214, &found));  // LPTXTIMECNT
+    TEST_ASSERT_EQUAL_HEX32(0x1403, last_write_val(0x0218, &found));  // TCLK_HEADERCNT
+    TEST_ASSERT_EQUAL_HEX32(0x0103, last_write_val(0x0220, &found));  // THS_HEADERCNT
+    TEST_ASSERT_EQUAL_HEX32(0x4882, last_write_val(0x0224, &found));  // TWAKEUP
+    TEST_ASSERT_EQUAL_HEX32(0x0002, last_write_val(0x022C, &found));  // THS_TRAILCNT
+    TEST_ASSERT_EQUAL_HEX32(0x0000, last_write_val(0x0238, &found));  // TXOPTIONCNTRL
+}
+
+// 失敗の注入: n 回目の書き込みを失敗させ、すべての n で false が返ること。
+static int g_fail_at;
+static int g_write_count;
+static bool inj_write8(void* c, uint16_t r, uint8_t v) { if (++g_write_count == g_fail_at) return false; return fake_write8(c, r, v); }
+static bool inj_write16(void* c, uint16_t r, uint16_t v) { if (++g_write_count == g_fail_at) return false; return fake_write16(c, r, v); }
+static bool inj_write32(void* c, uint16_t r, uint32_t v) { if (++g_write_count == g_fail_at) return false; return fake_write32(c, r, v); }
+
+void test_every_write_failure_is_reported(void) {
+    tc358743_mode_t mode = { .lane_rate_mbps = 972, .lanes = 2, .format = TC358743_FORMAT_RGB888, .continuous_clock = false };
+    tc358743_io_ops_t ops = fake_ops;
+    ops.write8 = inj_write8; ops.write16 = inj_write16; ops.write32 = inj_write32;
+
+    // まず失敗なしで書き込み回数を数える
+    g_fail_at = 0; g_write_count = 0;
+    memset(&g_ctx, 0, sizeof(g_ctx)); g_ctx.sys_status_mock = 0x82;
+    bool locked = false;
+    TEST_ASSERT_TRUE(tc358743_start_sequence(&ops, &mode, TC358743_EDID_PROFILE_720P_60, &locked));
+    int total = g_write_count;
+    TEST_ASSERT_TRUE(total > 100);
+
+    for (int k = 1; k <= total; k++) {
+        memset(&g_ctx, 0, sizeof(g_ctx)); g_ctx.sys_status_mock = 0x82;
+        g_fail_at = k; g_write_count = 0;
+        locked = true;
+        bool ret = tc358743_start_sequence(&ops, &mode, TC358743_EDID_PROFILE_720P_60, &locked);
+        char msg[48];
+        snprintf(msg, sizeof(msg), "write #%d failure not reported", k);
+        TEST_ASSERT_FALSE_MESSAGE(ret, msg);
+        TEST_ASSERT_FALSE_MESSAGE(locked, msg);
+    }
+}
+
+void test_chipid_mismatch_stops_before_writes(void) {
+    tc358743_mode_t mode = { .lane_rate_mbps = 972, .lanes = 2, .format = TC358743_FORMAT_RGB888, .continuous_clock = false };
+    g_ctx.chipid_mock = 0x4400; // 上位バイトが 0 でない
+    bool locked = false;
+    TEST_ASSERT_FALSE(tc358743_start_sequence(&fake_ops, &mode, TC358743_EDID_PROFILE_720P_60, &locked));
+    for (int i = 0; i < g_ctx.count; i++) {
+        TEST_ASSERT_NOT_EQUAL('W', g_ctx.ops[i].type);
+    }
+}
+
+void test_null_args_rejected(void) {
+    tc358743_mode_t mode = { .lane_rate_mbps = 972, .lanes = 2, .format = TC358743_FORMAT_RGB888, .continuous_clock = false };
+    bool locked;
+    TEST_ASSERT_FALSE(tc358743_start_sequence(NULL, &mode, TC358743_EDID_PROFILE_720P_60, &locked));
+    TEST_ASSERT_FALSE(tc358743_start_sequence(&fake_ops, NULL, TC358743_EDID_PROFILE_720P_60, &locked));
+    TEST_ASSERT_FALSE(tc358743_start_sequence(&fake_ops, &mode, TC358743_EDID_PROFILE_720P_60, NULL));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_success_972);
     RUN_TEST(test_success_594);
     RUN_TEST(test_timeout);
     RUN_TEST(test_unsupported_rejection);
+    RUN_TEST(test_golden_972_write_sequence);
+    RUN_TEST(test_continuous_clock_sets_txoptioncntrl);
+    RUN_TEST(test_594_register_set);
+    RUN_TEST(test_every_write_failure_is_reported);
+    RUN_TEST(test_chipid_mismatch_stops_before_writes);
+    RUN_TEST(test_null_args_rejected);
     return UNITY_END();
 }

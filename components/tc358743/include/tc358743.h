@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <driver/i2c_master.h>
+#include "esp_err.h"
+#include "tc358743_start.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,6 +42,10 @@ typedef struct {
 } tc358743_config_t;
 
 tc358743_handle_t tc358743_init(const tc358743_config_t* config);
+
+// Full start-up sequence (hardware reset, HDMI RX PHY, DDC/EDID, PLL, CSI, RGB888 output, HPD, lock wait).
+// Returns ESP_OK when the sequence ran to the end; *out_locked tells whether TMDS and SYNC were detected.
+esp_err_t tc358743_start_csi(tc358743_handle_t dev, const tc358743_mode_t* mode, bool* out_locked);
 void tc358743_deinit(tc358743_handle_t dev);
 
 // Diagnostic logging
