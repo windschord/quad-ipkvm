@@ -29,8 +29,8 @@ struct video_source_t {
 
 - publish は **1 つのスレッド**から行う（`frame_hub_begin_publish` → データを書く → `frame_hub_commit`）。書けなかったときは `frame_hub_abort_publish`。
 - `frame_hub_commit(hub, frame, size, width, height, timestamp_ms)`: `size` は JPEG のバイト数、`width` / `height` は画素数、`timestamp_ms` は単調増加のミリ秒。
-- `frame_hub_begin_publish(hub, required_size)` が `NULL` を返したら、**そのフレームを捨てる**（プールが埋まっている。クライアントが遅い）。待たない。
-- フレームのバッファは `frame_hub` が管理する（`alloc_cb`）。`max_frame_size` を超える JPEG は publish しない（捨てて、統計に残す）。`max_frame_size` / `pool_size` の既定は `main/Kconfig.projbuild` の `FRAME_HUB_*`。**1080p の JPEG が収まらないときは、HDMI 担当が `FRAME_HUB_*` の値の変更を PR で提案する**（共有ファイルの規則は `ANTIGRAVITY_HANDOFF.md` の 5 章）。
+- `frame_hub_begin_publish(hub, required_size)` が `NULL` を返したら、**そのフレームを捨てる**。待たない。`NULL` の理由は 2 つある。(a) プールが埋まっている（クライアントが遅い）: `frame_hub` の統計 `dropped_frames` に**数えられる**。(b) `required_size` が 0、または `max_frame_size` を超える: **`dropped_frames` には数えられない**（実装は黙って `NULL` を返す）。(b) は HDMI 担当側で数えて記録する（ログか自前の統計）。
+- フレームのバッファは `frame_hub` が管理する（`alloc_cb`）。`max_frame_size` を超える JPEG は publish しない（上の (b)。`frame_hub_commit` に超過した `size` を渡した場合は、`frame_hub` が捨てて `dropped_frames` に数えるが、先に `begin_publish` が `NULL` を返すので通常は届かない）。`max_frame_size` / `pool_size` の既定は `main/Kconfig.projbuild` の `FRAME_HUB_*`。**1080p の JPEG が収まらないときは、HDMI 担当が `FRAME_HUB_*` の値の変更を PR で提案する**（共有ファイルの規則は `ANTIGRAVITY_HANDOFF.md` の 5 章）。
 - JPEG は、**ブラウザの `createImageBitmap` が解釈できる、通常のベースライン JPEG**（SOI `FFD8` で始まり EOI `FFD9` で終わる）。
 
 ### 1.3 映像の状態（P5 で使う。いまは任意）

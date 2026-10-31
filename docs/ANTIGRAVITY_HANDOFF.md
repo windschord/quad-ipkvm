@@ -25,7 +25,7 @@
 
 ### 2.1 できていて、実機でも確認したもの
 - ビルドと起動: ESP-IDF v6.0.1、チップ rev v1.3、PSRAM（HEX、200MHz、32MB）、Ethernet（IP101GRI）。
-- **Web と認証（Claude 担当）**: HTTPS（自己署名、NVS に保存）、初回パスワード設定、PBKDF2 のワーカー、セッション Cookie、`WS /video`、最小ビューア。**ブラウザ（Chrome）でログインし、テストパターンが約 10 fps で映る**ことまで確認済み（`HW_VERIFY` D10、Z）。
+- **Web と認証（Claude 担当）**: HTTPS（自己署名、NVS に保存）、初回パスワード設定、PBKDF2 のワーカー、セッション Cookie、`WS /video`、最小ビューア。**ブラウザ（Chrome）でログインし、`/video` の wss でテストパターン（8 色のカラーバー）が表示される**ことを確認済み。フレームレートは Python クライアントで約 9.9 fps を実測した（`TEST_PATTERN_FPS=10`）。**Chrome 上の表示 fps は未測定**（`HW_VERIFY` D10、Z）。
 - X630（TC358743）: **I2C（0x0F）が応答**、Chip ID 0x0000、EDID の書き込みが成功、電源（USB、電流制限つきのハブ）で異常なし。
 
 ### 2.2 できていて、ホストテストまで（実機は未確認）
