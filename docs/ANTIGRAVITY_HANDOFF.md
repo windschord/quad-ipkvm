@@ -75,6 +75,21 @@
 - 1 タスク = 1 Issue。PR の本文で `Closes #番号`。担当は、Issue にコメントで進捗を書く。
 - 相手の担当に依頼したいことは、**Issue を立てる**（担当のラベルを付ける）。
 
+**現在の Issue（2026-10-31）**
+
+| Issue | 内容 | 担当 |
+|---|---|---|
+| #64 | A-0: ESP-KVM を参照機として動かし、動作中のレジスタを記録（`VDD_MIPI_DPHY` の測定の段取りもここ） | Antigravity |
+| #65 | A-1: P2b-3 起動手順（`tc358743_start_csi`。#62 でマージ済み）の実機確認 | Antigravity |
+| #66 | A-2: P2b-4 `csi_capture` | Antigravity（`blocked`） |
+| #67 | A-3: P2b-5/6 JPEG 化と `csi_video_source` | Antigravity（`blocked`、`contract`） |
+| #68 | A-4/A-5: 解像度変更への追従、実験 | Antigravity（`blocked`） |
+| #69 | 遅いクライアントによる `WS /video` の停止対策 | Claude |
+| #70 | 認証成功経路のスモークテスト | Claude |
+| #71 | HDMI 以外の機能（OLED-3b/4、MCP23017、HID、KVM/ATX、H.264、mDNS など） | Claude |
+
+`VDD_MIPI_DPHY` の測定は、**Antigravity が段取りを組み、オーナーがテスターで測る**（オーナーの決定、2026-10-31）。
+
 ## 6. 実機と電気の安全（必ず守る）
 
 - **電気的な数値（電圧、極性、タイミング）を推測で確定しない。** 根拠のない値は `TODO(hw-verify)` を残す。
