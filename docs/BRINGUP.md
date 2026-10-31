@@ -153,13 +153,13 @@ Initializing TC358743...
 Found TC358743, Chip ID: 0x00xx (Revision 0x..)   ← 上位バイトが 0x00 であること
 ----- TC358743 Diagnostics -----
 Chip ID: ...  SYSCTL: ...  HDMI SYS_STATUS: ... (TMDS detected: no, SYNC: no)
-CSI_STATUS: ...  CSI_ERR: ...
+CSI_STATUS/CSI_ERR: not read (CSI not started; values before CSI start are invalid)
 ```
 **P2b-3 以降の動作（`Initialize TC358743 full CSI startup` = `TC358743_START_CSI`、既定 n）**: `tc358743_init()` は **ChipID の確認だけ**を行い、リセット・EDID の書き込み・HPD・PLL・CSI の設定は行いません（以前の「EDID programmed successfully」のログは、`START_CSI=n` では出なくなりました）。診断（読み出しのみ）は `START_CSI` に関わらず出ます。**EDID・HPD・PLL・CSI の起動は `START_CSI=y` のときだけ**で、これは GPIO16 の RESET 配線、`VDD_MIPI_DPHY` の電圧測定（`MIPI_PHY_POWER_ENABLE`）が済んでから、Antigravity の A-1（#65）で行います。**段階 2 では `START_CSI=n` のまま**にしてください。
 
 **確認すること**: `Chip ID validation failed`（I2C で応答がない、またはアドレス違い）が出ないか。I2C は SDA=GPIO7、SCL=GPIO8、アドレス 0x0F（回路図と Linux ドライバの既定値。E3）。
 
-**HDMI を接続した場合**: `TMDS detected: yes` になるかを確認してください（映像信号があるか。EDID が相手に認識されたかの目安）。
+**HDMI を接続した場合**: `START_CSI=n` では EDID も HPD も設定しないので、相手（PC）が映像を送らず、**`TMDS detected: no` のままでも異常ではありません**（`TMDS detected: yes` を必須条件にしないでください）。HDMI を接続したことの検出は、`SYS_STATUS` の DDC5V（下の読み方）で確認します。TMDS・SYNC は、`START_CSI=y`（Antigravity の A-1、#65）で確認します。
 
 **診断ログの読み方（2026-10-21 の実機結果から）**:
 - `Chip ID`、`SYSCTL`、`HDMI SYS_STATUS` は実値として読んでよいです。`SYS_STATUS=0x09` は、DDC5V（相手が 5V を出している）と PHY_SCDT（信号の検出）が立っている状態で、`TMDS detected: no` のままでも、HDMI を接続したことは検出されています。
