@@ -11,6 +11,7 @@
 | 監視・レビュー | Claude (Sonnet) | プラン評価、PR 差分レビュー、受入基準の照合、Issue/進捗管理 |
 | 助言 | Claude (Opus) | 設計判断で迷ったときのみ相談 |
 | 実機確認・書き込み | **人間（オーナー）** | Jules/Claude は実機に触れない。実機確認が要る項目は PR/Issue に `hw-verify` ラベルで残す |
+| **HDMI 周り（検証と実装）** | **Antigravity**（ローカル、実機と同じ PC） | TC358743、MIPI PHY 電源、CSI 受信、JPEG 化、`csi_video_source`、HDMI の実機検証（2026-10-31 のオーナーの決定。**分担・規約・境界は `docs/ANTIGRAVITY_HANDOFF.md` と `docs/INTERFACES.md`**。それ以外は Claude が担当） |
 
 Jules の VM から実機は見えない。したがって **実機が完了条件に含まれるフェーズでは、Jules の完了条件は「CI（ホストテスト + ESP-IDF ビルド）が緑」まで**とし、実機での動作確認はオーナーが行って結果を Issue に記録する。
 
