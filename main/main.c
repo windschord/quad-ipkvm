@@ -7,6 +7,13 @@
 #include "esp_event.h"
 
 // If not enabled, define it to 0 so `if (CONFIG_TC358743_INIT)` doesn't fail compilation
+
+#ifndef CONFIG_TC358743_START_CSI
+#define CONFIG_TC358743_START_CSI 0
+#endif
+#ifndef CONFIG_TC358743_CSI_CONTINUOUS_CLOCK
+#define CONFIG_TC358743_CSI_CONTINUOUS_CLOCK 0
+#endif
 #ifndef CONFIG_TC358743_INIT
 #define CONFIG_TC358743_INIT 0
 #endif
@@ -193,7 +200,25 @@ void app_main(void)
 
         tc358743_handle_t tc_dev = tc358743_init(&config);
         if (tc_dev) {
+
+        if (CONFIG_TC358743_START_CSI) {
+            tc358743_mode_t mode = {
+                .lane_rate_mbps = 972,
+                .lanes = 2,
+                .format = TC358743_FORMAT_RGB888,
+                .continuous_clock = CONFIG_TC358743_CSI_CONTINUOUS_CLOCK
+            };
+            bool locked = false;
+            ESP_LOGI(TAG, "Starting TC358743 CSI output...");
+            esp_err_t start_err = tc358743_start_csi(tc_dev, &mode, &locked);
+            if (start_err == ESP_OK) {
+                ESP_LOGI(TAG, "TC358743 start sequence complete. HDMI locked: %s", locked ? "Yes" : "No");
+            } else {
+                ESP_LOGE(TAG, "TC358743 start sequence failed.");
+            }
             tc358743_dump_diagnostics(tc_dev);
+        }
+
             // tc358743_poll_interrupts(tc_dev);
         } else {
             ESP_LOGE(TAG, "Failed to initialize TC358743");
