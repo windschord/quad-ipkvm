@@ -1,5 +1,7 @@
 #include "tc358743.h"
-#include "tc358743_edid.h"
+#include "tc358743_edid.h"\n#include "tc358743_start.h"
+#include <driver/gpio.h>
+
 #include <string.h>
 #include <stdlib.h>
 #include <esp_log.h>
@@ -417,7 +419,69 @@ static esp_err_t tc_write_edid(tc358743_handle_t dev) {
     return err;
 }
 
-// --- Initialization ---
+
+static bool esp_io_write8(void* ctx, uint16_t reg, uint8_t val) {
+    return tc_write8((tc358743_handle_t)ctx, reg, val) == ESP_OK;
+}
+static bool esp_io_write16(void* ctx, uint16_t reg, uint16_t val) {
+    return tc_write16((tc358743_handle_t)ctx, reg, val) == ESP_OK;
+}
+static bool esp_io_write32(void* ctx, uint16_t reg, uint32_t val) {
+    return tc_write32((tc358743_handle_t)ctx, reg, val) == ESP_OK;
+}
+static bool esp_io_read8(void* ctx, uint16_t reg, uint8_t* val) {
+    return tc_read8((tc358743_handle_t)ctx, reg, val) == ESP_OK;
+}
+static bool esp_io_read16(void* ctx, uint16_t reg, uint16_t* val) {
+    return tc_read16((tc358743_handle_t)ctx, reg, val) == ESP_OK;
+}
+static void esp_io_delay_ms(void* ctx, uint32_t ms) {
+    vTaskDelay(pdMS_TO_TICKS(ms));
+}
+static void esp_io_reset_gpio(void* ctx, bool level) {
+#ifdef CONFIG_TC358743_RESET_GPIO
+    if (CONFIG_TC358743_RESET_GPIO >= 0) {
+        gpio_set_level(CONFIG_TC358743_RESET_GPIO, level ? 1 : 0);
+    }
+#endif
+}
+
+esp_err_t tc358743_start_csi(tc358743_handle_t dev, const tc358743_mode_t *mode, bool *out_locked) {
+    if (!dev || !mode || !out_locked) return ESP_ERR_INVALID_ARG;
+
+#ifdef CONFIG_TC358743_RESET_GPIO
+    if (CONFIG_TC358743_RESET_GPIO >= 0) {
+        gpio_config_t io_conf = {
+            .pin_bit_mask = (1ULL << CONFIG_TC358743_RESET_GPIO),
+            .mode = GPIO_MODE_OUTPUT_OD,
+            .pull_up_en = 0,
+            .pull_down_en = 0,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&io_conf);
+        gpio_set_level(CONFIG_TC358743_RESET_GPIO, 1);
+    }
+#endif
+
+    tc358743_io_ops_t ops = {
+        .ctx = dev,
+        .write8 = esp_io_write8,
+        .write16 = esp_io_write16,
+        .write32 = esp_io_write32,
+        .read8 = esp_io_read8,
+        .read16 = esp_io_read16,
+        .delay_ms = esp_io_delay_ms,
+        .reset_gpio = esp_io_reset_gpio
+    };
+
+    bool res = tc358743_start_sequence(&ops, mode, TC358743_EDID_PROFILE_720P_60, out_locked);
+    if (res) {
+        dev->csi_started = true;
+        return ESP_OK;
+    }
+    return ESP_FAIL;
+}
+\n// --- Initialization ---
 tc358743_handle_t tc358743_init(const tc358743_config_t* config) {
     ESP_LOGI(TAG, "Initializing TC358743...");
 
@@ -484,9 +548,8 @@ tc358743_handle_t tc358743_init(const tc358743_config_t* config) {
         return NULL;
     }
 
-    // 3. HPD Control Order
-    // Pull HPD down before writing EDID and configuring CSI
-    ESP_LOGI(TAG, "Lowering HPD...");
+
+    // HPD is kept LOW initially. The rest of the initialization is done in tc358743_start_csi()
     err = tc_update8(dev, HPD_CTL, MASK_HPD_CTL0 | MASK_HPD_OUT0, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to lower HPD");
@@ -494,36 +557,8 @@ tc358743_handle_t tc358743_init(const tc358743_config_t* config) {
         return NULL;
     }
 
-    // Write EDID
-    err = tc_write_edid(dev);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to program EDID");
-        // Do not bring up HPD if EDID programming fails
-        tc358743_deinit(dev);
-        return NULL;
-    }
-
-    // Configure CSI (Minimal setup to enable the bridge)
-    err = tc_set_pll(dev);
-    if (err == ESP_OK) err = tc_set_csi(dev);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to configure PLL/CSI");
-        tc358743_deinit(dev);
-        return NULL;
-    }
-
     dev->csi_started = false;
-
-    // Bring up HPD to signal the source that we are ready
-    ESP_LOGI(TAG, "Bringing up HPD...");
-    err = tc_update8(dev, HPD_CTL, MASK_HPD_CTL0 | MASK_HPD_OUT0, MASK_HPD_CTL0 | MASK_HPD_OUT0);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to bring up HPD");
-        tc358743_deinit(dev);
-        return NULL;
-    }
-
-    return dev;
+return dev;
 }
 
 void tc358743_deinit(tc358743_handle_t dev) {

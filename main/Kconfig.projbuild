@@ -1,5 +1,30 @@
 menu "Quad IP-KVM Configuration"
 
+
+    config TC358743_START_CSI
+        bool "Initialize TC358743 full CSI startup"
+        default n
+        depends on TC358743_INIT
+        help
+            Enables the full HDMI RX PHY, PLL, and CSI sequence after tc358743_init.
+
+    config TC358743_RESET_GPIO
+        int "TC358743 reset GPIO"
+        default 16
+        depends on TC358743_START_CSI
+        help
+            GPIO used for TC358743 hard reset (active low).
+            Defaults to 16 for X630. Set to -1 if not wired.
+            TODO(hw-verify): Wiring for GPIO16 is a manual step for the owner,
+            and its lack of interference with other schematic items needs verification.
+
+    config TC358743_CSI_CONTINUOUS_CLOCK
+        bool "Use continuous clock mode for CSI"
+        default n
+        depends on TC358743_START_CSI
+        help
+            If true, sets TXOPTIONCNTRL to continuous clock mode instead of non-continuous.
+            TODO(hw-verify): Effect on ESP32-P4 CSI host is unknown.
     config TC358743_INIT
         bool "Initialize TC358743 on startup"
         default n
