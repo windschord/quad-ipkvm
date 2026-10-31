@@ -111,6 +111,54 @@ void test_edid_vendor_id_del_sam(void) {
 
 void test_edid_dtd_refresh_rates(void);
 
+void test_edid_profile_720p60(void) {
+    uint8_t buffer[256];
+    size_t len = tc358743_edid_build_profile(buffer, sizeof(buffer), TC358743_EDID_PROFILE_720P_60);
+    TEST_ASSERT_EQUAL(256, len);
+
+    // DTD Check for 720p60 (74.25 MHz -> 7425 = 0x1D01)
+    TEST_ASSERT_EQUAL_HEX8(0x01, buffer[54]);
+    TEST_ASSERT_EQUAL_HEX8(0x1D, buffer[55]);
+
+    // Check VICs: only 4 (720p60) and 1 (480p60) should be present
+    TEST_ASSERT_EQUAL_HEX8(0x42, buffer[132]);
+    TEST_ASSERT_EQUAL_HEX8(4, buffer[133]);
+    TEST_ASSERT_EQUAL_HEX8(1, buffer[134]);
+
+    uint8_t sum1 = 0;
+    for (int i = 0; i < 128; i++) sum1 += buffer[i];
+    TEST_ASSERT_EQUAL_HEX8(0x00, sum1);
+
+    uint8_t sum2 = 0;
+    for (int i = 128; i < 256; i++) sum2 += buffer[i];
+    TEST_ASSERT_EQUAL_HEX8(0x00, sum2);
+}
+
+void test_edid_profile_1080p30(void) {
+    uint8_t buffer[256];
+    size_t len = tc358743_edid_build_profile(buffer, sizeof(buffer), TC358743_EDID_PROFILE_1080P_30);
+    TEST_ASSERT_EQUAL(256, len);
+
+    // DTD Check for 1080p30 (74.25 MHz -> 7425 = 0x1D01)
+    TEST_ASSERT_EQUAL_HEX8(0x01, buffer[54]);
+    TEST_ASSERT_EQUAL_HEX8(0x1D, buffer[55]);
+
+    // Check VICs: 34 (1080p30), 4 (720p60), and 1 (480p60) should be present
+    TEST_ASSERT_EQUAL_HEX8(0x43, buffer[132]);
+    TEST_ASSERT_EQUAL_HEX8(34, buffer[133]);
+    TEST_ASSERT_EQUAL_HEX8(4, buffer[134]);
+    TEST_ASSERT_EQUAL_HEX8(1, buffer[135]);
+
+    uint8_t sum1 = 0;
+    for (int i = 0; i < 128; i++) sum1 += buffer[i];
+    TEST_ASSERT_EQUAL_HEX8(0x00, sum1);
+
+    uint8_t sum2 = 0;
+    for (int i = 128; i < 256; i++) sum2 += buffer[i];
+    TEST_ASSERT_EQUAL_HEX8(0x00, sum2);
+}
+
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_edid_generation_basic);
@@ -119,6 +167,8 @@ int main(void) {
     RUN_TEST(test_edid_vendor_id_decode);
     RUN_TEST(test_edid_vendor_id_del_sam);
     RUN_TEST(test_edid_dtd_refresh_rates);
+    RUN_TEST(test_edid_profile_720p60);
+    RUN_TEST(test_edid_profile_1080p30);
     return UNITY_END();
 }
 

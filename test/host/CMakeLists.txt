@@ -40,6 +40,12 @@ add_library(auth_crypto_ref STATIC ${CMAKE_SOURCE_DIR}/auth_logic/auth_crypto_re
 target_include_directories(auth_crypto_ref PUBLIC ${CMAKE_SOURCE_DIR}/../../components/auth_logic/include)
 
 
+
+# Create a static library for tc358743_start test
+add_library(tc358743_start STATIC ${CMAKE_SOURCE_DIR}/../../components/tc358743/tc358743_start.c)
+target_include_directories(tc358743_start PUBLIC ${CMAKE_SOURCE_DIR}/../../components/tc358743/include)
+target_link_libraries(tc358743_start PRIVATE tc358743_edid tc358743_pll_calc)
+
 # Discover tests automatically
 file(GLOB_RECURSE TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*/test_*.c" "${CMAKE_CURRENT_SOURCE_DIR}/test_*.c")
 list(FILTER TEST_SOURCES EXCLUDE REGEX ".*build/.*")
@@ -75,6 +81,13 @@ foreach(test_source ${TEST_SOURCES})
     if (test_source MATCHES "test_pll_calc.c")
         target_link_libraries(${test_name} PRIVATE tc358743_pll_calc)
     endif()
+
+
+    if (test_source MATCHES "test_start_csi.c")
+        target_link_libraries(${test_name} PRIVATE tc358743_start tc358743_edid)
+    endif()
+
+
 
     if (test_source MATCHES "/http_guard/")
         target_link_libraries(${test_name} PRIVATE http_guard auth_logic)

@@ -171,3 +171,141 @@ size_t tc358743_edid_build(uint8_t* out_buffer, size_t buffer_size, uint32_t max
 
     return 256;
 }
+
+size_t tc358743_edid_build_profile(uint8_t* out_buffer, size_t buffer_size, tc358743_edid_profile_t profile) {
+    if (buffer_size < 256) return 0;
+
+    memset(out_buffer, 0, 256);
+
+    // --- 1. Base Block (128 bytes) ---
+    out_buffer[0] = 0x00;
+    for (int i = 1; i <= 6; i++) out_buffer[i] = 0xFF;
+    out_buffer[7] = 0x00;
+
+    // Vendor / Product ID
+    out_buffer[8]  = 0x16; // ESP
+    out_buffer[9]  = 0x70;
+    out_buffer[10] = 0x01;
+    out_buffer[11] = 0x00;
+    out_buffer[18] = 0x01; // EDID 1.3
+    out_buffer[19] = 0x03;
+    out_buffer[20] = 0x80; // Digital input
+    out_buffer[21] = 0x10; // H size
+    out_buffer[22] = 0x09; // V size
+    out_buffer[23] = 0x78; // Gamma
+    out_buffer[24] = 0x0A; // Features
+    out_buffer[35] = 0x20; // Established Timings
+
+    for (int i = 38; i < 54; i += 2) {
+        out_buffer[i] = 0x01;
+        out_buffer[i+1] = 0x01;
+    }
+
+    // Detailed Timing Descriptor (DTD) 1
+    if (profile == TC358743_EDID_PROFILE_1080P_30) {
+        // 1080p30 DTD (~74.25 MHz)
+        uint16_t pix_clk = 7425;
+        out_buffer[54] = pix_clk & 0xFF;
+        out_buffer[55] = pix_clk >> 8;
+        out_buffer[56] = 0x80;
+        out_buffer[57] = 0x18;
+        out_buffer[58] = 0x71;
+        out_buffer[59] = 0x38;
+        out_buffer[60] = 0x2D;
+        out_buffer[61] = 0x40;
+        out_buffer[62] = 0x58;
+        out_buffer[63] = 0x2C;
+        out_buffer[64] = 0x45;
+        out_buffer[65] = 0x00;
+        out_buffer[66] = 0x10;
+        out_buffer[67] = 0x09;
+        out_buffer[68] = 0x00;
+        out_buffer[69] = 0x00;
+        out_buffer[70] = 0x00;
+        out_buffer[71] = 0x1E;
+    } else {
+        // 720p60 DTD (~74.25 MHz) (VIC 4)
+        uint16_t pix_clk = 7425;
+        out_buffer[54] = pix_clk & 0xFF;
+        out_buffer[55] = pix_clk >> 8;
+        out_buffer[56] = 0x00; // H active 1280 lower 8 (0x00)
+        out_buffer[57] = 0x72; // H blanking 370 (0x172) lower 8 (0x72)
+        out_buffer[58] = 0x51; // H active upper 4 (0x5), H blank 4 (0x1) -> 0x51
+        out_buffer[59] = 0xD0; // V active 720 lower 8 (0xD0)
+        out_buffer[60] = 0x1E; // V blanking 30 (0x1E)
+        out_buffer[61] = 0x20; // V active upper 4 (0x2), V blank 4 (0x0) -> 0x20
+        out_buffer[62] = 0x6E; // H sync offset 110 (0x6E)
+        out_buffer[63] = 0x28; // H sync width 40 (0x28)
+        out_buffer[64] = 0x55; // V sync offset 5, V sync width 5 -> 0x55
+        out_buffer[65] = 0x00; // sync upper bits
+        out_buffer[66] = 0x10;
+        out_buffer[67] = 0x09;
+        out_buffer[68] = 0x00;
+        out_buffer[69] = 0x00;
+        out_buffer[70] = 0x00;
+        out_buffer[71] = 0x1E; // sync positive/positive -> 0x1E
+    }
+
+    // Monitor Name Descriptor (Descriptor 2)
+    out_buffer[72] = 0x00; out_buffer[73] = 0x00; out_buffer[74] = 0x00; out_buffer[75] = 0xFC;
+    out_buffer[76] = 0x00;
+    out_buffer[77] = 'E'; out_buffer[78] = 'S'; out_buffer[79] = 'P';
+    out_buffer[80] = 0x0A;
+    for (int i = 81; i < 90; i++) out_buffer[i] = 0x20;
+
+    // Dummy Descriptor (Descriptor 3)
+    out_buffer[90] = 0x00; out_buffer[91] = 0x00; out_buffer[92] = 0x00; out_buffer[93] = 0x10;
+    out_buffer[94] = 0x00;
+    out_buffer[95] = 0x0A;
+    for (int i = 96; i < 108; i++) out_buffer[i] = 0x20;
+
+    // Dummy Descriptor (Descriptor 4)
+    out_buffer[108] = 0x00; out_buffer[109] = 0x00; out_buffer[110] = 0x00; out_buffer[111] = 0x10;
+    out_buffer[112] = 0x00;
+    out_buffer[113] = 0x0A;
+    for (int i = 114; i < 126; i++) out_buffer[i] = 0x20;
+
+    out_buffer[126] = 0x01; // 1 Extension Block
+
+    // Calculate base block checksum
+    uint8_t sum = 0;
+    for (int i = 0; i < 127; i++) sum += out_buffer[i];
+    out_buffer[127] = (uint8_t)(256 - sum);
+
+    // --- 2. CEA-861 Extension Block (128 bytes) ---
+    uint8_t* ext = out_buffer + 128;
+    ext[0] = 0x02; // Extension Tag
+    ext[1] = 0x03; // Revision 3
+
+    uint8_t data_block_ptr = 4;
+    uint8_t vics[10];
+    uint8_t num_vics = 0;
+
+    if (profile == TC358743_EDID_PROFILE_1080P_30) {
+        vics[num_vics++] = 34; // 1080p30
+    }
+    vics[num_vics++] = 4; // 720p60
+    vics[num_vics++] = 1; // 640x480p60
+
+    uint8_t vdb_len = num_vics;
+    ext[data_block_ptr++] = (0x02 << 5) | vdb_len;
+    for (int i = 0; i < num_vics; i++) {
+        ext[data_block_ptr++] = vics[i];
+    }
+
+    uint8_t vsdb_len = 5;
+    ext[data_block_ptr++] = (0x03 << 5) | vsdb_len;
+    ext[data_block_ptr++] = 0x03;
+    ext[data_block_ptr++] = 0x0C;
+    ext[data_block_ptr++] = 0x00;
+    ext[data_block_ptr++] = 0x10;
+    ext[data_block_ptr++] = 0x00;
+
+    ext[2] = data_block_ptr;
+
+    sum = 0;
+    for (int i = 0; i < 127; i++) sum += ext[i];
+    ext[127] = (uint8_t)(256 - sum);
+
+    return 256;
+}
