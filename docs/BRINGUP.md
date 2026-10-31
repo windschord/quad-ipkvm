@@ -151,14 +151,11 @@ idf.py -p <シリアルポート> flash monitor
 ```
 Initializing TC358743...
 Found TC358743, Chip ID: 0x00xx (Revision 0x..)   ← 上位バイトが 0x00 であること
-Generating and writing 256-byte EDID to RAM...
-EDID programmed successfully
-...
 ----- TC358743 Diagnostics -----
 Chip ID: ...  SYSCTL: ...  HDMI SYS_STATUS: ... (TMDS detected: no, SYNC: no)
 CSI_STATUS: ...  CSI_ERR: ...
 ```
-`UNVERIFIED PLL parameters ... Skipping`、`UNVERIFIED CSI timings ...`、`UNVERIFIED: ...` の警告が出ますが、**これらは未実装部分の意図した警告で、異常ではありません**（PLL / CSI / PHY の設定は P2b の実機確認後に実装します）。
+**P2b-3 以降の動作（`Initialize TC358743 full CSI startup` = `TC358743_START_CSI`、既定 n）**: `tc358743_init()` は **ChipID の確認だけ**を行い、リセット・EDID の書き込み・HPD・PLL・CSI の設定は行いません（以前の「EDID programmed successfully」のログは、`START_CSI=n` では出なくなりました）。診断（読み出しのみ）は `START_CSI` に関わらず出ます。**EDID・HPD・PLL・CSI の起動は `START_CSI=y` のときだけ**で、これは GPIO16 の RESET 配線、`VDD_MIPI_DPHY` の電圧測定（`MIPI_PHY_POWER_ENABLE`）が済んでから、Antigravity の A-1（#65）で行います。**段階 2 では `START_CSI=n` のまま**にしてください。
 
 **確認すること**: `Chip ID validation failed`（I2C で応答がない、またはアドレス違い）が出ないか。I2C は SDA=GPIO7、SCL=GPIO8、アドレス 0x0F（回路図と Linux ドライバの既定値。E3）。
 

@@ -200,24 +200,24 @@ void app_main(void)
 
         tc358743_handle_t tc_dev = tc358743_init(&config);
         if (tc_dev) {
-
-        if (CONFIG_TC358743_START_CSI) {
-            tc358743_mode_t mode = {
-                .lane_rate_mbps = 972,
-                .lanes = 2,
-                .format = TC358743_FORMAT_RGB888,
-                .continuous_clock = CONFIG_TC358743_CSI_CONTINUOUS_CLOCK
-            };
-            bool locked = false;
-            ESP_LOGI(TAG, "Starting TC358743 CSI output...");
-            esp_err_t start_err = tc358743_start_csi(tc_dev, &mode, &locked);
-            if (start_err == ESP_OK) {
-                ESP_LOGI(TAG, "TC358743 start sequence complete. HDMI locked: %s", locked ? "Yes" : "No");
-            } else {
-                ESP_LOGE(TAG, "TC358743 start sequence failed.");
+            if (CONFIG_TC358743_START_CSI) {
+                tc358743_mode_t mode = {
+                    .lane_rate_mbps = 972,
+                    .lanes = 2,
+                    .format = TC358743_FORMAT_RGB888,
+                    .continuous_clock = CONFIG_TC358743_CSI_CONTINUOUS_CLOCK
+                };
+                bool locked = false;
+                ESP_LOGI(TAG, "Starting TC358743 CSI output...");
+                esp_err_t start_err = tc358743_start_csi(tc_dev, &mode, &locked);
+                if (start_err == ESP_OK) {
+                    ESP_LOGI(TAG, "TC358743 start sequence complete. HDMI locked: %s", locked ? "Yes" : "No");
+                } else {
+                    ESP_LOGE(TAG, "TC358743 start sequence failed.");
+                }
             }
+            // 診断（読み出しのみ）。START_CSI=n でも出す（段階 2 の確認用）。
             tc358743_dump_diagnostics(tc_dev);
-        }
 
             // tc358743_poll_interrupts(tc_dev);
         } else {

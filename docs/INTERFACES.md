@@ -44,6 +44,18 @@ kvm_video_sync_state_t csi_video_source_get_sync_state(void);
 void csi_video_source_get_mode(uint32_t *width, uint32_t *height);
 ```
 
+**一貫した読み出し**: `get_sync_state()` と `get_mode()` は別の呼び出しなので、2 回の間に状態が変わりえる（`LOCKED` を読んだあとに幅・高さが 0 になる、など）。KVM 側が状態と解像度を**同じ時点の値**で必要とするときは、次の 1 回の呼び出しを使う（実装は、タスク間の共有値を、ロックなしで一貫して読める形（シーケンス番号つきのコピー、またはクリティカルセクション）にする。ブロックしない規則は同じ）。
+
+```c
+typedef struct {
+    kvm_video_sync_state_t state;
+    uint32_t width;   // state が LOCKED のときだけ有効（それ以外は 0）
+    uint32_t height;
+} csi_video_status_t;
+// 状態・幅・高さを同じ時点で返す。ブロックしない。どのタスクからも呼べる。
+void csi_video_source_get_status(csi_video_status_t *out);
+```
+
 ## 2. Kconfig の名前空間
 
 | 接頭辞 | 担当 | 例 |
