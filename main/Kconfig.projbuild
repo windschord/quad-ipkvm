@@ -7,6 +7,31 @@ menu "Quad IP-KVM Configuration"
             Enable this to initialize the TC358743 HDMI-CSI bridge during app_main.
             Requires proper I2C connections on the hardware.
 
+    config MIPI_PHY_POWER_ENABLE
+        bool "Enable MIPI PHY power"
+        default n
+        help
+            Enable the on-chip LDO (VO3) that powers VDD_MIPI_DPHY.
+            If disabled (default), the LDO is not touched.
+            Before enabling for the first time, disconnect the CSI cable and measure the
+            voltage at VDD_MIPI_DPHY (U6 pin 41) on the board.
+            TODO(hw-verify): the voltage for chip rev v1.3 is unverified.
+
+    config MIPI_PHY_LDO_CHAN
+        int "MIPI PHY LDO Channel"
+        default 3
+        range 3 3
+
+    config MIPI_PHY_LDO_MV
+        int "MIPI PHY LDO Voltage (mV)"
+        default 2500
+        range 2250 2750
+        help
+            Recommended 2250..2750 mV (typ. 2500 mV) from the ESP32-P4 datasheet v0.7.
+            The absolute maximum is 2750 mV; values above it are rejected at build and run time.
+            TODO(hw-verify): the datasheet is for chip rev v3.x; applicability to rev v1.3 is unverified.
+
+
     config FRAME_HUB_POOL_SIZE
         int "Frame Hub pool size"
         default 3
