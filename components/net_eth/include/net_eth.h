@@ -1,6 +1,8 @@
 #pragma once
 
 #include "esp_err.h"
+#include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,6 +20,16 @@ typedef enum {
  * Does not abort on failure. Returns ESP_ERR_...
  */
 esp_err_t net_eth_init(void);
+
+/**
+ * @brief Get the IP address as a string
+ */
+bool net_eth_get_ip_str(char *buf, size_t len);
+
+/**
+ * @brief Get the link speed in Mbps
+ */
+int net_eth_get_speed_mbps(void);
 
 /**
  * @brief Get the current Ethernet state

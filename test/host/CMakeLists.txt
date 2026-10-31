@@ -59,6 +59,9 @@ foreach(test_source ${TEST_SOURCES})
     add_executable(${test_name} ${test_source})
     # Link kvm_logic for all, and conditionally link tc358743_edid for its tests
     target_link_libraries(${test_name} PRIVATE unity kvm_logic)
+    if (test_source MATCHES "/net_eth/")
+        target_link_libraries(${test_name} PRIVATE net_eth_util)
+    endif()
 
     if (test_source MATCHES "test_edid.c")
         target_link_libraries(${test_name} PRIVATE tc358743_edid)
@@ -148,3 +151,6 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/oled_ui ${CMAKE_BINARY_DIR
 
 # Setup auth_worker_slot component (pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/auth_worker_slot ${CMAKE_BINARY_DIR}/auth_worker_slot)
+
+# Setup net_eth_util component (pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/net_eth ${CMAKE_BINARY_DIR}/net_eth)
