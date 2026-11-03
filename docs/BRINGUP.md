@@ -209,6 +209,13 @@ Ethernet (段階 1) が通った状態で、Web ブラウザからアクセス�
    - メソッド不許可の確認: `curl -k -i -X POST https://<ESP の IP アドレス>/` を実行し、ステータスが `405` であることを確認します。
    - Host ヘッダ不一致の確認: `curl -k -i -H "Host: wrong-host" https://<ESP の IP アドレス>/` を実行し、ステータスが `403` であることを確認します。
 
+5. **スモークテスト（読み取りのみ）**: `tools/https_smoke.sh <ESP の IP アドレス>`。状態を変えません。GET と、パスワードポリシーに拒否される `setup` だけを送り、各セキュリティヘッダーが**応答ごとに 1 回**であることを確認します。
+6. **スモークテスト（認証の成功経路。状態を変えます）**: `tools/https_smoke_auth.sh --allow-state-change <ESP の IP アドレス>`。`setup` → 誤ったパスワードの `login` → `login` → `status` → `/video`（WebSocket）→ `logout` → ログアウト前の Cookie の再送、までを通し、`Set-Cookie`（`__Host-session`、`HttpOnly`、`Secure`、`SameSite=Strict`、`Path=/`、`Max-Age`）とセキュリティヘッダーの重複（PR #55 の不具合）を確認します。
+   - **実機のパスワードが設定されます**（実行後も残る）。`needs_setup` 以外の状態では、何も変えずに終了します（終了コード 64）。`needs_setup` に戻すには NVS の消去が要ります（証明書も消える）: `esptool --chip esp32p4 -p <ポート> erase-region 0x9000 0x6000`（既定のパーティションテーブル）。スクリプトからは消去しません。
+   - パスワードは、環境変数 `QUAD_IPKVM_SMOKE_PASSWORD`（印字可能な ASCII、10 文字以上）、無ければランダムな 24 文字を使います。**パスワード・Cookie は画面に出ません。**
+   - 終了コード: 0 = 合格、1〜63 = 失敗した項目の数、64 = 実行を拒否（何も変えていない）。
+   - 機器なしの確認: `tools/test/run_smoke_auth_mock.sh`（モックのサーバーに対して、正しい機器では合格し、欠陥を 13 通り入れたときはすべて失敗することを確かめる）。
+
 ## 実施記録
 - **2026-10-21**（オーナー側 Claude の報告）: 段階 0 OK（チップ rev v1.3、ESP-IDF v6.0.1）、段階 1 OK（Link Up は起動後約 3.4 秒、DHCP 取得、ping 3/3。PHY アドレスと 100M/全二重はログに出ず未確認）、段階 2 OK（I2C 0x0F で応答、Chip ID 0x0000、EDID 書き込み成功。HDMI 接続時 `SYS_STATUS=0x09`）、段階 3 未実施（`frame_hub` の作成に失敗するため）。詳細は `docs/HW_VERIFY.md` の D1・E3・E4・E7・F1〜F6。
 - **2026-10-22**（オーナー側 Claude の報告）: 段階 0b OK（PSRAM を**既定値のまま**有効化。HEX・200MHz・32MB、メモリテスト OK、`frame_hub` の作成と `Starting test pattern source...` を確認）、段階 1 の抜き差し・300 回 ping OK、PBKDF2 の動作と所要時間（`docs/HW_VERIFY.md` D5）。シリアルの取得は、RTS でリセットしてから読む方法が確実（`monitor` は TTY が必要）。F2・F4（PHY アドレス、100M/全二重）は、P-BOOT-1 のログで確認する。
