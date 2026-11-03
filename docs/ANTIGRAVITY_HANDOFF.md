@@ -45,7 +45,8 @@
 - 電流計なし（電流制限つきのハブで給電）。15 ピンの中間 GND は導通を測っていない。
 
 ### 2.5 Claude の作業（Antigravity は触れない）
-- **未着手・進行中**: スモークテスト `tools/https_smoke_auth.sh`、遅い WS クライアントで `/status` が止まる問題（`HW_VERIFY` Z）、OLED-3b、MCP23017 / OLED-4、HID（P4）、KVM 切替と ATX（P5・P6）、H.264（P7）、mDNS、UI のエラーメッセージ。
+- **未着手・進行中**: スモークテスト `tools/https_smoke_auth.sh`、OLED-3b、MCP23017 / OLED-4、HID（P4）、KVM 切替と ATX（P5・P6）、H.264（P7）、mDNS、UI のエラーメッセージ。
+- **例外**: 遅い WS クライアントで `/status` が止まる問題（`HW_VERIFY` Z）は、**Issue #69 で Antigravity に移した**（実機を共有しているため）。この Issue に限り、Antigravity が `ws_video_core`、`web_server.c` の WS 送信まわり、`WEB_SERVER_*` の Kconfig を変更してよい。PR は Claude がレビューする。
 
 ## 3. 分担（所有権）
 
@@ -84,7 +85,7 @@
 | #66 | A-2: P2b-4 `csi_capture` | Antigravity（`blocked`） |
 | #67 | A-3: P2b-5/6 JPEG 化と `csi_video_source` | Antigravity（`blocked`、`contract`） |
 | #68 | A-4/A-5: 解像度変更への追従、実験 | Antigravity（`blocked`） |
-| #69 | 遅いクライアントによる `WS /video` の停止対策 | Claude |
+| #69 | A-6（旧 C-1）: 遅いクライアントによる `WS /video` の停止対策。**担当を Claude から Antigravity に移した**（実機を共有しているため。オーナーの決定、2026-11-03）。PR は Claude がレビューする | Antigravity |
 | #70 | 認証成功経路のスモークテスト | Claude |
 | #71 | HDMI 以外の機能（OLED-3b/4、MCP23017、HID、KVM/ATX、H.264、mDNS など） | Claude |
 
