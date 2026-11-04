@@ -37,6 +37,8 @@ static const char* TAG = "tc358743";
 #define SYS_FREQ1        0x8541
 // Source: tc358743_regs.h PHY_CTL0
 #define PHY_CTL0         0x8531
+// Source: tc358743_regs.h PHY_EN
+#define PHY_EN           0x8534
 // Source: tc358743_regs.h DDC_CTL
 #define DDC_CTL          0x8543
 // Source: tc358743_regs.h HPD_CTL
@@ -106,13 +108,28 @@ struct tc358743_dev_t {
     bool csi_started;
 };
 
+// Bounded I2C transfer timeout (ms). Passing -1 blocks forever on a bus glitch.
+// Source: docs/P2B_TC358743_REFERENCE.md §2-1, §7-11
+#define TC358743_I2C_TIMEOUT_MS 200
+
 // I2C 16-bit register read (Little Endian, as seen in Linux `i2c_rd16`)
 static esp_err_t tc_read16(tc358743_handle_t dev, uint16_t reg, uint16_t* val) {
     uint8_t tx[2] = { reg >> 8, reg & 0xFF };
     uint8_t rx[2];
-    esp_err_t err = i2c_master_transmit_receive(dev->i2c_dev, tx, 2, rx, 2, -1);
+    esp_err_t err = i2c_master_transmit_receive(dev->i2c_dev, tx, 2, rx, 2, TC358743_I2C_TIMEOUT_MS);
     if (err == ESP_OK) {
         *val = rx[0] | (rx[1] << 8); // Little Endian
+    }
+    return err;
+}
+
+// I2C 32-bit register read (Little Endian, as seen in Linux `i2c_rd32`)
+static esp_err_t tc_read32(tc358743_handle_t dev, uint16_t reg, uint32_t* val) {
+    uint8_t tx[2] = { reg >> 8, reg & 0xFF };
+    uint8_t rx[4];
+    esp_err_t err = i2c_master_transmit_receive(dev->i2c_dev, tx, 2, rx, 4, TC358743_I2C_TIMEOUT_MS);
+    if (err == ESP_OK) {
+        *val = (uint32_t)rx[0] | ((uint32_t)rx[1] << 8) | ((uint32_t)rx[2] << 16) | ((uint32_t)rx[3] << 24);
     }
     return err;
 }
@@ -120,19 +137,19 @@ static esp_err_t tc_read16(tc358743_handle_t dev, uint16_t reg, uint16_t* val) {
 // I2C 8-bit register read
 static esp_err_t tc_read8(tc358743_handle_t dev, uint16_t reg, uint8_t* val) {
     uint8_t tx[2] = { reg >> 8, reg & 0xFF };
-    return i2c_master_transmit_receive(dev->i2c_dev, tx, 2, val, 1, -1);
+    return i2c_master_transmit_receive(dev->i2c_dev, tx, 2, val, 1, TC358743_I2C_TIMEOUT_MS);
 }
 
 // I2C 16-bit register write
 static esp_err_t tc_write16(tc358743_handle_t dev, uint16_t reg, uint16_t val) {
     uint8_t tx[4] = { reg >> 8, reg & 0xFF, val & 0xFF, val >> 8 }; // Little Endian
-    return i2c_master_transmit(dev->i2c_dev, tx, 4, -1);
+    return i2c_master_transmit(dev->i2c_dev, tx, 4, TC358743_I2C_TIMEOUT_MS);
 }
 
 // I2C 32-bit register write
 static esp_err_t tc_write32(tc358743_handle_t dev, uint16_t reg, uint32_t val) {
     uint8_t tx[6] = { reg >> 8, reg & 0xFF, val & 0xFF, (val >> 8) & 0xFF, (val >> 16) & 0xFF, (val >> 24) & 0xFF }; // Little Endian
-    return i2c_master_transmit(dev->i2c_dev, tx, 6, -1);
+    return i2c_master_transmit(dev->i2c_dev, tx, 6, TC358743_I2C_TIMEOUT_MS);
 }
 
 // Source: tc358743_regs.h MASK_PLL_PRD
@@ -192,7 +209,27 @@ static esp_err_t tc_write32(tc358743_handle_t dev, uint16_t reg, uint32_t val) {
 
 static esp_err_t tc_write8(tc358743_handle_t dev, uint16_t reg, uint8_t val) {
     uint8_t tx[3] = { reg >> 8, reg & 0xFF, val };
-    return i2c_master_transmit(dev->i2c_dev, tx, 3, -1);
+    return i2c_master_transmit(dev->i2c_dev, tx, 3, TC358743_I2C_TIMEOUT_MS);
+}
+
+static void tc_configure_reset_gpio_od(void) {
+#ifdef CONFIG_TC358743_RESET_GPIO
+    if (CONFIG_TC358743_RESET_GPIO >= 0) {
+        // Set output latch to 1 (open-drain Hi-Z) before enabling GPIO output mode
+        // so X630 RESETN is never driven push-pull High and does not glitch Low.
+        // Source: docs/HW_VERIFY.md E4, E.1 item 6-(c)
+        gpio_set_level(CONFIG_TC358743_RESET_GPIO, 1);
+        gpio_config_t io_conf = {
+            .pin_bit_mask = (1ULL << CONFIG_TC358743_RESET_GPIO),
+            .mode = GPIO_MODE_OUTPUT_OD,
+            .pull_up_en = 0,
+            .pull_down_en = 0,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&io_conf);
+        gpio_set_level(CONFIG_TC358743_RESET_GPIO, 1);
+    }
+#endif
 }
 
 static bool esp_io_write8(void* ctx, uint16_t reg, uint8_t val) {
@@ -227,17 +264,11 @@ static void esp_io_reset_gpio(void* ctx, bool level) {
 esp_err_t tc358743_start_csi(tc358743_handle_t dev, const tc358743_mode_t *mode, bool *out_locked) {
     if (!dev || !mode || !out_locked) return ESP_ERR_INVALID_ARG;
 
+    tc_configure_reset_gpio_od();
 #ifdef CONFIG_TC358743_RESET_GPIO
     if (CONFIG_TC358743_RESET_GPIO >= 0) {
-        gpio_config_t io_conf = {
-            .pin_bit_mask = (1ULL << CONFIG_TC358743_RESET_GPIO),
-            .mode = GPIO_MODE_OUTPUT_OD,
-            .pull_up_en = 0,
-            .pull_down_en = 0,
-            .intr_type = GPIO_INTR_DISABLE,
-        };
-        gpio_config(&io_conf);
-        gpio_set_level(CONFIG_TC358743_RESET_GPIO, 1);
+        ESP_LOGI(TAG, "Pulsing TC358743 hardware reset on GPIO %d (open-drain, active-low)...",
+                 CONFIG_TC358743_RESET_GPIO);
     }
 #endif
 
@@ -285,10 +316,27 @@ tc358743_handle_t tc358743_init(const tc358743_config_t* config) {
         return NULL;
     }
 
+    // Release hardware reset (open-drain Hi-Z) before initial CHIPID read when RESET GPIO is enabled.
+    tc_configure_reset_gpio_od();
+
     // 1. Check Chip ID
     // As per Linux driver (tc358743_probe), the expected CHIPID value (mask 0xff00) is 0x0000.
     uint16_t chipid = 0;
-    if (tc_read16(dev, CHIPID, &chipid) != ESP_OK || (chipid & MASK_CHIPID) != 0x0000) {
+    esp_err_t probe_err = tc_read16(dev, CHIPID, &chipid);
+#ifdef CONFIG_TC358743_RESET_GPIO
+    if ((probe_err != ESP_OK || (chipid & MASK_CHIPID) != 0x0000) && CONFIG_TC358743_RESET_GPIO >= 0) {
+        // Recover chip if it was previously held in reset or wedged on I2C.
+        // Source: docs/P2B_TC358743_REFERENCE.md §3-1 (Low 10ms -> High 200ms)
+        ESP_LOGW(TAG, "Initial CHIPID read failed (%s); pulsing reset on GPIO %d...",
+                 esp_err_to_name(probe_err), CONFIG_TC358743_RESET_GPIO);
+        gpio_set_level(CONFIG_TC358743_RESET_GPIO, 0);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        gpio_set_level(CONFIG_TC358743_RESET_GPIO, 1);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        probe_err = tc_read16(dev, CHIPID, &chipid);
+    }
+#endif
+    if (probe_err != ESP_OK || (chipid & MASK_CHIPID) != 0x0000) {
         ESP_LOGE(TAG, "Chip ID validation failed. Read 0x%04x, expected 0x00xx", chipid);
         tc358743_deinit(dev);
         return NULL;
@@ -311,10 +359,28 @@ void tc358743_deinit(tc358743_handle_t dev) {
 // --- Diagnostic Logging ---
 // Source: tc358743_regs.h SYS_STATUS
 #define SYS_STATUS       0x8520
-// Source: tc358743_regs.h CSI_STATUS
+// Source: tc358743_regs.h CSI_CONTROL / CSI_STATUS / CSI_ERR
+#define CSI_CONTROL      0x040C
 #define CSI_STATUS       0x0410
-// Source: tc358743_regs.h CSI_ERR
 #define CSI_ERR          0x044C
+// Source: tc358743_regs.h DE_WIDTH_H_LO..V_SIZE_HI
+#define DE_WIDTH_H_LO    0x8582
+#define DE_WIDTH_H_HI    0x8583
+#define DE_WIDTH_V_LO    0x8588
+#define DE_WIDTH_V_HI    0x8589
+#define H_SIZE_LO        0x858A
+#define H_SIZE_HI        0x858B
+#define V_SIZE_LO        0x858C
+#define V_SIZE_HI        0x858D
+
+static bool tc_read_pair_le16(tc358743_handle_t dev, uint16_t reg_lo, uint16_t reg_hi, uint16_t* out) {
+    uint8_t lo = 0, hi = 0;
+    if (tc_read8(dev, reg_lo, &lo) != ESP_OK || tc_read8(dev, reg_hi, &hi) != ESP_OK) {
+        return false;
+    }
+    *out = (uint16_t)lo | ((uint16_t)hi << 8);
+    return true;
+}
 
 void tc358743_dump_diagnostics(tc358743_handle_t dev) {
     if (!dev) return;
@@ -332,24 +398,67 @@ void tc358743_dump_diagnostics(tc358743_handle_t dev) {
                  sysctl, !!(sysctl & MASK_SLEEP), !!(sysctl & MASK_HDMIRST), !!(sysctl & MASK_CTXRST));
     }
 
-    uint8_t sys_status;
+    uint8_t phy_en = 0, hpd_ctl = 0, ddc_ctl = 0, edid_mode = 0;
+    if (tc_read8(dev, PHY_EN, &phy_en) == ESP_OK &&
+        tc_read8(dev, HPD_CTL, &hpd_ctl) == ESP_OK &&
+        tc_read8(dev, DDC_CTL, &ddc_ctl) == ESP_OK &&
+        tc_read8(dev, EDID_MODE, &edid_mode) == ESP_OK) {
+        ESP_LOGI(TAG, "PHY_EN: 0x%02x, HPD_CTL: 0x%02x, DDC_CTL: 0x%02x, EDID_MODE: 0x%02x",
+                 phy_en, hpd_ctl, ddc_ctl, edid_mode);
+    }
+
+    uint16_t pllctl0 = 0, pllctl1 = 0;
+    if (tc_read16(dev, PLLCTL0, &pllctl0) == ESP_OK &&
+        tc_read16(dev, PLLCTL1, &pllctl1) == ESP_OK) {
+        ESP_LOGI(TAG, "PLLCTL0: 0x%04x, PLLCTL1: 0x%04x", pllctl0, pllctl1);
+    }
+
+    uint16_t intstatus = 0, intmask = 0;
+    if (tc_read16(dev, INTSTATUS, &intstatus) == ESP_OK &&
+        tc_read16(dev, INTMASK, &intmask) == ESP_OK) {
+        ESP_LOGI(TAG, "INTSTATUS: 0x%04x, INTMASK: 0x%04x", intstatus, intmask);
+    }
+
+    uint8_t sys_status = 0;
     if (tc_read8(dev, SYS_STATUS, &sys_status) == ESP_OK) {
-        // MASK_S_TMDS = 0x02, MASK_S_SYNC = 0x80 in Linux driver
-        ESP_LOGI(TAG, "HDMI SYS_STATUS: 0x%02x (TMDS detected: %s, SYNC: %s)",
-                 sys_status, (sys_status & 0x02) ? "yes" : "no", (sys_status & 0x80) ? "yes" : "no");
+        // Source: tc358743_regs.h MASK_S_DDC5V=0x01, TMDS=0x02, PHY_PLL=0x04, PHY_SCDT=0x08, HDMI=0x10, SYNC=0x80
+        ESP_LOGI(TAG, "HDMI SYS_STATUS: 0x%02x (DDC5V: %s, TMDS detected: %s, PHY_PLL: %s, PHY_SCDT: %s, HDMI: %s, SYNC: %s)",
+                 sys_status,
+                 (sys_status & 0x01) ? "yes" : "no",
+                 (sys_status & 0x02) ? "yes" : "no",
+                 (sys_status & 0x04) ? "yes" : "no",
+                 (sys_status & 0x08) ? "yes" : "no",
+                 (sys_status & 0x10) ? "yes" : "no",
+                 (sys_status & 0x80) ? "yes" : "no");
+
+        if (sys_status & 0x80) {
+            uint16_t de_w = 0, de_h = 0, h_total = 0, v_size = 0;
+            if (tc_read_pair_le16(dev, DE_WIDTH_H_LO, DE_WIDTH_H_HI, &de_w) &&
+                tc_read_pair_le16(dev, DE_WIDTH_V_LO, DE_WIDTH_V_HI, &de_h) &&
+                tc_read_pair_le16(dev, H_SIZE_LO, H_SIZE_HI, &h_total) &&
+                tc_read_pair_le16(dev, V_SIZE_LO, V_SIZE_HI, &v_size)) {
+                ESP_LOGI(TAG, "HDMI Active Timing: %" PRIu16 "x%" PRIu16 " (H_SIZE=%" PRIu16 ", V_SIZE=%" PRIu16 ")",
+                         de_w, de_h, h_total, v_size);
+            }
+        }
     }
 
     if (!dev->csi_started) {
         ESP_LOGI(TAG, "CSI_STATUS/CSI_ERR: not read (CSI not started; values before CSI start are invalid)");
     } else {
-        uint16_t csi_status;
+        uint32_t csi_ctrl = 0;
+        if (tc_read32(dev, CSI_CONTROL, &csi_ctrl) == ESP_OK) {
+            ESP_LOGI(TAG, "CSI_CONTROL: 0x%08" PRIx32, csi_ctrl);
+        }
+
+        uint16_t csi_status = 0;
         if (tc_read16(dev, CSI_STATUS, &csi_status) == ESP_OK) {
             ESP_LOGI(TAG, "CSI_STATUS: 0x%04x", csi_status);
         }
 
-        uint16_t csi_err;
-        if (tc_read16(dev, CSI_ERR, &csi_err) == ESP_OK) {
-            ESP_LOGI(TAG, "CSI_ERR: 0x%04x", csi_err);
+        uint32_t csi_err = 0;
+        if (tc_read32(dev, CSI_ERR, &csi_err) == ESP_OK) {
+            ESP_LOGI(TAG, "CSI_ERR: 0x%08" PRIx32, csi_err);
         }
     }
 

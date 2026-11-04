@@ -24,6 +24,7 @@ typedef struct {
     uint8_t ddc_ctl_mock;
     uint8_t phy_ctl0_mock;
     uint8_t phy_ctl2_mock;
+    uint8_t phy_en_mock;
     uint8_t hdcp_mode_mock;
     uint8_t vi_mode_mock;
     uint8_t vout_set2_mock;
@@ -58,6 +59,7 @@ static bool fake_write8(void* ctx, uint16_t reg, uint8_t val) {
     if (reg == 0x8543) c->ddc_ctl_mock = val;
     if (reg == 0x8531) c->phy_ctl0_mock = val;
     if (reg == 0x8533) c->phy_ctl2_mock = val;
+    if (reg == 0x8534) c->phy_en_mock = val;
     if (reg == 0x8560) c->hdcp_mode_mock = val;
     if (reg == 0x8570) c->vi_mode_mock = val;
     if (reg == 0x8573) c->vout_set2_mock = val;
@@ -94,6 +96,7 @@ static bool fake_read8(void* ctx, uint16_t reg, uint8_t* val) {
     else if (reg == 0x8543) *val = c->ddc_ctl_mock;
     else if (reg == 0x8531) *val = c->phy_ctl0_mock;
     else if (reg == 0x8533) *val = c->phy_ctl2_mock;
+    else if (reg == 0x8534) *val = c->phy_en_mock;
     else if (reg == 0x8560) *val = c->hdcp_mode_mock;
     else if (reg == 0x8570) *val = c->vi_mode_mock;
     else if (reg == 0x8573) *val = c->vout_set2_mock;
@@ -466,6 +469,90 @@ void test_null_args_rejected(void) {
     TEST_ASSERT_FALSE(tc358743_start_sequence(&fake_ops, &mode, TC358743_EDID_PROFILE_720P_60, NULL));
 }
 
+// 実機 (X630 V1.5) で PHY_EN (0x8534) の電源投入時上位ビット 0x3E と PLLCTL1 (0x0022) の bit 9 (0x0200) を
+// RMW で保持しないと TMDS がロックしない不具合の回帰テスト。
+void test_rmw_preserves_phy_en_and_pllctl1_defaults(void) {
+    tc358743_mode_t mode_972 = { .lane_rate_mbps = 972, .lanes = 2, .format = TC358743_FORMAT_RGB888, .continuous_clock = false };
+    g_ctx.phy_en_mock = 0x3F;    // 上位ビット 0x3E + bit0 (ENABLE_PHY) = 1
+    g_ctx.pllctl1_mock = 0x0EE0; // FRS(0x0C00)=3 + bit9(0x0200) + 予約(0x00E0)
+    bool locked = false;
+    TEST_ASSERT_TRUE(tc358743_start_sequence(&fake_ops, &mode_972, TC358743_EDID_PROFILE_720P_60, &locked));
+    TEST_ASSERT_TRUE(locked);
+
+    uint32_t phy_writes[4] = {0};
+    int phy_n = 0;
+    uint32_t pll1_writes[4] = {0};
+    int pll1_n = 0;
+    for (int i = 0; i < g_ctx.count; i++) {
+        if (g_ctx.ops[i].type == 'W' && g_ctx.ops[i].reg == 0x8534 && phy_n < 4) {
+            phy_writes[phy_n++] = g_ctx.ops[i].val;
+        }
+        if (g_ctx.ops[i].type == 'W' && g_ctx.ops[i].reg == 0x0022 && pll1_n < 4) {
+            pll1_writes[pll1_n++] = g_ctx.ops[i].val;
+        }
+    }
+    TEST_ASSERT_EQUAL_INT(2, phy_n);
+    TEST_ASSERT_EQUAL_HEX8(0x3E, phy_writes[0]); // 0x3E を維持しつつ bit0 のみ 0
+    TEST_ASSERT_EQUAL_HEX8(0x3F, phy_writes[1]); // 0x3E を維持しつつ bit0 を 1
+
+    TEST_ASSERT_EQUAL_INT(2, pll1_n);
+    TEST_ASSERT_EQUAL_HEX16(0x02E3, pll1_writes[0]); // FRS(0x0C00)->0, 0x02E0 維持, RESETB|PLL_EN(0x0003)=1
+    TEST_ASSERT_EQUAL_HEX16(0x02F3, pll1_writes[1]); // 0x02E3 維持 + CKEN(0x0010)=1
+
+    // 594Mbps (>500Mbps なので frs=0) かつ初期 PHY_EN=0x3E (bit0=0) でも RMW が正しく機能すること
+    setUp();
+    tc358743_mode_t mode_594 = { .lane_rate_mbps = 594, .lanes = 2, .format = TC358743_FORMAT_RGB888, .continuous_clock = false };
+    g_ctx.phy_en_mock = 0x3E;
+    g_ctx.pllctl1_mock = 0x0EE0; // FRS(0x0C00)=3, bit9(0x0200)=1, 予約(0x00E0)
+    locked = false;
+    TEST_ASSERT_TRUE(tc358743_start_sequence(&fake_ops, &mode_594, TC358743_EDID_PROFILE_720P_60, &locked));
+    phy_n = 0;
+    pll1_n = 0;
+    for (int i = 0; i < g_ctx.count; i++) {
+        if (g_ctx.ops[i].type == 'W' && g_ctx.ops[i].reg == 0x8534 && phy_n < 4) {
+            phy_writes[phy_n++] = g_ctx.ops[i].val;
+        }
+        if (g_ctx.ops[i].type == 'W' && g_ctx.ops[i].reg == 0x0022 && pll1_n < 4) {
+            pll1_writes[pll1_n++] = g_ctx.ops[i].val;
+        }
+    }
+    TEST_ASSERT_EQUAL_INT(2, phy_n);
+    TEST_ASSERT_EQUAL_HEX8(0x3E, phy_writes[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x3F, phy_writes[1]);
+    TEST_ASSERT_EQUAL_INT(2, pll1_n);
+    TEST_ASSERT_EQUAL_HEX16(0x02E3, pll1_writes[0]);
+    TEST_ASSERT_EQUAL_HEX16(0x02F3, pll1_writes[1]);
+}
+
+static int g_read_fail_at;
+static int g_read_count;
+static bool inj_read8(void* c, uint16_t r, uint8_t* v) { if (++g_read_count == g_read_fail_at) return false; return fake_read8(c, r, v); }
+static bool inj_read16(void* c, uint16_t r, uint16_t* v) { if (++g_read_count == g_read_fail_at) return false; return fake_read16(c, r, v); }
+
+void test_every_read_failure_is_reported(void) {
+    tc358743_mode_t mode = { .lane_rate_mbps = 972, .lanes = 2, .format = TC358743_FORMAT_RGB888, .continuous_clock = false };
+    tc358743_io_ops_t ops = fake_ops;
+    ops.read8 = inj_read8; ops.read16 = inj_read16;
+
+    g_read_fail_at = 0; g_read_count = 0;
+    setUp();
+    bool locked = false;
+    TEST_ASSERT_TRUE(tc358743_start_sequence(&ops, &mode, TC358743_EDID_PROFILE_720P_60, &locked));
+    int total = g_read_count;
+    TEST_ASSERT_TRUE(total >= 20);
+
+    for (int k = 1; k <= total; k++) {
+        setUp();
+        g_read_fail_at = k; g_read_count = 0;
+        locked = true;
+        bool ret = tc358743_start_sequence(&ops, &mode, TC358743_EDID_PROFILE_720P_60, &locked);
+        char msg[48];
+        snprintf(msg, sizeof(msg), "read #%d failure not reported", k);
+        TEST_ASSERT_FALSE_MESSAGE(ret, msg);
+        TEST_ASSERT_FALSE_MESSAGE(locked, msg);
+    }
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_success_972);
@@ -478,5 +565,7 @@ int main(void) {
     RUN_TEST(test_every_write_failure_is_reported);
     RUN_TEST(test_chipid_mismatch_stops_before_writes);
     RUN_TEST(test_null_args_rejected);
+    RUN_TEST(test_rmw_preserves_phy_en_and_pllctl1_defaults);
+    RUN_TEST(test_every_read_failure_is_reported);
     return UNITY_END();
 }
