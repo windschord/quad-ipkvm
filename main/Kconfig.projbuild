@@ -32,6 +32,45 @@ menu "Quad IP-KVM Configuration"
             Enable this to initialize the TC358743 HDMI-CSI bridge during app_main.
             Requires proper I2C connections on the hardware.
 
+    config CSI_CAPTURE_TEST
+        bool "Capture RGB888 frames over MIPI CSI after HDMI lock (P2b-4 test)"
+        default n
+        depends on TC358743_START_CSI && MIPI_PHY_POWER_ENABLE
+        help
+            After tc358743_start_csi reports HDMI lock, opens csi_capture with the measured active
+            size, receives CSI_CAPTURE_TEST_FRAMES frames into PSRAM and logs per-frame statistics,
+            then stops the CSI DMA. Hardware bring-up only (verified on rev v1.3 at 1280x720@60fps;
+            see docs/HW_VERIFY.md E.1 item 9).
+
+    config CSI_CAPTURE_TEST_FRAMES
+        int "Number of frames to capture in the test"
+        default 30
+        range 1 1000
+        depends on CSI_CAPTURE_TEST
+
+    config CSI_CAPTURE_MAX_WIDTH
+        int "CSI capture buffer max width (pixels)"
+        default 1920
+        range 64 1920
+        depends on CSI_CAPTURE_TEST
+        help
+            Two RGB888 buffers of MAX_WIDTH x MAX_HEIGHT x 3 bytes are allocated once in PSRAM.
+            Frames larger than this are rejected before the DMA is configured.
+
+    config CSI_CAPTURE_MAX_HEIGHT
+        int "CSI capture buffer max height (lines)"
+        default 1080
+        range 64 1080
+        depends on CSI_CAPTURE_TEST
+
+    config CSI_CAPTURE_ISP_BYPASS
+        bool "Create an ISP processor with bypass_isp (reference configuration)"
+        default y
+        depends on CSI_CAPTURE_TEST
+        help
+            p4kvm / ESP-KVM create a bypassed ISP processor next to the CSI controller
+            (docs/P2B_TC358743_REFERENCE.md 4-1). Whether it is required is unverified.
+
     config MIPI_PHY_POWER_ENABLE
         bool "Enable MIPI PHY power"
         default n

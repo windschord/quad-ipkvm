@@ -1,0 +1,87 @@
+#include "csi_capture_logic.h"
+
+csi_geom_result_t csi_capture_check_geometry(uint32_t width, uint32_t height, uint32_t bits_per_pixel,
+                                             uint32_t max_width, uint32_t max_height,
+                                             size_t capacity, size_t *out_bytes) {
+    if (!out_bytes) return CSI_GEOM_ERR_ARG;
+    *out_bytes = 0;
+    if (width == 0 || height == 0 || bits_per_pixel == 0) return CSI_GEOM_ERR_ZERO;
+    if ((bits_per_pixel % 8u) != 0 || bits_per_pixel > 32u) return CSI_GEOM_ERR_BPP;
+    if (width > max_width || height > max_height) return CSI_GEOM_ERR_DIM;
+
+    uint64_t bits = (uint64_t)width * (uint64_t)height * (uint64_t)bits_per_pixel;
+    // The driver computes v_res * h_res * bpp in `int`; keep it representable.
+    if (bits > (uint64_t)INT32_MAX) return CSI_GEOM_ERR_OVERFLOW;
+    // DMA transfer size is bits / 64; a remainder would leave the frame partially transferred.
+    if ((bits % 64u) != 0) return CSI_GEOM_ERR_ALIGN;
+
+    uint64_t bytes = bits / 8u;
+    if (bytes > (uint64_t)capacity) return CSI_GEOM_ERR_CAPACITY;
+    *out_bytes = (size_t)bytes;
+    return CSI_GEOM_OK;
+}
+
+size_t csi_capture_round_up(size_t n, size_t align) {
+    if (align == 0) return 0;
+    size_t rem = n % align;
+    if (rem == 0) return n;
+    size_t add = align - rem;
+    if (n > (size_t)-1 - add) return 0;
+    return n + add;
+}
+
+void csi_pp_init(csi_pp_t *pp, uint32_t skip_frames) {
+    pp->writing = CSI_PP_NONE;
+    pp->latest = CSI_PP_NONE;
+    pp->held = CSI_PP_NONE;
+    pp->skip_frames = skip_frames;
+    pp->completed = 0;
+    pp->published = 0;
+    pp->overwritten = 0;
+}
+
+int csi_pp_next_dma(csi_pp_t *pp) {
+    if (pp->writing != CSI_PP_NONE) {
+        pp->completed++;
+        if (pp->completed > pp->skip_frames) {
+            if (pp->latest != CSI_PP_NONE) pp->overwritten++;  // previous latest was never consumed
+            pp->latest = pp->writing;
+            pp->published++;
+        }
+    }
+
+    // Prefer a buffer that is neither held by the consumer nor the newest complete frame.
+    int next = CSI_PP_NONE;
+    for (int i = 0; i < CSI_PP_NUM_BUFS; i++) {
+        if (i != pp->held && i != pp->latest) {
+            next = i;
+            break;
+        }
+    }
+    if (next == CSI_PP_NONE) {
+        // Both buffers are taken (one held, one latest): overwrite the unconsumed latest frame.
+        next = pp->latest;
+        pp->latest = CSI_PP_NONE;
+        pp->overwritten++;
+    }
+    pp->writing = (int8_t)next;
+    return next;
+}
+
+int csi_pp_acquire(csi_pp_t *pp) {
+    if (pp->held != CSI_PP_NONE) return CSI_PP_NONE;
+    if (pp->latest == CSI_PP_NONE) return CSI_PP_NONE;
+    pp->held = pp->latest;
+    pp->latest = CSI_PP_NONE;
+    return pp->held;
+}
+
+bool csi_pp_release(csi_pp_t *pp, int idx) {
+    if (idx == CSI_PP_NONE || idx != pp->held) return false;
+    pp->held = CSI_PP_NONE;
+    return true;
+}
+
+void csi_pp_stop(csi_pp_t *pp) {
+    pp->writing = CSI_PP_NONE;
+}

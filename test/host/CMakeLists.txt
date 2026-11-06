@@ -46,6 +46,10 @@ add_library(tc358743_start STATIC ${CMAKE_SOURCE_DIR}/../../components/tc358743/
 target_include_directories(tc358743_start PUBLIC ${CMAKE_SOURCE_DIR}/../../components/tc358743/include)
 target_link_libraries(tc358743_start PRIVATE tc358743_edid tc358743_pll_calc)
 
+# Pure-C part of csi_capture (geometry check and two-buffer selector)
+add_library(csi_capture_logic STATIC ${CMAKE_SOURCE_DIR}/../../components/csi_capture/csi_capture_logic.c)
+target_include_directories(csi_capture_logic PUBLIC ${CMAKE_SOURCE_DIR}/../../components/csi_capture/include)
+
 # Discover tests automatically
 file(GLOB_RECURSE TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*/test_*.c" "${CMAKE_CURRENT_SOURCE_DIR}/test_*.c")
 list(FILTER TEST_SOURCES EXCLUDE REGEX ".*build/.*")
@@ -85,6 +89,10 @@ foreach(test_source ${TEST_SOURCES})
 
     if (test_source MATCHES "test_start_csi.c")
         target_link_libraries(${test_name} PRIVATE tc358743_start tc358743_edid)
+    endif()
+
+    if (test_source MATCHES "/csi_capture/")
+        target_link_libraries(${test_name} PRIVATE csi_capture_logic)
     endif()
 
 

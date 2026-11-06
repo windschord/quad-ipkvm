@@ -52,6 +52,10 @@ void tc358743_deinit(tc358743_handle_t dev);
 void tc358743_dump_diagnostics(tc358743_handle_t dev);
 uint16_t tc358743_poll_interrupts(tc358743_handle_t dev);
 
+// Reads the active video size measured by the HDMI receiver (DE_WIDTH_H / DE_WIDTH_V).
+// Returns ESP_ERR_INVALID_STATE when SYS_STATUS reports no SYNC (size is undefined then).
+esp_err_t tc358743_get_active_size(tc358743_handle_t dev, uint32_t* out_width, uint32_t* out_height);
+
 #ifdef __cplusplus
 }
 #endif
