@@ -10,7 +10,8 @@ ESP32-P4 (Waveshare ESP32-P4-ETH, チップ rev v1.3) で作る、ベアメタ�
 - HID: TinyUSB 複合デバイス（ブートキーボード + 絶対ポインタ + 相対ポインタ）。
 - 4台管理: 前段に 4ch HDMI KVM。**KVM の LED を状態の真実とし、ATX の選択先はそれに追従する。**
 - ATX: 74HC139 ×2 + フォトリレー×8。API は `channel` 必須。現在チャンネルと違えば 409。
-- 実装順序は HANDOFF.md の 5 章に従う。**最初は「CSI でフレームを1枚取る」**。
+- 実装順序は HANDOFF.md の 5 章に従う。**映像（CSI → JPEG → 配信）と HTTPS・認証は実機で動作済み。次は HID（P4）以降。** 進捗と未確認の項目は `docs/PLAN.md` 5.1。
+- 役割: **HDMI 周り（TC358743、CSI、JPEG）は Antigravity**、それ以外は Claude（`docs/ANTIGRAVITY_HANDOFF.md`、境界は `docs/INTERFACES.md`）。タスクは GitHub Issues。
 
 ## ルール
 

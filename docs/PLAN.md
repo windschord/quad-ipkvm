@@ -161,6 +161,27 @@ HANDOFF の範囲に、**状態表示用の OLED** と、パネル用の **I/O �
 | P6 | ATX 4ch + KVM 切替 + パネル + API | TB-1,P5 | `kvm_board` HAL 実装、API（`channel` 必須・不一致 409）。TB-1 のテストが引き続き緑 | 要 |
 | P7 | H.264 低帯域モード | P3 | PPA 変換含むビルドが緑。設定で MJPEG/H.264 切替 | 要 |
 
+### 5.1 進捗（2026-11-07 時点）
+
+事実の区別: **[実機]** = 実機で確認、**[ホスト]** = ホストテストと CI のビルドまで（実機は未確認）、**[未]** = 未着手。数値の出典は `docs/HW_VERIFY.md`、各 PR の本文。
+
+| ID | 状態 | 内容 |
+|---|---|---|
+| T0-1、TB-1、TC-1、P2a | 完了 | 雛形と CI、`kvm_logic`（ホストテスト）、`HW_VERIFY`、TC358743 の I2C。 |
+| **P2b** | **完了 [実機]** | CSI で RGB888 を受信し、HW JPEG で `frame_hub` に配信。**720p60 入力: CSI 59.95 fps で受信、JPEG 30.00 fps（約 114KB）**。**1080p30 入力: JPEG 15.00 fps**（エンコード 52.7ms。JPEG は平均約 154KB、ピーク 198KB ＝ 静止画面と通常のデスクトップ操作だけの実測）。720p60 ↔ 1080p30 の往復切替に無停止で追従（4.39 時間、累積約 47 万フレームでエラー 0）。**既定: RGB888・972 Mbps・2 レーン・EDID は 720p60 のみ**。`TC358743_EDID_1080P30`、UYVY、594/445 Mbps は実験用（実測で 972 Mbps の RGB888 が最速）。実装: `tc358743`、`csi_capture`、`csi_video_source`（PR #76〜#80、担当 Antigravity）。 |
+| **P3** | **完了 [実機]** | HTTPS、認証、`WS /video`、最小ビューア。遅いクライアントの停止対策（送信タイムアウト切断 + 映像ソケットの `SO_SNDTIMEO`、PR #81）。認証の成功経路のスモークテスト `tools/https_smoke_auth.sh`（PR #75）は**ホスト（モック）まで。実機では未実行**。 |
+| P4 | 未着手 [未] | HID（`hid_logic` + TinyUSB + `WS /ws`）。 |
+| P5 | 準備のみ [ホスト] | `csi_video_source_get_status` / `get_sync_state` / `get_mode`（契約は `INTERFACES.md` 1.3、実装済み）。`kvm_logic` への配線と KVM 経由の確認は未着手。 |
+| P6 | 一部 [ホスト] | `kvm_logic`（状態機械）はホストテスト済み。`kvm_board` の HAL と API、ATX の回路は未着手・未確認。 |
+| P7 | 未着手 [未] | H.264。実映像（P2b）で JPEG の大きさと帯域を測れるようになったので、着手前に再評価する。 |
+| OLED（#44） | 一部 [ホスト] | `oled_ui`、`oled_render`、`mcp23017_logic`（純 C）まで。OLED-3b/4 は未着手。I2C バスは TC358743 と共用。 |
+
+**未確認・残っていること**
+- `VDD_MIPI_DPHY` は**未測定のまま**、オーナー判断（2026-11-07）で LDO ch3 を 2500mV に有効化して動かした（`HW_VERIFY` E14）。
+- INT は未配線（High の電圧が未測定）。RESET は GPIO16 に配線済みで動作。
+- KVM 経由の動作（HPD、切替後の再同期時間。`HW_VERIFY` A10 / E8）、実機のブラウザでの長時間視聴。
+- 後続の改善は **Issue #82**（A-7）: I2C 読み出し失敗でストリームを止めない、JPEG の最悪サイズと `FRAME_HUB_MAX_FRAME_KB`（256KB）、実映像での遅いクライアントの再測定ほか。
+
 各 Issue には「触ってよいディレクトリ」を明記し、並行タスク間のコンフリクトを避ける（例: TB-1 は `components/kvm_logic/` と `test/host/kvm_logic/` のみ、P2a は `components/tc358743/` のみ）。ルートの `CMakeLists.txt`・`ci.yml`・`sdkconfig.defaults` は T0-1 以外では原則変更しない。
 
 ## 6. 進め方（初手）
