@@ -24,6 +24,7 @@ typedef bool (*ws_video_io_validate_session_cb)(void* user_data, const uint8_t t
 typedef struct {
     int max_clients;
     uint64_t session_check_interval_ms;
+    uint64_t send_timeout_ms; // 0 = disabled; >0 = request close if an in-flight send stalls >= send_timeout_ms
 
     ws_video_hub_register_cb hub_register;
     ws_video_hub_unregister_cb hub_unregister;
@@ -45,6 +46,7 @@ typedef struct {
     uint8_t tokens[WS_CLIENTS_MAX][32];
     const video_frame_t* current_frames[WS_CLIENTS_MAX];
     int64_t last_seqs[WS_CLIENTS_MAX];
+    uint64_t send_started_ms[WS_CLIENTS_MAX];
     bool close_requested[WS_CLIENTS_MAX];
 } ws_video_core_t;
 

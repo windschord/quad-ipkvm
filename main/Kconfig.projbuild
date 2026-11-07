@@ -141,7 +141,23 @@ menu "Quad IP-KVM Configuration"
         default 2
         range 1 10
         help
-            send_wait_timeout of the HTTPS server. WebSocket frames are sent inside the httpd task,
-            so a stalled client blocks the whole HTTP server for up to this many seconds per send.
-            TODO(hw-verify): measure the stall with a slow client.
+            send_wait_timeout of the HTTPS server (default SO_SNDTIMEO for non-video HTTP sockets).
+            Video WebSocket sockets override SO_SNDTIMEO via WEB_SERVER_WS_SOCK_SNDTIMEO_MS.
+
+    config WEB_SERVER_WS_SEND_TIMEOUT_MS
+        int "WS Video in-flight send stall timeout (ms)"
+        default 3000
+        range 0 30000
+        help
+            Maximum duration in milliseconds an async WS /video frame send may remain in flight
+            before ws_video_core_tick requests disconnecting the stalled client. Set 0 to disable.
+
+    config WEB_SERVER_WS_SOCK_SNDTIMEO_MS
+        int "WS Video socket SO_SNDTIMEO (ms)"
+        default 250
+        range 50 10000
+        help
+            Per-socket SO_SNDTIMEO in milliseconds set on /video WebSocket fds after handshake
+            (ws_video_post_handshake_cb) so a stalled send fails quickly instead of blocking the
+            single httpd task for WEB_SERVER_SEND_WAIT_TIMEOUT seconds.
 endmenu
