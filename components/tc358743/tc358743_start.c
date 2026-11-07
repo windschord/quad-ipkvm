@@ -156,7 +156,9 @@ bool tc358743_start_sequence(const tc358743_io_ops_t* ops, const tc358743_mode_t
     if (!ops->write16(ops->ctx, CECHCLK, 0x01A5)) return false;
     if (!ops->write16(ops->ctx, CECLCLK, 0x01A5)) return false;
 
-    if (!ops->write8(ops->ctx, PHY_EN, 0x00)) return false;
+    // Preserve power-on upper bits (0x3E: TMDS lane/termination enables) via RMW; only toggle bit 0 (ENABLE_PHY).
+    // Source: Linux tc358743.c (tc358743_set_hdmi_phy), docs/P2B_REGDUMP.md (PHY_EN = 0x3F)
+    if (!update8(ops, PHY_EN, 0x01, 0x00)) return false;
     if (!ops->write8(ops->ctx, PHY_CTL1, 0x80)) return false;
     if (!update8(ops, PHY_CTL2, 0x1C, 0x00)) return false;
     if (!ops->write8(ops->ctx, PHY_BIAS, 0x40)) return false;
@@ -164,7 +166,7 @@ bool tc358743_start_sequence(const tc358743_io_ops_t* ops, const tc358743_mode_t
     if (!ops->write8(ops->ctx, AVM_CTL, 45)) return false;
     if (!update8(ops, HDMI_DET, 0x30, 0x00)) return false;
     if (!update8(ops, HV_RST, 0x03, 0x00)) return false;
-    if (!ops->write8(ops->ctx, PHY_EN, 0x01)) return false;
+    if (!update8(ops, PHY_EN, 0x01, 0x01)) return false;
 
     if (!update8(ops, DDC_CTL, 0x03, 0x02)) return false;
     if (!update8(ops, HDCP_MODE, 0x02, 0x02)) return false;
@@ -186,9 +188,11 @@ bool tc358743_start_sequence(const tc358743_io_ops_t* ops, const tc358743_mode_t
     uint16_t pllctl1 = (pll_cfg.frs << 10);
 
     if (!ops->write16(ops->ctx, PLLCTL0, pllctl0)) return false;
-    if (!ops->write16(ops->ctx, PLLCTL1, pllctl1 | 0x03)) return false;
+    // Preserve power-on bit 9 (0x0200) via RMW when updating FRS/RESETB/PLL_EN and CKEN.
+    // Source: Linux tc358743.c (tc358743_set_pll), docs/P2B_REGDUMP.md (PLLCTL1 = 0x0213)
+    if (!update16(ops, PLLCTL1, 0x0C03, pllctl1 | 0x0003)) return false;
     ops->delay_ms(ops->ctx, 1);
-    if (!ops->write16(ops->ctx, PLLCTL1, pllctl1 | 0x13)) return false;
+    if (!update16(ops, PLLCTL1, 0x0010, 0x0010)) return false;
     if (!sleep_mode(ops, false)) return false;
 
     if (!update16(ops, SYSCTL, 0x0200, 0x0200)) return false;
