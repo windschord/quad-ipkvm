@@ -37,7 +37,7 @@ static http_guard_action_e expected_decide(auth_state_e state, http_guard_method
             return HTTP_GUARD_ACTION_ALLOW;
         }
 
-        if (path == HTTP_GUARD_PATH_WS_VIDEO) {
+        if (path == HTTP_GUARD_PATH_WS_VIDEO || path == HTTP_GUARD_PATH_WS_INPUT) {
             if (method != HTTP_GUARD_METHOD_GET) return HTTP_GUARD_ACTION_405;
             if (!origin_ok) return HTTP_GUARD_ACTION_403_ORIGIN;
             return HTTP_GUARD_ACTION_ALLOW;
@@ -60,12 +60,12 @@ static http_guard_action_e expected_decide(auth_state_e state, http_guard_method
 void test_exhaustive_matrix_and_invariants(void) {
     auth_state_e states[] = {AUTH_STATE_NEEDS_SETUP, AUTH_STATE_READY};
     http_guard_method_e methods[] = {HTTP_GUARD_METHOD_GET, HTTP_GUARD_METHOD_POST, HTTP_GUARD_METHOD_OTHER};
-    http_guard_path_e paths[] = {HTTP_GUARD_PATH_STATUS, HTTP_GUARD_PATH_SETUP, HTTP_GUARD_PATH_LOGIN, HTTP_GUARD_PATH_LOGOUT, HTTP_GUARD_PATH_WS_VIDEO, HTTP_GUARD_PATH_STATIC, HTTP_GUARD_PATH_OTHER};
+    http_guard_path_e paths[] = {HTTP_GUARD_PATH_STATUS, HTTP_GUARD_PATH_SETUP, HTTP_GUARD_PATH_LOGIN, HTTP_GUARD_PATH_LOGOUT, HTTP_GUARD_PATH_WS_VIDEO, HTTP_GUARD_PATH_WS_INPUT, HTTP_GUARD_PATH_STATIC, HTTP_GUARD_PATH_OTHER};
     bool bools[] = {false, true};
 
     for (int is = 0; is < 2; is++) {
         for (int im = 0; im < 3; im++) {
-            for (int ip = 0; ip < 7; ip++) {
+            for (int ip = 0; ip < 8; ip++) {
                 for (int iv = 0; iv < 2; iv++) {
                     for (int io = 0; io < 2; io++) {
                         for (int ij = 0; ij < 2; ij++) {
@@ -102,7 +102,7 @@ void test_exhaustive_matrix_and_invariants(void) {
                                     }
 
                                     if (actual == HTTP_GUARD_ACTION_ALLOW) {
-                                        if (method != HTTP_GUARD_METHOD_GET || path == HTTP_GUARD_PATH_WS_VIDEO) {
+                                        if (method != HTTP_GUARD_METHOD_GET || path == HTTP_GUARD_PATH_WS_VIDEO || path == HTTP_GUARD_PATH_WS_INPUT) {
                                             TEST_ASSERT_TRUE(origin_ok);
                                         }
                                     }
