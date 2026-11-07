@@ -4,9 +4,9 @@ if (NOT COMMAND idf_component_register)
     target_include_directories(csi_capture_logic PUBLIC include)
 else()
     idf_component_register(
-        SRCS "csi_capture.c" "csi_capture_logic.c"
+        SRCS "csi_capture.c" "csi_capture_logic.c" "csi_jpeg.c"
         INCLUDE_DIRS "include"
         REQUIRES esp_driver_cam
-        PRIV_REQUIRES esp_driver_isp esp_mm esp_timer esp_hw_support soc
+        PRIV_REQUIRES esp_driver_isp esp_driver_jpeg esp_mm esp_timer esp_hw_support soc
     )
 endif()

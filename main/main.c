@@ -20,6 +20,21 @@
 #ifndef CONFIG_MIPI_PHY_POWER_ENABLE
 #define CONFIG_MIPI_PHY_POWER_ENABLE 0
 #endif
+#ifndef CONFIG_VIDEO_SOURCE_CSI
+#define CONFIG_VIDEO_SOURCE_CSI 0
+#endif
+#ifndef CONFIG_JPEG_ENCODE_QUALITY
+#define CONFIG_JPEG_ENCODE_QUALITY 70
+#endif
+#ifndef CONFIG_CSI_CAPTURE_MAX_WIDTH
+#define CONFIG_CSI_CAPTURE_MAX_WIDTH 1920
+#endif
+#ifndef CONFIG_CSI_CAPTURE_MAX_HEIGHT
+#define CONFIG_CSI_CAPTURE_MAX_HEIGHT 1080
+#endif
+#ifndef CONFIG_CSI_CAPTURE_ISP_BYPASS
+#define CONFIG_CSI_CAPTURE_ISP_BYPASS 1
+#endif
 
 #ifndef CONFIG_NET_ETH_INIT
 #define CONFIG_NET_ETH_INIT 0
@@ -29,6 +44,7 @@
 #include "tc358743.h"
 #include "mipi_phy_power.h"
 #include "csi_capture.h"
+#include "csi_video_source.h"
 #include <inttypes.h>
 #include "net_eth.h"
 #include "driver/i2c_master.h"
@@ -219,6 +235,7 @@ void app_main(void)
         }
     }
 
+    frame_hub_t* hub = NULL;
     SemaphoreHandle_t hub_mutex = xSemaphoreCreateMutex();
     if (!hub_mutex) {
         ESP_LOGE(TAG, "Failed to create mutex for frame hub");
@@ -249,10 +266,13 @@ void app_main(void)
         // Verified on hardware with CONFIG_FRAME_HUB_PREFER_SPIRAM=y (source: docs/HW_VERIFY.md D4):
         // the 6 allocations made through app_alloc during frame_hub_create all landed in external RAM.
         // Without PREFER_SPIRAM, app_alloc falls back to malloc() and the placement is not verified.
-        frame_hub_t* hub = frame_hub_create(&hub_config);
+        hub = frame_hub_create(&hub_config);
         if (hub) {
-            ESP_LOGI(TAG, "Starting test pattern source...");
-            test_pattern_source_start(hub);
+            if (!CONFIG_VIDEO_SOURCE_CSI) {
+                const video_source_t* vs = test_pattern_source_get();
+                ESP_LOGI(TAG, "Starting video source '%s'...", vs->name);
+                vs->start(vs, hub);
+            }
         } else {
             ESP_LOGE(TAG, "Failed to create frame hub");
         }
@@ -330,6 +350,24 @@ void app_main(void)
             run_csi_capture_test(tc_dev);
             tc358743_dump_diagnostics(tc_dev);
 #endif
+
+            if (CONFIG_VIDEO_SOURCE_CSI && hub) {
+                csi_video_source_cfg_t vs_cfg = {
+                    .max_width = CONFIG_CSI_CAPTURE_MAX_WIDTH,
+                    .max_height = CONFIG_CSI_CAPTURE_MAX_HEIGHT,
+                    .lane_bit_rate_mbps = 972,
+                    .data_lanes = 2,
+                    .create_isp_bypass = CONFIG_CSI_CAPTURE_ISP_BYPASS,
+                    .jpeg_quality = CONFIG_JPEG_ENCODE_QUALITY,
+                    .hub_max_frame_bytes = (size_t)CONFIG_FRAME_HUB_MAX_FRAME_KB * 1024u,
+                };
+                csi_video_source_configure(tc_dev, &vs_cfg);
+                const video_source_t *vs = csi_video_source_get();
+                ESP_LOGI(TAG, "Starting video source '%s'...", vs->name);
+                if (vs->start(vs, hub) != 0) {
+                    ESP_LOGE(TAG, "Failed to start video source '%s'", vs->name);
+                }
+            }
 
             // tc358743_poll_interrupts(tc_dev);
         } else {
