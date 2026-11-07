@@ -106,14 +106,76 @@ static bool write_edid(const tc358743_io_ops_t* ops, tc358743_edid_profile_t pro
     return true;
 }
 
+uint32_t tc358743_format_bpp(tc358743_format_t format) {
+    if (format == TC358743_FORMAT_RGB888) return 24u;
+    if (format == TC358743_FORMAT_UYVY) return 16u;
+    return 0u;
+}
+
+static uint32_t lane_rate_min_kbps(uint32_t lane_rate_mbps) {
+    if (lane_rate_mbps == 972u) return 972000u;
+    if (lane_rate_mbps == 594u) return 594000u;
+    // 445 selects the P2b-8 445.5 Mbps candidate (fbd = 66 * 6.75 MHz = 445.5 Mbps, FRS = 1).
+    // Source: docs/P2B_PREP.md §2-3, docs/P2B_PLAN.md §5 item 3 & P2b-8.
+    if (lane_rate_mbps == 445u) return 445500u;
+    return 0u;
+}
+
+static bool write_csi_timings(const tc358743_io_ops_t* ops, uint32_t lane_rate_mbps) {
+    // Source: docs/P2B_TC358743_REFERENCE.md §3-2 (Linux tc358743.c:2105-2141).
+    // Only 972 Mbps and 594 Mbps tables exist; rates other than 972 fall back to the 594 table.
+    if (lane_rate_mbps == 972u) {
+        if (!ops->write32(ops->ctx, LINEINITCNT, 0x1B58)) return false;
+        if (!ops->write32(ops->ctx, LPTXTIMECNT, 0x0007)) return false;
+        if (!ops->write32(ops->ctx, TCLK_HEADERCNT, 0x2806)) return false;
+        if (!ops->write32(ops->ctx, TCLK_TRAILCNT, 0x00)) return false;
+        if (!ops->write32(ops->ctx, THS_HEADERCNT, 0x0806)) return false;
+        if (!ops->write32(ops->ctx, TWAKEUP, 0x4268)) return false;
+        if (!ops->write32(ops->ctx, TCLK_POSTCNT, 0x0008)) return false;
+        if (!ops->write32(ops->ctx, THS_TRAILCNT, 0x0005)) return false;
+        if (!ops->write32(ops->ctx, HSTXVREGCNT, 0)) return false;
+    } else {
+        if (!ops->write32(ops->ctx, LINEINITCNT, 0x0E80)) return false;
+        if (!ops->write32(ops->ctx, LPTXTIMECNT, 0x0003)) return false;
+        if (!ops->write32(ops->ctx, TCLK_HEADERCNT, 0x1403)) return false;
+        if (!ops->write32(ops->ctx, TCLK_TRAILCNT, 0x00)) return false;
+        if (!ops->write32(ops->ctx, THS_HEADERCNT, 0x0103)) return false;
+        if (!ops->write32(ops->ctx, TWAKEUP, 0x4882)) return false;
+        if (!ops->write32(ops->ctx, TCLK_POSTCNT, 0x0008)) return false;
+        if (!ops->write32(ops->ctx, THS_TRAILCNT, 0x0002)) return false;
+        if (!ops->write32(ops->ctx, HSTXVREGCNT, 0)) return false;
+    }
+    return true;
+}
+
+static bool apply_output_format(const tc358743_io_ops_t* ops, tc358743_format_t format) {
+    // Source: docs/P2B_TC358743_REFERENCE.md §3-4 (VOUT_SET2, VI_REP, CONFCTL.YCBCRFMT).
+    if (format == TC358743_FORMAT_RGB888) {
+        if (!update8(ops, VOUT_SET2, 0xC0, 0x00)) return false;
+        if (!update8(ops, VI_REP, 0xE0, 0x00)) return false;
+        if (!update16(ops, CONFCTL, 0x00C0, 0x0000)) return false;
+        return true;
+    }
+    if (format == TC358743_FORMAT_UYVY) {
+        // SEL422 (0x80) | VOUT_422FIL_100 (0x40), COLOR_SEL = BT.601 YCbCr limited (0x60),
+        // CONFCTL.YCBCRFMT = YCbCr 4:2:2 8-bit (0x00C0 -> CSI-2 DT 0x1E).
+        if (!update8(ops, VOUT_SET2, 0xC0, 0xC0)) return false;
+        if (!update8(ops, VI_REP, 0xE0, 0x60)) return false;
+        if (!update16(ops, CONFCTL, 0x00C0, 0x00C0)) return false;
+        return true;
+    }
+    return false;
+}
+
 bool tc358743_start_sequence(const tc358743_io_ops_t* ops, const tc358743_mode_t* mode, tc358743_edid_profile_t edid_profile, bool* out_locked) {
     if (!ops || !mode || !out_locked) return false;
 
     *out_locked = false;
 
     if (mode->lanes != 2) return false;
-    if (mode->format != TC358743_FORMAT_RGB888) return false;
-    if (mode->lane_rate_mbps != 972 && mode->lane_rate_mbps != 594) return false;
+    if (tc358743_format_bpp(mode->format) == 0u) return false;
+    uint32_t min_kbps = lane_rate_min_kbps(mode->lane_rate_mbps);
+    if (min_kbps == 0u) return false;
 
     if (ops->reset_gpio) {
         ops->reset_gpio(ops->ctx, true);
@@ -183,7 +245,7 @@ bool tc358743_start_sequence(const tc358743_io_ops_t* ops, const tc358743_mode_t
     if (!sleep_mode(ops, true)) return false;
 
     tc358743_pll_config_t pll_cfg;
-    if (!tc358743_pll_calc(27000000, mode->lane_rate_mbps * 1000, &pll_cfg)) return false;
+    if (!tc358743_pll_calc(27000000, min_kbps, &pll_cfg)) return false;
     uint16_t pllctl0 = (((pll_cfg.pll_prd - 1) << 12) | ((pll_cfg.pll_fbd - 1) & 0x1FF));
     uint16_t pllctl1 = (pll_cfg.frs << 10);
 
@@ -201,27 +263,7 @@ bool tc358743_start_sequence(const tc358743_io_ops_t* ops, const tc358743_mode_t
     if (!ops->write32(ops->ctx, D2W_CNTRL, 0x01)) return false;
     if (!ops->write32(ops->ctx, D3W_CNTRL, 0x01)) return false;
 
-    if (mode->lane_rate_mbps == 972) {
-        if (!ops->write32(ops->ctx, LINEINITCNT, 0x1B58)) return false;
-        if (!ops->write32(ops->ctx, LPTXTIMECNT, 0x0007)) return false;
-        if (!ops->write32(ops->ctx, TCLK_HEADERCNT, 0x2806)) return false;
-        if (!ops->write32(ops->ctx, TCLK_TRAILCNT, 0x00)) return false;
-        if (!ops->write32(ops->ctx, THS_HEADERCNT, 0x0806)) return false;
-        if (!ops->write32(ops->ctx, TWAKEUP, 0x4268)) return false;
-        if (!ops->write32(ops->ctx, TCLK_POSTCNT, 0x0008)) return false;
-        if (!ops->write32(ops->ctx, THS_TRAILCNT, 0x0005)) return false;
-        if (!ops->write32(ops->ctx, HSTXVREGCNT, 0)) return false;
-    } else {
-        if (!ops->write32(ops->ctx, LINEINITCNT, 0x0E80)) return false;
-        if (!ops->write32(ops->ctx, LPTXTIMECNT, 0x0003)) return false;
-        if (!ops->write32(ops->ctx, TCLK_HEADERCNT, 0x1403)) return false;
-        if (!ops->write32(ops->ctx, TCLK_TRAILCNT, 0x00)) return false;
-        if (!ops->write32(ops->ctx, THS_HEADERCNT, 0x0103)) return false;
-        if (!ops->write32(ops->ctx, TWAKEUP, 0x4882)) return false;
-        if (!ops->write32(ops->ctx, TCLK_POSTCNT, 0x0008)) return false;
-        if (!ops->write32(ops->ctx, THS_TRAILCNT, 0x0002)) return false;
-        if (!ops->write32(ops->ctx, HSTXVREGCNT, 0)) return false;
-    }
+    if (!write_csi_timings(ops, mode->lane_rate_mbps)) return false;
 
     if (!ops->write32(ops->ctx, HSTXVREGEN, 0x07)) return false;
 
@@ -234,9 +276,7 @@ bool tc358743_start_sequence(const tc358743_io_ops_t* ops, const tc358743_mode_t
     if (!ops->write32(ops->ctx, CSI_CONFW, 0xD5000012)) return false;
     if (!ops->write32(ops->ctx, CSI_CONFW, 0xA6000004)) return false;
 
-    if (!update8(ops, VOUT_SET2, 0xC0, 0x00)) return false;
-    if (!update8(ops, VI_REP, 0xE0, 0x00)) return false;
-    if (!update16(ops, CONFCTL, 0x00C0, 0x0000)) return false;
+    if (!apply_output_format(ops, mode->format)) return false;
 
     if (!ops->write16(ops->ctx, INTSTATUS, 0xFFFF)) return false;
     if (!ops->write16(ops->ctx, INTMASK, 0xFCFF)) return false;
@@ -263,5 +303,85 @@ bool tc358743_start_sequence(const tc358743_io_ops_t* ops, const tc358743_mode_t
         ops->delay_ms(ops->ctx, 50);
     }
 
+    return true;
+}
+
+uint16_t tc358743_calc_fifoctl(uint32_t active_width, uint32_t bits_per_pixel) {
+    if (active_width == 0u || bits_per_pixel == 0u || active_width > 16384u || bits_per_pixel > 64u) {
+        return 374u;
+    }
+    uint32_t line_words = (active_width * bits_per_pixel) / 32u;
+    if (line_words > 374u) {
+        return 374u;
+    }
+    uint32_t adj = (line_words * 7u) / 8u;
+    if (adj < 16u) {
+        adj = 16u;
+    }
+    return (uint16_t)adj;
+}
+
+bool tc358743_rearm_csi_sequence(const tc358743_io_ops_t* ops, const tc358743_mode_t* mode, uint32_t active_width) {
+    if (!ops || !mode || active_width == 0u) return false;
+    if (mode->lanes != 2u) return false;
+    uint32_t bpp = tc358743_format_bpp(mode->format);
+    if (bpp == 0u) return false;
+    if (lane_rate_min_kbps(mode->lane_rate_mbps) == 0u) return false;
+
+    // 1. Mute video/audio stream before resetting CSI TX context.
+    if (!ops->write8(ops->ctx, VI_MUTE, 0xD0)) return false;
+    if (!update16(ops, CONFCTL, 0x0003, 0x0000)) return false;
+
+    // 2. Adjust FIFO threshold for the newly locked horizontal width and format bpp.
+    uint16_t fifoctl = tc358743_calc_fifoctl(active_width, bpp);
+    if (!ops->write16(ops->ctx, FIFOCTL, fifoctl)) return false;
+
+    // 3. Pulse CTXRST only (leave HDMIRST and HPD untouched so HDMI lock stays intact).
+    if (!update16(ops, SYSCTL, 0x0200, 0x0200)) return false;
+    if (!update16(ops, SYSCTL, 0x0200, 0x0000)) return false;
+
+    if (!ops->write32(ops->ctx, D2W_CNTRL, 0x01)) return false;
+    if (!ops->write32(ops->ctx, D3W_CNTRL, 0x01)) return false;
+
+    if (!write_csi_timings(ops, mode->lane_rate_mbps)) return false;
+
+    if (!ops->write32(ops->ctx, HSTXVREGEN, 0x07)) return false;
+    if (!ops->write32(ops->ctx, TXOPTIONCNTRL, mode->continuous_clock ? 1u : 0u)) return false;
+    if (!ops->write32(ops->ctx, STARTCNTRL, 1)) return false;
+    if (!ops->write32(ops->ctx, CSI_START, 1)) return false;
+
+    if (!ops->write32(ops->ctx, CSI_CONFW, 0xA3008082)) return false;
+    if (!ops->write32(ops->ctx, CSI_CONFW, 0xB4000312)) return false;
+    if (!ops->write32(ops->ctx, CSI_CONFW, 0xD5000012)) return false;
+    if (!ops->write32(ops->ctx, CSI_CONFW, 0xA6000004)) return false;
+
+    // 4. Re-apply output colour space, re-enable stream, and re-kick CSI_START.
+    if (!apply_output_format(ops, mode->format)) return false;
+
+    if (!ops->write8(ops->ctx, VI_MUTE, 0xC0)) return false;
+    if (!update16(ops, CONFCTL, 0x0003, 0x0003)) return false;
+    if (!ops->write32(ops->ctx, CSI_START, 1)) return false;
+
+    return true;
+}
+
+bool tc358743_hpd_nudge_sequence(const tc358743_io_ops_t* ops) {
+    if (!ops) return false;
+
+    if (!ops->write8(ops->ctx, VI_MUTE, 0xD0)) return false;
+    if (!update16(ops, CONFCTL, 0x0003, 0x0000)) return false;
+
+    // Lower HPD_OUT0 (bit 0), preserving HPD_CTL0 (bit 4).
+    if (!update8(ops, HPD_CTL, 0x01, 0x00)) return false;
+    ops->delay_ms(ops->ctx, 150);
+
+    if (!ops->write8(ops->ctx, VI_MUTE, 0xC0)) return false;
+    if (!update16(ops, CONFCTL, 0x0003, 0x0003)) return false;
+    ops->delay_ms(ops->ctx, 150);
+
+    if (!update8(ops, HPD_CTL, 0x01, 0x01)) return false;
+    ops->delay_ms(ops->ctx, 50);
+
+    if (!ops->write32(ops->ctx, CSI_START, 1)) return false;
     return true;
 }

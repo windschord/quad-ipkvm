@@ -97,6 +97,66 @@ void csi_video_pub_stats_on_pool_busy(csi_video_pub_stats_t *st, size_t jpeg_byt
 void csi_video_pub_stats_on_oversize(csi_video_pub_stats_t *st, size_t jpeg_bytes, uint32_t encode_us);
 void csi_video_pub_stats_on_error(csi_video_pub_stats_t *st);
 
+// ---- P2b-7 Mode-stability, resolution-change & HPD-nudge state machine ----
+// Source: docs/P2B_PLAN.md P2b-7, docs/P2B_TC358743_REFERENCE.md §2-2, §7 items 6, 7, 9.
+#define CSI_MODE_POLL_INTERVAL_MS     200u
+#define CSI_MODE_STABLE_COUNT         2u
+#define CSI_MODE_STALL_TIMEOUT_MS     2000u
+#define CSI_MODE_RECOVERY_COOLDOWN_MS 8000u
+#define CSI_HPD_NUDGE_STEPS           3u
+#define CSI_HPD_NUDGE_DELAY_0_MS      10000u
+#define CSI_HPD_NUDGE_DELAY_1_MS      20000u
+#define CSI_HPD_NUDGE_DELAY_2_MS      40000u
+
+typedef enum {
+    CSI_MODE_ACT_WAIT = 0,              // Stay unlocked / waiting for next 200 ms poll
+    CSI_MODE_ACT_KEEP_STREAMING,        // Locked resolution unchanged; keep acquiring frames
+    CSI_MODE_ACT_START_MODE,            // 2 consecutive identical valid samples; (re)configure & start CSI
+    CSI_MODE_ACT_STOP_NO_SIGNAL,        // Signal lost while streaming; stop CSI & publish NO_SIGNAL
+    CSI_MODE_ACT_STOP_MODE_CHANGED,     // Active resolution changed while streaming; stop CSI & debounce new mode
+    CSI_MODE_ACT_REJECT_OUT_OF_RANGE,   // Sync locked on out-of-range mode; stop CSI (if active) & publish NO_SIGNAL
+    CSI_MODE_ACT_NUDGE_HPD,             // DDC5V present without sync for 10s -> 20s -> 40s; pulse HPD
+    CSI_MODE_ACT_RECOVER_STALL,         // CSI DMA stalled >= 2000 ms while locked; stop CSI & pulse HPD
+} csi_mode_action_t;
+
+typedef struct {
+    uint64_t now_ms;
+    bool ddc5v;
+    bool sync_locked;
+    bool geom_ok;
+    uint32_t width;
+    uint32_t height;
+} csi_mode_sample_t;
+
+typedef struct {
+    bool streaming;
+    uint32_t active_w;
+    uint32_t active_h;
+
+    uint32_t cand_w;
+    uint32_t cand_h;
+    uint32_t cand_hits;
+
+    bool nudge_timer_active;
+    uint64_t nudge_since_ms;
+    uint32_t nudge_stage;
+
+    uint64_t last_frame_ms;
+    bool has_recovered;
+    uint64_t last_recovery_ms;
+    uint32_t mode_switches;
+    uint32_t hpd_nudges;
+    uint32_t stall_recoveries;
+} csi_mode_tracker_t;
+
+void csi_mode_tracker_init(csi_mode_tracker_t *m);
+csi_mode_action_t csi_mode_tracker_step(csi_mode_tracker_t *m, const csi_mode_sample_t *s);
+void csi_mode_tracker_on_frame(csi_mode_tracker_t *m, uint64_t now_ms);
+csi_mode_action_t csi_mode_tracker_check_stall(csi_mode_tracker_t *m, uint64_t now_ms);
+// If CSI start/reconfigure fails after CSI_MODE_ACT_START_MODE, revert streaming state so the
+// next 200 ms poll retries cleanly instead of thinking DMA is running.
+void csi_mode_tracker_abort_start(csi_mode_tracker_t *m);
+
 #ifdef __cplusplus
 }
 #endif

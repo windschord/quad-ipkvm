@@ -11,6 +11,7 @@
 //   its base address and length are L2-cache-line aligned as required by jpeg_encoder_process()
 //   (esp_driver_jpeg/jpeg_encode.c:177, 380-392).
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
@@ -25,6 +26,9 @@ typedef struct {
     uint8_t quality;          // 1..100 (reference default: 70)
     size_t max_output_bytes;  // capacity of the reusable PSRAM output buffer (>= 4096)
     int timeout_ms;           // per-frame HW timeout in ms (<= 0 uses default 100 ms)
+    bool enable_uyvy_ppa;     // P2b-8: allocate PPA SRM client + 16bpp PSRAM swap buffer for UYVY
+    uint32_t max_width;       // required when enable_uyvy_ppa == true
+    uint32_t max_height;      // required when enable_uyvy_ppa == true
 } csi_jpeg_config_t;
 
 esp_err_t csi_jpeg_open(const csi_jpeg_config_t *cfg, csi_jpeg_handle_t *out);
@@ -37,7 +41,22 @@ esp_err_t csi_jpeg_encode(csi_jpeg_handle_t h,
                           uint32_t width, uint32_t height,
                           const uint8_t **out_jpeg, size_t *out_len);
 
+// P2b-8 step 1: Reverses each 32-bit word of a CSI UYVY frame (Y1,V0,Y0,U0 -> U0,Y0,V0,Y1)
+// into the internal PPA aligned PSRAM buffer by running PPA SRM in ARGB8888 mode (width/2 x height)
+// with rgb_swap = true. The caller may immediately release the CSI ping-pong buffer once this returns.
+// Source: ESP-IDF v6.0.1 driver/ppa.h, hal/ppa_ll.h:438-446; docs/P2B_TC358743_REFERENCE.md §6, §10 #9.
+esp_err_t csi_jpeg_ppa_swap_uyvy(csi_jpeg_handle_t h,
+                                 const uint8_t *uyvy_dma_in, size_t in_bytes,
+                                 uint32_t width, uint32_t height);
+
+// P2b-8 step 2: Encodes the most recently PPA-swapped width x height UYVY frame into baseline JPEG
+// (src_type = JPEG_ENCODE_IN_FORMAT_YUV422, sub_sample = JPEG_DOWN_SAMPLING_YUV422).
+esp_err_t csi_jpeg_encode_swapped_uyvy(csi_jpeg_handle_t h,
+                                       uint32_t width, uint32_t height,
+                                       const uint8_t **out_jpeg, size_t *out_len);
+
 size_t csi_jpeg_output_capacity(csi_jpeg_handle_t h);
+size_t csi_jpeg_ppa_capacity(csi_jpeg_handle_t h);
 
 esp_err_t csi_jpeg_close(csi_jpeg_handle_t h);
 

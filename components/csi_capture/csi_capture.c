@@ -18,10 +18,11 @@
 
 static const char *TAG = "csi_capture";
 
-// RGB888 on the wire (CSI-2 data type 0x24) and in memory (bridge colour conversion bypassed:
-// input == output). Memory order is B,G,R per pixel on rev v1.3 [参照].
-// Source: docs/P2B_TC358743_REFERENCE.md §4-1, §4-2
-#define CSI_CAPTURE_BPP 24
+// Supported wire/memory formats on ESP32-P4 rev v1.3 (bridge colour conversion bypassed:
+// input == output):
+// - RGB888 (CSI-2 DT 0x24, 24 bpp): B,G,R per pixel in PSRAM.
+// - UYVY   (CSI-2 DT 0x1E, 16 bpp): 4-byte reversed Y1,V0,Y0,U0 per 32-bit word in PSRAM.
+// Source: docs/P2B_TC358743_REFERENCE.md §4-1, §4-2, §6
 
 // DMA works in 64-bit beats with 512-byte bursts; 128-byte alignment covers both 64B and 128B
 // ESP32-P4 L2 cache line configurations for esp_cache_msync.
@@ -39,6 +40,13 @@ struct csi_capture_t {
     size_t frame_bytes;
     uint32_t width;
     uint32_t height;
+    uint32_t max_width;
+    uint32_t max_height;
+    int lane_bit_rate_mbps;
+    uint8_t data_lanes;
+    uint32_t skip_frames;
+    bool create_isp_bypass;
+    csi_pixel_format_t pixel_format;
     bool enabled;
     bool started;
     csi_pp_t pp;
@@ -73,69 +81,43 @@ static bool IRAM_ATTR on_trans_finished(esp_cam_ctlr_handle_t handle, esp_cam_ct
     return woken == pdTRUE;
 }
 
+static void destroy_ctlr_and_isp(struct csi_capture_t *h) {
+    if (!h) return;
+    if (h->isp) {
+        esp_isp_del_processor(h->isp);
+        h->isp = NULL;
+    }
+    if (h->enabled && h->ctlr) {
+        esp_cam_ctlr_disable(h->ctlr);
+        h->enabled = false;
+    }
+    if (h->ctlr) {
+        esp_cam_ctlr_del(h->ctlr);
+        h->ctlr = NULL;
+    }
+}
+
 static void free_handle(struct csi_capture_t *h) {
     if (!h) return;
-    if (h->isp) esp_isp_del_processor(h->isp);
-    if (h->ctlr) esp_cam_ctlr_del(h->ctlr);
+    destroy_ctlr_and_isp(h);
     for (int i = 0; i < CSI_PP_NUM_BUFS; i++) heap_caps_free(h->buf[i]);
     if (h->frame_sem) vSemaphoreDelete(h->frame_sem);
     free(h);
 }
 
-esp_err_t csi_capture_open(const csi_capture_config_t *cfg, csi_capture_handle_t *out) {
-    ESP_RETURN_ON_FALSE(cfg && out, ESP_ERR_INVALID_ARG, TAG, "null argument");
-    ESP_RETURN_ON_FALSE(cfg->data_lanes >= 1 && cfg->data_lanes <= 2, ESP_ERR_INVALID_ARG, TAG, "lanes must be 1..2");
-    ESP_RETURN_ON_FALSE(cfg->lane_bit_rate_mbps > 0, ESP_ERR_INVALID_ARG, TAG, "lane rate");
-    *out = NULL;
-
-    // Size each buffer for the maximum mode, once.
-    size_t max_bytes = 0;
-    csi_geom_result_t g = csi_capture_check_geometry(cfg->max_width, cfg->max_height, CSI_CAPTURE_BPP,
-                                                     cfg->max_width, cfg->max_height, SIZE_MAX, &max_bytes);
-    ESP_RETURN_ON_FALSE(g == CSI_GEOM_OK, ESP_ERR_INVALID_ARG, TAG, "invalid max geometry %"PRIu32"x%"PRIu32" (%d)",
-                        cfg->max_width, cfg->max_height, (int)g);
-    size_t buf_bytes = csi_capture_round_up(max_bytes, CSI_CAPTURE_BUF_ALIGN);
-    ESP_RETURN_ON_FALSE(buf_bytes != 0, ESP_ERR_INVALID_ARG, TAG, "buffer size overflow");
-
-    // Validate the actual geometry against that capacity BEFORE any DMA configuration.
-    size_t frame_bytes = 0;
-    g = csi_capture_check_geometry(cfg->width, cfg->height, CSI_CAPTURE_BPP,
-                                   cfg->max_width, cfg->max_height, buf_bytes, &frame_bytes);
-    if (g != CSI_GEOM_OK) {
-        ESP_LOGE(TAG, "Rejecting frame %"PRIu32"x%"PRIu32" before DMA setup (result %d, capacity %u)",
-                 cfg->width, cfg->height, (int)g, (unsigned)buf_bytes);
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    struct csi_capture_t *h = calloc(1, sizeof(*h));
-    ESP_RETURN_ON_FALSE(h, ESP_ERR_NO_MEM, TAG, "no mem");
-    h->lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
-    h->width = cfg->width;
-    h->height = cfg->height;
-    h->frame_bytes = frame_bytes;
-    h->buf_bytes = buf_bytes;
-    csi_pp_init(&h->pp, cfg->skip_frames);
-
+static esp_err_t create_ctlr_and_isp(struct csi_capture_t *h, uint32_t width, uint32_t height, size_t frame_bytes) {
     esp_err_t ret = ESP_OK;
-    h->frame_sem = xSemaphoreCreateBinary();
-    ESP_GOTO_ON_FALSE(h->frame_sem, ESP_ERR_NO_MEM, err, TAG, "no mem for semaphore");
-
-    for (int i = 0; i < CSI_PP_NUM_BUFS; i++) {
-        h->buf[i] = heap_caps_aligned_calloc(CSI_CAPTURE_BUF_ALIGN, 1, buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
-        ESP_GOTO_ON_FALSE(h->buf[i], ESP_ERR_NO_MEM, err, TAG, "no PSRAM for buffer %d (%u bytes)", i, (unsigned)buf_bytes);
-        // Push the zeroed contents out of the cache and invalidate so stale lines cannot overwrite DMA data.
-        esp_cache_msync(h->buf[i], buf_bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
-    }
-
+    bool is_uyvy = (h->pixel_format == CSI_PIXEL_FORMAT_UYVY);
+    cam_ctlr_color_t cam_color = is_uyvy ? CAM_CTLR_COLOR_YUV422_UYVY : CAM_CTLR_COLOR_RGB888;
     esp_cam_ctlr_csi_config_t csi_cfg = {
         .ctlr_id = 0,
         .clk_src = MIPI_CSI_PHY_CLK_SRC_DEFAULT,
-        .h_res = cfg->width,
-        .v_res = cfg->height,
-        .data_lane_num = cfg->data_lanes,
-        .lane_bit_rate_mbps = cfg->lane_bit_rate_mbps,
-        .input_data_color_type = CAM_CTLR_COLOR_RGB888,
-        .output_data_color_type = CAM_CTLR_COLOR_RGB888,   // same as input -> colour conversion bypassed
+        .h_res = width,
+        .v_res = height,
+        .data_lane_num = h->data_lanes,
+        .lane_bit_rate_mbps = h->lane_bit_rate_mbps,
+        .input_data_color_type = cam_color,
+        .output_data_color_type = cam_color,   // same as input -> colour conversion bypassed on rev v1.3
         .queue_items = 1,
         .byte_swap_en = false,
         .bk_buffer_dis = true,
@@ -150,33 +132,150 @@ esp_err_t csi_capture_open(const csi_capture_config_t *cfg, csi_capture_handle_t
     ESP_GOTO_ON_ERROR(esp_cam_ctlr_enable(h->ctlr), err, TAG, "esp_cam_ctlr_enable failed");
     h->enabled = true;
 
-    if (cfg->create_isp_bypass) {
+    if (h->create_isp_bypass) {
         // Source: docs/P2B_TC358743_REFERENCE.md §4-1 (bypass_isp, CSI source, 80 MHz, no line packets).
         // Whether this processor is required at all is unverified (TODO(hw-verify)).
+        isp_color_t isp_color = is_uyvy ? ISP_COLOR_YUV422 : ISP_COLOR_RGB888;
         esp_isp_processor_cfg_t isp_cfg = {
             .clk_hz = CSI_CAPTURE_ISP_CLK_HZ,
             .input_data_source = ISP_INPUT_DATA_SOURCE_CSI,
-            .input_data_color_type = ISP_COLOR_RGB888,
-            .output_data_color_type = ISP_COLOR_RGB888,
+            .input_data_color_type = isp_color,
+            .output_data_color_type = isp_color,
             .has_line_start_packet = false,
             .has_line_end_packet = false,
-            .h_res = cfg->width,
-            .v_res = cfg->height,
+            .h_res = width,
+            .v_res = height,
             .flags.bypass_isp = true,
         };
         ESP_GOTO_ON_ERROR(esp_isp_new_processor(&isp_cfg, &h->isp), err, TAG, "esp_isp_new_processor (bypass) failed");
     }
 
-    ESP_LOGI(TAG, "Opened: %"PRIu32"x%"PRIu32" RGB888, %u lanes @ %d Mbps, frame %u bytes, 2 x %u-byte PSRAM buffers, ISP bypass %s",
-             cfg->width, cfg->height, (unsigned)cfg->data_lanes, cfg->lane_bit_rate_mbps,
-             (unsigned)frame_bytes, (unsigned)buf_bytes, h->isp ? "created" : "not created");
+    h->width = width;
+    h->height = height;
+    h->frame_bytes = frame_bytes;
+    return ESP_OK;
+
+err:
+    destroy_ctlr_and_isp(h);
+    return ret;
+}
+
+esp_err_t csi_capture_open_pool(const csi_capture_config_t *cfg, csi_capture_handle_t *out) {
+    ESP_RETURN_ON_FALSE(cfg && out, ESP_ERR_INVALID_ARG, TAG, "null argument");
+    ESP_RETURN_ON_FALSE(cfg->data_lanes >= 1 && cfg->data_lanes <= 2, ESP_ERR_INVALID_ARG, TAG, "lanes must be 1..2");
+    ESP_RETURN_ON_FALSE(cfg->lane_bit_rate_mbps > 0, ESP_ERR_INVALID_ARG, TAG, "lane rate");
+    *out = NULL;
+
+    size_t max_bytes = 0;
+    csi_geom_result_t g = csi_capture_check_format_geometry(cfg->max_width, cfg->max_height, cfg->pixel_format,
+                                                            cfg->max_width, cfg->max_height, SIZE_MAX, &max_bytes);
+    ESP_RETURN_ON_FALSE(g == CSI_GEOM_OK, ESP_ERR_INVALID_ARG, TAG, "invalid max geometry %"PRIu32"x%"PRIu32" (%d)",
+                        cfg->max_width, cfg->max_height, (int)g);
+    size_t buf_bytes = csi_capture_round_up(max_bytes, CSI_CAPTURE_BUF_ALIGN);
+    ESP_RETURN_ON_FALSE(buf_bytes != 0, ESP_ERR_INVALID_ARG, TAG, "buffer size overflow");
+
+    struct csi_capture_t *h = calloc(1, sizeof(*h));
+    ESP_RETURN_ON_FALSE(h, ESP_ERR_NO_MEM, TAG, "no mem");
+    h->lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
+    h->max_width = cfg->max_width;
+    h->max_height = cfg->max_height;
+    h->lane_bit_rate_mbps = cfg->lane_bit_rate_mbps;
+    h->data_lanes = cfg->data_lanes;
+    h->skip_frames = cfg->skip_frames;
+    h->create_isp_bypass = cfg->create_isp_bypass;
+    h->pixel_format = cfg->pixel_format;
+    h->buf_bytes = buf_bytes;
+    csi_pp_init(&h->pp, cfg->skip_frames);
+
+    esp_err_t ret = ESP_OK;
+    h->frame_sem = xSemaphoreCreateBinary();
+    ESP_GOTO_ON_FALSE(h->frame_sem, ESP_ERR_NO_MEM, err, TAG, "no mem for semaphore");
+
+    for (int i = 0; i < CSI_PP_NUM_BUFS; i++) {
+        h->buf[i] = heap_caps_aligned_calloc(CSI_CAPTURE_BUF_ALIGN, 1, buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+        ESP_GOTO_ON_FALSE(h->buf[i], ESP_ERR_NO_MEM, err, TAG, "no PSRAM for buffer %d (%u bytes)", i, (unsigned)buf_bytes);
+        esp_cache_msync(h->buf[i], buf_bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+    }
+
     *out = h;
     return ESP_OK;
 
 err:
-    if (h->enabled) esp_cam_ctlr_disable(h->ctlr);
     free_handle(h);
     return ret;
+}
+
+esp_err_t csi_capture_reconfigure(csi_capture_handle_t h, uint32_t width, uint32_t height) {
+    ESP_RETURN_ON_FALSE(h, ESP_ERR_INVALID_ARG, TAG, "null handle");
+
+    // Always halt ongoing DMA and tear down previous controller BEFORE inspecting or configuring
+    // a new geometry so stale transfers can never continue on mode changes.
+    ESP_RETURN_ON_ERROR(csi_capture_stop(h), TAG, "stop before reconfigure failed");
+    destroy_ctlr_and_isp(h);
+    h->width = 0;
+    h->height = 0;
+    h->frame_bytes = 0;
+
+    size_t frame_bytes = 0;
+    csi_geom_result_t g = csi_capture_check_format_geometry(width, height, h->pixel_format,
+                                                            h->max_width, h->max_height, h->buf_bytes, &frame_bytes);
+    if (g != CSI_GEOM_OK) {
+        ESP_LOGE(TAG, "Rejecting frame %"PRIu32"x%"PRIu32" before DMA setup (result %d, capacity %u)",
+                 width, height, (int)g, (unsigned)h->buf_bytes);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    portENTER_CRITICAL(&h->lock);
+    csi_pp_init(&h->pp, h->skip_frames);
+    h->first_frame_us = 0;
+    h->last_frame_us = 0;
+    portEXIT_CRITICAL(&h->lock);
+    xSemaphoreTake(h->frame_sem, 0);
+
+    for (int i = 0; i < CSI_PP_NUM_BUFS; i++) {
+        esp_cache_msync(h->buf[i], h->buf_bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    }
+
+    ESP_RETURN_ON_ERROR(create_ctlr_and_isp(h, width, height, frame_bytes), TAG, "recreate ctlr/isp failed");
+    ESP_LOGI(TAG, "Configured: %"PRIu32"x%"PRIu32" %s, %u lanes @ %d Mbps, frame %u bytes, 2 x %u-byte PSRAM buffers, ISP bypass %s",
+             width, height, (h->pixel_format == CSI_PIXEL_FORMAT_UYVY) ? "UYVY" : "RGB888",
+             (unsigned)h->data_lanes, h->lane_bit_rate_mbps,
+             (unsigned)frame_bytes, (unsigned)h->buf_bytes, h->isp ? "created" : "not created");
+    return ESP_OK;
+}
+
+esp_err_t csi_capture_open(const csi_capture_config_t *cfg, csi_capture_handle_t *out) {
+    ESP_RETURN_ON_FALSE(cfg && out, ESP_ERR_INVALID_ARG, TAG, "null argument");
+    ESP_RETURN_ON_FALSE(cfg->data_lanes >= 1 && cfg->data_lanes <= 2, ESP_ERR_INVALID_ARG, TAG, "lanes must be 1..2");
+    ESP_RETURN_ON_FALSE(cfg->lane_bit_rate_mbps > 0, ESP_ERR_INVALID_ARG, TAG, "lane rate");
+    *out = NULL;
+
+    size_t max_bytes = 0;
+    csi_geom_result_t g = csi_capture_check_format_geometry(cfg->max_width, cfg->max_height, cfg->pixel_format,
+                                                            cfg->max_width, cfg->max_height, SIZE_MAX, &max_bytes);
+    ESP_RETURN_ON_FALSE(g == CSI_GEOM_OK, ESP_ERR_INVALID_ARG, TAG, "invalid max geometry %"PRIu32"x%"PRIu32" (%d)",
+                        cfg->max_width, cfg->max_height, (int)g);
+    size_t buf_bytes = csi_capture_round_up(max_bytes, CSI_CAPTURE_BUF_ALIGN);
+    ESP_RETURN_ON_FALSE(buf_bytes != 0, ESP_ERR_INVALID_ARG, TAG, "buffer size overflow");
+
+    size_t frame_bytes = 0;
+    g = csi_capture_check_format_geometry(cfg->width, cfg->height, cfg->pixel_format,
+                                          cfg->max_width, cfg->max_height, buf_bytes, &frame_bytes);
+    if (g != CSI_GEOM_OK) {
+        ESP_LOGE(TAG, "Rejecting frame %"PRIu32"x%"PRIu32" before DMA setup (result %d, capacity %u)",
+                 cfg->width, cfg->height, (int)g, (unsigned)buf_bytes);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    csi_capture_handle_t h = NULL;
+    ESP_RETURN_ON_ERROR(csi_capture_open_pool(cfg, &h), TAG, "open_pool failed");
+    esp_err_t ret = csi_capture_reconfigure(h, cfg->width, cfg->height);
+    if (ret != ESP_OK) {
+        free_handle(h);
+        return ret;
+    }
+    *out = h;
+    return ESP_OK;
 }
 
 esp_err_t csi_capture_start(csi_capture_handle_t h) {
@@ -264,10 +363,6 @@ void csi_capture_log_hw_state(csi_capture_handle_t h, const char *label) {
 esp_err_t csi_capture_close(csi_capture_handle_t h) {
     ESP_RETURN_ON_FALSE(h, ESP_ERR_INVALID_ARG, TAG, "null handle");
     ESP_RETURN_ON_ERROR(csi_capture_stop(h), TAG, "stop failed");
-    if (h->enabled) {
-        esp_cam_ctlr_disable(h->ctlr);
-        h->enabled = false;
-    }
     free_handle(h);
     return ESP_OK;
 }

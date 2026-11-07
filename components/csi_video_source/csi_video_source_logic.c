@@ -230,3 +230,160 @@ void csi_video_pub_stats_on_error(csi_video_pub_stats_t *st)
     }
     st->encode_errors++;
 }
+
+static const uint32_t k_hpd_nudge_delays_ms[CSI_HPD_NUDGE_STEPS] = {
+    CSI_HPD_NUDGE_DELAY_0_MS,
+    CSI_HPD_NUDGE_DELAY_1_MS,
+    CSI_HPD_NUDGE_DELAY_2_MS,
+};
+
+void csi_mode_tracker_init(csi_mode_tracker_t *m)
+{
+    if (!m) {
+        return;
+    }
+    memset(m, 0, sizeof(*m));
+}
+
+csi_mode_action_t csi_mode_tracker_step(csi_mode_tracker_t *m, const csi_mode_sample_t *s)
+{
+    if (!m || !s) {
+        return CSI_MODE_ACT_WAIT;
+    }
+
+    if (!s->sync_locked) {
+        m->cand_w = 0u;
+        m->cand_h = 0u;
+        m->cand_hits = 0u;
+
+        if (m->streaming) {
+            m->streaming = false;
+            m->active_w = 0u;
+            m->active_h = 0u;
+            m->nudge_stage = 0u;
+            if (s->ddc5v) {
+                m->nudge_timer_active = true;
+                m->nudge_since_ms = s->now_ms;
+            } else {
+                m->nudge_timer_active = false;
+                m->nudge_since_ms = 0u;
+            }
+            return CSI_MODE_ACT_STOP_NO_SIGNAL;
+        }
+
+        if (!s->ddc5v) {
+            m->nudge_timer_active = false;
+            m->nudge_since_ms = 0u;
+            m->nudge_stage = 0u;
+            return CSI_MODE_ACT_WAIT;
+        }
+
+        if (!m->nudge_timer_active) {
+            m->nudge_timer_active = true;
+            m->nudge_since_ms = s->now_ms;
+            return CSI_MODE_ACT_WAIT;
+        }
+
+        if (m->nudge_stage < CSI_HPD_NUDGE_STEPS &&
+            s->now_ms >= m->nudge_since_ms &&
+            (s->now_ms - m->nudge_since_ms) >= k_hpd_nudge_delays_ms[m->nudge_stage]) {
+            m->nudge_stage++;
+            m->nudge_since_ms = s->now_ms;
+            m->hpd_nudges++;
+            return CSI_MODE_ACT_NUDGE_HPD;
+        }
+        return CSI_MODE_ACT_WAIT;
+    }
+
+    // HDMI TMDS + SYNC are locked: clear no-signal HPD nudge state.
+    m->nudge_timer_active = false;
+    m->nudge_since_ms = 0u;
+    m->nudge_stage = 0u;
+
+    if (!s->geom_ok || s->width == 0u || s->height == 0u) {
+        m->cand_w = 0u;
+        m->cand_h = 0u;
+        m->cand_hits = 0u;
+        m->streaming = false;
+        m->active_w = 0u;
+        m->active_h = 0u;
+        return CSI_MODE_ACT_REJECT_OUT_OF_RANGE;
+    }
+
+    if (m->streaming) {
+        if (s->width == m->active_w && s->height == m->active_h) {
+            return CSI_MODE_ACT_KEEP_STREAMING;
+        }
+        m->streaming = false;
+        m->active_w = 0u;
+        m->active_h = 0u;
+        m->cand_w = s->width;
+        m->cand_h = s->height;
+        m->cand_hits = 1u;
+        return CSI_MODE_ACT_STOP_MODE_CHANGED;
+    }
+
+    if (m->cand_hits > 0u && m->cand_w == s->width && m->cand_h == s->height) {
+        m->cand_hits++;
+    } else {
+        m->cand_w = s->width;
+        m->cand_h = s->height;
+        m->cand_hits = 1u;
+    }
+
+    if (m->cand_hits >= CSI_MODE_STABLE_COUNT) {
+        m->streaming = true;
+        m->active_w = s->width;
+        m->active_h = s->height;
+        m->last_frame_ms = s->now_ms;
+        m->mode_switches++;
+        return CSI_MODE_ACT_START_MODE;
+    }
+    return CSI_MODE_ACT_WAIT;
+}
+
+void csi_mode_tracker_on_frame(csi_mode_tracker_t *m, uint64_t now_ms)
+{
+    if (!m || !m->streaming) {
+        return;
+    }
+    m->last_frame_ms = now_ms;
+}
+
+csi_mode_action_t csi_mode_tracker_check_stall(csi_mode_tracker_t *m, uint64_t now_ms)
+{
+    if (!m || !m->streaming) {
+        return CSI_MODE_ACT_WAIT;
+    }
+    if (now_ms >= m->last_frame_ms &&
+        (now_ms - m->last_frame_ms) >= CSI_MODE_STALL_TIMEOUT_MS) {
+        if (!m->has_recovered ||
+            (now_ms >= m->last_recovery_ms &&
+             (now_ms - m->last_recovery_ms) >= CSI_MODE_RECOVERY_COOLDOWN_MS)) {
+            m->streaming = false;
+            m->active_w = 0u;
+            m->active_h = 0u;
+            m->cand_w = 0u;
+            m->cand_h = 0u;
+            m->cand_hits = 0u;
+            m->has_recovered = true;
+            m->last_recovery_ms = now_ms;
+            m->stall_recoveries++;
+            return CSI_MODE_ACT_RECOVER_STALL;
+        }
+    }
+    return CSI_MODE_ACT_KEEP_STREAMING;
+}
+
+void csi_mode_tracker_abort_start(csi_mode_tracker_t *m)
+{
+    if (!m) {
+        return;
+    }
+    m->streaming = false;
+    m->active_w = 0u;
+    m->active_h = 0u;
+    m->cand_w = 0u;
+    m->cand_h = 0u;
+    m->cand_hits = 0u;
+}

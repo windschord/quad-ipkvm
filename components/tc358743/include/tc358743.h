@@ -46,11 +46,33 @@ tc358743_handle_t tc358743_init(const tc358743_config_t* config);
 // Full start-up sequence (hardware reset, HDMI RX PHY, DDC/EDID, PLL, CSI, RGB888 output, HPD, lock wait).
 // Returns ESP_OK when the sequence ran to the end; *out_locked tells whether TMDS and SYNC were detected.
 esp_err_t tc358743_start_csi(tc358743_handle_t dev, const tc358743_mode_t* mode, bool* out_locked);
+esp_err_t tc358743_start_csi_with_edid(tc358743_handle_t dev, const tc358743_mode_t* mode,
+                                       tc358743_edid_profile_t edid_profile, bool* out_locked);
 void tc358743_deinit(tc358743_handle_t dev);
 
 // Diagnostic logging
 void tc358743_dump_diagnostics(tc358743_handle_t dev);
 uint16_t tc358743_poll_interrupts(tc358743_handle_t dev);
+
+// Point-in-time HDMI receiver status and active resolution.
+typedef struct {
+    uint8_t sys_status;
+    bool ddc5v;         // SYS_STATUS bit 0 (MASK_S_DDC5V = 0x01)
+    bool tmds;          // SYS_STATUS bit 1 (MASK_S_TMDS  = 0x02)
+    bool sync;          // SYS_STATUS bit 7 (MASK_S_SYNC  = 0x80)
+    uint32_t width;     // DE_WIDTH_H when tmds && sync, else 0
+    uint32_t height;    // DE_WIDTH_V when tmds && sync, else 0
+} tc358743_signal_t;
+
+// Reads SYS_STATUS and, when both TMDS and SYNC are asserted, reads DE_WIDTH_H / DE_WIDTH_V.
+esp_err_t tc358743_get_signal(tc358743_handle_t dev, tc358743_signal_t* out);
+
+// Re-arms the TC358743 CSI-2 TX block for a newly locked active horizontal width using the mode
+// previously passed to tc358743_start_csi().
+esp_err_t tc358743_rearm_csi(tc358743_handle_t dev, uint32_t active_width);
+
+// Pulses HPD Low (150 ms) -> High to nudge a connected HDMI source into re-reading EDID.
+esp_err_t tc358743_nudge_hpd(tc358743_handle_t dev);
 
 // Reads the active video size measured by the HDMI receiver (DE_WIDTH_H / DE_WIDTH_V).
 // Returns ESP_ERR_INVALID_STATE when SYS_STATUS reports no SYNC (size is undefined then).

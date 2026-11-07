@@ -22,6 +22,7 @@ typedef struct {
     bool create_isp_bypass;       // create ISP bypass processor (reference configuration)
     uint8_t jpeg_quality;         // HW JPEG quality 1..100 (default 70)
     size_t hub_max_frame_bytes;   // Frame Hub max_frame_size for §1.2(b) oversize accounting
+    tc358743_format_t pixel_format; // TC358743_FORMAT_RGB888 (0, default) or TC358743_FORMAT_UYVY
 } csi_video_source_cfg_t;
 
 // Binds the initialized TC358743 handle and capture/encode parameters before start() is called.

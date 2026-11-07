@@ -14,6 +14,12 @@
 #ifndef CONFIG_TC358743_CSI_CONTINUOUS_CLOCK
 #define CONFIG_TC358743_CSI_CONTINUOUS_CLOCK 0
 #endif
+#ifndef CONFIG_TC358743_CSI_FORMAT_UYVY
+#define CONFIG_TC358743_CSI_FORMAT_UYVY 0
+#endif
+#ifndef CONFIG_TC358743_CSI_LANE_RATE_MBPS
+#define CONFIG_TC358743_CSI_LANE_RATE_MBPS 972
+#endif
 #ifndef CONFIG_TC358743_INIT
 #define CONFIG_TC358743_INIT 0
 #endif
@@ -130,10 +136,11 @@ static void run_csi_capture_test(tc358743_handle_t tc_dev) {
         .height = h,
         .max_width = CONFIG_CSI_CAPTURE_MAX_WIDTH,
         .max_height = CONFIG_CSI_CAPTURE_MAX_HEIGHT,
-        .lane_bit_rate_mbps = 972,  // must match tc358743_mode_t.lane_rate_mbps
+        .lane_bit_rate_mbps = CONFIG_TC358743_CSI_LANE_RATE_MBPS,
         .data_lanes = 2,
         .skip_frames = 1,           // the first completion may start mid-frame
         .create_isp_bypass = CONFIG_CSI_CAPTURE_ISP_BYPASS,
+        .pixel_format = CONFIG_TC358743_CSI_FORMAT_UYVY ? CSI_PIXEL_FORMAT_UYVY : CSI_PIXEL_FORMAT_RGB888,
     };
     csi_capture_handle_t cap = NULL;
     err = csi_capture_open(&cfg, &cap);
@@ -329,9 +336,9 @@ void app_main(void)
         if (tc_dev) {
             if (CONFIG_TC358743_START_CSI) {
                 tc358743_mode_t mode = {
-                    .lane_rate_mbps = 972,
+                    .lane_rate_mbps = CONFIG_TC358743_CSI_LANE_RATE_MBPS,
                     .lanes = 2,
-                    .format = TC358743_FORMAT_RGB888,
+                    .format = CONFIG_TC358743_CSI_FORMAT_UYVY ? TC358743_FORMAT_UYVY : TC358743_FORMAT_RGB888,
                     .continuous_clock = CONFIG_TC358743_CSI_CONTINUOUS_CLOCK
                 };
                 bool locked = false;
@@ -355,11 +362,12 @@ void app_main(void)
                 csi_video_source_cfg_t vs_cfg = {
                     .max_width = CONFIG_CSI_CAPTURE_MAX_WIDTH,
                     .max_height = CONFIG_CSI_CAPTURE_MAX_HEIGHT,
-                    .lane_bit_rate_mbps = 972,
+                    .lane_bit_rate_mbps = CONFIG_TC358743_CSI_LANE_RATE_MBPS,
                     .data_lanes = 2,
                     .create_isp_bypass = CONFIG_CSI_CAPTURE_ISP_BYPASS,
                     .jpeg_quality = CONFIG_JPEG_ENCODE_QUALITY,
                     .hub_max_frame_bytes = (size_t)CONFIG_FRAME_HUB_MAX_FRAME_KB * 1024u,
+                    .pixel_format = CONFIG_TC358743_CSI_FORMAT_UYVY ? TC358743_FORMAT_UYVY : TC358743_FORMAT_RGB888,
                 };
                 csi_video_source_configure(tc_dev, &vs_cfg);
                 const video_source_t *vs = csi_video_source_get();

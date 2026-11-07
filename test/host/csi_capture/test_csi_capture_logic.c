@@ -183,6 +183,36 @@ void test_pp_stop_keeps_latest_and_restart_does_not_count(void) {
     TEST_ASSERT_EQUAL_INT(0, csi_pp_acquire(&pp));
 }
 
+void test_format_geometry_rgb888_and_uyvy(void) {
+    TEST_ASSERT_EQUAL_UINT32(24u, csi_pixel_format_bpp(CSI_PIXEL_FORMAT_RGB888));
+    TEST_ASSERT_EQUAL_UINT32(16u, csi_pixel_format_bpp(CSI_PIXEL_FORMAT_UYVY));
+    TEST_ASSERT_EQUAL_UINT32(0u, csi_pixel_format_bpp((csi_pixel_format_t)99));
+
+    size_t out = 0;
+    TEST_ASSERT_EQUAL_INT(CSI_GEOM_ERR_ARG,
+                          csi_capture_check_format_geometry(1280, 720, CSI_PIXEL_FORMAT_UYVY, 1920, 1080, SIZE_MAX, NULL));
+    TEST_ASSERT_EQUAL_INT(CSI_GEOM_ERR_BPP,
+                          csi_capture_check_format_geometry(1280, 720, (csi_pixel_format_t)99, 1920, 1080, SIZE_MAX, &out));
+    TEST_ASSERT_EQUAL_INT(CSI_GEOM_ERR_ZERO,
+                          csi_capture_check_format_geometry(0, 720, CSI_PIXEL_FORMAT_UYVY, 1920, 1080, SIZE_MAX, &out));
+    // Odd width (641x480 * 16 = 4,922,880 bits IS divisible by 64, so plain check_geometry would pass,
+    // whereas UYVY 4:2:2 / PPA ARGB8888 requires even horizontal width!)
+    TEST_ASSERT_EQUAL_INT(CSI_GEOM_ERR_ALIGN,
+                          csi_capture_check_format_geometry(641, 480, CSI_PIXEL_FORMAT_UYVY, 1920, 1080, SIZE_MAX, &out));
+
+    TEST_ASSERT_EQUAL_INT(CSI_GEOM_OK,
+                          csi_capture_check_format_geometry(1280, 720, CSI_PIXEL_FORMAT_UYVY, 1920, 1080, 4147200u, &out));
+    TEST_ASSERT_EQUAL_UINT32(1843200u, (uint32_t)out);
+
+    TEST_ASSERT_EQUAL_INT(CSI_GEOM_OK,
+                          csi_capture_check_format_geometry(1920, 1080, CSI_PIXEL_FORMAT_UYVY, 1920, 1080, 4147200u, &out));
+    TEST_ASSERT_EQUAL_UINT32(4147200u, (uint32_t)out);
+
+    TEST_ASSERT_EQUAL_INT(CSI_GEOM_OK,
+                          csi_capture_check_format_geometry(1920, 1080, CSI_PIXEL_FORMAT_RGB888, 1920, 1080, 6220800u, &out));
+    TEST_ASSERT_EQUAL_UINT32(6220800u, (uint32_t)out);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_geometry_720p_rgb888_ok);
@@ -201,5 +231,6 @@ int main(void) {
     RUN_TEST(test_pp_skip_initial_frames);
     RUN_TEST(test_pp_release_rejects_wrong_index);
     RUN_TEST(test_pp_stop_keeps_latest_and_restart_does_not_count);
+    RUN_TEST(test_format_geometry_rgb888_and_uyvy);
     return UNITY_END();
 }
