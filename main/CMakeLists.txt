@@ -1,1 +1,1 @@
-idf_component_register(SRCS "main.c" INCLUDE_DIRS "." REQUIRES tc358743 mipi_phy_power csi_capture esp_driver_i2c esp_timer net_eth frame_hub test_pattern_source web_server web_cert nvs_flash esp_netif esp_event)
+idf_component_register(SRCS "main.c" INCLUDE_DIRS "." REQUIRES tc358743 mipi_phy_power csi_capture csi_video_source esp_driver_i2c esp_timer net_eth frame_hub test_pattern_source web_server web_cert nvs_flash esp_netif esp_event)

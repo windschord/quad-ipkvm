@@ -50,6 +50,9 @@ target_link_libraries(tc358743_start PRIVATE tc358743_edid tc358743_pll_calc)
 add_library(csi_capture_logic STATIC ${CMAKE_SOURCE_DIR}/../../components/csi_capture/csi_capture_logic.c)
 target_include_directories(csi_capture_logic PUBLIC ${CMAKE_SOURCE_DIR}/../../components/csi_capture/include)
 
+# Pure-C part of csi_video_source (JPEG validation, output sizing, seqlock status, publish stats)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/csi_video_source ${CMAKE_BINARY_DIR}/csi_video_source)
+
 # Discover tests automatically
 file(GLOB_RECURSE TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*/test_*.c" "${CMAKE_CURRENT_SOURCE_DIR}/test_*.c")
 list(FILTER TEST_SOURCES EXCLUDE REGEX ".*build/.*")
@@ -93,6 +96,10 @@ foreach(test_source ${TEST_SOURCES})
 
     if (test_source MATCHES "/csi_capture/")
         target_link_libraries(${test_name} PRIVATE csi_capture_logic)
+    endif()
+
+    if (test_source MATCHES "/csi_video_source/")
+        target_link_libraries(${test_name} PRIVATE csi_video_source_logic)
     endif()
 
 

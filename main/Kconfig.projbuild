@@ -52,7 +52,7 @@ menu "Quad IP-KVM Configuration"
         int "CSI capture buffer max width (pixels)"
         default 1920
         range 64 1920
-        depends on CSI_CAPTURE_TEST
+        depends on CSI_CAPTURE_TEST || VIDEO_SOURCE_CSI
         help
             Two RGB888 buffers of MAX_WIDTH x MAX_HEIGHT x 3 bytes are allocated once in PSRAM.
             Frames larger than this are rejected before the DMA is configured.
@@ -61,15 +61,41 @@ menu "Quad IP-KVM Configuration"
         int "CSI capture buffer max height (lines)"
         default 1080
         range 64 1080
-        depends on CSI_CAPTURE_TEST
+        depends on CSI_CAPTURE_TEST || VIDEO_SOURCE_CSI
 
     config CSI_CAPTURE_ISP_BYPASS
         bool "Create an ISP processor with bypass_isp (reference configuration)"
         default y
-        depends on CSI_CAPTURE_TEST
+        depends on CSI_CAPTURE_TEST || VIDEO_SOURCE_CSI
         help
             p4kvm / ESP-KVM create a bypassed ISP processor next to the CSI controller
-            (docs/P2B_TC358743_REFERENCE.md 4-1). Whether it is required is unverified.
+            (docs/P2B_TC358743_REFERENCE.md 4-1). Verified working on rev v1.3 (docs/HW_VERIFY.md E14).
+
+    choice VIDEO_SOURCE_SELECT
+        prompt "Video source for Frame Hub"
+        default VIDEO_SOURCE_TEST_PATTERN
+        help
+            Select which video_source_t implementation publishes JPEG frames to Frame Hub.
+
+        config VIDEO_SOURCE_TEST_PATTERN
+            bool "Test pattern source (synthetic MJPEG)"
+
+        config VIDEO_SOURCE_CSI
+            bool "MIPI CSI HDMI capture + HW JPEG encoder (TC358743)"
+            depends on TC358743_START_CSI && MIPI_PHY_POWER_ENABLE && !CSI_CAPTURE_TEST
+            help
+                Publishes live HDMI frames captured from TC358743 over MIPI CSI-2 and
+                compressed by the ESP32-P4 hardware JPEG encoder (YUV420) to Frame Hub.
+    endchoice
+
+    config JPEG_ENCODE_QUALITY
+        int "Hardware JPEG encoder quality (1-100)"
+        default 70
+        range 1 100
+        depends on VIDEO_SOURCE_CSI
+        help
+            JPEG compression quality passed to esp_driver_jpeg (YUV420 subsampling).
+            Reference default on ESP32-P4 rev v1.3 is 70 (docs/P2B_PLAN.md P2b-5).
 
     config MIPI_PHY_POWER_ENABLE
         bool "Enable MIPI PHY power"
