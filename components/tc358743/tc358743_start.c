@@ -265,3 +265,104 @@ bool tc358743_start_sequence(const tc358743_io_ops_t* ops, const tc358743_mode_t
 
     return true;
 }
+
+uint16_t tc358743_calc_fifoctl(uint32_t active_width, uint32_t bits_per_pixel) {
+    if (active_width == 0u || bits_per_pixel == 0u || active_width > 16384u || bits_per_pixel > 64u) {
+        return 374u;
+    }
+    uint32_t line_words = (active_width * bits_per_pixel) / 32u;
+    if (line_words > 374u) {
+        return 374u;
+    }
+    uint32_t adj = (line_words * 7u) / 8u;
+    if (adj < 16u) {
+        adj = 16u;
+    }
+    return (uint16_t)adj;
+}
+
+bool tc358743_rearm_csi_sequence(const tc358743_io_ops_t* ops, const tc358743_mode_t* mode, uint32_t active_width) {
+    if (!ops || !mode || active_width == 0u) return false;
+    if (mode->lanes != 2u) return false;
+    if (mode->format != TC358743_FORMAT_RGB888) return false;
+    if (mode->lane_rate_mbps != 972u && mode->lane_rate_mbps != 594u) return false;
+
+    // 1. Mute video/audio stream before resetting CSI TX context.
+    if (!ops->write8(ops->ctx, VI_MUTE, 0xD0)) return false;
+    if (!update16(ops, CONFCTL, 0x0003, 0x0000)) return false;
+
+    // 2. Adjust FIFO threshold for the newly locked horizontal width (24 bpp for RGB888).
+    uint16_t fifoctl = tc358743_calc_fifoctl(active_width, 24u);
+    if (!ops->write16(ops->ctx, FIFOCTL, fifoctl)) return false;
+
+    // 3. Pulse CTXRST only (leave HDMIRST and HPD untouched so HDMI lock stays intact).
+    if (!update16(ops, SYSCTL, 0x0200, 0x0200)) return false;
+    if (!update16(ops, SYSCTL, 0x0200, 0x0000)) return false;
+
+    if (!ops->write32(ops->ctx, D2W_CNTRL, 0x01)) return false;
+    if (!ops->write32(ops->ctx, D3W_CNTRL, 0x01)) return false;
+
+    if (mode->lane_rate_mbps == 972u) {
+        if (!ops->write32(ops->ctx, LINEINITCNT, 0x1B58)) return false;
+        if (!ops->write32(ops->ctx, LPTXTIMECNT, 0x0007)) return false;
+        if (!ops->write32(ops->ctx, TCLK_HEADERCNT, 0x2806)) return false;
+        if (!ops->write32(ops->ctx, TCLK_TRAILCNT, 0x00)) return false;
+        if (!ops->write32(ops->ctx, THS_HEADERCNT, 0x0806)) return false;
+        if (!ops->write32(ops->ctx, TWAKEUP, 0x4268)) return false;
+        if (!ops->write32(ops->ctx, TCLK_POSTCNT, 0x0008)) return false;
+        if (!ops->write32(ops->ctx, THS_TRAILCNT, 0x0005)) return false;
+        if (!ops->write32(ops->ctx, HSTXVREGCNT, 0)) return false;
+    } else {
+        if (!ops->write32(ops->ctx, LINEINITCNT, 0x0E80)) return false;
+        if (!ops->write32(ops->ctx, LPTXTIMECNT, 0x0003)) return false;
+        if (!ops->write32(ops->ctx, TCLK_HEADERCNT, 0x1403)) return false;
+        if (!ops->write32(ops->ctx, TCLK_TRAILCNT, 0x00)) return false;
+        if (!ops->write32(ops->ctx, THS_HEADERCNT, 0x0103)) return false;
+        if (!ops->write32(ops->ctx, TWAKEUP, 0x4882)) return false;
+        if (!ops->write32(ops->ctx, TCLK_POSTCNT, 0x0008)) return false;
+        if (!ops->write32(ops->ctx, THS_TRAILCNT, 0x0002)) return false;
+        if (!ops->write32(ops->ctx, HSTXVREGCNT, 0)) return false;
+    }
+
+    if (!ops->write32(ops->ctx, HSTXVREGEN, 0x07)) return false;
+    if (!ops->write32(ops->ctx, TXOPTIONCNTRL, mode->continuous_clock ? 1u : 0u)) return false;
+    if (!ops->write32(ops->ctx, STARTCNTRL, 1)) return false;
+    if (!ops->write32(ops->ctx, CSI_START, 1)) return false;
+
+    if (!ops->write32(ops->ctx, CSI_CONFW, 0xA3008082)) return false;
+    if (!ops->write32(ops->ctx, CSI_CONFW, 0xB4000312)) return false;
+    if (!ops->write32(ops->ctx, CSI_CONFW, 0xD5000012)) return false;
+    if (!ops->write32(ops->ctx, CSI_CONFW, 0xA6000004)) return false;
+
+    // 4. Re-apply RGB888 output colour space, re-enable stream, and re-kick CSI_START.
+    if (!update8(ops, VOUT_SET2, 0xC0, 0x00)) return false;
+    if (!update8(ops, VI_REP, 0xE0, 0x00)) return false;
+    if (!update16(ops, CONFCTL, 0x00C0, 0x0000)) return false;
+
+    if (!ops->write8(ops->ctx, VI_MUTE, 0xC0)) return false;
+    if (!update16(ops, CONFCTL, 0x0003, 0x0003)) return false;
+    if (!ops->write32(ops->ctx, CSI_START, 1)) return false;
+
+    return true;
+}
+
+bool tc358743_hpd_nudge_sequence(const tc358743_io_ops_t* ops) {
+    if (!ops) return false;
+
+    if (!ops->write8(ops->ctx, VI_MUTE, 0xD0)) return false;
+    if (!update16(ops, CONFCTL, 0x0003, 0x0000)) return false;
+
+    // Lower HPD_OUT0 (bit 0), preserving HPD_CTL0 (bit 4).
+    if (!update8(ops, HPD_CTL, 0x01, 0x00)) return false;
+    ops->delay_ms(ops->ctx, 150);
+
+    if (!ops->write8(ops->ctx, VI_MUTE, 0xC0)) return false;
+    if (!update16(ops, CONFCTL, 0x0003, 0x0003)) return false;
+    ops->delay_ms(ops->ctx, 150);
+
+    if (!update8(ops, HPD_CTL, 0x01, 0x01)) return false;
+    ops->delay_ms(ops->ctx, 50);
+
+    if (!ops->write32(ops->ctx, CSI_START, 1)) return false;
+    return true;
+}

@@ -25,6 +25,22 @@ menu "Quad IP-KVM Configuration"
         help
             If true, sets TXOPTIONCNTRL to continuous clock mode instead of non-continuous.
             TODO(hw-verify): Effect on ESP32-P4 CSI host is unknown.
+
+    choice TC358743_EDID_PROFILE
+        prompt "TC358743 advertised EDID profile"
+        default TC358743_EDID_720P60
+        depends on TC358743_START_CSI
+        help
+            Select the maximum video mode advertised in TC358743 EDID RAM.
+            720p60 is the conservative baseline; 1080p30 adds 1920x1080@30Hz (74.25 MHz,
+            within 2-lane 972 Mbps RGB888 bandwidth).
+
+        config TC358743_EDID_720P60
+            bool "720p60 max (1280x720@60, 640x480@60)"
+
+        config TC358743_EDID_1080P30
+            bool "1080p30 max (1920x1080@30, 1280x720@60, 640x480@60)"
+    endchoice
     config TC358743_INIT
         bool "Initialize TC358743 on startup"
         default n

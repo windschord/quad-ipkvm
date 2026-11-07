@@ -18,7 +18,6 @@ static const char *TAG = "csi_video_src";
 #define CSI_VIDEO_TASK_PRIO        5
 #define CSI_VIDEO_ACQUIRE_WAIT_MS  200u
 #define CSI_VIDEO_POLL_SLICE_MS    50u
-#define CSI_VIDEO_POLL_SLICES      5u   // 250 ms between I2C active-size polls when unlocked
 #define CSI_VIDEO_STATS_PERIOD_US  (5 * 1000 * 1000)
 #define CSI_VIDEO_STOP_WAIT_MS     2500u
 
@@ -48,6 +47,12 @@ static void csi_video_shutdown_handler(void)
     }
 }
 
+static uint64_t now_monotonic_ms(void)
+{
+    int64_t us = esp_timer_get_time();
+    return (us > 0) ? (uint64_t)(us / 1000) : 0u;
+}
+
 static bool stop_requested(void)
 {
     return __atomic_load_n(&s_stop_requested, __ATOMIC_SEQ_CST) != 0;
@@ -70,7 +75,48 @@ static bool sleep_interruptible_ms(uint32_t total_ms)
     return !stop_requested();
 }
 
+static void ensure_no_signal_status(void)
+{
+    csi_video_status_t cur;
+    csi_video_seq_read(&s_seq_status, CSI_VIDEO_SEQ_DEFAULT_RETRIES, &cur);
+    if (cur.state != KVM_VIDEO_SYNC_NO_SIGNAL) {
+        csi_video_seq_write(&s_seq_status, KVM_VIDEO_SYNC_NO_SIGNAL, 0u, 0u);
+    }
+}
+
+static void sample_hdmi_mode(uint64_t now_ms, size_t max_buf_cap,
+                             csi_mode_sample_t *out, csi_geom_result_t *out_geom_err)
+{
+    memset(out, 0, sizeof(*out));
+    out->now_ms = now_ms;
+    if (out_geom_err) {
+        *out_geom_err = CSI_GEOM_OK;
+    }
+
+    tc358743_signal_t sig;
+    if (tc358743_get_signal(s_tc_dev, &sig) != ESP_OK) {
+        return;
+    }
+
+    out->ddc5v = sig.ddc5v;
+    out->sync_locked = (sig.tmds && sig.sync);
+    out->width = sig.width;
+    out->height = sig.height;
+
+    if (out->sync_locked) {
+        size_t raw_bytes = 0u;
+        csi_geom_result_t g = csi_capture_check_geometry(
+            sig.width, sig.height, 24u,
+            s_cfg.max_width, s_cfg.max_height, max_buf_cap, &raw_bytes);
+        out->geom_ok = (g == CSI_GEOM_OK);
+        if (out_geom_err) {
+            *out_geom_err = g;
+        }
+    }
+}
+
 static void log_periodic_stats(const csi_video_pub_stats_t *pub,
+                               const csi_mode_tracker_t *tracker,
                                csi_capture_handle_t cap,
                                uint32_t width, uint32_t height,
                                int64_t elapsed_us)
@@ -97,13 +143,15 @@ static void log_periodic_stats(const csi_video_pub_stats_t *pub,
              "%" PRIu32 "x%" PRIu32 " @ %.2f fps | enc avg=%.2f ms max=%.2f ms | "
              "jpeg min=%u avg=%u max=%u (peak=%u) B | "
              "pub=%" PRIu64 " busy_drop=%" PRIu64 " oversize_drop=%" PRIu64 " enc_err=%" PRIu64 " | "
-             "hub clients=%d dropped=%" PRIu64 " | csi done=%" PRIu32 " ovw=%" PRIu32 " | stack_free=%u B",
+             "hub clients=%d dropped=%" PRIu64 " | csi done=%" PRIu32 " ovw=%" PRIu32 " | "
+             "modes=%" PRIu32 " nudges=%" PRIu32 " stalls=%" PRIu32 " | stack_free=%u B",
              width, height, enc_fps, avg_enc_ms, max_enc_ms,
              (unsigned)pub->win_min_jpeg_bytes, (unsigned)avg_bytes,
              (unsigned)pub->win_max_jpeg_bytes, (unsigned)pub->peak_jpeg_bytes,
              pub->published, pub->pool_busy_drops, pub->oversize_drops, pub->encode_errors,
-             hub_st.active_clients, hub_st.published_frames ? hub_st.dropped_frames : hub_st.dropped_frames,
+             hub_st.active_clients, hub_st.dropped_frames,
              cap_st.completed, cap_st.overwritten,
+             tracker->mode_switches, tracker->hpd_nudges, tracker->stall_recoveries,
              (unsigned)uxTaskGetStackHighWaterMark(NULL));
 }
 
@@ -112,48 +160,9 @@ static void csi_video_task(void *arg)
     (void)arg;
     csi_capture_handle_t cap = NULL;
     csi_jpeg_handle_t jpeg = NULL;
-    uint32_t active_w = 0u, active_h = 0u;
 
-    // 1. Poll TC358743 until HDMI SYNC is locked and geometry fits max buffer bounds.
-    uint32_t wait_logs = 0u;
-    while (!stop_requested()) {
-        uint32_t w = 0u, h = 0u;
-        esp_err_t err = tc358743_get_active_size(s_tc_dev, &w, &h);
-        if (err == ESP_OK) {
-            size_t max_cap = 0u;
-            size_t raw_bytes = 0u;
-            csi_geom_result_t cap_ok = csi_capture_check_geometry(
-                s_cfg.max_width, s_cfg.max_height, 24u,
-                s_cfg.max_width, s_cfg.max_height, SIZE_MAX, &max_cap);
-            csi_geom_result_t gerr = (cap_ok == CSI_GEOM_OK)
-                ? csi_capture_check_geometry(w, h, 24u, s_cfg.max_width, s_cfg.max_height, max_cap, &raw_bytes)
-                : cap_ok;
-            if (gerr == CSI_GEOM_OK) {
-                active_w = w;
-                active_h = h;
-                break;
-            }
-            if ((wait_logs++ % 20u) == 0u) {
-                ESP_LOGW(TAG, "Rejected out-of-range HDMI mode %" PRIu32 "x%" PRIu32
-                              " (max %" PRIu32 "x%" PRIu32 ", geom_err=%d)",
-                         w, h, s_cfg.max_width, s_cfg.max_height, (int)gerr);
-            }
-        }
-        csi_video_status_t cur;
-        csi_video_seq_read(&s_seq_status, CSI_VIDEO_SEQ_DEFAULT_RETRIES, &cur);
-        if (cur.state != KVM_VIDEO_SYNC_NO_SIGNAL) {
-            csi_video_seq_write(&s_seq_status, KVM_VIDEO_SYNC_NO_SIGNAL, 0u, 0u);
-            ESP_LOGI(TAG, "Waiting for HDMI signal lock...");
-        }
-        if (!sleep_interruptible_ms(CSI_VIDEO_POLL_SLICE_MS * CSI_VIDEO_POLL_SLICES)) {
-            goto cleanup;
-        }
-    }
-    if (stop_requested()) {
-        goto cleanup;
-    }
-
-    // 2. Open HW JPEG encoder and MIPI CSI capture once.
+    // 1. Pre-allocate HW JPEG output buffer and 2x max-mode CSI PSRAM buffers ONCE at startup
+    //    so resolution switches never fragment PSRAM (docs/P2B_PLAN.md P2b-7).
     size_t jpeg_out_cap = csi_jpeg_calc_output_buf_size(s_cfg.hub_max_frame_bytes);
     if (jpeg_out_cap == 0u) {
         ESP_LOGE(TAG, "Invalid hub_max_frame_bytes=%u", (unsigned)s_cfg.hub_max_frame_bytes);
@@ -171,8 +180,8 @@ static void csi_video_task(void *arg)
     }
 
     csi_capture_config_t cap_cfg = {
-        .width = active_w,
-        .height = active_h,
+        .width = 0u,
+        .height = 0u,
         .max_width = s_cfg.max_width,
         .max_height = s_cfg.max_height,
         .lane_bit_rate_mbps = s_cfg.lane_bit_rate_mbps,
@@ -180,59 +189,178 @@ static void csi_video_task(void *arg)
         .skip_frames = 1u,
         .create_isp_bypass = s_cfg.create_isp_bypass,
     };
-    err = csi_capture_open(&cap_cfg, &cap);
+    err = csi_capture_open_pool(&cap_cfg, &cap);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "csi_capture_open failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "csi_capture_open_pool failed: %s", esp_err_to_name(err));
         goto cleanup;
     }
-
     __atomic_store_n(&s_active_cap, cap, __ATOMIC_SEQ_CST);
-    err = csi_capture_start(cap);
-    if (err != ESP_OK) {
-        __atomic_store_n(&s_active_cap, NULL, __ATOMIC_SEQ_CST);
-        ESP_LOGE(TAG, "csi_capture_start failed: %s", esp_err_to_name(err));
-        goto cleanup;
-    }
 
-    csi_video_seq_write(&s_seq_status, KVM_VIDEO_SYNC_LOCKED, active_w, active_h);
-    ESP_LOGI(TAG, "Pipeline running: %" PRIu32 "x%" PRIu32 " RGB888 -> HW JPEG (q=%u, YUV420) -> Frame Hub "
-                  "(hub_max=%u B, enc_buf=%u B, free_spiram=%u B, free_internal=%u B)",
-             active_w, active_h, (unsigned)s_cfg.jpeg_quality,
-             (unsigned)s_cfg.hub_max_frame_bytes, (unsigned)csi_jpeg_output_capacity(jpeg),
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    csi_capture_stats_t pool_st;
+    csi_capture_get_stats(cap, &pool_st);
+    size_t max_buf_cap = pool_st.buffer_bytes;
 
-    // 3. Acquire -> HW JPEG encode -> release CSI buffer -> publish to Frame Hub.
+    csi_mode_tracker_t tracker;
+    csi_mode_tracker_init(&tracker);
     csi_video_pub_stats_t pub_stats;
     csi_video_pub_stats_init(&pub_stats);
-    int64_t win_start_us = esp_timer_get_time();
 
+    int64_t win_start_us = esp_timer_get_time();
+    uint64_t last_mode_poll_ms = 0u;
+    bool force_mode_poll = true;
+    uint32_t reject_logs = 0u;
+
+    ESP_LOGI(TAG, "CSI video source ready: max=%" PRIu32 "x%" PRIu32 " (2x%u B PSRAM), "
+                  "enc_buf=%u B, hub_max=%u B, free_spiram=%u B",
+             s_cfg.max_width, s_cfg.max_height, (unsigned)max_buf_cap,
+             (unsigned)csi_jpeg_output_capacity(jpeg), (unsigned)s_cfg.hub_max_frame_bytes,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+    // 2. Unified mode-tracking + capture/encode/publish loop (P2b-6 + P2b-7).
     while (!stop_requested()) {
+        uint64_t now_ms = now_monotonic_ms();
+
+        if (!tracker.streaming) {
+            csi_mode_sample_t sample;
+            csi_geom_result_t gerr = CSI_GEOM_OK;
+            sample_hdmi_mode(now_ms, max_buf_cap, &sample, &gerr);
+            csi_mode_action_t act = csi_mode_tracker_step(&tracker, &sample);
+
+            if (act == CSI_MODE_ACT_START_MODE) {
+                uint32_t w = tracker.active_w;
+                uint32_t h = tracker.active_h;
+                esp_err_t rearm_err = tc358743_rearm_csi(s_tc_dev, w);
+                if (rearm_err != ESP_OK) {
+                    ESP_LOGW(TAG, "tc358743_rearm_csi(%" PRIu32 ") failed: %s",
+                             w, esp_err_to_name(rearm_err));
+                }
+                err = csi_capture_reconfigure(cap, w, h);
+                if (err == ESP_OK) {
+                    err = csi_capture_start(cap);
+                }
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to start CSI for %" PRIu32 "x%" PRIu32 ": %s",
+                             w, h, esp_err_to_name(err));
+                    (void)csi_capture_stop(cap);
+                    csi_mode_tracker_abort_start(&tracker);
+                    ensure_no_signal_status();
+                    if (!sleep_interruptible_ms(CSI_MODE_POLL_INTERVAL_MS)) {
+                        break;
+                    }
+                    continue;
+                }
+
+                reject_logs = 0u;
+                last_mode_poll_ms = now_monotonic_ms();
+                force_mode_poll = false;
+                tracker.last_frame_ms = last_mode_poll_ms;
+                csi_video_pub_stats_reset_window(&pub_stats);
+                win_start_us = esp_timer_get_time();
+                csi_video_seq_write(&s_seq_status, KVM_VIDEO_SYNC_LOCKED, w, h);
+
+                ESP_LOGI(TAG, "Pipeline locked (#%" PRIu32 "): %" PRIu32 "x%" PRIu32
+                              " RGB888 -> HW JPEG (q=%u, YUV420) -> Frame Hub "
+                              "(free_spiram=%u B, free_internal=%u B)",
+                         tracker.mode_switches, w, h, (unsigned)s_cfg.jpeg_quality,
+                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+                continue;
+            }
+
+            ensure_no_signal_status();
+
+            if (act == CSI_MODE_ACT_NUDGE_HPD) {
+                ESP_LOGW(TAG, "DDC5V present without HDMI sync (nudge #%" PRIu32 "/%u); pulsing HPD...",
+                         tracker.hpd_nudges, (unsigned)CSI_HPD_NUDGE_STEPS);
+                esp_err_t nerr = tc358743_nudge_hpd(s_tc_dev);
+                if (nerr != ESP_OK) {
+                    ESP_LOGW(TAG, "tc358743_nudge_hpd failed: %s", esp_err_to_name(nerr));
+                }
+                continue;
+            }
+
+            if (act == CSI_MODE_ACT_REJECT_OUT_OF_RANGE) {
+                if ((reject_logs++ % 25u) == 0u) {
+                    ESP_LOGW(TAG, "Rejected out-of-range HDMI mode %" PRIu32 "x%" PRIu32
+                                  " (max %" PRIu32 "x%" PRIu32 ", geom_err=%d)",
+                             sample.width, sample.height,
+                             s_cfg.max_width, s_cfg.max_height, (int)gerr);
+                }
+            }
+
+            if (!sleep_interruptible_ms(CSI_MODE_POLL_INTERVAL_MS)) {
+                break;
+            }
+            continue;
+        }
+
+        // Streaming state: periodically verify HDMI sync & active resolution every 200 ms
+        // (or immediately after an acquire timeout) so mode changes tear down CSI cleanly.
+        if (force_mode_poll || (now_ms - last_mode_poll_ms) >= CSI_MODE_POLL_INTERVAL_MS) {
+            last_mode_poll_ms = now_ms;
+            force_mode_poll = false;
+
+            csi_mode_sample_t sample;
+            csi_geom_result_t gerr = CSI_GEOM_OK;
+            sample_hdmi_mode(now_ms, max_buf_cap, &sample, &gerr);
+            csi_mode_action_t act = csi_mode_tracker_step(&tracker, &sample);
+
+            if (act == CSI_MODE_ACT_STOP_NO_SIGNAL) {
+                (void)csi_capture_stop(cap);
+                ensure_no_signal_status();
+                ESP_LOGW(TAG, "HDMI sync lost (SYS_STATUS ddc5v=%d); CSI DMA stopped",
+                         (int)sample.ddc5v);
+                if (!sleep_interruptible_ms(CSI_MODE_POLL_INTERVAL_MS)) {
+                    break;
+                }
+                continue;
+            }
+            if (act == CSI_MODE_ACT_STOP_MODE_CHANGED) {
+                (void)csi_capture_stop(cap);
+                ensure_no_signal_status();
+                ESP_LOGI(TAG, "HDMI resolution change detected (-> candidate %" PRIu32 "x%" PRIu32
+                              ", sample 1/%u); CSI DMA stopped",
+                         sample.width, sample.height, (unsigned)CSI_MODE_STABLE_COUNT);
+                if (!sleep_interruptible_ms(CSI_MODE_POLL_INTERVAL_MS)) {
+                    break;
+                }
+                continue;
+            }
+            if (act == CSI_MODE_ACT_REJECT_OUT_OF_RANGE) {
+                (void)csi_capture_stop(cap);
+                ensure_no_signal_status();
+                ESP_LOGW(TAG, "HDMI switched to out-of-range mode %" PRIu32 "x%" PRIu32
+                              " (geom_err=%d); CSI DMA stopped",
+                         sample.width, sample.height, (int)gerr);
+                if (!sleep_interruptible_ms(CSI_MODE_POLL_INTERVAL_MS)) {
+                    break;
+                }
+                continue;
+            }
+
+            if (csi_mode_tracker_check_stall(&tracker, now_ms) == CSI_MODE_ACT_RECOVER_STALL) {
+                (void)csi_capture_stop(cap);
+                ensure_no_signal_status();
+                ESP_LOGW(TAG, "CSI frame stall (>= %u ms) while HDMI locked; pulsing HPD recovery (#%" PRIu32 ")...",
+                         (unsigned)CSI_MODE_STALL_TIMEOUT_MS, tracker.stall_recoveries);
+                (void)tc358743_nudge_hpd(s_tc_dev);
+                continue;
+            }
+        }
+
+        uint32_t active_w = tracker.active_w;
+        uint32_t active_h = tracker.active_h;
         const uint8_t *raw_data = NULL;
         size_t raw_len = 0u;
         int buf_idx = -1;
 
         err = csi_capture_acquire(cap, CSI_VIDEO_ACQUIRE_WAIT_MS, &raw_data, &raw_len, &buf_idx);
         if (err != ESP_OK) {
-            // Reflect transient cable unplug in sync state; P2b-7 (#68) adds full mode-change controller recreation.
-            uint32_t cur_w = 0u, cur_h = 0u;
-            if (tc358743_get_active_size(s_tc_dev, &cur_w, &cur_h) != ESP_OK) {
-                csi_video_status_t st;
-                csi_video_seq_read(&s_seq_status, CSI_VIDEO_SEQ_DEFAULT_RETRIES, &st);
-                if (st.state != KVM_VIDEO_SYNC_NO_SIGNAL) {
-                    csi_video_seq_write(&s_seq_status, KVM_VIDEO_SYNC_NO_SIGNAL, 0u, 0u);
-                    ESP_LOGW(TAG, "HDMI sync lost");
-                }
-            }
+            force_mode_poll = true;
             continue;
         }
 
-        csi_video_status_t cur_st;
-        csi_video_seq_read(&s_seq_status, CSI_VIDEO_SEQ_DEFAULT_RETRIES, &cur_st);
-        if (cur_st.state != KVM_VIDEO_SYNC_LOCKED) {
-            csi_video_seq_write(&s_seq_status, KVM_VIDEO_SYNC_LOCKED, active_w, active_h);
-            ESP_LOGI(TAG, "HDMI sync restored: %" PRIu32 "x%" PRIu32, active_w, active_h);
-        }
+        csi_mode_tracker_on_frame(&tracker, now_monotonic_ms());
 
         const uint8_t *jpeg_data = NULL;
         size_t jpeg_len = 0u;
@@ -263,12 +391,9 @@ static void csi_video_task(void *arg)
                     frame_hub_commit(s_hub, dst, jpeg_len, active_w, active_h, ts_ms);
                     csi_video_pub_stats_on_published(&pub_stats, jpeg_len, enc_us);
                 } else {
-                    // Pool is busy (all buffers held by slow viewers); frame_hub already incremented dropped_frames.
                     csi_video_pub_stats_on_pool_busy(&pub_stats, jpeg_len, enc_us);
                 }
             } else if (ferr == CSI_JPEG_FRAME_ERR_OVERSIZE) {
-                // INTERFACES.md §1.2(b): frame_hub does NOT count oversize frames in dropped_frames;
-                // we count and log them here with the exact byte size.
                 csi_video_pub_stats_on_oversize(&pub_stats, jpeg_len, enc_us);
                 if (pub_stats.oversize_drops <= 5u || (pub_stats.oversize_drops % 60u) == 0u) {
                     ESP_LOGW(TAG, "Dropped oversize JPEG: %u bytes > hub max %u bytes (count=%" PRIu64 ")",
@@ -282,7 +407,7 @@ static void csi_video_task(void *arg)
 
         int64_t now_us = esp_timer_get_time();
         if (now_us - win_start_us >= CSI_VIDEO_STATS_PERIOD_US) {
-            log_periodic_stats(&pub_stats, cap, active_w, active_h, now_us - win_start_us);
+            log_periodic_stats(&pub_stats, &tracker, cap, active_w, active_h, now_us - win_start_us);
             csi_video_pub_stats_reset_window(&pub_stats);
             win_start_us = now_us;
         }
@@ -347,7 +472,6 @@ static int csi_video_source_start(const video_source_t *source, frame_hub_t *hub
             return -1;
         }
     }
-    // Drain any stale completion token from an earlier stop().
     (void)xSemaphoreTake(s_done_sem, 0);
 
     if (!s_shutdown_registered) {

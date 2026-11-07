@@ -46,6 +46,17 @@ typedef struct {
 } csi_capture_stats_t;
 
 esp_err_t csi_capture_open(const csi_capture_config_t *cfg, csi_capture_handle_t *out);
+
+// Pre-allocates the 2 max-mode PSRAM buffers once (cfg->width/height ignored) without creating
+// the CSI controller yet; call csi_capture_reconfigure() once HDMI locks onto a stable mode.
+// Source: docs/P2B_PLAN.md P2b-7, docs/P2B_TC358743_REFERENCE.md §7 item 6.
+esp_err_t csi_capture_open_pool(const csi_capture_config_t *cfg, csi_capture_handle_t *out);
+
+// Stops any active DMA, tears down the previous esp_cam_ctlr / ISP processor, validates the new
+// geometry against the pre-allocated PSRAM buffer capacity, and recreates esp_cam_ctlr + ISP
+// reusing the existing 2 PSRAM buffers (zero PSRAM re-allocation).
+esp_err_t csi_capture_reconfigure(csi_capture_handle_t h, uint32_t width, uint32_t height);
+
 esp_err_t csi_capture_start(csi_capture_handle_t h);
 
 // Waits up to timeout_ms for a new complete frame and hands it to the caller.

@@ -553,6 +553,192 @@ void test_every_read_failure_is_reported(void) {
     }
 }
 
+void test_calc_fifoctl_boundaries_and_narrow_modes(void) {
+    // Standard 24 bpp RGB888 modes: line_words = width * 24 / 32 = width * 3 / 4 > 374 -> 374
+    TEST_ASSERT_EQUAL_UINT16(374u, tc358743_calc_fifoctl(1920u, 24u)); // 1440 words
+    TEST_ASSERT_EQUAL_UINT16(374u, tc358743_calc_fifoctl(1280u, 24u)); // 960 words
+    TEST_ASSERT_EQUAL_UINT16(374u, tc358743_calc_fifoctl(640u, 24u));  // 480 words
+
+    // Exact boundary around line_words == 374 vs 375 (at 32 bpp, line_words == width)
+    TEST_ASSERT_EQUAL_UINT16(374u, tc358743_calc_fifoctl(375u, 32u));  // 375 > 374 -> 374
+    TEST_ASSERT_EQUAL_UINT16(327u, tc358743_calc_fifoctl(374u, 32u));  // 374 * 7 / 8 = 327
+
+    // Narrow / 16 bpp UYVY mode: 640 * 16 / 32 = 320 words <= 374 -> 320 * 7 / 8 = 280
+    TEST_ASSERT_EQUAL_UINT16(280u, tc358743_calc_fifoctl(640u, 16u));
+
+    // Ultra-narrow mode clamps to minimum 16 words
+    TEST_ASSERT_EQUAL_UINT16(16u, tc358743_calc_fifoctl(16u, 16u));    // 8 * 7 / 8 = 7 -> 16
+    TEST_ASSERT_EQUAL_UINT16(17u, tc358743_calc_fifoctl(20u, 32u));    // 20 * 7 / 8 = 17
+
+    // Invalid / out-of-bounds inputs fall back safely to 374
+    TEST_ASSERT_EQUAL_UINT16(374u, tc358743_calc_fifoctl(0u, 24u));
+    TEST_ASSERT_EQUAL_UINT16(374u, tc358743_calc_fifoctl(1280u, 0u));
+    TEST_ASSERT_EQUAL_UINT16(374u, tc358743_calc_fifoctl(16385u, 24u));
+    TEST_ASSERT_EQUAL_UINT16(374u, tc358743_calc_fifoctl(1280u, 65u));
+}
+
+void test_rearm_csi_sequence_972_and_594_and_narrow_fifoctl(void) {
+    tc358743_mode_t mode = {
+        .lane_rate_mbps = 972,
+        .lanes = 2,
+        .format = TC358743_FORMAT_RGB888,
+        .continuous_clock = false,
+    };
+    g_ctx.sysctl_mock = 0x0C00;  // IRRST|CECRST preserved
+    g_ctx.confctl_mock = 0x0003; // VBUFEN|ABUFEN initially active
+    g_ctx.hpd_ctl_mock = 0x11;   // HPD_CTL0|HPD_OUT0 high
+
+    // 400 px @ 24 bpp -> line_words = 300 <= 374 -> fifoctl = 262 (0x0106)
+    TEST_ASSERT_TRUE(tc358743_rearm_csi_sequence(&fake_ops, &mode, 400u));
+
+    bool saw_fifoctl = false;
+    bool saw_ctxrst_set = false;
+    bool saw_ctxrst_clr = false;
+    bool saw_lineinit_972 = false;
+    bool saw_csi_confw_last = false;
+    int vi_mute_writes = 0;
+    uint32_t first_vi_mute = 0, last_vi_mute = 0;
+    for (int i = 0; i < g_ctx.count; i++) {
+        const op_record_t* op = &g_ctx.ops[i];
+        // Must NEVER touch HPD_CTL (0x8544), HDMIRST (0x0100 in SYSCTL), or reset GPIO!
+        if (op->type == 'W') {
+            TEST_ASSERT_NOT_EQUAL_HEX16(0x8544, op->reg);
+            if (op->reg == 0x0002) {
+                TEST_ASSERT_EQUAL_HEX16(0x0000, op->val & 0x0100);
+                if (op->val == 0x0E00) saw_ctxrst_set = true;
+                if (op->val == 0x0C00 && saw_ctxrst_set) saw_ctxrst_clr = true;
+            }
+            if (op->reg == 0x0006 && op->val == 262u) saw_fifoctl = true;
+            if (op->reg == 0x0210 && op->val == 0x1B58u) saw_lineinit_972 = true;
+            if (op->reg == 0x0500 && op->val == 0xA6000004u) saw_csi_confw_last = true;
+            if (op->reg == 0x857F) {
+                if (vi_mute_writes == 0) first_vi_mute = op->val;
+                last_vi_mute = op->val;
+                vi_mute_writes++;
+            }
+        }
+        TEST_ASSERT_NOT_EQUAL('G', op->type);
+    }
+    TEST_ASSERT_TRUE(saw_fifoctl);
+    TEST_ASSERT_TRUE(saw_ctxrst_set && saw_ctxrst_clr);
+    TEST_ASSERT_TRUE(saw_lineinit_972);
+    TEST_ASSERT_TRUE(saw_csi_confw_last);
+    TEST_ASSERT_EQUAL_INT(2, vi_mute_writes);
+    TEST_ASSERT_EQUAL_HEX8(0xD0, first_vi_mute);
+    TEST_ASSERT_EQUAL_HEX8(0xC0, last_vi_mute);
+    TEST_ASSERT_EQUAL_HEX16(0x0003, g_ctx.confctl_mock);
+
+    // 594 Mbps + continuous_clock = true + 1920 px (fifoctl = 374)
+    setUp();
+    mode.lane_rate_mbps = 594;
+    mode.continuous_clock = true;
+    TEST_ASSERT_TRUE(tc358743_rearm_csi_sequence(&fake_ops, &mode, 1920u));
+    bool found = false;
+    TEST_ASSERT_EQUAL_HEX32(374u, last_write_val(0x0006, &found));
+    TEST_ASSERT_TRUE(found);
+    TEST_ASSERT_EQUAL_HEX32(0x0E80u, last_write_val(0x0210, &found));
+    TEST_ASSERT_EQUAL_HEX32(0x1u, last_write_val(0x0238, &found));
+    TEST_ASSERT_EQUAL_HEX32(0x1u, last_write_val(0x0518, &found));
+}
+
+void test_rearm_csi_invalid_args_and_io_failures(void) {
+    tc358743_mode_t mode = { .lane_rate_mbps = 972, .lanes = 2, .format = TC358743_FORMAT_RGB888, .continuous_clock = false };
+    TEST_ASSERT_FALSE(tc358743_rearm_csi_sequence(NULL, &mode, 1280u));
+    TEST_ASSERT_FALSE(tc358743_rearm_csi_sequence(&fake_ops, NULL, 1280u));
+    TEST_ASSERT_FALSE(tc358743_rearm_csi_sequence(&fake_ops, &mode, 0u));
+
+    tc358743_mode_t bad = mode;
+    bad.lanes = 4;
+    TEST_ASSERT_FALSE(tc358743_rearm_csi_sequence(&fake_ops, &bad, 1280u));
+    bad = mode;
+    bad.format = TC358743_FORMAT_UYVY;
+    TEST_ASSERT_FALSE(tc358743_rearm_csi_sequence(&fake_ops, &bad, 1280u));
+    bad = mode;
+    bad.lane_rate_mbps = 445;
+    TEST_ASSERT_FALSE(tc358743_rearm_csi_sequence(&fake_ops, &bad, 1280u));
+
+    // Every write failure in rearm must return false
+    tc358743_io_ops_t wops = fake_ops;
+    wops.write8 = inj_write8; wops.write16 = inj_write16; wops.write32 = inj_write32;
+    g_fail_at = 0; g_write_count = 0;
+    setUp();
+    TEST_ASSERT_TRUE(tc358743_rearm_csi_sequence(&wops, &mode, 1280u));
+    int total_w = g_write_count;
+    TEST_ASSERT_TRUE(total_w >= 20);
+    for (int k = 1; k <= total_w; k++) {
+        setUp();
+        g_fail_at = k; g_write_count = 0;
+        TEST_ASSERT_FALSE(tc358743_rearm_csi_sequence(&wops, &mode, 1280u));
+    }
+
+    // Every read failure in rearm must return false
+    tc358743_io_ops_t rops = fake_ops;
+    rops.read8 = inj_read8; rops.read16 = inj_read16;
+    g_read_fail_at = 0; g_read_count = 0;
+    setUp();
+    TEST_ASSERT_TRUE(tc358743_rearm_csi_sequence(&rops, &mode, 1280u));
+    int total_r = g_read_count;
+    TEST_ASSERT_TRUE(total_r >= 5);
+    for (int k = 1; k <= total_r; k++) {
+        setUp();
+        g_read_fail_at = k; g_read_count = 0;
+        TEST_ASSERT_FALSE(tc358743_rearm_csi_sequence(&rops, &mode, 1280u));
+    }
+}
+
+void test_hpd_nudge_sequence_and_failure_propagation(void) {
+    TEST_ASSERT_FALSE(tc358743_hpd_nudge_sequence(NULL));
+
+    setUp();
+    g_ctx.hpd_ctl_mock = 0x11; // bit 4 (HPD_CTL0) must be preserved across Low -> High pulse
+    g_ctx.confctl_mock = 0x0003;
+    TEST_ASSERT_TRUE(tc358743_hpd_nudge_sequence(&fake_ops));
+
+    const gold_t expect_nudge[] = {
+        { 0x857F, 0xD0u },
+        { 0x0004, 0x00u },
+        { 0x8544, 0x10u },
+        { GOLD_DELAY, 150u },
+        { 0x857F, 0xC0u },
+        { 0x0004, 0x03u },
+        { GOLD_DELAY, 150u },
+        { 0x8544, 0x11u },
+        { GOLD_DELAY, 50u },
+        { 0x0518, 0x01u },
+    };
+    gold_t got[MAX_OPS];
+    int n = collect_seq(got, MAX_OPS);
+    TEST_ASSERT_EQUAL_INT((int)(sizeof(expect_nudge) / sizeof(expect_nudge[0])), n);
+    for (int i = 0; i < n; i++) {
+        TEST_ASSERT_EQUAL_HEX16(expect_nudge[i].reg, got[i].reg);
+        TEST_ASSERT_EQUAL_HEX32(expect_nudge[i].val, got[i].val);
+    }
+
+    tc358743_io_ops_t wops = fake_ops;
+    wops.write8 = inj_write8; wops.write16 = inj_write16; wops.write32 = inj_write32;
+    g_fail_at = 0; g_write_count = 0;
+    setUp();
+    TEST_ASSERT_TRUE(tc358743_hpd_nudge_sequence(&wops));
+    int total_w = g_write_count;
+    for (int k = 1; k <= total_w; k++) {
+        setUp();
+        g_fail_at = k; g_write_count = 0;
+        TEST_ASSERT_FALSE(tc358743_hpd_nudge_sequence(&wops));
+    }
+
+    tc358743_io_ops_t rops = fake_ops;
+    rops.read8 = inj_read8; rops.read16 = inj_read16;
+    g_read_fail_at = 0; g_read_count = 0;
+    setUp();
+    TEST_ASSERT_TRUE(tc358743_hpd_nudge_sequence(&rops));
+    int total_r = g_read_count;
+    for (int k = 1; k <= total_r; k++) {
+        setUp();
+        g_read_fail_at = k; g_read_count = 0;
+        TEST_ASSERT_FALSE(tc358743_hpd_nudge_sequence(&rops));
+    }
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_success_972);
@@ -567,5 +753,9 @@ int main(void) {
     RUN_TEST(test_null_args_rejected);
     RUN_TEST(test_rmw_preserves_phy_en_and_pllctl1_defaults);
     RUN_TEST(test_every_read_failure_is_reported);
+    RUN_TEST(test_calc_fifoctl_boundaries_and_narrow_modes);
+    RUN_TEST(test_rearm_csi_sequence_972_and_594_and_narrow_fifoctl);
+    RUN_TEST(test_rearm_csi_invalid_args_and_io_failures);
+    RUN_TEST(test_hpd_nudge_sequence_and_failure_propagation);
     return UNITY_END();
 }

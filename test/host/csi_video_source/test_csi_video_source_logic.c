@@ -260,6 +260,225 @@ static void test_pub_stats_accounting_and_window_reset(void)
     TEST_ASSERT_EQUAL_UINT(280000u, st.peak_jpeg_bytes);
 }
 
+// --- 5. P2b-7 Mode stability, resolution switch, HPD nudge & stall recovery ---
+
+static csi_mode_sample_t make_sample(uint64_t now_ms, bool ddc5v, bool sync_locked,
+                                     bool geom_ok, uint32_t w, uint32_t h)
+{
+    csi_mode_sample_t s = {
+        .now_ms = now_ms,
+        .ddc5v = ddc5v,
+        .sync_locked = sync_locked,
+        .geom_ok = geom_ok,
+        .width = w,
+        .height = h,
+    };
+    return s;
+}
+
+static void test_mode_tracker_two_sample_stability_and_jitter(void)
+{
+    csi_mode_tracker_t m;
+    csi_mode_tracker_init(&m);
+
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(NULL, NULL));
+    csi_mode_sample_t s0 = make_sample(100u, true, true, true, 1280u, 720u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, NULL));
+
+    // Sample #1 of 1280x720 -> WAIT (must NOT start on single transient read)
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, &s0));
+    TEST_ASSERT_FALSE(m.streaming);
+
+    // Transient jitter to 1920x1080 resets candidate count to 1 -> WAIT
+    csi_mode_sample_t s1 = make_sample(300u, true, true, true, 1920u, 1080u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, &s1));
+    TEST_ASSERT_FALSE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(1u, m.cand_hits);
+
+    // Second consecutive 1920x1080 -> START_MODE!
+    csi_mode_sample_t s2 = make_sample(500u, true, true, true, 1920u, 1080u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_START_MODE, csi_mode_tracker_step(&m, &s2));
+    TEST_ASSERT_TRUE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(1920u, m.active_w);
+    TEST_ASSERT_EQUAL_UINT32(1080u, m.active_h);
+    TEST_ASSERT_EQUAL_UINT32(1u, m.mode_switches);
+    TEST_ASSERT_EQUAL_UINT64(500u, m.last_frame_ms);
+
+    // Steady-state polling at same resolution -> KEEP_STREAMING
+    csi_mode_sample_t s3 = make_sample(700u, true, true, true, 1920u, 1080u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_KEEP_STREAMING, csi_mode_tracker_step(&m, &s3));
+    TEST_ASSERT_EQUAL_UINT32(1u, m.mode_switches);
+}
+
+static void test_mode_tracker_live_resolution_switch_and_signal_loss(void)
+{
+    csi_mode_tracker_t m;
+    csi_mode_tracker_init(&m);
+
+    // Lock onto 1920x1080
+    csi_mode_sample_t a1 = make_sample(0u, true, true, true, 1920u, 1080u);
+    csi_mode_sample_t a2 = make_sample(200u, true, true, true, 1920u, 1080u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, &a1));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_START_MODE, csi_mode_tracker_step(&m, &a2));
+
+    // Switch to 1280x720: first sample stops CSI immediately and records hit #1
+    csi_mode_sample_t b1 = make_sample(400u, true, true, true, 1280u, 720u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_STOP_MODE_CHANGED, csi_mode_tracker_step(&m, &b1));
+    TEST_ASSERT_FALSE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(0u, m.active_w);
+    TEST_ASSERT_EQUAL_UINT32(1280u, m.cand_w);
+    TEST_ASSERT_EQUAL_UINT32(720u, m.cand_h);
+    TEST_ASSERT_EQUAL_UINT32(1u, m.cand_hits);
+
+    // Second consecutive 1280x720 sample starts CSI at 1280x720
+    csi_mode_sample_t b2 = make_sample(600u, true, true, true, 1280u, 720u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_START_MODE, csi_mode_tracker_step(&m, &b2));
+    TEST_ASSERT_TRUE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(1280u, m.active_w);
+    TEST_ASSERT_EQUAL_UINT32(720u, m.active_h);
+    TEST_ASSERT_EQUAL_UINT32(2u, m.mode_switches);
+
+    // Switch to 640x480 and verify height-only change (e.g. 640x480 -> 640x400) is also caught
+    csi_mode_sample_t c1 = make_sample(800u, true, true, true, 640u, 480u);
+    csi_mode_sample_t c2 = make_sample(1000u, true, true, true, 640u, 480u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_STOP_MODE_CHANGED, csi_mode_tracker_step(&m, &c1));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_START_MODE, csi_mode_tracker_step(&m, &c2));
+    csi_mode_sample_t c3 = make_sample(1200u, true, true, true, 640u, 400u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_STOP_MODE_CHANGED, csi_mode_tracker_step(&m, &c3));
+    csi_mode_sample_t c4 = make_sample(1400u, true, true, true, 640u, 400u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_START_MODE, csi_mode_tracker_step(&m, &c4));
+    TEST_ASSERT_EQUAL_UINT32(4u, m.mode_switches);
+
+    // Signal loss while streaming -> STOP_NO_SIGNAL
+    csi_mode_sample_t lost = make_sample(1600u, true, false, false, 0u, 0u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_STOP_NO_SIGNAL, csi_mode_tracker_step(&m, &lost));
+    TEST_ASSERT_FALSE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(0u, m.active_w);
+    TEST_ASSERT_EQUAL_UINT32(0u, m.active_h);
+}
+
+static void test_mode_tracker_out_of_range_and_abort_start(void)
+{
+    csi_mode_tracker_t m;
+    csi_mode_tracker_init(&m);
+
+    // Out-of-range mode while unlocked -> REJECT_OUT_OF_RANGE, never starts
+    csi_mode_sample_t bad = make_sample(100u, true, true, false, 3840u, 2160u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_REJECT_OUT_OF_RANGE, csi_mode_tracker_step(&m, &bad));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_REJECT_OUT_OF_RANGE, csi_mode_tracker_step(&m, &bad));
+    TEST_ASSERT_FALSE(m.streaming);
+
+    // Zero width/height even if geom_ok were true -> REJECT_OUT_OF_RANGE
+    csi_mode_sample_t zero_w = make_sample(200u, true, true, true, 0u, 720u);
+    csi_mode_sample_t zero_h = make_sample(300u, true, true, true, 1280u, 0u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_REJECT_OUT_OF_RANGE, csi_mode_tracker_step(&m, &zero_w));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_REJECT_OUT_OF_RANGE, csi_mode_tracker_step(&m, &zero_h));
+
+    // Lock valid mode, then switch to out-of-range -> REJECT_OUT_OF_RANGE & stops streaming
+    csi_mode_sample_t ok1 = make_sample(400u, true, true, true, 1280u, 720u);
+    csi_mode_sample_t ok2 = make_sample(600u, true, true, true, 1280u, 720u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, &ok1));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_START_MODE, csi_mode_tracker_step(&m, &ok2));
+    TEST_ASSERT_TRUE(m.streaming);
+
+    csi_mode_sample_t bad2 = make_sample(800u, true, true, false, 2560u, 1440u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_REJECT_OUT_OF_RANGE, csi_mode_tracker_step(&m, &bad2));
+    TEST_ASSERT_FALSE(m.streaming);
+
+    // Start again, then simulate driver failure via csi_mode_tracker_abort_start
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, &ok1));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_START_MODE, csi_mode_tracker_step(&m, &ok2));
+    csi_mode_tracker_abort_start(&m);
+    TEST_ASSERT_FALSE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(0u, m.active_w);
+    TEST_ASSERT_EQUAL_UINT32(0u, m.cand_hits);
+}
+
+static void test_mode_tracker_hpd_nudge_10_20_40_backoff(void)
+{
+    csi_mode_tracker_t m;
+    csi_mode_tracker_init(&m);
+
+    // Without DDC5V (cable unplugged), HPD must NEVER be nudged even after 60s
+    csi_mode_sample_t unplug0 = make_sample(0u, false, false, false, 0u, 0u);
+    csi_mode_sample_t unplug60 = make_sample(60000u, false, false, false, 0u, 0u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, &unplug0));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, &unplug60));
+    TEST_ASSERT_EQUAL_UINT32(0u, m.hpd_nudges);
+
+    // DDC5V appears at t = 1000 ms without sync: timer arms
+    csi_mode_sample_t d0 = make_sample(1000u, true, false, false, 0u, 0u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, &d0));
+
+    // At +9999 ms (t = 10999): still WAIT; at +10000 ms (t = 11000): NUDGE #1
+    csi_mode_sample_t d1_pre = make_sample(10999u, true, false, false, 0u, 0u);
+    csi_mode_sample_t d1_hit = make_sample(11000u, true, false, false, 0u, 0u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, &d1_pre));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_NUDGE_HPD, csi_mode_tracker_step(&m, &d1_hit));
+    TEST_ASSERT_EQUAL_UINT32(1u, m.hpd_nudges);
+
+    // Stage 2 backoff = 20000 ms (from 11000 -> 31000)
+    csi_mode_sample_t d2_pre = make_sample(30999u, true, false, false, 0u, 0u);
+    csi_mode_sample_t d2_hit = make_sample(31000u, true, false, false, 0u, 0u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, &d2_pre));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_NUDGE_HPD, csi_mode_tracker_step(&m, &d2_hit));
+    TEST_ASSERT_EQUAL_UINT32(2u, m.hpd_nudges);
+
+    // Stage 3 backoff = 40000 ms (from 31000 -> 71000)
+    csi_mode_sample_t d3_pre = make_sample(70999u, true, false, false, 0u, 0u);
+    csi_mode_sample_t d3_hit = make_sample(71000u, true, false, false, 0u, 0u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, &d3_pre));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_NUDGE_HPD, csi_mode_tracker_step(&m, &d3_hit));
+    TEST_ASSERT_EQUAL_UINT32(3u, m.hpd_nudges);
+
+    // After 3 nudges, stop nudging indefinitely while cable remains idle
+    csi_mode_sample_t d4 = make_sample(200000u, true, false, false, 0u, 0u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, &d4));
+    TEST_ASSERT_EQUAL_UINT32(3u, m.hpd_nudges);
+
+    // Cable unplug resets backoff so re-plugging gets fresh 10s nudge
+    csi_mode_sample_t replug_off = make_sample(201000u, false, false, false, 0u, 0u);
+    csi_mode_sample_t replug_on  = make_sample(202000u, true, false, false, 0u, 0u);
+    csi_mode_sample_t replug_10s = make_sample(212000u, true, false, false, 0u, 0u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, &replug_off));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_step(&m, &replug_on));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_NUDGE_HPD, csi_mode_tracker_step(&m, &replug_10s));
+    TEST_ASSERT_EQUAL_UINT32(4u, m.hpd_nudges);
+}
+
+static void test_mode_tracker_stall_recovery_and_cooldown(void)
+{
+    csi_mode_tracker_t m;
+    csi_mode_tracker_init(&m);
+
+    // Not streaming -> WAIT
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_check_stall(&m, 5000u));
+
+    csi_mode_sample_t s1 = make_sample(1000u, true, true, true, 1280u, 720u);
+    csi_mode_sample_t s2 = make_sample(1200u, true, true, true, 1280u, 720u);
+    (void)csi_mode_tracker_step(&m, &s1);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_START_MODE, csi_mode_tracker_step(&m, &s2));
+
+    // Frame arrives at 2500 ms -> stall deadline moves to 4500 ms
+    csi_mode_tracker_on_frame(&m, 2500u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_KEEP_STREAMING, csi_mode_tracker_check_stall(&m, 4499u));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_RECOVER_STALL, csi_mode_tracker_check_stall(&m, 4500u));
+    TEST_ASSERT_FALSE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(1u, m.stall_recoveries);
+
+    // Re-lock at 5000 ms; stall at 7000 ms is within 8000 ms cooldown (4500 + 8000 = 12500),
+    // so recovery must NOT fire until 12500 ms!
+    csi_mode_sample_t r1 = make_sample(4800u, true, true, true, 1280u, 720u);
+    csi_mode_sample_t r2 = make_sample(5000u, true, true, true, 1280u, 720u);
+    (void)csi_mode_tracker_step(&m, &r1);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_START_MODE, csi_mode_tracker_step(&m, &r2));
+
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_KEEP_STREAMING, csi_mode_tracker_check_stall(&m, 7000u));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_KEEP_STREAMING, csi_mode_tracker_check_stall(&m, 12499u));
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_RECOVER_STALL, csi_mode_tracker_check_stall(&m, 12500u));
+    TEST_ASSERT_EQUAL_UINT32(2u, m.stall_recoveries);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -272,5 +491,10 @@ int main(void)
     RUN_TEST(test_seqlock_detects_even_to_even_generation_jump_and_retries);
     RUN_TEST(test_seqlock_null_and_zero_retries);
     RUN_TEST(test_pub_stats_accounting_and_window_reset);
+    RUN_TEST(test_mode_tracker_two_sample_stability_and_jitter);
+    RUN_TEST(test_mode_tracker_live_resolution_switch_and_signal_loss);
+    RUN_TEST(test_mode_tracker_out_of_range_and_abort_start);
+    RUN_TEST(test_mode_tracker_hpd_nudge_10_20_40_backoff);
+    RUN_TEST(test_mode_tracker_stall_recovery_and_cooldown);
     return UNITY_END();
 }

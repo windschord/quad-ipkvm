@@ -105,6 +105,7 @@ static const char* TAG = "tc358743";
 struct tc358743_dev_t {
     tc358743_config_t config;
     i2c_master_dev_handle_t i2c_dev;
+    tc358743_mode_t active_mode;
     bool csi_started;
 };
 
@@ -261,17 +262,7 @@ static void esp_io_reset_gpio(void* ctx, bool level) {
 #endif
 }
 
-esp_err_t tc358743_start_csi(tc358743_handle_t dev, const tc358743_mode_t *mode, bool *out_locked) {
-    if (!dev || !mode || !out_locked) return ESP_ERR_INVALID_ARG;
-
-    tc_configure_reset_gpio_od();
-#ifdef CONFIG_TC358743_RESET_GPIO
-    if (CONFIG_TC358743_RESET_GPIO >= 0) {
-        ESP_LOGI(TAG, "Pulsing TC358743 hardware reset on GPIO %d (open-drain, active-low)...",
-                 CONFIG_TC358743_RESET_GPIO);
-    }
-#endif
-
+static tc358743_io_ops_t make_esp_io_ops(tc358743_handle_t dev) {
     tc358743_io_ops_t ops = {
         .ctx = dev,
         .write8 = esp_io_write8,
@@ -282,13 +273,37 @@ esp_err_t tc358743_start_csi(tc358743_handle_t dev, const tc358743_mode_t *mode,
         .delay_ms = esp_io_delay_ms,
         .reset_gpio = esp_io_reset_gpio
     };
+    return ops;
+}
 
-    bool res = tc358743_start_sequence(&ops, mode, TC358743_EDID_PROFILE_720P_60, out_locked);
+esp_err_t tc358743_start_csi_with_edid(tc358743_handle_t dev, const tc358743_mode_t *mode,
+                                       tc358743_edid_profile_t edid_profile, bool *out_locked) {
+    if (!dev || !mode || !out_locked) return ESP_ERR_INVALID_ARG;
+
+    tc_configure_reset_gpio_od();
+#ifdef CONFIG_TC358743_RESET_GPIO
+    if (CONFIG_TC358743_RESET_GPIO >= 0) {
+        ESP_LOGI(TAG, "Pulsing TC358743 hardware reset on GPIO %d (open-drain, active-low)...",
+                 CONFIG_TC358743_RESET_GPIO);
+    }
+#endif
+
+    tc358743_io_ops_t ops = make_esp_io_ops(dev);
+    bool res = tc358743_start_sequence(&ops, mode, edid_profile, out_locked);
     if (res) {
+        dev->active_mode = *mode;
         dev->csi_started = true;
         return ESP_OK;
     }
     return ESP_FAIL;
+}
+
+esp_err_t tc358743_start_csi(tc358743_handle_t dev, const tc358743_mode_t *mode, bool *out_locked) {
+    tc358743_edid_profile_t profile = TC358743_EDID_PROFILE_720P_60;
+#if defined(CONFIG_TC358743_EDID_1080P30) && CONFIG_TC358743_EDID_1080P30
+    profile = TC358743_EDID_PROFILE_1080P_30;
+#endif
+    return tc358743_start_csi_with_edid(dev, mode, profile, out_locked);
 }
 // --- Initialization ---
 tc358743_handle_t tc358743_init(const tc358743_config_t* config) {
@@ -463,6 +478,42 @@ void tc358743_dump_diagnostics(tc358743_handle_t dev) {
     }
 
     ESP_LOGI(TAG, "--------------------------------");
+}
+
+esp_err_t tc358743_get_signal(tc358743_handle_t dev, tc358743_signal_t* out) {
+    if (!dev || !out) return ESP_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out));
+    uint8_t sys_status = 0;
+    esp_err_t err = tc_read8(dev, SYS_STATUS, &sys_status);
+    if (err != ESP_OK) return err;
+
+    // Source: tc358743_regs.h MASK_S_DDC5V=0x01, MASK_S_TMDS=0x02, MASK_S_SYNC=0x80
+    out->sys_status = sys_status;
+    out->ddc5v = (sys_status & 0x01) != 0;
+    out->tmds  = (sys_status & 0x02) != 0;
+    out->sync  = (sys_status & 0x80) != 0;
+    if (out->tmds && out->sync) {
+        uint16_t w = 0, h = 0;
+        if (!tc_read_pair_le16(dev, DE_WIDTH_H_LO, DE_WIDTH_H_HI, &w) ||
+            !tc_read_pair_le16(dev, DE_WIDTH_V_LO, DE_WIDTH_V_HI, &h)) {
+            return ESP_FAIL;
+        }
+        out->width = w;
+        out->height = h;
+    }
+    return ESP_OK;
+}
+
+esp_err_t tc358743_rearm_csi(tc358743_handle_t dev, uint32_t active_width) {
+    if (!dev || !dev->csi_started || active_width == 0u) return ESP_ERR_INVALID_STATE;
+    tc358743_io_ops_t ops = make_esp_io_ops(dev);
+    return tc358743_rearm_csi_sequence(&ops, &dev->active_mode, active_width) ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t tc358743_nudge_hpd(tc358743_handle_t dev) {
+    if (!dev || !dev->csi_started) return ESP_ERR_INVALID_STATE;
+    tc358743_io_ops_t ops = make_esp_io_ops(dev);
+    return tc358743_hpd_nudge_sequence(&ops) ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t tc358743_get_active_size(tc358743_handle_t dev, uint32_t* out_width, uint32_t* out_height) {
