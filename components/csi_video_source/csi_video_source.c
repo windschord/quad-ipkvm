@@ -84,6 +84,13 @@ static void ensure_no_signal_status(void)
     }
 }
 
+static csi_pixel_format_t configured_cap_format(void)
+{
+    return (s_cfg.pixel_format == TC358743_FORMAT_UYVY)
+               ? CSI_PIXEL_FORMAT_UYVY
+               : CSI_PIXEL_FORMAT_RGB888;
+}
+
 static void sample_hdmi_mode(uint64_t now_ms, size_t max_buf_cap,
                              csi_mode_sample_t *out, csi_geom_result_t *out_geom_err)
 {
@@ -105,8 +112,8 @@ static void sample_hdmi_mode(uint64_t now_ms, size_t max_buf_cap,
 
     if (out->sync_locked) {
         size_t raw_bytes = 0u;
-        csi_geom_result_t g = csi_capture_check_geometry(
-            sig.width, sig.height, 24u,
+        csi_geom_result_t g = csi_capture_check_format_geometry(
+            sig.width, sig.height, configured_cap_format(),
             s_cfg.max_width, s_cfg.max_height, max_buf_cap, &raw_bytes);
         out->geom_ok = (g == CSI_GEOM_OK);
         if (out_geom_err) {
@@ -119,7 +126,8 @@ static void log_periodic_stats(const csi_video_pub_stats_t *pub,
                                const csi_mode_tracker_t *tracker,
                                csi_capture_handle_t cap,
                                uint32_t width, uint32_t height,
-                               int64_t elapsed_us)
+                               int64_t elapsed_us,
+                               uint64_t win_ppa_us, uint64_t win_jpeg_us)
 {
     csi_capture_stats_t cap_st;
     csi_capture_get_stats(cap, &cap_st);
@@ -138,6 +146,30 @@ static void log_periodic_stats(const csi_video_pub_stats_t *pub,
     size_t avg_bytes = (pub->win_frames > 0u)
                            ? (size_t)(pub->win_jpeg_bytes / pub->win_frames)
                            : 0u;
+
+    if (configured_cap_format() == CSI_PIXEL_FORMAT_UYVY) {
+        double avg_ppa_ms = (pub->win_frames > 0u)
+                                ? ((double)win_ppa_us / (double)pub->win_frames / 1000.0)
+                                : 0.0;
+        double avg_jpg_ms = (pub->win_frames > 0u)
+                                ? ((double)win_jpeg_us / (double)pub->win_frames / 1000.0)
+                                : 0.0;
+        ESP_LOGI(TAG,
+                 "%" PRIu32 "x%" PRIu32 " UYVY @ %.2f fps | enc avg=%.2f ms (ppa=%.2f + jpg=%.2f) max=%.2f ms | "
+                 "jpeg min=%u avg=%u max=%u (peak=%u) B | "
+                 "pub=%" PRIu64 " busy_drop=%" PRIu64 " oversize_drop=%" PRIu64 " enc_err=%" PRIu64 " | "
+                 "hub clients=%d dropped=%" PRIu64 " | csi done=%" PRIu32 " ovw=%" PRIu32 " | "
+                 "modes=%" PRIu32 " nudges=%" PRIu32 " stalls=%" PRIu32 " | stack_free=%u B",
+                 width, height, enc_fps, avg_enc_ms, avg_ppa_ms, avg_jpg_ms, max_enc_ms,
+                 (unsigned)pub->win_min_jpeg_bytes, (unsigned)avg_bytes,
+                 (unsigned)pub->win_max_jpeg_bytes, (unsigned)pub->peak_jpeg_bytes,
+                 pub->published, pub->pool_busy_drops, pub->oversize_drops, pub->encode_errors,
+                 hub_st.active_clients, hub_st.dropped_frames,
+                 cap_st.completed, cap_st.overwritten,
+                 tracker->mode_switches, tracker->hpd_nudges, tracker->stall_recoveries,
+                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
+        return;
+    }
 
     ESP_LOGI(TAG,
              "%" PRIu32 "x%" PRIu32 " @ %.2f fps | enc avg=%.2f ms max=%.2f ms | "
@@ -168,10 +200,15 @@ static void csi_video_task(void *arg)
         ESP_LOGE(TAG, "Invalid hub_max_frame_bytes=%u", (unsigned)s_cfg.hub_max_frame_bytes);
         goto cleanup;
     }
+    csi_pixel_format_t cap_fmt = configured_cap_format();
+    bool is_uyvy = (cap_fmt == CSI_PIXEL_FORMAT_UYVY);
     csi_jpeg_config_t jpeg_cfg = {
         .quality = s_cfg.jpeg_quality,
         .max_output_bytes = jpeg_out_cap,
         .timeout_ms = 100,
+        .enable_uyvy_ppa = is_uyvy,
+        .max_width = s_cfg.max_width,
+        .max_height = s_cfg.max_height,
     };
     esp_err_t err = csi_jpeg_open(&jpeg_cfg, &jpeg);
     if (err != ESP_OK) {
@@ -188,6 +225,7 @@ static void csi_video_task(void *arg)
         .data_lanes = s_cfg.data_lanes,
         .skip_frames = 1u,
         .create_isp_bypass = s_cfg.create_isp_bypass,
+        .pixel_format = cap_fmt,
     };
     err = csi_capture_open_pool(&cap_cfg, &cap);
     if (err != ESP_OK) {
@@ -206,17 +244,21 @@ static void csi_video_task(void *arg)
     csi_video_pub_stats_init(&pub_stats);
 
     int64_t win_start_us = esp_timer_get_time();
+    uint64_t win_ppa_us = 0u;
+    uint64_t win_jpeg_us = 0u;
     uint64_t last_mode_poll_ms = 0u;
     bool force_mode_poll = true;
     uint32_t reject_logs = 0u;
 
-    ESP_LOGI(TAG, "CSI video source ready: max=%" PRIu32 "x%" PRIu32 " (2x%u B PSRAM), "
-                  "enc_buf=%u B, hub_max=%u B, free_spiram=%u B",
+    ESP_LOGI(TAG, "CSI video source ready (%s @ %d Mbps): max=%" PRIu32 "x%" PRIu32 " (2x%u B PSRAM), "
+                  "ppa_buf=%u B, enc_buf=%u B, hub_max=%u B, free_spiram=%u B",
+             is_uyvy ? "UYVY" : "RGB888", s_cfg.lane_bit_rate_mbps,
              s_cfg.max_width, s_cfg.max_height, (unsigned)max_buf_cap,
+             (unsigned)csi_jpeg_ppa_capacity(jpeg),
              (unsigned)csi_jpeg_output_capacity(jpeg), (unsigned)s_cfg.hub_max_frame_bytes,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-    // 2. Unified mode-tracking + capture/encode/publish loop (P2b-6 + P2b-7).
+    // 2. Unified mode-tracking + capture/encode/publish loop (P2b-6 + P2b-7 + P2b-8).
     while (!stop_requested()) {
         uint64_t now_ms = now_monotonic_ms();
 
@@ -255,13 +297,17 @@ static void csi_video_task(void *arg)
                 force_mode_poll = false;
                 tracker.last_frame_ms = last_mode_poll_ms;
                 csi_video_pub_stats_reset_window(&pub_stats);
+                win_ppa_us = 0u;
+                win_jpeg_us = 0u;
                 win_start_us = esp_timer_get_time();
                 csi_video_seq_write(&s_seq_status, KVM_VIDEO_SYNC_LOCKED, w, h);
 
                 ESP_LOGI(TAG, "Pipeline locked (#%" PRIu32 "): %" PRIu32 "x%" PRIu32
-                              " RGB888 -> HW JPEG (q=%u, YUV420) -> Frame Hub "
+                              " %s @ %d Mbps -> HW JPEG (q=%u) -> Frame Hub "
                               "(free_spiram=%u B, free_internal=%u B)",
-                         tracker.mode_switches, w, h, (unsigned)s_cfg.jpeg_quality,
+                         tracker.mode_switches, w, h,
+                         is_uyvy ? "UYVY->PPA->YUV422" : "RGB888->YUV420",
+                         s_cfg.lane_bit_rate_mbps, (unsigned)s_cfg.jpeg_quality,
                          (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
                 continue;
@@ -365,18 +411,38 @@ static void csi_video_task(void *arg)
         const uint8_t *jpeg_data = NULL;
         size_t jpeg_len = 0u;
         int64_t t_enc0 = esp_timer_get_time();
-        esp_err_t enc_err = csi_jpeg_encode(jpeg, raw_data, raw_len,
-                                            active_w, active_h, &jpeg_data, &jpeg_len);
-        int64_t t_enc1 = esp_timer_get_time();
+        int64_t t_enc1 = t_enc0;
+        uint32_t ppa_us = 0u;
+        uint32_t jpg_us = 0u;
+        esp_err_t enc_err = ESP_OK;
 
-        // Return the PSRAM buffer to the CSI ping-pong pool immediately after DMA2D finishes reading it.
-        (void)csi_capture_release(cap, buf_idx);
+        if (is_uyvy) {
+            enc_err = csi_jpeg_ppa_swap_uyvy(jpeg, raw_data, raw_len, active_w, active_h);
+            int64_t t_ppa1 = esp_timer_get_time();
+            // Return the CSI buffer to the ping-pong pool as soon as PPA SRM has copied it to ppa_buf.
+            (void)csi_capture_release(cap, buf_idx);
+            ppa_us = (t_ppa1 > t_enc0) ? (uint32_t)(t_ppa1 - t_enc0) : 0u;
+            if (enc_err == ESP_OK) {
+                enc_err = csi_jpeg_encode_swapped_uyvy(jpeg, active_w, active_h, &jpeg_data, &jpeg_len);
+                t_enc1 = esp_timer_get_time();
+                jpg_us = (t_enc1 > t_ppa1) ? (uint32_t)(t_enc1 - t_ppa1) : 0u;
+            } else {
+                t_enc1 = t_ppa1;
+            }
+        } else {
+            enc_err = csi_jpeg_encode(jpeg, raw_data, raw_len,
+                                      active_w, active_h, &jpeg_data, &jpeg_len);
+            t_enc1 = esp_timer_get_time();
+            // Return the PSRAM buffer to the CSI ping-pong pool immediately after DMA2D finishes reading it.
+            (void)csi_capture_release(cap, buf_idx);
+            jpg_us = (t_enc1 > t_enc0) ? (uint32_t)(t_enc1 - t_enc0) : 0u;
+        }
 
         uint32_t enc_us = (t_enc1 > t_enc0) ? (uint32_t)(t_enc1 - t_enc0) : 0u;
         if (enc_err != ESP_OK) {
             csi_video_pub_stats_on_error(&pub_stats);
             if (pub_stats.encode_errors <= 5u || (pub_stats.encode_errors % 100u) == 0u) {
-                ESP_LOGW(TAG, "HW JPEG encode failed (count=%" PRIu64 "): %s",
+                ESP_LOGW(TAG, "HW JPEG/PPA encode failed (count=%" PRIu64 "): %s",
                          pub_stats.encode_errors, esp_err_to_name(enc_err));
             }
         } else {
@@ -390,11 +456,17 @@ static void csi_video_task(void *arg)
                     uint64_t ts_ms = (uint64_t)(esp_timer_get_time() / 1000);
                     frame_hub_commit(s_hub, dst, jpeg_len, active_w, active_h, ts_ms);
                     csi_video_pub_stats_on_published(&pub_stats, jpeg_len, enc_us);
+                    win_ppa_us += ppa_us;
+                    win_jpeg_us += jpg_us;
                 } else {
                     csi_video_pub_stats_on_pool_busy(&pub_stats, jpeg_len, enc_us);
+                    win_ppa_us += ppa_us;
+                    win_jpeg_us += jpg_us;
                 }
             } else if (ferr == CSI_JPEG_FRAME_ERR_OVERSIZE) {
                 csi_video_pub_stats_on_oversize(&pub_stats, jpeg_len, enc_us);
+                win_ppa_us += ppa_us;
+                win_jpeg_us += jpg_us;
                 if (pub_stats.oversize_drops <= 5u || (pub_stats.oversize_drops % 60u) == 0u) {
                     ESP_LOGW(TAG, "Dropped oversize JPEG: %u bytes > hub max %u bytes (count=%" PRIu64 ")",
                              (unsigned)jpeg_len, (unsigned)s_cfg.hub_max_frame_bytes,
@@ -407,8 +479,11 @@ static void csi_video_task(void *arg)
 
         int64_t now_us = esp_timer_get_time();
         if (now_us - win_start_us >= CSI_VIDEO_STATS_PERIOD_US) {
-            log_periodic_stats(&pub_stats, &tracker, cap, active_w, active_h, now_us - win_start_us);
+            log_periodic_stats(&pub_stats, &tracker, cap, active_w, active_h,
+                               now_us - win_start_us, win_ppa_us, win_jpeg_us);
             csi_video_pub_stats_reset_window(&pub_stats);
+            win_ppa_us = 0u;
+            win_jpeg_us = 0u;
             win_start_us = now_us;
         }
     }

@@ -40,6 +40,9 @@ typedef struct {
 
 bool tc358743_start_sequence(const tc358743_io_ops_t* ops, const tc358743_mode_t* mode, tc358743_edid_profile_t edid_profile, bool* out_locked);
 
+// Returns bits-per-pixel for a TC358743 output format (24 for RGB888, 16 for UYVY, 0 if invalid).
+uint32_t tc358743_format_bpp(tc358743_format_t format);
+
 // Computes FIFOCTL (in 32-bit words) for a given active horizontal resolution and bits-per-pixel.
 // Returns 374 when line_words > 374 (or when inputs are 0), otherwise max(16, line_words * 7 / 8)
 // so narrow modes do not stall waiting for a 374-word threshold that a single line never reaches.

@@ -31,6 +31,7 @@ typedef struct {
     uint8_t data_lanes;           // 2 on ESP32-P4-ETH (J1 has no lanes 2/3)
     uint32_t skip_frames;         // initial completions to discard (the first may be partial)
     bool create_isp_bypass;       // create an ISP processor with bypass_isp = true (reference config)
+    csi_pixel_format_t pixel_format; // CSI_PIXEL_FORMAT_RGB888 (0, default) or CSI_PIXEL_FORMAT_UYVY
 } csi_capture_config_t;
 
 typedef struct {

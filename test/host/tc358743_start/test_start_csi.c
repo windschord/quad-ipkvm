@@ -246,7 +246,7 @@ void test_timeout(void) {
 }
 
 void test_unsupported_rejection(void) {
-    tc358743_mode_t mode = { .lane_rate_mbps = 445, .lanes = 2, .format = TC358743_FORMAT_RGB888, .continuous_clock = false };
+    tc358743_mode_t mode = { .lane_rate_mbps = 600, .lanes = 2, .format = TC358743_FORMAT_RGB888, .continuous_clock = false };
     bool locked = false;
     bool ret = tc358743_start_sequence(&fake_ops, &mode, TC358743_EDID_PROFILE_720P_60, &locked);
     TEST_ASSERT_FALSE(ret);
@@ -257,7 +257,7 @@ void test_unsupported_rejection(void) {
     TEST_ASSERT_FALSE(ret);
     TEST_ASSERT_EQUAL(0, g_ctx.count);
 
-    mode.lanes = 2; mode.format = TC358743_FORMAT_UYVY;
+    mode.lanes = 2; mode.format = (tc358743_format_t)99;
     ret = tc358743_start_sequence(&fake_ops, &mode, TC358743_EDID_PROFILE_720P_60, &locked);
     TEST_ASSERT_FALSE(ret);
     TEST_ASSERT_EQUAL(0, g_ctx.count);
@@ -651,10 +651,10 @@ void test_rearm_csi_invalid_args_and_io_failures(void) {
     bad.lanes = 4;
     TEST_ASSERT_FALSE(tc358743_rearm_csi_sequence(&fake_ops, &bad, 1280u));
     bad = mode;
-    bad.format = TC358743_FORMAT_UYVY;
+    bad.format = (tc358743_format_t)99;
     TEST_ASSERT_FALSE(tc358743_rearm_csi_sequence(&fake_ops, &bad, 1280u));
     bad = mode;
-    bad.lane_rate_mbps = 445;
+    bad.lane_rate_mbps = 600;
     TEST_ASSERT_FALSE(tc358743_rearm_csi_sequence(&fake_ops, &bad, 1280u));
 
     // Every write failure in rearm must return false
@@ -739,6 +739,39 @@ void test_hpd_nudge_sequence_and_failure_propagation(void) {
     }
 }
 
+void test_uyvy_and_445_modes(void) {
+    TEST_ASSERT_EQUAL_UINT32(24u, tc358743_format_bpp(TC358743_FORMAT_RGB888));
+    TEST_ASSERT_EQUAL_UINT32(16u, tc358743_format_bpp(TC358743_FORMAT_UYVY));
+    TEST_ASSERT_EQUAL_UINT32(0u, tc358743_format_bpp((tc358743_format_t)99));
+
+    // P2b-8 Experiment 1: 972 Mbps UYVY (VOUT_SET2=0xC1, VI_REP=0x60, CONFCTL=0x00C3)
+    setUp();
+    tc358743_mode_t uyvy_972 = { .lane_rate_mbps = 972, .lanes = 2, .format = TC358743_FORMAT_UYVY, .continuous_clock = false };
+    bool locked = false, found = false;
+    TEST_ASSERT_TRUE(tc358743_start_sequence(&fake_ops, &uyvy_972, TC358743_EDID_PROFILE_1080P_30, &locked));
+    TEST_ASSERT_TRUE(locked);
+    TEST_ASSERT_EQUAL_HEX32(0xC1u, last_write_val(0x8573, &found));
+    TEST_ASSERT_EQUAL_HEX32(0x60u, last_write_val(0x8576, &found));
+    TEST_ASSERT_EQUAL_HEX32(0x00C3u, last_write_val(0x0004, &found));
+
+    // Rearm in UYVY @ 640 px: 640 * 16 / 32 = 320 words <= 374 -> 320 * 7 / 8 = 280 FIFOCTL
+    setUp();
+    TEST_ASSERT_TRUE(tc358743_rearm_csi_sequence(&fake_ops, &uyvy_972, 640u));
+    TEST_ASSERT_EQUAL_HEX32(280u, last_write_val(0x0006, &found));
+    TEST_ASSERT_EQUAL_HEX32(0xC0u, last_write_val(0x8573, &found));
+    TEST_ASSERT_EQUAL_HEX32(0x60u, last_write_val(0x8576, &found));
+    TEST_ASSERT_EQUAL_HEX32(0x00C3u, last_write_val(0x0004, &found));
+
+    // P2b-8 Experiment 2: 445.5 Mbps (fbd=66 -> PLLCTL0=0x3041, FRS=1 -> PLLCTL1=0x0413, 594 timing fallback)
+    setUp();
+    g_ctx.pllctl1_mock = 0x0200; // preserve bit 9
+    tc358743_mode_t uyvy_445 = { .lane_rate_mbps = 445, .lanes = 2, .format = TC358743_FORMAT_UYVY, .continuous_clock = false };
+    TEST_ASSERT_TRUE(tc358743_start_sequence(&fake_ops, &uyvy_445, TC358743_EDID_PROFILE_720P_60, &locked));
+    TEST_ASSERT_EQUAL_HEX32(0x3041u, last_write_val(0x0020, &found));
+    TEST_ASSERT_EQUAL_HEX32(0x0613u, last_write_val(0x0022, &found)); // bit9(0x0200) | FRS=1(0x0400) | CKEN|RESETB|PLL_EN(0x0013)
+    TEST_ASSERT_EQUAL_HEX32(0x0E80u, last_write_val(0x0210, &found));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_success_972);
@@ -757,5 +790,6 @@ int main(void) {
     RUN_TEST(test_rearm_csi_sequence_972_and_594_and_narrow_fifoctl);
     RUN_TEST(test_rearm_csi_invalid_args_and_io_failures);
     RUN_TEST(test_hpd_nudge_sequence_and_failure_propagation);
+    RUN_TEST(test_uyvy_and_445_modes);
     return UNITY_END();
 }

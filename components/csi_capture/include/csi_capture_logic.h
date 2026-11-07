@@ -15,12 +15,20 @@ extern "C" {
 #endif
 
 typedef enum {
+    CSI_PIXEL_FORMAT_RGB888 = 0,  // 24 bpp (CSI-2 DT 0x24; B,G,R in PSRAM on rev v1.3)
+    CSI_PIXEL_FORMAT_UYVY = 1,    // 16 bpp (CSI-2 DT 0x1E; 4-byte reversed YVYU in PSRAM on rev v1.3)
+} csi_pixel_format_t;
+
+// Returns bits-per-pixel for a supported CSI pixel format (24 for RGB888, 16 for UYVY, 0 otherwise).
+uint32_t csi_pixel_format_bpp(csi_pixel_format_t fmt);
+
+typedef enum {
     CSI_GEOM_OK = 0,
     CSI_GEOM_ERR_ARG,        // NULL output pointer
     CSI_GEOM_ERR_ZERO,       // width, height or bits per pixel is 0
     CSI_GEOM_ERR_BPP,        // bits per pixel not a multiple of 8, or above 32
     CSI_GEOM_ERR_DIM,        // width/height above the configured maximum
-    CSI_GEOM_ERR_ALIGN,      // frame bits not a multiple of 64 (DMA moves 64-bit words)
+    CSI_GEOM_ERR_ALIGN,      // frame bits not a multiple of 64 (DMA moves 64-bit words) or odd UYVY width
     CSI_GEOM_ERR_OVERFLOW,   // frame bits do not fit the driver's signed 32-bit arithmetic
     CSI_GEOM_ERR_CAPACITY,   // frame bytes exceed the buffer capacity
 } csi_geom_result_t;
@@ -32,6 +40,13 @@ typedef enum {
 csi_geom_result_t csi_capture_check_geometry(uint32_t width, uint32_t height, uint32_t bits_per_pixel,
                                              uint32_t max_width, uint32_t max_height,
                                              size_t capacity, size_t *out_bytes);
+
+// Format-aware wrapper around csi_capture_check_geometry(): resolves format bpp and enforces
+// even horizontal width for UYVY 4:2:2 (2 pixels per 32-bit word).
+csi_geom_result_t csi_capture_check_format_geometry(uint32_t width, uint32_t height,
+                                                    csi_pixel_format_t fmt,
+                                                    uint32_t max_width, uint32_t max_height,
+                                                    size_t capacity, size_t *out_bytes);
 
 // Rounds n up to a multiple of align. Returns 0 if align is 0 or the result overflows size_t.
 size_t csi_capture_round_up(size_t n, size_t align);

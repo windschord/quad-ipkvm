@@ -1,5 +1,24 @@
 #include "csi_capture_logic.h"
 
+uint32_t csi_pixel_format_bpp(csi_pixel_format_t fmt) {
+    if (fmt == CSI_PIXEL_FORMAT_RGB888) return 24u;
+    if (fmt == CSI_PIXEL_FORMAT_UYVY) return 16u;
+    return 0u;
+}
+
+csi_geom_result_t csi_capture_check_format_geometry(uint32_t width, uint32_t height,
+                                                    csi_pixel_format_t fmt,
+                                                    uint32_t max_width, uint32_t max_height,
+                                                    size_t capacity, size_t *out_bytes) {
+    if (!out_bytes) return CSI_GEOM_ERR_ARG;
+    *out_bytes = 0;
+    uint32_t bpp = csi_pixel_format_bpp(fmt);
+    if (bpp == 0u) return CSI_GEOM_ERR_BPP;
+    if (width == 0u || height == 0u) return CSI_GEOM_ERR_ZERO;
+    if (fmt == CSI_PIXEL_FORMAT_UYVY && (width % 2u) != 0u) return CSI_GEOM_ERR_ALIGN;
+    return csi_capture_check_geometry(width, height, bpp, max_width, max_height, capacity, out_bytes);
+}
+
 csi_geom_result_t csi_capture_check_geometry(uint32_t width, uint32_t height, uint32_t bits_per_pixel,
                                              uint32_t max_width, uint32_t max_height,
                                              size_t capacity, size_t *out_bytes) {
