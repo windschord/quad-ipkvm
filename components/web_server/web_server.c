@@ -828,6 +828,15 @@ static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
     }
 
     int fd = httpd_req_to_sockfd(req);
+    struct timeval tv = {
+        .tv_sec = CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS / 1000,
+        .tv_usec = (CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS % 1000) * 1000,
+    };
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+        ESP_LOGW(TAG, "Failed to set SO_SNDTIMEO on WS video fd=%d (errno=%d)", fd, errno);
+        return ESP_FAIL;
+    }
+
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     int ret = ws_video_core_on_connect(&s_ws_core, (ws_video_conn_t)(intptr_t)fd, fd, token, esp_timer_get_time() / 1000);
     xSemaphoreGive(s_ws_mutex);
@@ -836,14 +845,6 @@ static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
         // Core failed to register (e.g., max clients reached).
         // on_connect cleans up anything internally so we don't leak hub registration slots.
         return ESP_FAIL;
-    }
-
-    struct timeval tv = {
-        .tv_sec = CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS / 1000,
-        .tv_usec = (CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS % 1000) * 1000,
-    };
-    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
-        ESP_LOGW(TAG, "Failed to set SO_SNDTIMEO on WS video fd=%d (errno=%d)", fd, errno);
     }
 
     ESP_LOGI(TAG, "WS video registered fd=%d (SO_SNDTIMEO=%d ms)", fd, CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS);
