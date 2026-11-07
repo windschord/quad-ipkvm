@@ -28,6 +28,8 @@
 // We deliberately include this unconditionally to ensure the header builds correctly regardless of toggle
 #include "tc358743.h"
 #include "mipi_phy_power.h"
+#include "csi_capture.h"
+#include <inttypes.h>
 #include "net_eth.h"
 #include "driver/i2c_master.h"
 #include "frame_hub.h"
@@ -68,6 +70,111 @@ static void app_lock(void* ctx) {
 static void app_unlock(void* ctx) {
     xSemaphoreGive((SemaphoreHandle_t)ctx);
 }
+
+#if CONFIG_CSI_CAPTURE_TEST
+// P2b-4 bring-up: receive RGB888 frames into PSRAM and log raw-data statistics.
+// Memory order is expected to be B,G,R per pixel on rev v1.3 [参照: docs/P2B_TC358743_REFERENCE.md 4-2].
+static void log_frame_stats(int n, const uint8_t* p, size_t len, uint32_t width) {
+    uint64_t sum[3] = {0, 0, 0};
+    uint32_t samples = 0, nonzero = 0;
+    uint8_t mn = 0xFF, mx = 0;
+    uint32_t checksum = 0;
+    for (size_t i = 0; i + 2 < len; i += 3) {
+        uint8_t b0 = p[i], b1 = p[i + 1], b2 = p[i + 2];
+        checksum = checksum * 31u + b0 + b1 + b2;
+        if (b0 | b1 | b2) nonzero++;
+        if ((i / 3) % 101 == 0) {  // sparse sample for channel means
+            sum[0] += b0; sum[1] += b1; sum[2] += b2;
+            samples++;
+            uint8_t lo = b0 < b1 ? (b0 < b2 ? b0 : b2) : (b1 < b2 ? b1 : b2);
+            uint8_t hi = b0 > b1 ? (b0 > b2 ? b0 : b2) : (b1 > b2 ? b1 : b2);
+            if (lo < mn) mn = lo;
+            if (hi > mx) mx = hi;
+        }
+    }
+    size_t mid = ((len / 3) / 2) * 3;  // centre-ish pixel
+    ESP_LOGI(TAG, "frame %d: %u bytes, non-zero px %"PRIu32"/%u, mean[b0,b1,b2]=%u,%u,%u (n=%"PRIu32"), min %u max %u, "
+             "px0=%02x%02x%02x px1=%02x%02x%02x mid=%02x%02x%02x row1px0=%02x%02x%02x, hash %08"PRIx32,
+             n, (unsigned)len, nonzero, (unsigned)(len / 3),
+             samples ? (unsigned)(sum[0] / samples) : 0u, samples ? (unsigned)(sum[1] / samples) : 0u,
+             samples ? (unsigned)(sum[2] / samples) : 0u, samples, mn, mx,
+             p[0], p[1], p[2], p[3], p[4], p[5], p[mid], p[mid + 1], p[mid + 2],
+             p[width * 3], p[width * 3 + 1], p[width * 3 + 2], checksum);
+}
+
+static void run_csi_capture_test(tc358743_handle_t tc_dev) {
+    uint32_t w = 0, h = 0;
+    esp_err_t err = tc358743_get_active_size(tc_dev, &w, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "CSI capture test skipped: no active size (%s)", esp_err_to_name(err));
+        return;
+    }
+    csi_capture_config_t cfg = {
+        .width = w,
+        .height = h,
+        .max_width = CONFIG_CSI_CAPTURE_MAX_WIDTH,
+        .max_height = CONFIG_CSI_CAPTURE_MAX_HEIGHT,
+        .lane_bit_rate_mbps = 972,  // must match tc358743_mode_t.lane_rate_mbps
+        .data_lanes = 2,
+        .skip_frames = 1,           // the first completion may start mid-frame
+        .create_isp_bypass = CONFIG_CSI_CAPTURE_ISP_BYPASS,
+    };
+    csi_capture_handle_t cap = NULL;
+    err = csi_capture_open(&cfg, &cap);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "csi_capture_open failed: %s", esp_err_to_name(err));
+        return;
+    }
+    ESP_LOGI(TAG, "Free PSRAM after capture buffers: %u bytes",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    err = csi_capture_start(cap);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "csi_capture_start failed: %s", esp_err_to_name(err));
+        csi_capture_close(cap);
+        return;
+    }
+    csi_capture_log_hw_state(cap, "after start");
+
+    int got = 0, timeouts = 0;
+    for (int n = 0; n < CONFIG_CSI_CAPTURE_TEST_FRAMES && timeouts < 3; n++) {
+        const uint8_t* data = NULL;
+        size_t len = 0;
+        int idx = -1;
+        err = csi_capture_acquire(cap, 1000, &data, &len, &idx);
+        if (err != ESP_OK) {
+            timeouts++;
+            csi_capture_stats_t st;
+            csi_capture_get_stats(cap, &st);
+            ESP_LOGW(TAG, "No frame within 1000 ms (%s); DMA completions so far: %"PRIu32,
+                     esp_err_to_name(err), st.completed);
+            csi_capture_log_hw_state(cap, "timeout");
+            continue;
+        }
+        got++;
+        if (got <= 3 || got == CONFIG_CSI_CAPTURE_TEST_FRAMES) {
+            log_frame_stats(got, data, len, w);
+        }
+        csi_capture_release(cap, idx);
+    }
+
+    csi_capture_log_hw_state(cap, "before stop");
+    csi_capture_stats_t st;
+    csi_capture_get_stats(cap, &st);
+    double fps = 0.0;
+    if (st.completed > 1 && st.last_frame_us > st.first_frame_us) {
+        fps = (double)(st.completed - 1) * 1e6 / (double)(st.last_frame_us - st.first_frame_us);
+    }
+    ESP_LOGI(TAG, "CSI capture test: %dx%d, acquired %d frames, DMA completions %"PRIu32", published %"PRIu32
+             ", overwritten %"PRIu32", DMA rate %.2f fps",
+             (int)st.width, (int)st.height, got, st.completed, st.published, st.overwritten, fps);
+
+    // Stop the CSI DMA before anything else (it writes PSRAM continuously; see csi_capture.h).
+    err = csi_capture_close(cap);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "csi_capture_close failed: %s", esp_err_to_name(err));
+    }
+}
+#endif
 
 void app_main(void)
 {
@@ -218,6 +325,11 @@ void app_main(void)
             }
             // 診断（読み出しのみ）。START_CSI=n でも出す（段階 2 の確認用）。
             tc358743_dump_diagnostics(tc_dev);
+
+#if CONFIG_CSI_CAPTURE_TEST
+            run_csi_capture_test(tc_dev);
+            tc358743_dump_diagnostics(tc_dev);
+#endif
 
             // tc358743_poll_interrupts(tc_dev);
         } else {

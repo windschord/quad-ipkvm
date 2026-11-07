@@ -465,6 +465,23 @@ void tc358743_dump_diagnostics(tc358743_handle_t dev) {
     ESP_LOGI(TAG, "--------------------------------");
 }
 
+esp_err_t tc358743_get_active_size(tc358743_handle_t dev, uint32_t* out_width, uint32_t* out_height) {
+    if (!dev || !out_width || !out_height) return ESP_ERR_INVALID_ARG;
+    uint8_t sys_status = 0;
+    esp_err_t err = tc_read8(dev, SYS_STATUS, &sys_status);
+    if (err != ESP_OK) return err;
+    // Source: tc358743_regs.h MASK_S_SYNC = 0x80
+    if (!(sys_status & 0x80)) return ESP_ERR_INVALID_STATE;
+    uint16_t w = 0, h = 0;
+    if (!tc_read_pair_le16(dev, DE_WIDTH_H_LO, DE_WIDTH_H_HI, &w) ||
+        !tc_read_pair_le16(dev, DE_WIDTH_V_LO, DE_WIDTH_V_HI, &h)) {
+        return ESP_FAIL;
+    }
+    *out_width = w;
+    *out_height = h;
+    return ESP_OK;
+}
+
 uint16_t tc358743_poll_interrupts(tc358743_handle_t dev) {
     if (!dev) return 0;
 
