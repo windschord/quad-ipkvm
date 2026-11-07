@@ -323,6 +323,7 @@ void test_fuzz_invariants(void) {
     ws_video_core_config_t cfg = {
         .max_clients = 5,
         .session_check_interval_ms = 1000,
+        .send_timeout_ms = 400,
         .hub_register = f_mock_hub_register,
         .hub_unregister = f_mock_hub_unregister,
         .hub_get_latest = f_mock_hub_get_latest,
@@ -438,6 +439,12 @@ void test_on_connect_rejection_unregisters_hub(void);
 void test_request_close_called_only_once(void);
 void test_slot_reuse_clears_close_requested(void);
 void test_init_rejects_each_null_callback(void);
+void test_send_timeout_requests_close_at_exact_boundary(void);
+void test_send_timeout_zero_disables_stall_disconnect(void);
+void test_send_timeout_resets_for_each_new_frame(void);
+void test_send_timeout_completed_send_does_not_timeout_when_idle(void);
+void test_send_timeout_clock_rollback_clamps_without_false_close(void);
+void test_send_timeout_session_invalid_still_checked_while_sending(void);
 
 int main(void) {
     UNITY_BEGIN();
@@ -463,6 +470,12 @@ int main(void) {
     RUN_TEST(test_request_close_called_only_once);
     RUN_TEST(test_slot_reuse_clears_close_requested);
     RUN_TEST(test_init_rejects_each_null_callback);
+    RUN_TEST(test_send_timeout_requests_close_at_exact_boundary);
+    RUN_TEST(test_send_timeout_zero_disables_stall_disconnect);
+    RUN_TEST(test_send_timeout_resets_for_each_new_frame);
+    RUN_TEST(test_send_timeout_completed_send_does_not_timeout_when_idle);
+    RUN_TEST(test_send_timeout_clock_rollback_clamps_without_false_close);
+    RUN_TEST(test_send_timeout_session_invalid_still_checked_while_sending);
 
     return UNITY_END();
 }
@@ -568,4 +581,159 @@ void test_init_rejects_each_null_callback(void) {
         ws_video_core_t test_core;
         TEST_ASSERT_EQUAL(-1, ws_video_core_init(&test_core, &cfg));
     }
+}
+
+static void init_with_send_timeout(uint64_t send_timeout_ms, uint64_t session_interval_ms) {
+    ws_video_core_destroy(&core);
+    reset_mocks();
+    ws_video_core_config_t cfg = {
+        .max_clients = 2,
+        .session_check_interval_ms = session_interval_ms,
+        .send_timeout_ms = send_timeout_ms,
+        .hub_register = mock_hub_register,
+        .hub_unregister = mock_hub_unregister,
+        .hub_get_latest = mock_hub_get_latest,
+        .hub_release = mock_hub_release,
+        .io_begin_send = mock_io_begin_send,
+        .io_request_close = mock_io_request_close,
+        .io_validate_session = mock_io_validate_session,
+        .user_data = NULL
+    };
+    TEST_ASSERT_EQUAL(0, ws_video_core_init(&core, &cfg));
+}
+
+void test_send_timeout_requests_close_at_exact_boundary(void) {
+    init_with_send_timeout(3000, 10000);
+    uint8_t token[32] = {1};
+
+    TEST_ASSERT_EQUAL(0, ws_video_core_on_connect(&core, (ws_video_conn_t)1, 10, token, 100));
+    TEST_ASSERT_EQUAL(1, ws_video_core_on_connect(&core, (ws_video_conn_t)2, 11, token, 100));
+
+    ws_video_core_tick(&core, 100);
+    TEST_ASSERT_EQUAL(2, io_begin_count);
+
+    // Client 1 finishes normally; Client 0 stalls
+    ws_video_core_on_send_done(&core, 11, true);
+    TEST_ASSERT_EQUAL(1, hub_rel_count);
+
+    // 1 ms before timeout (elapsed = 2999 ms): must NOT disconnect
+    ws_video_core_tick(&core, 3099);
+    TEST_ASSERT_EQUAL(0, io_close_count);
+    TEST_ASSERT_NOT_NULL(core.current_frames[0]);
+    TEST_ASSERT_EQUAL(2, hub_rel_count); // Client 1 send_done (1) + Client 1 dup-seq release (1); Client 0 still holding!
+    int rel_before_timeout;
+
+    // Exact boundary (elapsed = 3000 ms): must request close on stalled Client 0 only
+    ws_video_core_tick(&core, 3100);
+    TEST_ASSERT_EQUAL(1, io_close_count);
+    TEST_ASSERT_EQUAL((ws_video_conn_t)1, io_close_last_conn);
+    // In-flight frame on Client 0 must remain held until on_send_done!
+    TEST_ASSERT_NOT_NULL(core.current_frames[0]);
+    TEST_ASSERT_FALSE(core.close_requested[1]);
+
+    // Healthy Client 1 continues to receive new frames unaffected
+    mock_frame.seq = 2;
+    int begins_before = io_begin_count;
+    ws_video_core_tick(&core, 3200);
+    TEST_ASSERT_EQUAL(begins_before + 1, io_begin_count);
+    TEST_ASSERT_EQUAL(1, io_close_count); // Close NOT requested a second time on Client 0
+
+    // Deferred unregister order: on_close arrives before on_send_done on stalled Client 0
+    ws_video_core_on_close(&core, 10);
+    TEST_ASSERT_EQUAL(0, hub_unreg_count);
+    TEST_ASSERT_NOT_NULL(core.current_frames[0]);
+
+    rel_before_timeout = hub_rel_count;
+    ws_video_core_on_send_done(&core, 10, false);
+    TEST_ASSERT_EQUAL(rel_before_timeout + 1, hub_rel_count);
+    TEST_ASSERT_EQUAL(1, hub_unreg_count);
+    TEST_ASSERT_EQUAL(100, hub_unreg_last_id);
+    TEST_ASSERT_EQUAL(1, io_close_count);
+}
+
+void test_send_timeout_zero_disables_stall_disconnect(void) {
+    init_with_send_timeout(0, 10000);
+    uint8_t token[32] = {1};
+    TEST_ASSERT_EQUAL(0, ws_video_core_on_connect(&core, (ws_video_conn_t)1, 10, token, 0));
+
+    ws_video_core_tick(&core, 0);
+    TEST_ASSERT_EQUAL(1, io_begin_count);
+
+    ws_video_core_tick(&core, 100000);
+    TEST_ASSERT_EQUAL(0, io_close_count);
+}
+
+void test_send_timeout_resets_for_each_new_frame(void) {
+    init_with_send_timeout(3000, 100000);
+    uint8_t token[32] = {1};
+    TEST_ASSERT_EQUAL(0, ws_video_core_on_connect(&core, (ws_video_conn_t)1, 10, token, 0));
+
+    // Frame 1 starts at t=0, finishes at t=2500 (< 3000)
+    ws_video_core_tick(&core, 0);
+    TEST_ASSERT_EQUAL(1, io_begin_count);
+    ws_video_core_on_send_done(&core, 10, true);
+
+    // Frame 2 starts at t=2600
+    mock_frame.seq = 2;
+    ws_video_core_tick(&core, 2600);
+    TEST_ASSERT_EQUAL(2, io_begin_count);
+
+    // At t=3000 (400 ms into Frame 2) and t=5599 (2999 ms into Frame 2): must NOT close
+    ws_video_core_tick(&core, 3000);
+    TEST_ASSERT_EQUAL(0, io_close_count);
+    ws_video_core_tick(&core, 5599);
+    TEST_ASSERT_EQUAL(0, io_close_count);
+
+    // At t=5600 (3000 ms into Frame 2): must close
+    ws_video_core_tick(&core, 5600);
+    TEST_ASSERT_EQUAL(1, io_close_count);
+}
+
+void test_send_timeout_completed_send_does_not_timeout_when_idle(void) {
+    init_with_send_timeout(3000, 100000);
+    uint8_t token[32] = {1};
+    TEST_ASSERT_EQUAL(0, ws_video_core_on_connect(&core, (ws_video_conn_t)1, 10, token, 100));
+
+    ws_video_core_tick(&core, 100);
+    ws_video_core_on_send_done(&core, 10, true);
+
+    // Client is idle (no new frames); elapsed > 3000 must NOT disconnect an idle healthy client
+    hub_return_null = true;
+    ws_video_core_tick(&core, 5000);
+    TEST_ASSERT_EQUAL(0, io_close_count);
+}
+
+void test_send_timeout_clock_rollback_clamps_without_false_close(void) {
+    init_with_send_timeout(3000, 100000);
+    uint8_t token[32] = {1};
+    TEST_ASSERT_EQUAL(0, ws_video_core_on_connect(&core, (ws_video_conn_t)1, 10, token, 5000));
+
+    ws_video_core_tick(&core, 5000);
+    TEST_ASSERT_EQUAL(1, io_begin_count);
+
+    // Clock jumps backwards from 5000 -> 1000: must NOT underflow and immediately close
+    ws_video_core_tick(&core, 1000);
+    TEST_ASSERT_EQUAL(0, io_close_count);
+
+    // Clamped to 1000: 1000 + 2999 = 3999 still open, 1000 + 3000 = 4000 closes
+    ws_video_core_tick(&core, 3999);
+    TEST_ASSERT_EQUAL(0, io_close_count);
+
+    ws_video_core_tick(&core, 4000);
+    TEST_ASSERT_EQUAL(1, io_close_count);
+}
+
+void test_send_timeout_session_invalid_still_checked_while_sending(void) {
+    init_with_send_timeout(5000, 1000);
+    uint8_t token[32] = {1};
+    TEST_ASSERT_EQUAL(0, ws_video_core_on_connect(&core, (ws_video_conn_t)1, 10, token, 0));
+
+    ws_video_core_tick(&core, 0);
+    TEST_ASSERT_EQUAL(1, io_begin_count);
+
+    // Session invalidated at t=1000 while send is still in flight (< 5000 ms)
+    io_val_ret = false;
+    ws_video_core_tick(&core, 1000);
+    TEST_ASSERT_EQUAL(1, io_val_count);
+    TEST_ASSERT_EQUAL(1, io_close_count);
 }

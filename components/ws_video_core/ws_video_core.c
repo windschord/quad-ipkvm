@@ -67,6 +67,7 @@ int ws_video_core_on_connect(ws_video_core_t* core, ws_video_conn_t conn, int fd
     memcpy(core->tokens[slot], token, 32);
     core->current_frames[slot] = NULL;
     core->last_seqs[slot] = -1;
+    core->send_started_ms[slot] = 0;
     core->close_requested[slot] = false;
 
     return slot;
@@ -85,7 +86,9 @@ void ws_video_core_on_close(ws_video_core_t* core, int fd) {
     if (!was_sending) {
         // Safe to unregister immediately
         core->config.hub_unregister(core->config.user_data, hub_client_id);
-        memset(core->tokens[slot], 0, 32); core->close_requested[slot] = false;
+        memset(core->tokens[slot], 0, 32);
+        core->send_started_ms[slot] = 0;
+        core->close_requested[slot] = false;
     }
     // If it was sending, the state is now CLOSING. We will unregister in on_send_done.
 }
@@ -117,7 +120,9 @@ void ws_video_core_on_send_done(ws_video_core_t* core, int fd, bool ok) {
     if (core->clients.clients[slot].state == WS_CLIENT_FREE) {
         // Was CLOSING, now FREE. Time to unregister.
         core->config.hub_unregister(core->config.user_data, hub_client_id);
-        memset(core->tokens[slot], 0, 32); core->close_requested[slot] = false;
+        memset(core->tokens[slot], 0, 32);
+        core->send_started_ms[slot] = 0;
+        core->close_requested[slot] = false;
     }
 }
 
@@ -147,6 +152,19 @@ void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
             }
         }
 
+        // Send stall check while a frame is in flight
+        if (core->clients.clients[i].is_sending) {
+            if (core->config.send_timeout_ms > 0) {
+                if (now_ms < core->send_started_ms[i]) {
+                    core->send_started_ms[i] = now_ms;
+                } else if ((now_ms - core->send_started_ms[i]) >= core->config.send_timeout_ms) {
+                    do_request_close(core, i);
+                    continue;
+                }
+            }
+            continue;
+        }
+
         // Try to send
         if (ws_clients_try_begin_send(&core->clients, i)) {
             int hub_client_id = core->clients.clients[i].hub_client_id;
@@ -168,6 +186,7 @@ void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
                 // Success
                 core->current_frames[i] = frame;
                 core->last_seqs[i] = frame->seq; // Update last_seq AFTER successful begin_send
+                core->send_started_ms[i] = now_ms;
             } else {
                 // Fail
                 core->config.hub_release(core->config.user_data, hub_client_id, frame);

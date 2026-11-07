@@ -20,6 +20,7 @@
 
 
 #include "lwip/sockets.h"
+#include <errno.h>
 #include <string.h>
 #include "auth_crypto_mbedtls.h"
 #include "web_assets.h"
@@ -749,6 +750,9 @@ static void ws_video_hub_release(void* user_data, int hub_client_id, const video
 }
 
 static void ws_video_send_done_cb(esp_err_t err, int socket, void *arg) {
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "WS video send failed on fd=%d (err=0x%x)", socket, (unsigned)err);
+    }
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     ws_video_core_on_send_done(&s_ws_core, socket, err == ESP_OK);
     xSemaphoreGive(s_ws_mutex);
@@ -772,6 +776,7 @@ static void ws_video_io_request_close(void* user_data, ws_video_conn_t conn) {
     httpd_handle_t server = user_data ? ((ws_ctx_t *)user_data)->server : NULL;
     if (!server) return;
     int fd = (int)(intptr_t)conn;
+    ESP_LOGI(TAG, "WS video requesting close on fd=%d", fd);
     httpd_sess_trigger_close(server, fd);
 }
 
@@ -823,6 +828,15 @@ static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
     }
 
     int fd = httpd_req_to_sockfd(req);
+    struct timeval tv = {
+        .tv_sec = CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS / 1000,
+        .tv_usec = (CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS % 1000) * 1000,
+    };
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+        ESP_LOGW(TAG, "Failed to set SO_SNDTIMEO on WS video fd=%d (errno=%d)", fd, errno);
+        return ESP_FAIL;
+    }
+
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     int ret = ws_video_core_on_connect(&s_ws_core, (ws_video_conn_t)(intptr_t)fd, fd, token, esp_timer_get_time() / 1000);
     xSemaphoreGive(s_ws_mutex);
@@ -832,6 +846,8 @@ static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
         // on_connect cleans up anything internally so we don't leak hub registration slots.
         return ESP_FAIL;
     }
+
+    ESP_LOGI(TAG, "WS video registered fd=%d (SO_SNDTIMEO=%d ms)", fd, CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS);
     return ESP_OK;
 }
 
@@ -872,8 +888,12 @@ static esp_err_t ws_video_handler(httpd_req_t *req) {
 
 static void ws_video_close_fn(httpd_handle_t handle, int sockfd) {
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    bool tracked = (ws_clients_find(&s_ws_core.clients, sockfd) >= 0);
     ws_video_core_on_close(&s_ws_core, sockfd);
     xSemaphoreGive(s_ws_mutex);
+    if (tracked) {
+        ESP_LOGI(TAG, "WS video client closed fd=%d", sockfd);
+    }
     close(sockfd);
 }
 
@@ -922,6 +942,7 @@ esp_err_t web_server_start(frame_hub_t *hub) {
     ws_video_core_config_t ws_config = {
         .max_clients = CONFIG_WEB_SERVER_WS_MAX_CLIENTS,
         .session_check_interval_ms = 5000,
+        .send_timeout_ms = CONFIG_WEB_SERVER_WS_SEND_TIMEOUT_MS,
         .hub_register = ws_video_hub_register,
         .hub_unregister = ws_video_hub_unregister,
         .hub_get_latest = ws_video_hub_get_latest,
