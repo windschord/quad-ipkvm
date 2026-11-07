@@ -168,7 +168,7 @@ HANDOFF の範囲に、**状態表示用の OLED** と、パネル用の **I/O �
 | ID | 状態 | 内容 |
 |---|---|---|
 | T0-1、TB-1、TC-1、P2a | 完了 | 雛形と CI、`kvm_logic`（ホストテスト）、`HW_VERIFY`、TC358743 の I2C。 |
-| **P2b** | **完了 [実機]** | CSI で RGB888 を受信し、HW JPEG で `frame_hub` に配信。**720p60 入力: CSI 59.95 fps で受信、JPEG 30.00 fps（約 114KB）**。**1080p30 入力: JPEG 15.00 fps**（エンコード 52.7ms。JPEG は平均約 154KB、ピーク 198KB ＝ 静止画面と通常のデスクトップ操作だけの実測）。720p60 ↔ 1080p30 の往復切替に無停止で追従（4.39 時間、累積約 47 万フレームでエラー 0）。**既定: RGB888・972 Mbps・2 レーン・EDID は 720p60 のみ**。`TC358743_EDID_1080P30`、UYVY、594/445 Mbps は実験用（実測で 972 Mbps の RGB888 が最速）。実装: `tc358743`、`csi_capture`、`csi_video_source`（PR #76〜#80、担当 Antigravity）。 |
+| **P2b** | **完了 [実機]** | CSI で RGB888 を受信し、HW JPEG で `frame_hub` に配信。**720p60 入力: CSI 59.95 fps で受信、JPEG 30.00 fps（約 114KB）**。**1080p30 入力: JPEG 15.00 fps**（エンコード 52.7ms。JPEG は平均約 154KB、ピーク 198KB ＝ 静止画面と通常のデスクトップ操作だけの実測）。720p60 ↔ 1080p30 の往復切替に無停止で追従（4.39 時間、累積約 47 万フレームでエラー 0）。**既定: RGB888・972 Mbps・2 レーン・EDID は 720p60 が最大（優先モードは 1280x720@60。640x480@60 も広告する。`HW_VERIFY` E12）**。`TC358743_EDID_1080P30`、UYVY、594/445 Mbps は実験用（実測で 972 Mbps の RGB888 が最速）。実装: `tc358743`、`csi_capture`、`csi_video_source`（PR #76〜#80、担当 Antigravity）。 |
 | **P3** | **完了 [実機]** | HTTPS、認証、`WS /video`、最小ビューア。遅いクライアントの停止対策（送信タイムアウト切断 + 映像ソケットの `SO_SNDTIMEO`、PR #81）。認証の成功経路のスモークテスト `tools/https_smoke_auth.sh`（PR #75）は**ホスト（モック）まで。実機では未実行**。 |
 | P4 | 未着手 [未] | HID（`hid_logic` + TinyUSB + `WS /ws`）。 |
 | P5 | 準備のみ [ホスト] | `csi_video_source_get_status` / `get_sync_state` / `get_mode`（契約は `INTERFACES.md` 1.3、実装済み）。`kvm_logic` への配線と KVM 経由の確認は未着手。 |
