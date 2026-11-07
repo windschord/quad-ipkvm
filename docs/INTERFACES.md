@@ -84,3 +84,75 @@ void csi_video_source_get_status(csi_video_status_t *out);
 1. 契約を変えたい担当は、Issue を立てる（ラベル `contract`）。
 2. 双方が合意したら、変更の PR を出す（本文に「契約の変更」の節）。
 3. マージは、オーナーの指示で行う。
+
+## 5. 入力: `hid_logic`（Claude）→ USB（Antigravity）
+
+Issue #84（C-4）と #89（A-8）の境界。**`hid_logic` は純 C で、USB を知らない。** USB への出力は、**シンク**（`hid_sink_t`）を通して、Antigravity の `components/usb_hid`（TinyUSB）が実装する。Kconfig の接頭辞: `HID_*` = Claude、`USB_DEVICE_*` = Antigravity。
+
+### 5.1 レポートの型（`components/hid_logic/include/hid_report.h`）
+
+```c
+#define HID_ABS_MAX 32767           // 絶対ポインタの座標は 0..32767（論理最大値）
+
+typedef struct {                    // ブートキーボードのレポート（USB 上は 8 バイト: modifiers, 0x00, keys[0..5]）
+    uint8_t modifiers;              // bit0 LCtrl, 1 LShift, 2 LAlt, 3 LGUI, 4 RCtrl, 5 RShift, 6 RAlt, 7 RGUI
+    uint8_t keys[6];                // HID Usage（Keyboard/Keypad Page 0x07）。0 = なし。7 個以上のときは全部 0x01（ErrorRollOver）
+} hid_kbd_report_t;
+
+typedef struct {                    // 絶対ポインタ
+    uint8_t  buttons;               // bit0 左, bit1 右, bit2 中（ボタンの状態は絶対・相対で共通の 1 組。種別が切り替わるときは下の規則）
+    uint16_t x, y;                  // 0..HID_ABS_MAX
+    int8_t   wheel;                 // -127..127
+} hid_abs_report_t;
+
+typedef struct {                    // 相対ポインタ（ブートマウスと同じ int8）
+    uint8_t buttons;
+    int8_t  dx, dy;                 // -127..127（大きい移動は hid_logic が複数のレポートに分ける）
+    int8_t  wheel;
+} hid_rel_report_t;
+```
+
+USB の記述子（レポート ID、インターフェースの分け方、ブートプロトコル、列挙）は **Antigravity が決める**。ブートキーボードは、BIOS のために **ブートインターフェース（レポート ID なし）**にすること（`docs/HANDOFF.md` 3 章）。
+
+### 5.2 シンク
+
+```c
+typedef struct {
+    void *ctx;
+    bool (*ready)(void *ctx);                                  // ホストが列挙済みで、送れる状態か
+    bool (*send_keyboard)(void *ctx, const hid_kbd_report_t *r);
+    bool (*send_abs)(void *ctx, const hid_abs_report_t *r);
+    bool (*send_rel)(void *ctx, const hid_rel_report_t *r);
+} hid_sink_t;
+```
+
+規則（**シンクを実装する側が守る**）:
+- **ブロックしない。** 送れなければ **すぐ `false`** を返す（未列挙、エンドポイントが使用中、サスペンド）。待たない（最悪でも数 ms）。`hid_logic` の呼び出しは、`httpd` のタスクの中で、ミューテックスを持ったまま行われる。
+- **シンクの中から `hid_logic` を呼ばない**（デッドロックを避ける）。
+- `true` は「USB のエンドポイントのバッファに積んだ」こと。ホストが読んだことまでは求めない。
+
+規則（**`hid_logic` が守る**）:
+- **キーボードとボタンは「状態」**。`send_*` が `false` を返したら、**状態を保持し、次の `tick` で最新の状態を再送する**（押しっぱなし・離しの取りこぼしを出さない）。
+- ポインタの移動は、**絶対は最新の位置だけ**、**相対は未送信の移動量を積算して（±32767 に飽和）、`int8` に分割して**送る。
+- **ポインタの種別（絶対 / 相対）が切り替わるとき**は、旧側のインターフェースへ **`buttons = 0` のレポートを先に送ってから**、新側へ送る（旧側のボタンが押されたまま残らないように。送れなければ次の `tick` で再送し、それまで新側へは送らない）。
+- **ロールオーバー（ErrorRollOver）の判定は、修飾キーを除く通常キーの数**（修飾キーは `modifiers` のビット）。
+- **`release_all`**（全キー・全ボタンを離したレポートを送る）を、次の場合に必ず行う: **操作者（所有者）の WS の切断**（`DENIED` で閉じた2つ目以降の接続など、所有者でない接続の切断では行わない）、ログアウト・セッション切れ、押しっぱなしのタイムアウト（`docs/WEB_API.md` 6 章）、USB の再列挙。
+
+USB が列挙・再開したとき、Antigravity は **`hid_logic_on_usb_mounted()` を呼ぶ**（ホスト側のキー状態がリセットされているので、`hid_logic` は状態を全部離した状態にして、ゼロのレポートを送る）。
+
+### 5.3 `hid_logic` の API（概要。詳細は Issue #84 と `hid_logic.h`）
+
+```c
+void hid_logic_init(hid_logic_t *h, const hid_logic_config_t *cfg, const hid_sink_t *sink);
+// 入力 1 メッセージ（WS のバイナリ、docs/WEB_API.md 6 章）。戻り値は enum（OK / 無効 / 範囲外 / レート超過 / 所有者でない）
+hid_result_t hid_logic_on_message(hid_logic_t *h, int owner_id, const uint8_t *msg, size_t len, uint64_t now_ms);
+void hid_logic_tick(hid_logic_t *h, uint64_t now_ms);      // 再送、押しっぱなしのタイムアウト、積算した相対移動の送出
+void hid_logic_release_all(hid_logic_t *h);
+void hid_logic_on_usb_mounted(hid_logic_t *h);
+// 操作の所有者は 1 つだけ（先着）。取れなければ DENIED
+bool hid_logic_acquire(hid_logic_t *h, int owner_id);
+void hid_logic_release_owner(hid_logic_t *h, int owner_id);   // 内部で release_all も行う
+```
+
+スレッド: **呼び出し側が 1 つのミューテックスで直列化する**（`hid_logic` 自体はロックしない）。
+
