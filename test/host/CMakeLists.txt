@@ -108,6 +108,10 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE http_guard auth_logic)
     endif()
 
+    if (test_source MATCHES "/hid_logic/")
+        target_link_libraries(${test_name} PRIVATE hid_logic)
+    endif()
+
     if (test_source MATCHES "/auth_worker_slot/")
         target_link_libraries(${test_name} PRIVATE auth_worker_slot)
         target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/auth_worker_slot/include)
@@ -178,6 +182,9 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/oled_render ${CMAKE_BINARY
 
 # Setup mcp23017_logic component
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/mcp23017_logic ${CMAKE_BINARY_DIR}/mcp23017_logic)
+
+# Setup hid_logic component (pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/hid_logic ${CMAKE_BINARY_DIR}/hid_logic)
 
 # Setup oled_ui component (pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/oled_ui ${CMAKE_BINARY_DIR}/oled_ui)

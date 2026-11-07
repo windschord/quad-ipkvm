@@ -604,7 +604,7 @@ http_guard_action_e http_guard_decide(auth_state_e state, http_guard_method_e me
             return HTTP_GUARD_ACTION_ALLOW;
         }
 
-        if (path == HTTP_GUARD_PATH_WS_VIDEO) {
+        if (path == HTTP_GUARD_PATH_WS_VIDEO || path == HTTP_GUARD_PATH_WS_INPUT) {
             if (method != HTTP_GUARD_METHOD_GET) return HTTP_GUARD_ACTION_405;
             if (!origin_ok) return HTTP_GUARD_ACTION_403_ORIGIN;
             return HTTP_GUARD_ACTION_ALLOW;
