@@ -105,25 +105,42 @@ static int8_t take_chunk(int32_t *acc) {
     return (int8_t)v;
 }
 
+static bool rel_motion_pending(const hid_logic_t *h) {
+    return h->rel_dx != 0 || h->rel_dy != 0 || h->rel_wheel != 0;
+}
+
 static bool rel_pending(const hid_logic_t *h) {
-    return h->need_rel_send || h->rel_dx != 0 || h->rel_dy != 0 || h->rel_wheel != 0;
+    return h->need_rel_send || h->rel_buttons != h->buttons || rel_motion_pending(h);
 }
 
 /* Sends the owed relative reports, at most HID_REL_MAX_REPORTS_PER_CALL per call (the rest goes out on the next tick).
- * `owe_report` forces one report even without movement (a button change is state and must reach the target). */
+ * `owe_report` forces one report even without movement (a button change is state and must reach the target).
+ * Movement that has not been sent yet keeps the button state it was made under (`rel_buttons`); a changed button
+ * state follows in its own report once that movement is out, so a click never lands before the cursor arrives. */
 static void send_rel(hid_logic_t *h, bool owe_report) {
+    if (h->last_ptr_type != HID_PTR_TYPE_REL) {
+        /* The relative interface is not the active pointer: its state is not ours to send (the switch already
+         * released it), and the button state belongs to the other interface. */
+        h->rel_dx = h->rel_dy = h->rel_wheel = 0;
+        h->rel_buttons = h->buttons;
+        h->need_rel_send = false;
+        return;
+    }
     if (owe_report) h->need_rel_send = true;
     if (!rel_pending(h)) return;
     if (!resolve_ptr_switch(h) || !sink_ready(h)) return;
     if (!h->sink.send_rel) { /* no sink: nothing can be delivered, drop it */
         h->rel_dx = h->rel_dy = h->rel_wheel = 0;
+        h->rel_buttons = h->buttons;
         h->need_rel_send = false;
         return;
     }
 
-    for (int n = 0; n < HID_REL_MAX_REPORTS_PER_CALL && rel_pending(h); n++) {
+    while (h->rel_budget > 0 && rel_pending(h)) {
+        h->rel_budget--;
+        bool motion = rel_motion_pending(h);
         hid_rel_report_t r = {0};
-        r.buttons = h->buttons;
+        r.buttons = motion ? h->rel_buttons : h->buttons;
         r.dx = take_chunk(&h->rel_dx);
         r.dy = take_chunk(&h->rel_dy);
         r.wheel = take_chunk(&h->rel_wheel);
@@ -134,6 +151,7 @@ static void send_rel(hid_logic_t *h, bool owe_report) {
             h->need_rel_send = true;
             return;
         }
+        h->rel_buttons = r.buttons;
         h->need_rel_send = false;
     }
 }
@@ -168,6 +186,7 @@ static void update_tokens(hid_logic_t *h, uint64_t now_ms) {
 }
 
 void hid_logic_release_all(hid_logic_t *h) {
+    h->rel_budget = HID_REL_MAX_REPORTS_PER_CALL;
     h->modifiers = 0;
     h->num_keys = 0;
     send_kbd(h);
@@ -206,6 +225,7 @@ void hid_logic_release_owner(hid_logic_t *h, int owner_id) {
 }
 
 void hid_logic_tick(hid_logic_t *h, uint64_t now_ms) {
+    h->rel_budget = HID_REL_MAX_REPORTS_PER_CALL;
     if (now_ms < h->last_tick_time) {
         h->last_msg_time = now_ms;
         h->token_last_update = now_ms;
@@ -234,6 +254,7 @@ void hid_logic_tick(hid_logic_t *h, uint64_t now_ms) {
 }
 
 hid_result_t hid_logic_on_message(hid_logic_t *h, int owner_id, const uint8_t *msg, size_t len, uint64_t now_ms) {
+    h->rel_budget = HID_REL_MAX_REPORTS_PER_CALL;
     if (now_ms < h->last_tick_time) {
         h->last_msg_time = now_ms;
         h->token_last_update = now_ms;
@@ -327,10 +348,7 @@ hid_result_t hid_logic_on_message(hid_logic_t *h, int owner_id, const uint8_t *m
 
         case HID_MSG_TYPE_PTR_ABS:
             if (h->last_ptr_type == HID_PTR_TYPE_REL) {
-                h->ptr_switch_pending = true;
-                /* Movement not yet sent belongs to the old pointer: drop it so it cannot leak this button state. */
-                h->rel_dx = h->rel_dy = h->rel_wheel = 0;
-                h->need_rel_send = false;
+                h->ptr_switch_pending = true; /* send_rel() drops relative state while absolute is active */
             }
             h->last_ptr_type = HID_PTR_TYPE_ABS;
             h->buttons = m.data.ptr_abs.buttons;
@@ -347,7 +365,13 @@ hid_result_t hid_logic_on_message(hid_logic_t *h, int owner_id, const uint8_t *m
                 h->need_abs_retransmit = false; /* superseded by the release report sent on the switch */
             }
             h->last_ptr_type = HID_PTR_TYPE_REL;
+            if (m.data.ptr_rel.buttons != h->buttons && rel_motion_pending(h)) {
+                send_rel(h, false); /* push the backlog out with the old button state first */
+            }
             h->buttons = m.data.ptr_rel.buttons;
+            if (!rel_motion_pending(h)) {
+                h->rel_buttons = h->buttons; /* no backlog: this message's movement and buttons form one report */
+            }
             int32_t dx = h->rel_dx + m.data.ptr_rel.dx;
             h->rel_dx = CLAMP(dx, -32767, 32767);
             int32_t dy = h->rel_dy + m.data.ptr_rel.dy;

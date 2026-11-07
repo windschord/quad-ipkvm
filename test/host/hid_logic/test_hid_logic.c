@@ -676,6 +676,46 @@ void test_usb_mounted_discards_unsent_relative_movement(void) {
     TEST_ASSERT_TRUE(ctx.rel_count >= 1); // the all-released report itself still goes out
 }
 
+void test_click_never_overtakes_unsent_movement(void) {
+    /* The sink is stuck: movement is queued, then a click arrives. The movement must go out under the OLD button
+     * state, the press afterwards (otherwise the click lands before the cursor arrives). */
+    uint8_t move[] = {0x11, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00};
+    uint8_t click[] = {0x11, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00};
+    ctx.is_ready = false;
+    send_msg(move, 7);
+    send_msg(click, 7);
+    TEST_ASSERT_EQUAL(0, ctx.rel_count);
+    ctx.is_ready = true;
+    hid_logic_tick(&logic, now);
+    TEST_ASSERT_EQUAL(2, ctx.rel_count);
+    TEST_ASSERT_EQUAL(10, ctx.rel[0].dx);
+    TEST_ASSERT_EQUAL(0, ctx.rel[0].buttons);
+    TEST_ASSERT_EQUAL(0, ctx.rel[1].dx);
+    TEST_ASSERT_EQUAL(1, ctx.rel[1].buttons);
+}
+
+void test_button_change_flushes_the_backlog_first(void) {
+    uint8_t move[] = {0x11, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00};
+    uint8_t press[] = {0x11, 0x01, 0x05, 0x00, 0x00, 0x00, 0x00}; /* press + 5 counts */
+    ctx.fail_rel_next = 1; /* the movement report is refused once and stays queued */
+    send_msg(move, 7);
+    TEST_ASSERT_EQUAL(0, ctx.rel_count);
+    send_msg(press, 7); /* the sink is fine now: backlog first under the old buttons, then the press with its own movement */
+    TEST_ASSERT_EQUAL(2, ctx.rel_count);
+    TEST_ASSERT_EQUAL(10, ctx.rel[0].dx);
+    TEST_ASSERT_EQUAL(0, ctx.rel[0].buttons);
+    TEST_ASSERT_EQUAL(5, ctx.rel[1].dx); /* not merged into the backlog */
+    TEST_ASSERT_EQUAL(1, ctx.rel[1].buttons);
+}
+
+void test_movement_in_a_button_message_travels_with_the_new_buttons(void) {
+    uint8_t drag[] = {0x11, 0x01, 0x05, 0x00, 0x00, 0x00, 0x00}; /* press + 5 counts, nothing queued before */
+    send_msg(drag, 7);
+    TEST_ASSERT_EQUAL(1, ctx.rel_count);
+    TEST_ASSERT_EQUAL(5, ctx.rel[0].dx);
+    TEST_ASSERT_EQUAL(1, ctx.rel[0].buttons);
+}
+
 void test_rate_bucket_refill_rate_and_cap(void) {
     uint8_t ka[] = {0x04};
     for (int i = 0; i < 100; i++) TEST_ASSERT_EQUAL(HID_RESULT_OK, send_msg(ka, 1));
@@ -749,6 +789,9 @@ int main(void) {
     RUN_TEST(test_release_owner_only_for_the_owner_and_releases_everything);
     RUN_TEST(test_usb_mounted_drops_a_pending_pointer_switch);
     RUN_TEST(test_usb_mounted_discards_unsent_relative_movement);
+    RUN_TEST(test_click_never_overtakes_unsent_movement);
+    RUN_TEST(test_button_change_flushes_the_backlog_first);
+    RUN_TEST(test_movement_in_a_button_message_travels_with_the_new_buttons);
     RUN_TEST(test_rate_bucket_refill_rate_and_cap);
     RUN_TEST(test_abuse_window_resets);
     RUN_TEST(test_release_all_clears_modifiers_buttons_and_both_pointers);

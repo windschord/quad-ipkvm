@@ -62,6 +62,8 @@ typedef struct {
     // Retransmission state
     bool need_kbd_retransmit;
     bool need_abs_retransmit; // Indicates if absolute pointer needs sending/retransmission
+    uint8_t rel_buttons;      // Button state the unsent relative movement belongs to (what the relative interface last saw)
+    int rel_budget;           // Relative reports still allowed in the current call (reset at every entry point)
     bool need_rel_send;       // A relative report is owed even without movement (button change)
     bool ptr_switch_pending;  // Indicates an old pointer type zero-button event is pending to be sent
 
@@ -80,12 +82,27 @@ typedef struct {
     uint32_t invalid_count;
 } hid_logic_t;
 
+/** Initializes `h`. `cfg` may be NULL (defaults from this header). `sink` is copied; its callbacks must not block and
+ *  must not call back into hid_logic. */
 void hid_logic_init(hid_logic_t *h, const hid_logic_config_t *cfg, const hid_sink_t *sink);
+
+/** Handles one WebSocket input message from `owner_id` at time `now_ms`. Never logs the message content.
+ *  HID_RESULT_ABUSE means the caller should release_all and close the connection. */
 hid_result_t hid_logic_on_message(hid_logic_t *h, int owner_id, const uint8_t *msg, size_t len, uint64_t now_ms);
+
+/** Periodic work (call about every 10-20 ms): hold timeout, re-sending what the sink refused, draining relative movement. */
 void hid_logic_tick(hid_logic_t *h, uint64_t now_ms);
+
+/** Releases every key and button (the all-released reports are sent now, or on the next tick if the sink refuses). */
 void hid_logic_release_all(hid_logic_t *h);
+
+/** The USB host (re-)enumerated or resumed: it forgot all key/button state. Drops unsent movement and sends all-released. */
 void hid_logic_on_usb_mounted(hid_logic_t *h);
+
+/** First come, first served: returns true if `owner_id` is (now) the controller, false if another one holds it. */
 bool hid_logic_acquire(hid_logic_t *h, int owner_id);
+
+/** If `owner_id` is the controller: release_all and free the slot. Anyone else: nothing happens. */
 void hid_logic_release_owner(hid_logic_t *h, int owner_id);
 
 #ifdef __cplusplus
