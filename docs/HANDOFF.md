@@ -27,8 +27,11 @@ LinuxベースのPiKVMの代わりに、**ベアメタル(FreeRTOS)環境の ESP
 
 接続:
 - HDMI キャプチャ（X630）とボードの CSI コネクタ: X630 は 15pin/1.0mm、ESP32-P4-ETH は **22pin/0.5mm**（回路図 J1「22PIN--PI5」）のため、**22pin→15pin の変換ケーブル（Raspberry Pi 5 用カメラケーブル相当）が必要**。ピン対応・向きは未確認（`TODO(hw-verify)`、HW_VERIFY E 章）。
-- ボードの USB-C のうち **UART / USB-JTAG 側**: 書き込み・ログ用（開発機に接続）。
-- ボードの USB-C のうち **OTG 側**: KVM 経由でターゲットPCに接続（HID デバイスとして認識させる）。
+- ボードの **USB-C（回路図 `H2`「Type-C UART」）**: **USB-UART ブリッジ経由**の UART（書き込み・ログ用。開発機に接続）。回路図で、H2 のデータ線（`USB_DBG_D_N/P`）は `USB to UART`（`CH343P` と書かれた部品）につながっており、**USB-JTAG ではない**（回路図の目視。以前の「UART / USB-JTAG」は誤りだった）。
+- ボードの **USB OTG（HS）は、USB-C ではない**。回路図（`docs/ESP32-P4-ETH-schematic.pdf` 1 ページ）の **`J3`「USB Interface」の 4 ピンのコネクタ**: **1 = `VCC_5V`、2 = `USBD_N`、3 = `USBD_P`、4 = `GND`**（2026-11-07、回路図の画像を目視。以前の「OTG 側も USB-C」は誤りだった）。KVM 経由でターゲット PC に接続し、HID デバイスとして認識させる。
+  - **コネクタの形状・ピッチ、実物のピンの向きは未確認**（`TODO(hw-verify)`、オーナーが基板で確認する）。
+  - **ピン 1 の `VCC_5V` は、ボード側の 5V 電源**。ターゲット PC の VBUS と直結しない（2 つの電源のぶつかり・逆流の恐れ）。VBUS の扱い（検出の要否を含む）は未確認（`TODO(hw-verify)`）。A-8（#89）の実機確認の前に、オーナーと決める。
+  - 40 ピンヘッダ `P1` の 19・20 番（回路図のネット名 `USB1P1_N` / `USB1P1_P`、GPIO24 / 25）は、`J3`（OTG HS）とは**別の信号**。GPIO24 / 25 の既定の用途（USB Serial/JTAG との共用の有無、PHY の切り替え）は**未確認**（`TODO(hw-verify)`。チップのデータシートで確認する）。
 - 開発環境: macOS。書き込み例: `esptool --chip esp32p4 -b 921600 write-flash ...`（ポートは `/dev/cu.usbmodem*`）。
 
 ## 3. 設計の決定事項
