@@ -137,6 +137,10 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE ws_video_core)
     endif()
 
+    if (test_source MATCHES "/ws_input_core/")
+        target_link_libraries(${test_name} PRIVATE ws_input_core)
+    endif()
+
     if (test_source MATCHES "/oled_ui/")
         target_link_libraries(${test_name} PRIVATE oled_ui)
         target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/oled_ui/include)
@@ -176,6 +180,9 @@ target_include_directories(frame_hub PUBLIC ${CMAKE_SOURCE_DIR}/../../components
 
 # Setup ws_video_core component
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/ws_video_core ${CMAKE_BINARY_DIR}/ws_video_core)
+
+# Setup ws_input_core component
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/ws_input_core ${CMAKE_BINARY_DIR}/ws_input_core)
 
 # Setup oled_render component
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/oled_render ${CMAKE_BINARY_DIR}/oled_render)
