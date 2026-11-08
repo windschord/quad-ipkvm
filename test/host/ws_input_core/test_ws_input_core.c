@@ -17,6 +17,7 @@ typedef struct {
 static sent_t g_sent[MAX_SENDS];
 static int g_send_count;
 static int g_send_result; /* what io_send returns (0 = ok, -1 = queue full) */
+static int g_send_fail_after = -1; /* >= 0: the sends after this many (in this connect) fail */
 static ws_input_conn_t g_closed[MAX_CLOSES];
 static int g_close_count;
 static bool g_session_valid;
@@ -39,6 +40,7 @@ static int mock_send(void *u, ws_input_conn_t conn, const uint8_t *data, size_t 
         memcpy(g_sent[g_send_count].data, data, g_sent[g_send_count].len);
     }
     g_send_count++;
+    if (g_send_fail_after >= 0 && g_send_count > g_send_fail_after) return -1;
     return g_send_result;
 }
 static void mock_close(void *u, ws_input_conn_t conn) {
@@ -80,6 +82,7 @@ void setUp(void) {
     memset(g_closed, 0, sizeof(g_closed));
     g_send_count = 0;
     g_send_result = 0;
+    g_send_fail_after = -1;
     g_close_count = 0;
     g_session_valid = true;
     g_per_token = false;
@@ -215,13 +218,41 @@ void test_closed_connections_free_their_slots(void) {
     }
 }
 
-void test_a_failed_send_does_not_undo_the_registration(void) {
+void test_a_lost_granted_gives_the_slot_back_and_closes(void) {
+    /* The viewer sends nothing before GRANTED: if GRANTED is lost, the controller could never type. */
     g_send_result = -1;
     TEST_ASSERT_EQUAL(0, connect_n(1, 10, 0));
-    TEST_ASSERT_EQUAL(10, hid.owner_id);
+    TEST_ASSERT_EQUAL(-1, hid.owner_id);
+    TEST_ASSERT_EQUAL(1, g_close_count);
+    TEST_ASSERT_EQUAL_PTR(conn_n(1), g_closed[0]);
     g_send_result = 0;
-    key_down(10, 0x04, 1);
-    TEST_ASSERT_EQUAL(1, g_kbd_count); /* the controller works */
+    ws_input_core_on_close(&core, 10);
+    TEST_ASSERT_EQUAL(0, connect_n(2, 20, 5)); /* the next connection can become the controller */
+    TEST_ASSERT_EQUAL(20, hid.owner_id);
+}
+
+void test_a_lost_usb_state_at_connect_is_sent_again_on_the_next_tick(void) {
+    /* The target is connected and the first controller was told. It leaves; a new controller connects and its
+     * USB_STATE is lost. The state did not change (still "connected"), so only the connect-time handling can resend it. */
+    g_usb_ready = true;
+    TEST_ASSERT_EQUAL(0, connect_n(1, 10, 0));
+    ws_input_core_tick(&core, 10); /* last_usb_ready is now true */
+    ws_input_core_on_close(&core, 10);
+
+    g_send_count = 0;
+    g_send_fail_after = 1; /* GRANTED (the 1st send) gets through, the USB_STATE after it is lost */
+    TEST_ASSERT_EQUAL(0, connect_n(2, 20, 20));
+    g_send_fail_after = -1;
+    TEST_ASSERT_EQUAL(20, hid.owner_id); /* still the controller */
+    TEST_ASSERT_EQUAL(0, g_close_count);
+    g_send_count = 0;
+    ws_input_core_tick(&core, 30);
+    TEST_ASSERT_EQUAL(1, g_send_count); /* USB_STATE again */
+    TEST_ASSERT_EQUAL_HEX8(0x82, g_sent[0].data[0]);
+    TEST_ASSERT_EQUAL_HEX8(1, g_sent[0].data[1]);
+    g_send_count = 0;
+    ws_input_core_tick(&core, 40);
+    TEST_ASSERT_EQUAL(0, g_send_count); /* and then quiet */
 }
 
 /* ---- frames ---- */
@@ -482,7 +513,8 @@ int main(void) {
     RUN_TEST(test_connection_table_full_and_duplicate_fd_are_refused_without_side_effects);
     RUN_TEST(test_a_connection_without_a_token_is_refused);
     RUN_TEST(test_closed_connections_free_their_slots);
-    RUN_TEST(test_a_failed_send_does_not_undo_the_registration);
+    RUN_TEST(test_a_lost_granted_gives_the_slot_back_and_closes);
+    RUN_TEST(test_a_lost_usb_state_at_connect_is_sent_again_on_the_next_tick);
     RUN_TEST(test_a_frame_from_the_controller_reaches_the_sink);
     RUN_TEST(test_a_frame_from_a_non_controller_closes_it_and_does_not_reach_the_sink);
     RUN_TEST(test_a_frame_from_an_unknown_fd_or_without_payload_is_ignored);

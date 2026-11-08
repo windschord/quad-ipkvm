@@ -48,10 +48,19 @@ int ws_input_core_on_connect(ws_input_core_t* core, ws_input_conn_t conn, int fd
     memcpy(core->tokens[idx], token, 32);
 
     if (hid_logic_acquire(core->hid, fd)) {
-        send_granted(core, conn);
-        bool ready = core->config.usb_ready ? core->config.usb_ready(core->config.user_data) : false;
-        send_usb_state(core, conn, ready);
-        /* core->last_usb_ready is not touched here: it is what the OTHER connections were last told, tick() compares it. */
+        if (send_granted(core, conn) < 0) {
+            /* The viewer sends nothing before GRANTED: a lost GRANTED would leave a controller that cannot type.
+             * Give the slot back and close; the viewer reconnects. */
+            hid_logic_release_owner(core->hid, fd);
+            core->config.io_request_close(core->config.user_data, conn);
+        } else {
+            bool ready = core->config.usb_ready ? core->config.usb_ready(core->config.user_data) : false;
+            if (send_usb_state(core, conn, ready) < 0) {
+                /* Make the next tick tell every connection again (a duplicate is harmless). */
+                core->last_usb_ready = !ready;
+            }
+            /* On success core->last_usb_ready is not touched: it is what the OTHER connections were last told. */
+        }
     } else {
         send_denied(core, conn, 1); // Reason 1: Someone else is controlling
         core->config.io_request_close(core->config.user_data, conn);

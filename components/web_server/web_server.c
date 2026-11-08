@@ -77,7 +77,8 @@ static hid_sink_t s_hid_sink_cfg;
 
 _Static_assert(CONFIG_WEB_SERVER_WS_MAX_CLIENTS + CONFIG_WEB_SERVER_INPUT_MAX_CONNECTIONS + 5 + 3 <= CONFIG_LWIP_MAX_SOCKETS, "Max open sockets exceeds LWIP limit");
 
-// Lock order: always lock `s_ws_input_mutex` only, no nested locks.
+// Lock order: `s_ws_input_mutex` -> `s_auth_mutex` (io_validate_session runs under the input lock, and takes the auth lock).
+// NEVER take `s_ws_input_mutex` while holding `s_auth_mutex`. `s_ws_mutex` (video) and `s_ws_input_mutex` are never nested.
 // `hid_sink_t` is called with `s_ws_input_mutex` held, and MUST NOT re-enter web_server or hid_logic.
 
 static void ws_video_task(void *pvParameters) {
