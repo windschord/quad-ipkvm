@@ -15,6 +15,9 @@ extern "C" {
 /* The largest input data frame (docs/WEB_API.md 6). */
 #define WS_INPUT_MAX_FRAME_LEN 16
 
+#define WS_INPUT_USB_UNKNOWN (-1)
+#define WS_INPUT_USB_NONE (-2)
+
 typedef void* ws_input_conn_t;
 
 typedef int (*ws_input_io_send_cb)(void* user_data, ws_input_conn_t conn, const uint8_t* data, size_t len);
@@ -43,7 +46,9 @@ typedef struct {
     uint8_t tokens[WS_CLIENTS_MAX][32];
 
     uint64_t last_session_check_ms;
-    bool last_usb_ready;
+    /* Per connection: what it was last told about the USB state (0 / 1), WS_INPUT_USB_UNKNOWN until a USB_STATE got
+     * through, or WS_INPUT_USB_NONE for a connection that is not told (a DENIED one, which is being closed). */
+    int8_t usb_sent[WS_CLIENTS_MAX];
 } ws_input_core_t;
 
 /**

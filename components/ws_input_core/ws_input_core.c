@@ -9,7 +9,6 @@ int ws_input_core_init(ws_input_core_t* core, const ws_input_core_config_t* conf
     memset(core, 0, sizeof(ws_input_core_t));
     core->config = *config;
     core->hid = hid;
-    core->last_usb_ready = false;
     ws_clients_init(&core->clients, config->max_clients);
     return 0;
 }
@@ -46,6 +45,7 @@ int ws_input_core_on_connect(ws_input_core_t* core, ws_input_conn_t conn, int fd
 
     core->conns[idx] = conn;
     memcpy(core->tokens[idx], token, 32);
+    core->usb_sent[idx] = WS_INPUT_USB_NONE;
 
     if (hid_logic_acquire(core->hid, fd)) {
         if (send_granted(core, conn) < 0) {
@@ -54,12 +54,10 @@ int ws_input_core_on_connect(ws_input_core_t* core, ws_input_conn_t conn, int fd
             hid_logic_release_owner(core->hid, fd);
             core->config.io_request_close(core->config.user_data, conn);
         } else {
+            /* The controller is told the USB state from now on: right here, or (if this send is lost) by the next tick. */
+            core->usb_sent[idx] = WS_INPUT_USB_UNKNOWN;
             bool ready = core->config.usb_ready ? core->config.usb_ready(core->config.user_data) : false;
-            if (send_usb_state(core, conn, ready) < 0) {
-                /* Make the next tick tell every connection again (a duplicate is harmless). */
-                core->last_usb_ready = !ready;
-            }
-            /* On success core->last_usb_ready is not touched: it is what the OTHER connections were last told. */
+            if (send_usb_state(core, conn, ready) >= 0) core->usb_sent[idx] = ready ? 1 : 0;
         }
     } else {
         send_denied(core, conn, 1); // Reason 1: Someone else is controlling
@@ -124,17 +122,14 @@ void ws_input_core_on_frame(ws_input_core_t* core, int fd, const uint8_t* payloa
 void ws_input_core_tick(ws_input_core_t* core, uint64_t now_ms) {
     hid_logic_tick(core->hid, now_ms);
 
-    /* USB_STATE: told to every connection when the state changes. If a send fails, last_usb_ready stays as it was,
-     * so the next tick tries again (a client must not keep a stale "target connected"). */
+    /* USB_STATE: each connection that is told (the controller) is told again whenever what it last got differs from
+     * the current state. A send that is lost is simply tried again on the next tick, per connection. */
     bool usb_ready = core->config.usb_ready ? core->config.usb_ready(core->config.user_data) : false;
-    if (usb_ready != core->last_usb_ready) {
-        bool all_sent = true;
-        for (int i = 0; i < core->clients.max_clients; i++) {
-            if (core->clients.clients[i].state == WS_CLIENT_ACTIVE) {
-                if (send_usb_state(core, core->conns[i], usb_ready) < 0) all_sent = false;
-            }
-        }
-        if (all_sent) core->last_usb_ready = usb_ready;
+    int8_t now_state = usb_ready ? 1 : 0;
+    for (int i = 0; i < core->clients.max_clients; i++) {
+        if (core->clients.clients[i].state != WS_CLIENT_ACTIVE) continue;
+        if (core->usb_sent[i] == WS_INPUT_USB_NONE || core->usb_sent[i] == now_state) continue;
+        if (send_usb_state(core, core->conns[i], usb_ready) >= 0) core->usb_sent[i] = now_state;
     }
 
     /* The session of every connection is checked again every session_check_interval_ms. */

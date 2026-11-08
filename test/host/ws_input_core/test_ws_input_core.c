@@ -236,7 +236,7 @@ void test_a_lost_usb_state_at_connect_is_sent_again_on_the_next_tick(void) {
      * USB_STATE is lost. The state did not change (still "connected"), so only the connect-time handling can resend it. */
     g_usb_ready = true;
     TEST_ASSERT_EQUAL(0, connect_n(1, 10, 0));
-    ws_input_core_tick(&core, 10); /* last_usb_ready is now true */
+    ws_input_core_tick(&core, 10); /* the first controller was told "connected" */
     ws_input_core_on_close(&core, 10);
 
     g_send_count = 0;
@@ -369,21 +369,19 @@ void test_tick_runs_the_hold_timeout(void) {
     TEST_ASSERT_EQUAL_HEX8(0, g_kbd_last.keys[0]);
 }
 
-void test_usb_state_is_sent_to_every_connection_when_it_changes_and_only_then(void) {
+void test_usb_state_is_sent_to_the_controller_when_it_changes_and_only_then(void) {
     connect_n(1, 10, 0);
-    connect_n(2, 20, 0);
+    connect_n(2, 20, 0); /* denied: it is being closed and is never told the USB state */
     g_send_count = 0;
     ws_input_core_tick(&core, 100); /* still not ready: nothing changed */
     TEST_ASSERT_EQUAL(0, g_send_count);
 
     g_usb_ready = true;
     ws_input_core_tick(&core, 110);
-    TEST_ASSERT_EQUAL(2, g_send_count);
-    for (int i = 0; i < 2; i++) {
-        TEST_ASSERT_EQUAL_HEX8(0x82, g_sent[i].data[0]);
-        TEST_ASSERT_EQUAL_HEX8(1, g_sent[i].data[1]);
-    }
-    TEST_ASSERT_TRUE(g_sent[0].conn != g_sent[1].conn);
+    TEST_ASSERT_EQUAL(1, g_send_count);
+    TEST_ASSERT_EQUAL_PTR(conn_n(1), g_sent[0].conn);
+    TEST_ASSERT_EQUAL_HEX8(0x82, g_sent[0].data[0]);
+    TEST_ASSERT_EQUAL_HEX8(1, g_sent[0].data[1]);
 
     g_send_count = 0;
     ws_input_core_tick(&core, 120); /* no change */
@@ -391,7 +389,8 @@ void test_usb_state_is_sent_to_every_connection_when_it_changes_and_only_then(vo
 
     g_usb_ready = false;
     ws_input_core_tick(&core, 130);
-    TEST_ASSERT_EQUAL(2, g_send_count);
+    TEST_ASSERT_EQUAL(1, g_send_count);
+    TEST_ASSERT_EQUAL_PTR(conn_n(1), g_sent[0].conn);
     TEST_ASSERT_EQUAL_HEX8(0, g_sent[0].data[1]);
 }
 
@@ -410,6 +409,24 @@ void test_a_failed_usb_state_send_is_retried_on_the_next_tick(void) {
     g_send_count = 0;
     ws_input_core_tick(&core, 120);
     TEST_ASSERT_EQUAL(0, g_send_count); /* and then quiet */
+}
+
+void test_a_lost_usb_state_followed_by_a_flip_still_ends_with_the_right_state(void) {
+    /* Connect while ready: the USB_STATE(1) is lost. Before the next tick the target goes away. The controller
+     * was told nothing, so the tick must tell it the CURRENT state (0), not skip it because "0 is the last known". */
+    g_usb_ready = true;
+    g_send_fail_after = 1;
+    TEST_ASSERT_EQUAL(0, connect_n(1, 10, 0));
+    g_send_fail_after = -1;
+    g_usb_ready = false;
+    g_send_count = 0;
+    ws_input_core_tick(&core, 10);
+    TEST_ASSERT_EQUAL(1, g_send_count);
+    TEST_ASSERT_EQUAL_HEX8(0x82, g_sent[0].data[0]);
+    TEST_ASSERT_EQUAL_HEX8(0, g_sent[0].data[1]);
+    g_send_count = 0;
+    ws_input_core_tick(&core, 20);
+    TEST_ASSERT_EQUAL(0, g_send_count);
 }
 
 void test_no_usb_ready_callback_means_not_ready(void) {
@@ -525,8 +542,9 @@ int main(void) {
     RUN_TEST(test_closing_the_controller_releases_everything_and_frees_the_slot);
     RUN_TEST(test_closing_a_denied_connection_does_not_touch_the_controllers_keys);
     RUN_TEST(test_tick_runs_the_hold_timeout);
-    RUN_TEST(test_usb_state_is_sent_to_every_connection_when_it_changes_and_only_then);
+    RUN_TEST(test_usb_state_is_sent_to_the_controller_when_it_changes_and_only_then);
     RUN_TEST(test_a_failed_usb_state_send_is_retried_on_the_next_tick);
+    RUN_TEST(test_a_lost_usb_state_followed_by_a_flip_still_ends_with_the_right_state);
     RUN_TEST(test_no_usb_ready_callback_means_not_ready);
     RUN_TEST(test_session_is_rechecked_at_the_interval_and_not_before);
     RUN_TEST(test_a_valid_session_stays_and_the_interval_restarts);
