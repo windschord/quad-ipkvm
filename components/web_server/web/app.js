@@ -27,6 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let wsInputReconnectTimer = null;
     let wsInputReconnectDelay = 1000;
     let inputEnabled = false;
+    let inputGranted = false; // the server accepted this connection as the controller (GRANTED, 0x80)
 
     let isDecoding = false;
     let ctx = elVideo.getContext('2d');
@@ -79,16 +80,18 @@ document.addEventListener('DOMContentLoaded', () => {
     let relDx = 0;
     let relDy = 0;
 
-    // Tracks currently pressed keys/buttons to know if keepalive is needed
-    let activeInputs = 0;
+    // Keys that are down right now (by KeyboardEvent.code). KEEPALIVE is needed while any key or button is down.
+    const pressedKeys = new Set();
 
     function sendWsInput(buf) {
-        if (wsInput && wsInput.readyState === WebSocket.OPEN) {
+        // Nothing is sent before GRANTED: a connection that is not the controller is closed by the server.
+        if (inputGranted && wsInput && wsInput.readyState === WebSocket.OPEN) {
             wsInput.send(buf);
         }
     }
 
     function handleActiveInput() {
+        const activeInputs = pressedKeys.size + (currentButtons !== 0 ? 1 : 0);
         if (activeInputs > 0 && !keepaliveTimer) {
             keepaliveTimer = setInterval(() => {
                 sendWsInput(MsgBuilder.keepalive());
@@ -99,8 +102,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    let isEscPressed = false;
+    let escTimeout = null;
+
+    function resetEscLongPress() {
+        isEscPressed = false;
+        if (escTimeout) {
+            clearTimeout(escTimeout);
+            escTimeout = null;
+        }
+    }
+
     function doReleaseAll() {
-        activeInputs = 0;
+        pressedKeys.clear();
+        resetEscLongPress();
         currentButtons = 0;
         relDx = 0;
         relDy = 0;
@@ -109,9 +124,6 @@ document.addEventListener('DOMContentLoaded', () => {
         handleActiveInput();
         sendWsInput(MsgBuilder.releaseAll());
     }
-
-    let isEscPressed = false;
-    let escTimeout = null;
 
     window.addEventListener('keydown', (e) => {
         if (!inputEnabled) return;
@@ -127,10 +139,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        if (KEYMAP.hasOwnProperty(e.code)) {
+        if (Object.prototype.hasOwnProperty.call(KEYMAP, e.code)) {
             e.preventDefault();
-            if (!e.repeat) {
-                activeInputs++;
+            if (!e.repeat && !pressedKeys.has(e.code)) {
+                pressedKeys.add(e.code);
                 handleActiveInput();
                 sendWsInput(MsgBuilder.keyDown(KEYMAP[e.code]));
             }
@@ -138,19 +150,14 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     window.addEventListener('keyup', (e) => {
+        // The Escape long-press state is reset even when input is already disabled (otherwise it would stay set
+        // and the long press could never disable the input a second time).
+        if (e.code === 'Escape') resetEscLongPress();
         if (!inputEnabled) return;
 
-        if (e.code === 'Escape') {
-            isEscPressed = false;
-            if (escTimeout) {
-                clearTimeout(escTimeout);
-                escTimeout = null;
-            }
-        }
-
-        if (KEYMAP.hasOwnProperty(e.code)) {
+        if (Object.prototype.hasOwnProperty.call(KEYMAP, e.code)) {
             e.preventDefault();
-            if (activeInputs > 0) activeInputs--;
+            pressedKeys.delete(e.code);
             handleActiveInput();
             sendWsInput(MsgBuilder.keyUp(KEYMAP[e.code]));
         }
@@ -164,9 +171,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function getMousePos(e) {
         const rect = elVideo.getBoundingClientRect();
-        // Calculate coordinate as a ratio of css size mapped to 0..32767
-        let x = (e.clientX - rect.left) / rect.width * 32767;
-        let y = (e.clientY - rect.top) / rect.height * 32767;
+        // Ratio of the CSS content box (without the border) mapped to 0..32767
+        const w = elVideo.clientWidth || rect.width;
+        const h = elVideo.clientHeight || rect.height;
+        let x = (e.clientX - rect.left - elVideo.clientLeft) / w * 32767;
+        let y = (e.clientY - rect.top - elVideo.clientTop) / h * 32767;
         x = Math.max(0, Math.min(32767, Math.round(x)));
         y = Math.max(0, Math.min(32767, Math.round(y)));
         return { x, y };
@@ -181,14 +190,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const isLocked = document.pointerLockElement === elVideo;
 
         if (isLocked && pendingPtrRel) {
-            // Rel max bound is 32767 but we will let server/struct handle it?
-            // int16 limit is 32767. dx/dy accumulated.
-            let clampDx = Math.max(-32768, Math.min(32767, relDx));
-            let clampDy = Math.max(-32768, Math.min(32767, relDy));
-            sendWsInput(MsgBuilder.ptrRel(currentButtons, clampDx, clampDy, 0));
-            relDx -= clampDx;
-            relDy -= clampDy;
-            if (relDx === 0 && relDy === 0) {
+            // movementX/Y can be fractional: send the integer part (int16), keep the remainder for the next frame.
+            const clampDx = Math.max(-32768, Math.min(32767, Math.trunc(relDx)));
+            const clampDy = Math.max(-32768, Math.min(32767, Math.trunc(relDy)));
+            if (clampDx !== 0 || clampDy !== 0) {
+                sendWsInput(MsgBuilder.ptrRel(currentButtons, clampDx, clampDy, 0));
+                relDx -= clampDx;
+                relDy -= clampDy;
+            }
+            if (Math.trunc(relDx) === 0 && Math.trunc(relDy) === 0) {
                 pendingPtrRel = false;
             } else {
                 requestAnimationFrame(sendPointerUpdate);
@@ -216,10 +226,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.buttons & 4) buttons |= 4; // Middle
 
         if (buttons !== currentButtons) {
-            // Button change resets active inputs logic for mouse
-            if (currentButtons === 0 && buttons !== 0) activeInputs++;
-            else if (currentButtons !== 0 && buttons === 0 && activeInputs > 0) activeInputs--;
-
             currentButtons = buttons;
             handleActiveInput();
 
@@ -244,7 +250,9 @@ document.addEventListener('DOMContentLoaded', () => {
         updateButtons(e);
     });
 
-    elVideo.addEventListener('mouseup', (e) => {
+    // On the window, not the canvas: a button released outside the canvas must not stay pressed on the target
+    // (KEEPALIVE would keep it pressed forever).
+    window.addEventListener('mouseup', (e) => {
         if (!inputEnabled) return;
         e.preventDefault();
 
@@ -372,6 +380,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.length === 0) return;
             const type = data[0];
             if (type === 0x80) {
+                inputGranted = true;
                 elInputStatus.textContent = '入力: 有効';
             } else if (type === 0x81) {
                 if (data.length >= 2) {
@@ -383,6 +392,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
                 // Do not reconnect if denied
+                inputGranted = false;
                 wsInput.onclose = null;
                 wsInput.close();
                 wsInput = null;
@@ -396,6 +406,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         wsInput.onclose = () => {
             wsInput = null;
+            inputGranted = false;
             elInputStatus.textContent = '入力: 未接続';
             elUsbStatus.textContent = 'ターゲット: 未接続';
             wsInputReconnectTimer = setTimeout(() => {
@@ -431,6 +442,7 @@ document.addEventListener('DOMContentLoaded', () => {
             wsInput.close();
             wsInput = null;
         }
+        inputGranted = false;
         elInputStatus.textContent = '入力: 未接続';
         elUsbStatus.textContent = 'ターゲット: 未接続';
     }
@@ -468,11 +480,13 @@ document.addEventListener('DOMContentLoaded', () => {
         'Enter': 0x28, 'Escape': 0x29, 'Backspace': 0x2A, 'Tab': 0x2B, 'Space': 0x2C,
 
         'Minus': 0x2D, 'Equal': 0x2E, 'BracketLeft': 0x2F, 'BracketRight': 0x30,
-        'Backslash': 0x31, 'Semicolon': 0x33, 'Quote': 0x34, 'Backquote': 0x35,
-        'Comma': 0x36, 'Period': 0x37, 'Slash': 0x38,
+        'Backslash': 0x31, 'IntlHash': 0x32, 'Semicolon': 0x33, 'Quote': 0x34, 'Backquote': 0x35,
+        'Comma': 0x36, 'Period': 0x37, 'Slash': 0x38, 'CapsLock': 0x39,
 
         'F1': 0x3A, 'F2': 0x3B, 'F3': 0x3C, 'F4': 0x3D, 'F5': 0x3E, 'F6': 0x3F,
         'F7': 0x40, 'F8': 0x41, 'F9': 0x42, 'F10': 0x43, 'F11': 0x44, 'F12': 0x45,
+        'F13': 0x68, 'F14': 0x69, 'F15': 0x6A, 'F16': 0x6B, 'F17': 0x6C, 'F18': 0x6D,
+        'F19': 0x6E, 'F20': 0x6F, 'F21': 0x70, 'F22': 0x71, 'F23': 0x72, 'F24': 0x73,
 
         'PrintScreen': 0x46, 'ScrollLock': 0x47, 'Pause': 0x48, 'Insert': 0x49,
         'Home': 0x4A, 'PageUp': 0x4B, 'Delete': 0x4C, 'End': 0x4D, 'PageDown': 0x4E,
@@ -485,10 +499,10 @@ document.addEventListener('DOMContentLoaded', () => {
         'Numpad5': 0x5D, 'Numpad6': 0x5E, 'Numpad7': 0x5F, 'Numpad8': 0x60,
         'Numpad9': 0x61, 'Numpad0': 0x62, 'NumpadDecimal': 0x63,
 
-        'ContextMenu': 0x65,
+        'IntlBackslash': 0x64, 'ContextMenu': 0x65, 'NumpadEqual': 0x67,
 
-        'IntlYen': 0x89, 'IntlRo': 0x87, 'IntlBackslash': 0x87, 'KanaMode': 0x88,
-        'Convert': 0x8A, 'NonConvert': 0x8B
+        'IntlRo': 0x87, 'KanaMode': 0x88, 'IntlYen': 0x89,
+        'Convert': 0x8A, 'NonConvert': 0x8B, 'Lang1': 0x90, 'Lang2': 0x91
     };
 
     const MsgBuilder = {

@@ -1,142 +1,134 @@
-import sys
+#!/usr/bin/env python3
+"""Checks the KeyboardEvent.code -> HID Usage table in components/web_server/web/app.js (Keyboard/Keypad Page 0x07).
+
+The expected table below is written from the USB HID Usage Tables (Keyboard/Keypad page) and the UI Events
+KeyboardEvent.code values, NOT copied from app.js. The test also runs against mutated copies of app.js
+(`--mutations`): every mutant must be detected.
+
+Usage: tools/test/check_keymap.py [--mutations]      (standard library only; run from anywhere)
+Exit status: 0 = ok, 1 = a check failed (or a mutant survived)
+"""
+import os
 import re
-import unittest
+import sys
 
-def extract_keymap(filepath):
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
+APP_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'components', 'web_server', 'web', 'app.js')
 
-    match = re.search(r'const\s+KEYMAP\s*=\s*({[^}]+});', content)
-    if not match:
-        raise ValueError("Could not find KEYMAP in app.js")
-
-    keymap_str = match.group(1)
-
-    keymap = {}
-    for line in keymap_str.split('\n'):
-        line = line.strip()
-        if not line or line.startswith('//'):
-            continue
-
-        matches = re.finditer(r'''['"]([^'"]+)['"]\s*:\s*(0x[0-9a-fA-F]+|\d+)''', line)
-        for m in matches:
-            code = m.group(1)
-            usage = int(m.group(2), 0)
-            keymap[code] = usage
-    return keymap
-
-EXPECTED_KEYMAP_ORIGINAL = {
-    # Letters
-    'KeyA': 0x04, 'KeyB': 0x05, 'KeyC': 0x06, 'KeyD': 0x07,
-    'KeyE': 0x08, 'KeyF': 0x09, 'KeyG': 0x0A, 'KeyH': 0x0B,
-    'KeyI': 0x0C, 'KeyJ': 0x0D, 'KeyK': 0x0E, 'KeyL': 0x0F,
-    'KeyM': 0x10, 'KeyN': 0x11, 'KeyO': 0x12, 'KeyP': 0x13,
-    'KeyQ': 0x14, 'KeyR': 0x15, 'KeyS': 0x16, 'KeyT': 0x17,
-    'KeyU': 0x18, 'KeyV': 0x19, 'KeyW': 0x1A, 'KeyX': 0x1B,
-    'KeyY': 0x1C, 'KeyZ': 0x1D,
-
-    # Numbers
-    'Digit1': 0x1E, 'Digit2': 0x1F, 'Digit3': 0x20, 'Digit4': 0x21,
-    'Digit5': 0x22, 'Digit6': 0x23, 'Digit7': 0x24, 'Digit8': 0x25,
-    'Digit9': 0x26, 'Digit0': 0x27,
-
-    # Modifiers
+EXPECTED = {}
+for i, c in enumerate('ABCDEFGHIJKLMNOPQRSTUVWXYZ'):
+    EXPECTED['Key' + c] = 0x04 + i
+for i, c in enumerate('1234567890'):
+    EXPECTED['Digit' + c] = 0x1E + i
+EXPECTED.update({
+    'Enter': 0x28, 'Escape': 0x29, 'Backspace': 0x2A, 'Tab': 0x2B, 'Space': 0x2C, 'Minus': 0x2D, 'Equal': 0x2E,
+    'BracketLeft': 0x2F, 'BracketRight': 0x30, 'Backslash': 0x31, 'IntlHash': 0x32, 'Semicolon': 0x33,
+    'Quote': 0x34, 'Backquote': 0x35, 'Comma': 0x36, 'Period': 0x37, 'Slash': 0x38, 'CapsLock': 0x39,
+})
+for i in range(12):
+    EXPECTED['F%d' % (i + 1)] = 0x3A + i
+EXPECTED.update({
+    'PrintScreen': 0x46, 'ScrollLock': 0x47, 'Pause': 0x48, 'Insert': 0x49, 'Home': 0x4A, 'PageUp': 0x4B,
+    'Delete': 0x4C, 'End': 0x4D, 'PageDown': 0x4E, 'ArrowRight': 0x4F, 'ArrowLeft': 0x50, 'ArrowDown': 0x51,
+    'ArrowUp': 0x52, 'NumLock': 0x53, 'NumpadDivide': 0x54, 'NumpadMultiply': 0x55, 'NumpadSubtract': 0x56,
+    'NumpadAdd': 0x57, 'NumpadEnter': 0x58,
+})
+for i, c in enumerate('123456789'):
+    EXPECTED['Numpad' + c] = 0x59 + i
+EXPECTED.update({
+    'Numpad0': 0x62, 'NumpadDecimal': 0x63, 'IntlBackslash': 0x64, 'ContextMenu': 0x65, 'NumpadEqual': 0x67,
+})
+for i in range(12):
+    EXPECTED['F%d' % (13 + i)] = 0x68 + i
+EXPECTED.update({
+    'IntlRo': 0x87, 'KanaMode': 0x88, 'IntlYen': 0x89, 'Convert': 0x8A, 'NonConvert': 0x8B,
+    'Lang1': 0x90, 'Lang2': 0x91,
     'ControlLeft': 0xE0, 'ShiftLeft': 0xE1, 'AltLeft': 0xE2, 'MetaLeft': 0xE3,
     'ControlRight': 0xE4, 'ShiftRight': 0xE5, 'AltRight': 0xE6, 'MetaRight': 0xE7,
+})
 
-    # Control/Navigation
-    'Enter': 0x28, 'Escape': 0x29, 'Backspace': 0x2A, 'Tab': 0x2B, 'Space': 0x2C,
 
-    # Symbols
-    'Minus': 0x2D, 'Equal': 0x2E, 'BracketLeft': 0x2F, 'BracketRight': 0x30,
-    'Backslash': 0x31, 'Semicolon': 0x33, 'Quote': 0x34, 'Backquote': 0x35,
-    'Comma': 0x36, 'Period': 0x37, 'Slash': 0x38,
+def extract_keymap(text):
+    m = re.search(r'const\s+KEYMAP\s*=\s*\{(.*?)\};', text, re.S)
+    if not m:
+        raise ValueError('KEYMAP not found in app.js')
+    pairs = re.findall(r"""['"]([^'"]+)['"]\s*:\s*(0x[0-9a-fA-F]+|\d+)""", m.group(1))
+    keymap = {}
+    for code, value in pairs:
+        if code in keymap:
+            raise ValueError('duplicate code in KEYMAP: ' + code)
+        keymap[code] = int(value, 0)
+    return keymap
 
-    # F keys
-    'F1': 0x3A, 'F2': 0x3B, 'F3': 0x3C, 'F4': 0x3D, 'F5': 0x3E, 'F6': 0x3F,
-    'F7': 0x40, 'F8': 0x41, 'F9': 0x42, 'F10': 0x43, 'F11': 0x44, 'F12': 0x45,
 
-    # System/Navigation keys
-    'PrintScreen': 0x46, 'ScrollLock': 0x47, 'Pause': 0x48, 'Insert': 0x49,
-    'Home': 0x4A, 'PageUp': 0x4B, 'Delete': 0x4C, 'End': 0x4D, 'PageDown': 0x4E,
-    'ArrowRight': 0x4F, 'ArrowLeft': 0x50, 'ArrowDown': 0x51, 'ArrowUp': 0x52,
+def check(text):
+    """Returns a list of problems (empty = ok)."""
+    try:
+        keymap = extract_keymap(text)
+    except ValueError as e:
+        return [str(e)]
+    problems = []
+    for code, usage in EXPECTED.items():
+        if code not in keymap:
+            problems.append('missing key: %s' % code)
+        elif keymap[code] != usage:
+            problems.append('mismatch for %s: expected 0x%02X, got 0x%02X' % (code, usage, keymap[code]))
+    for code in keymap:
+        if code not in EXPECTED:
+            problems.append('unexpected key in app.js: %s' % code)
+    seen = {}
+    for code, usage in keymap.items():
+        if not (0x04 <= usage <= 0xA4 or 0xE0 <= usage <= 0xE7):
+            problems.append('usage out of the range the server accepts for %s: 0x%02X' % (code, usage))
+        if usage in seen:
+            problems.append('duplicate usage 0x%02X for %s and %s' % (usage, code, seen[usage]))
+        seen[usage] = code
+    return problems
 
-    # Numpad
-    'NumLock': 0x53,
-    'NumpadDivide': 0x54, 'NumpadMultiply': 0x55, 'NumpadSubtract': 0x56, 'NumpadAdd': 0x57,
-    'NumpadEnter': 0x58,
-    'Numpad1': 0x59, 'Numpad2': 0x5A, 'Numpad3': 0x5B, 'Numpad4': 0x5C,
-    'Numpad5': 0x5D, 'Numpad6': 0x5E, 'Numpad7': 0x5F, 'Numpad8': 0x60,
-    'Numpad9': 0x61, 'Numpad0': 0x62, 'NumpadDecimal': 0x63,
 
-    # Misc
-    'ContextMenu': 0x65,
+def mutants(text):
+    """(name, mutated text): each is a one-place change to app.js that must be detected."""
+    out = []
 
-    # JIS specific
-    'IntlYen': 0x89, 'IntlRo': 0x87, 'IntlBackslash': 0x87, 'KanaMode': 0x88,
-    'Convert': 0x8A, 'NonConvert': 0x8B,
-}
+    def change_value(code, new):
+        return re.sub(r"('%s'\s*:\s*)0x[0-9a-fA-F]+" % code, lambda m: m.group(1) + new, text, count=1)
 
-EXPECTED_KEYMAP = EXPECTED_KEYMAP_ORIGINAL.copy()
+    def drop(code):
+        return re.sub(r"'%s'\s*:\s*0x[0-9a-fA-F]+,?\s*" % code, '', text, count=1)
 
-class TestKeymap(unittest.TestCase):
-    def setUp(self):
-        self.keymap = extract_keymap('components/web_server/web/app.js')
+    for code, new in [('KeyA', '0x05'), ('Digit0', '0x1E'), ('Enter', '0x29'), ('F1', '0x3B'), ('F12', '0x46'),
+                      ('ShiftLeft', '0xE2'), ('ControlRight', '0xE0'), ('ArrowUp', '0x51'), ('Numpad0', '0x61'),
+                      ('IntlBackslash', '0x87'), ('IntlRo', '0x64'), ('CapsLock', '0x3A'), ('ContextMenu', '0x66'),
+                      ('Space', '0xA5'), ('MetaRight', '0xE8')]:
+        out.append(('change %s to %s' % (code, new), change_value(code, new)))
+    for code in ['KeyB', 'Digit1', 'Space', 'ArrowUp', 'CapsLock', 'Convert', 'ControlLeft', 'F24', 'NumpadEnter']:
+        out.append(('drop %s' % code, drop(code)))
+    out.append(('add an unexpected key', text.replace("'KeyA': 0x04,", "'KeyA': 0x04, 'Fn': 0x04,", 1)))
+    out.append(('add a code twice', text.replace("'KeyA': 0x04,", "'KeyA': 0x04, 'KeyA': 0x04,", 1)))
+    return [(n, t) for n, t in out if t != text]
 
-    def test_complete_match(self):
-        for code, expected_usage in EXPECTED_KEYMAP.items():
-            self.assertIn(code, self.keymap, f"Missing key: {code}")
-            self.assertEqual(self.keymap[code], expected_usage, f"Mismatch for {code}: expected {hex(expected_usage)}, got {hex(self.keymap[code])}")
 
-        for code in self.keymap:
-            self.assertIn(code, EXPECTED_KEYMAP, f"Unexpected key in app.js: {code}")
+def main():
+    with open(APP_JS, encoding='utf-8') as f:
+        text = f.read()
+    problems = check(text)
+    for p in problems:
+        print('FAIL:', p)
+    status = 1 if problems else 0
+    if not problems:
+        print('keymap ok (%d keys)' % len(extract_keymap(text)))
 
-    def test_valid_ranges(self):
-        for code, usage in self.keymap.items():
-            is_normal = (0x04 <= usage <= 0xA4)
-            is_modifier = (0xE0 <= usage <= 0xE7)
-            self.assertTrue(is_normal or is_modifier, f"Usage out of bounds for {code}: {hex(usage)}")
+    if '--mutations' in sys.argv:
+        survived = 0
+        ms = mutants(text)
+        for name, mutated in ms:
+            detected = bool(check(mutated))
+            print('%-8s %s' % ('KILLED' if detected else 'SURVIVED', name))
+            survived += 0 if detected else 1
+        print('%d mutants, %d survived' % (len(ms), survived))
+        if survived:
+            status = 1
+    return status
 
-    def test_no_duplicates(self):
-        seen = {}
-        allowed_duplicates = {'IntlBackslash': 0x87, 'IntlRo': 0x87}
-
-        for code, usage in self.keymap.items():
-            if code in allowed_duplicates:
-                continue
-            self.assertNotIn(usage, seen, f"Duplicate usage {hex(usage)} for {code} and {seen.get(usage)}")
-            seen[usage] = code
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1 and sys.argv[1] == '--mutations':
-        print("Running mutation tests...")
-
-        mutations = [
-            ("Change KeyA value", lambda: {**EXPECTED_KEYMAP_ORIGINAL, 'KeyA': 0x99}),
-            ("Remove KeyB", lambda: {k:v for k,v in EXPECTED_KEYMAP_ORIGINAL.items() if k != 'KeyB'}),
-            ("Change Enter value", lambda: {**EXPECTED_KEYMAP_ORIGINAL, 'Enter': 0x29}),
-            ("Remove ArrowUp", lambda: {k:v for k,v in EXPECTED_KEYMAP_ORIGINAL.items() if k != 'ArrowUp'}),
-            ("Change F1 value", lambda: {**EXPECTED_KEYMAP_ORIGINAL, 'F1': 0x3B}),
-            ("Remove Digit1", lambda: {k:v for k,v in EXPECTED_KEYMAP_ORIGINAL.items() if k != 'Digit1'}),
-            ("Change ShiftLeft", lambda: {**EXPECTED_KEYMAP_ORIGINAL, 'ShiftLeft': 0xE2}),
-            ("Remove Space", lambda: {k:v for k,v in EXPECTED_KEYMAP_ORIGINAL.items() if k != 'Space'}),
-            ("Change ContextMenu", lambda: {**EXPECTED_KEYMAP_ORIGINAL, 'ContextMenu': 0x66}),
-            ("Remove Convert", lambda: {k:v for k,v in EXPECTED_KEYMAP_ORIGINAL.items() if k != 'Convert'})
-        ]
-
-        for name, mutator in mutations:
-            EXPECTED_KEYMAP = mutator()
-            try:
-                suite = unittest.TestLoader().loadTestsFromTestCase(TestKeymap)
-                result = unittest.TextTestRunner(stream=sys.stderr, verbosity=0).run(suite)
-                if not result.wasSuccessful():
-                    print(f"{name}: Failed as expected")
-                else:
-                    print(f"{name}: Did NOT fail!")
-            except Exception as e:
-                print(f"{name}: Error {e}")
-
-        EXPECTED_KEYMAP = EXPECTED_KEYMAP_ORIGINAL
-        sys.exit(0)
-
-    unittest.main()
+    sys.exit(main())
