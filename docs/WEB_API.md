@@ -148,12 +148,12 @@
 - **KVM の LED が「状態の真実」**。切替要求は、KVM 本体のボタンを押して LED の変化を待つ。成功は、LED が確定したことで決まる（要求の受理 ≠ 切替の完了）。
 - **ATX は `channel` が必須**。現在のチャンネルと違えば **409**（人が別の PC を見ている間に、別の PC の電源を切る事故を避ける）。**判定は状態機械の内部で行う**（API 層で事前に確認しない。確認と実行の間に切り替わる競合を避ける）。
 - **パルス長はクライアントが決めない**。操作の種類ごとの長さはサーバーの設定（Kconfig `KVM_*` / `ATX_*`。値は `TODO(hw-verify)`）で、ボードの HAL の上限（INTERFACES.md §6）が最後に頭を押さえる。
-- 受理した操作は**非同期**に実行する（`202`）。結果は `GET /api/v1/kvm/status` で見る。
+- 受理した操作は**非同期**に実行する（`202`）。各操作には**操作 ID**（`op_id`、起動からの通し番号、u32）が付き、`202` の応答で返る。結果は `GET /api/v1/kvm/status` の `last_op` で見る（下記）。**結果を保持するのは直近の 1 操作だけ**: 後続の操作を受理すると、前の操作の結果は消える（`op_id` が違えば、クライアントは「結果は不明」として扱う）。操作は一度に 1 つしか実行しないので（`busy`）、自分の操作の完了を待ってから次を出せば、結果を取りこぼさない。
 
 #### 7.1 状態取得 `GET /api/v1/kvm/status`
 `200`:
 ```json
-{"state":"idle","active_channel":2,"video_sync":"locked","atx_locked":false,"atx_anomaly":false,"fault":false,"cooldown_ms":0}
+{"state":"idle","active_channel":2,"video_sync":"locked","atx_locked":false,"atx_anomaly":false,"fault":false,"cooldown_ms":0,"last_op":{"op_id":7,"kind":"power_press","channel":2,"result":"completed"}}
 ```
 | フィールド | 意味 |
 |---|---|
@@ -161,15 +161,16 @@
 | `active_channel` | `1..4`。`state` が `unknown` のときは `null` |
 | `video_sync` | `unknown` / `no_signal` / `locked` |
 | `atx_locked` | ATX が拒否される状態（`unknown`、切替中、切替直後の安定待ち） |
-| `atx_anomaly` | ATX のパルス（またはその準備）中に LED が変化・不正になった（パルスは中断済みで、`tracking` に移る）。**次の ATX パルスの開始で消える**（`kvm_logic` の現在の挙動） |
-| `fault` | ボードの HAL が失敗した（ラッチ。全 Ē を High にして停止している。再起動まで解除しない） |
-| `cooldown_ms` | 次の ATX 操作を受け付けるまでの残り時間（0 なら受け付ける） |
+| `atx_anomaly` | ATX のパルス（またはその準備）中に LED が変化・不正になった（パルスは中断済み）。**LED がほかの有効なチャンネルを示していれば `tracking`、無点灯・複数点灯なら `unknown`** に移る（`kvm_logic` の現在の挙動）。**次の ATX パルスの開始で消える** |
+| `fault` | ボードの HAL が失敗した（ラッチ。**全 Ē を High にして停止し、以後 tick は出力を一切有効にしない**。`release_all` の再試行だけ続ける。再起動まで解除しない） |
+| `cooldown_ms` | 次の ATX 操作を、**クールダウンのために**受け付けない残り時間（ms）。**0 は「クールダウンによる拒否がない」だけの意味**: `state` が `unknown` / `switching` / `tracking` / `atx`、`atx_locked`、`fault` のときは、0 でも ATX は拒否される |
+| `last_op` | 直近に**受理した**操作（まだ無ければ `null`）。`op_id`、`kind`（`select` / `power_press` / `power_reset` / `power_force`）、`channel`、`result`: `pending`（実行中）、`completed`（切替: LED と映像の確認まで済んだ。ATX: パルスを異常なく出し終えた）、`aborted`（切替: タイムアウトか、手動切替に追い越された。ATX: パルス中に LED が変わって中断した、または `fault`）。`kvm_ctrl` が `kvm_logic` の状態の遷移から判定する |
 
 #### 7.2 切替 `POST /api/v1/kvm/select`
 リクエスト: `{"channel":3}`（`1..4`。**ほかのキーがあれば 400**）。
 | 結果 | 応答 |
 |---|---|
-| 受理 | `202 {"result":"accepted","channel":3}` |
+| 受理 | `202 {"result":"accepted","channel":3,"op_id":8}` |
 | すでにそのチャンネルで `idle` | `200 {"result":"already_selected","channel":3}`（何も押さない） |
 | ボディ不正、`channel` が欠落・範囲外・整数でない | `400 {"error":"invalid_request"}` |
 | 切替中、ATX パルス中、追従中 | `409 {"error":"busy"}` |
@@ -187,7 +188,7 @@
 リクエスト: `{"channel":2}`（**必須**。ほかのキーがあれば 400）。
 | 結果 | 応答 |
 |---|---|
-| 受理 | `202 {"result":"accepted","channel":2,"action":"press"}` |
+| 受理 | `202 {"result":"accepted","channel":2,"action":"press","op_id":9}` |
 | ボディ不正、`channel` の欠落・範囲外 | `400 {"error":"invalid_request"}` |
 | **`channel` が現在のチャンネルと違う** | `409 {"error":"channel_mismatch","active_channel":1}` |
 | 切替中・ATX パルス中 | `409 {"error":"busy"}` |
