@@ -156,3 +156,62 @@ void hid_logic_release_owner(hid_logic_t *h, int owner_id);   // 内部で relea
 
 スレッド: **呼び出し側が 1 つのミューテックスで直列化する**（`hid_logic` 自体はロックしない）。
 
+## 6. KVM 切替・ATX: `kvm_ctrl`（Claude）→ ボード HAL `kvm_board`（Antigravity）
+
+Issue #85（C-5）と #88 などの A-9（ボード実装）の境界。**ホストで確かめられるのは、HAL より上（`kvm_logic`、`kvm_ctrl`、`kvm_api`、モック HAL）**。GPIO の実装と極性は、実機の配線が決まってから Antigravity が書く。Kconfig の接頭辞: `KVM_*`、`ATX_*` = Claude、`KVM_BOARD_*` = ボード担当（Antigravity）。
+
+### 6.1 層
+
+```
+web_server ── kvm_service（IDF のタスク + ミューテックス）
+                 └─ kvm_api（純 C: JSON の入出力、kvm_result_t → HTTP の対応）
+                 └─ kvm_ctrl（純 C: kvm_logic と HAL の結線、安全な出力の順序、フォールト）
+                        ├─ kvm_logic（純 C: 状態機械。既存）
+                        └─ kvm_board_hal_t（関数ポインタ。実機: kvm_board、ホスト: モック）
+```
+
+### 6.2 `kvm_board_hal_t`（`components/kvm_board/include/kvm_board.h`）
+
+HAL は**論理値だけ**を話す（GPIO の極性・番号は、ボード実装の中に閉じる。`TODO(hw-verify)`、A-9）。
+
+```c
+typedef enum { KVM_BOARD_LINE_POWER = 0, KVM_BOARD_LINE_RESET, KVM_BOARD_LINE_KVM, KVM_BOARD_LINE_COUNT } kvm_board_line_t;
+
+typedef struct {
+    void *ctx;
+    /* A0/A1 を設定する（channel 1..4）。全 Ē が High（未選択）のときだけ呼ばれる。戻り値 < 0 は失敗 */
+    int (*set_addr)(void *ctx, uint8_t channel);
+    /* 線を有効（Ē を Low）にする。max_ms 後に、ボードのハードウェアタイマーが自動で解除する（ソフトのハングへの防御）。
+     * max_ms は、ボード側のハード上限（KVM_BOARD_MAX_*_MS）でクランプされる。0 や上限超えは、上限に丸める。失敗は < 0 */
+    int (*assert_line)(void *ctx, kvm_board_line_t line, uint32_t max_ms);
+    /* 線を無効（Ē を High）にする。冪等。呼び出しは常に成功しなければならない（失敗するなら、ボードのフォールトとして上げる） */
+    int (*release_line)(void *ctx, kvm_board_line_t line);
+    /* 全線を無効にする（緊急。フォールト時、起動時、終了時） */
+    int (*release_all)(void *ctx);
+    /* KVM の LED の論理値（ビット 0..3 = ch1..4 が点灯）。フォトカプラの極性はボード側で吸収。失敗は < 0 */
+    int (*read_led_mask)(void *ctx, uint8_t *mask);
+    /* 映像の同期状態（映像側の状態 1.3 を結線する。HAL を実装しない環境では UNKNOWN を返してよい） */
+    kvm_video_sync_state_t (*video_sync)(void *ctx);
+} kvm_board_hal_t;
+```
+
+**ボード側の義務**（A-9）:
+1. **起動直後は、全 Ē が High（未選択）**。MCU のリセットで High-Z になっても、外付けの 10kΩ のプルアップでリレーが切れる前提を崩さない。
+2. `assert_line` は、**同時に 1 本まで**。2 本目は失敗（< 0）。
+3. 線ごとのハード上限は、`kvm_logic` のハード上限（`KVM_ATX_HARD_MAX_*`）**以下**にする（`TODO(hw-verify)`）。ボード側は、ソフトの要求値を信用せず、タイマーで自動解除する。
+4. `set_addr` は、**どれかの線が有効なら失敗**する（不変条件 4 の最後の砦）。
+5. 値・極性・GPIO 番号は `TODO(hw-verify)`（`HW_VERIFY.md`）。推測で確定しない。
+
+### 6.3 `kvm_ctrl`（`components/kvm_ctrl/include/kvm_ctrl.h`）
+
+純 C。`kvm_logic` の出力を HAL に適用する。**1 回の `kvm_ctrl_tick(now_ms)`** で: LED と映像を読む → LED のビットマスクを `led_raw_state` に変換（**ちょうど 1 ビットなら `1..4`、無点灯は `0`、複数点灯は `0xFF`**）→ `kvm_logic_step` → 出力を**安全な順序**で適用する。
+
+- **適用の順序**: ① 無効にすべき線を `release_line` → ② A0/A1 が変わるなら、**全線が High のときに** `set_addr` → ③ 新たに有効にする線を `assert_line`（`max_ms` は、そのパルスの長さ + 余裕。ボードが上限で丸める）。
+- **HAL の失敗**（`< 0`）: 即座に `release_all` → **フォールトをラッチ**（以降の要求は `hw_fault`、`kvm_logic` は ATX ロック）。`release_all` が失敗しても、ラッチは変わらない。
+- **要求 API**: `kvm_ctrl_select(channel)`、`kvm_ctrl_power(channel, action)`。前者は `unknown` のとき `UNKNOWN_STATE` を返す（現在の `kvm_logic` は `unknown` での切替要求を `SWITCHING` で返すので、`kvm_ctrl` が先に区別する）。後者は、パルス長を**サーバーの設定**から決めて `kvm_logic_request_atx` を呼ぶ。`channel` の照合は `kvm_logic` の中で行う。
+- **ソフトのクールダウン**: 受理した ATX 操作の後 `ATX_MIN_INTERVAL_MS`（`TODO(hw-verify)`、既定は保守的な値）が経つまで、次の ATX を `COOLDOWN` で拒否（マウス連打、フォームの二重送信を防ぐ）。
+- **スレッド**: 呼び出し側が 1 つのミューテックスで直列化する（`kvm_ctrl` 自体はロックしない）。`kvm_service` が、`tick` 用のタスク（周期 `KVM_TICK_MS`、`TODO`: 既定 20）で回す。
+
+### 6.4 Antigravity への依頼（A-9）
+- 実機の `kvm_board_hal_t` 実装（GPIO、フォトカプラの極性、ハードウェアタイマーの自動解除）。**このインターフェースに合意できるか**を、Issue #85 のコメントで回答してほしい。変えたい点（例: 自動解除を `gptimer` ではなく別の手段にする）があれば、`contract` ラベルの Issue で。
+- それまで、ホストでは**モック HAL**（`test/host/kvm_board/`）で検証する。モックは、上の「ボード側の義務」の 2 と 4 も再現し、`kvm_ctrl` が不変条件に反した順序で呼ばないことをテストで固定する。
