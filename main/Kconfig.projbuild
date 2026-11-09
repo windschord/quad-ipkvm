@@ -266,4 +266,34 @@ menu "Quad IP-KVM Configuration"
             Per-socket SO_SNDTIMEO in milliseconds set on /video WebSocket fds after handshake
             (ws_video_post_handshake_cb) so a stalled send fails quickly instead of blocking the
             single httpd task for WEB_SERVER_SEND_WAIT_TIMEOUT seconds.
+
+    config WEB_SERVER_INPUT_MAX_CONNECTIONS
+        int "Max simultaneous WS input clients (/ws)"
+        default 2
+        range 1 4
+
+    config WEB_SERVER_INPUT_TICK_MS
+        int "WS input Tick interval (ms)"
+        default 10
+        range 5 200
+
+    config WEB_SERVER_INPUT_TASK_STACK_SIZE
+        int "WS input Task Stack Size"
+        default 3072
+        range 2048 16384
+
+    config HID_HOLD_TIMEOUT_MS
+        int "HID input hold timeout (ms)"
+        default 3000
+        range 500 10000
+
+    config HID_RATE_PER_SEC
+        int "HID token bucket rate per sec"
+        default 400
+        range 100 2000
+
+    config HID_RATE_BURST
+        int "HID token bucket burst size"
+        default 100
+        range 10 1000
 endmenu

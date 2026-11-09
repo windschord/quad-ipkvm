@@ -15,6 +15,7 @@
 #include "freertos/task.h"
 
 #include "ws_video_core.h"
+#include "ws_input_core.h"
 #include "esp_timer.h"
 #include <inttypes.h>
 
@@ -57,6 +58,8 @@ static auth_logic_t s_auth_ctx;
 static SemaphoreHandle_t s_auth_mutex;
 
 static ws_video_core_t s_ws_core;
+static ws_input_core_t s_ws_input_core;
+static hid_logic_t s_hid_logic;
 // Shared context for the ws_video_core callbacks (the core hands the same user_data to all of them).
 typedef struct {
     frame_hub_t *hub;
@@ -66,12 +69,33 @@ static ws_ctx_t s_ws_ctx;
 static SemaphoreHandle_t s_ws_mutex;
 static TaskHandle_t s_ws_task;
 
+static SemaphoreHandle_t s_ws_input_mutex;
+static TaskHandle_t s_ws_input_task;
+// The sink given by web_server_set_hid_sink(). It may be set before web_server_start() (the mutex does not exist yet)
+// or later; web_server_start() hands it to hid_logic. Without a sink, ready() is NULL = never ready (USB_STATE 0).
+static hid_sink_t s_hid_sink_cfg;
+
+_Static_assert(CONFIG_WEB_SERVER_WS_MAX_CLIENTS + CONFIG_WEB_SERVER_INPUT_MAX_CONNECTIONS + 5 + 3 <= CONFIG_LWIP_MAX_SOCKETS, "Max open sockets exceeds LWIP limit");
+
+// Lock order: `s_ws_input_mutex` -> `s_auth_mutex` (io_validate_session runs under the input lock, and takes the auth lock).
+// NEVER take `s_ws_input_mutex` while holding `s_auth_mutex`. `s_ws_mutex` (video) and `s_ws_input_mutex` are never nested.
+// `hid_sink_t` is called with `s_ws_input_mutex` held, and MUST NOT re-enter web_server or hid_logic.
+
 static void ws_video_task(void *pvParameters) {
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(CONFIG_WEB_SERVER_WS_TICK_MS));
         xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
         ws_video_core_tick(&s_ws_core, esp_timer_get_time() / 1000);
         xSemaphoreGive(s_ws_mutex);
+    }
+}
+
+static void ws_input_task(void *pvParameters) {
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_WEB_SERVER_INPUT_TICK_MS));
+        xSemaphoreTake(s_ws_input_mutex, portMAX_DELAY);
+        ws_input_core_tick(&s_ws_input_core, esp_timer_get_time() / 1000);
+        xSemaphoreGive(s_ws_input_mutex);
     }
 }
 
@@ -780,6 +804,39 @@ static void ws_video_io_request_close(void* user_data, ws_video_conn_t conn) {
     httpd_sess_trigger_close(server, fd);
 }
 
+static void ws_input_send_done_cb(esp_err_t err, int socket, void *arg) {
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "WS input send failed on fd=%d (err=0x%x)", socket, (unsigned)err);
+    }
+}
+
+static int ws_input_io_send(void* user_data, ws_input_conn_t conn, const uint8_t* data, size_t len) {
+    httpd_handle_t server = user_data ? ((ws_ctx_t *)user_data)->server : NULL;
+    if (!server) return -1;
+    int fd = (int)(intptr_t)conn;
+    httpd_ws_frame_t ws_pkt = {
+        .payload = (uint8_t*)data,
+        .len = len,
+        .type = HTTPD_WS_TYPE_BINARY,
+        .final = true
+    };
+    esp_err_t ret = httpd_ws_send_data_async(server, fd, &ws_pkt, ws_input_send_done_cb, NULL);
+    return (ret == ESP_OK) ? 0 : -1;
+}
+
+static void ws_input_io_request_close(void* user_data, ws_input_conn_t conn) {
+    httpd_handle_t server = user_data ? ((ws_ctx_t *)user_data)->server : NULL;
+    if (!server) return;
+    int fd = (int)(intptr_t)conn;
+    httpd_sess_trigger_close(server, fd);
+}
+
+static bool ws_input_usb_ready(void* user_data) {
+    // If the sink is not set, or ready is NULL, default to false.
+    if (!s_hid_logic.sink.ready) return false;
+    return s_hid_logic.sink.ready(s_hid_logic.sink.ctx);
+}
+
 static bool ws_video_io_validate_session(void* user_data, const uint8_t token[32]) {
     xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
     bool valid = (auth_logic_validate_session(&s_auth_ctx, token, 32, esp_timer_get_time() / 1000) == 0);
@@ -821,6 +878,41 @@ static esp_err_t ws_video_pre_handshake_cb(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static esp_err_t ws_input_pre_handshake_cb(httpd_req_t *req) {
+    // Same checks as /video (docs/WEB_API.md 6): Host and Origin (Origin is mandatory), and a VALID session.
+    bool host_ok = check_host_origin(req, true); // GET, but the Origin is enforced explicitly
+    bool origin_ok = host_ok;
+
+    uint8_t token[32];
+    bool has_token = get_session_token(req, token);
+
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    bool valid = false;
+    if (has_token) {
+        valid = (auth_logic_validate_session(&s_auth_ctx, token, sizeof(token), esp_timer_get_time() / 1000) == 0);
+    }
+    auth_state_e state = s_auth_ctx.state;
+    xSemaphoreGive(s_auth_mutex);
+
+    http_guard_action_e action = http_guard_decide(state, HTTP_GUARD_METHOD_GET, HTTP_GUARD_PATH_WS_INPUT, valid, origin_ok, false, host_ok);
+
+    if (action != HTTP_GUARD_ACTION_ALLOW) {
+        ESP_LOGE(TAG, "WS input upgrade rejected: action=%d", action);
+        return ESP_FAIL; // The connection is closed without a 101: fail closed
+    }
+
+    xSemaphoreTake(s_ws_input_mutex, portMAX_DELAY);
+    int active_clients = ws_clients_count(&s_ws_input_core.clients);
+    xSemaphoreGive(s_ws_input_mutex);
+
+    if (active_clients >= CONFIG_WEB_SERVER_INPUT_MAX_CONNECTIONS) {
+        ESP_LOGE(TAG, "WS input upgrade rejected: max connections reached");
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
 static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
     uint8_t token[32];
     if (!get_session_token(req, token)) {
@@ -850,6 +942,35 @@ static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
     ESP_LOGI(TAG, "WS video registered fd=%d (SO_SNDTIMEO=%d ms)", fd, CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS);
     return ESP_OK;
 }
+
+static esp_err_t ws_input_post_handshake_cb(httpd_req_t *req) {
+    uint8_t token[32];
+    if (!get_session_token(req, token)) {
+        return ESP_FAIL;
+    }
+
+    int fd = httpd_req_to_sockfd(req);
+    struct timeval tv = {
+        .tv_sec = CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS / 1000,
+        .tv_usec = (CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS % 1000) * 1000,
+    };
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+        ESP_LOGW(TAG, "Failed to set SO_SNDTIMEO on WS input fd=%d (errno=%d)", fd, errno);
+        return ESP_FAIL;
+    }
+
+    xSemaphoreTake(s_ws_input_mutex, portMAX_DELAY);
+    int ret = ws_input_core_on_connect(&s_ws_input_core, (ws_input_conn_t)(intptr_t)fd, fd, token, esp_timer_get_time() / 1000);
+    xSemaphoreGive(s_ws_input_mutex);
+
+    if (ret < 0) {
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "WS input registered fd=%d (SO_SNDTIMEO=%d ms)", fd, CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS);
+    return ESP_OK;
+}
+
 
 static esp_err_t ws_video_handler(httpd_req_t *req) {
     if (req->method == HTTP_GET) {
@@ -886,6 +1007,45 @@ static esp_err_t ws_video_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static esp_err_t ws_input_handler(httpd_req_t *req) {
+    if (req->method == HTTP_GET) {
+        return ESP_OK;
+    }
+
+    httpd_ws_frame_t ws_pkt;
+    memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
+
+    // Get frame length first
+    esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    if (!ws_input_core_check_frame(ws_pkt.type, ws_pkt.final, ws_pkt.len)) {
+        // Protocol violation (text, fragmented, empty or too long): release the controller's keys now and close.
+        // The payload is NOT read.
+        int fd = httpd_req_to_sockfd(req);
+        xSemaphoreTake(s_ws_input_mutex, portMAX_DELAY);
+        ws_input_core_on_violation(&s_ws_input_core, fd);
+        xSemaphoreGive(s_ws_input_mutex);
+        return ESP_OK;
+    }
+
+    uint8_t payload[WS_INPUT_MAX_FRAME_LEN];
+    ws_pkt.payload = payload;
+    ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    int fd = httpd_req_to_sockfd(req);
+    xSemaphoreTake(s_ws_input_mutex, portMAX_DELAY);
+    ws_input_core_on_frame(&s_ws_input_core, fd, ws_pkt.payload, ws_pkt.len, esp_timer_get_time() / 1000);
+    xSemaphoreGive(s_ws_input_mutex);
+
+    return ESP_OK;
+}
+
 static void ws_video_close_fn(httpd_handle_t handle, int sockfd) {
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     bool tracked = (ws_clients_find(&s_ws_core.clients, sockfd) >= 0);
@@ -894,6 +1054,15 @@ static void ws_video_close_fn(httpd_handle_t handle, int sockfd) {
     if (tracked) {
         ESP_LOGI(TAG, "WS video client closed fd=%d", sockfd);
     }
+
+    xSemaphoreTake(s_ws_input_mutex, portMAX_DELAY);
+    bool tracked_input = (ws_clients_find(&s_ws_input_core.clients, sockfd) >= 0);
+    ws_input_core_on_close(&s_ws_input_core, sockfd);
+    xSemaphoreGive(s_ws_input_mutex);
+    if (tracked_input) {
+        ESP_LOGI(TAG, "WS input client closed fd=%d", sockfd);
+    }
+
     close(sockfd);
 }
 
@@ -957,6 +1126,27 @@ esp_err_t web_server_start(frame_hub_t *hub) {
         return ESP_FAIL;
     }
 
+    s_ws_input_mutex = xSemaphoreCreateMutex();
+    hid_logic_config_t hid_cfg = {
+        .hold_timeout_ms = CONFIG_HID_HOLD_TIMEOUT_MS,
+        .rate_per_sec = CONFIG_HID_RATE_PER_SEC,
+        .rate_burst = CONFIG_HID_RATE_BURST,
+    };
+    hid_logic_init(&s_hid_logic, &hid_cfg, &s_hid_sink_cfg);
+
+    ws_input_core_config_t ws_input_config = {
+        .max_clients = CONFIG_WEB_SERVER_INPUT_MAX_CONNECTIONS,
+        .session_check_interval_ms = 5000,
+        .io_send = ws_input_io_send,
+        .io_request_close = ws_input_io_request_close,
+        .io_validate_session = ws_video_io_validate_session, // Same session validator
+        .usb_ready = ws_input_usb_ready,
+        .user_data = &s_ws_ctx
+    };
+    if (ws_input_core_init(&s_ws_input_core, &ws_input_config, &s_hid_logic) != 0) {
+        ESP_LOGE(TAG, "Failed to initialize ws_input_core");
+        return ESP_FAIL;
+    }
 
 
 
@@ -990,7 +1180,7 @@ esp_err_t web_server_start(frame_hub_t *hub) {
 
 
     httpd_ssl_config_t conf = HTTPD_SSL_CONFIG_DEFAULT();
-    conf.httpd.max_open_sockets = CONFIG_WEB_SERVER_WS_MAX_CLIENTS + 5; // Max clients + 5 for status, API etc.
+    conf.httpd.max_open_sockets = CONFIG_WEB_SERVER_WS_MAX_CLIENTS + CONFIG_WEB_SERVER_INPUT_MAX_CONNECTIONS + 5; // Max clients + 5 for status, API etc.
     conf.httpd.lru_purge_enable = true;
     conf.httpd.stack_size = 10240; // 10KB to ensure PBKDF2/mbedTLS have enough space
     conf.httpd.max_uri_handlers = 17; // Increased for WS
@@ -1055,10 +1245,18 @@ esp_err_t web_server_start(frame_hub_t *hub) {
     }
 
 
+    // The server handle is needed by /ws (io_send, io_request_close) whether or not there is a video hub.
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    s_ws_ctx.server = server;
+    xSemaphoreGive(s_ws_mutex);
+
+    if (xTaskCreate(ws_input_task, "ws_input", CONFIG_WEB_SERVER_INPUT_TASK_STACK_SIZE, NULL, 4, &s_ws_input_task) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create ws_input task");
+        httpd_ssl_stop(server);
+        return ESP_FAIL;
+    }
+
     if (hub) {
-        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
-        s_ws_ctx.server = server;
-        xSemaphoreGive(s_ws_mutex);
         if (xTaskCreate(ws_video_task, "ws_video", CONFIG_WEB_SERVER_WS_TASK_STACK_SIZE, NULL, 4, &s_ws_task) != pdPASS) {
             ESP_LOGE(TAG, "Failed to create ws_video task");
             httpd_ssl_stop(server);
@@ -1089,6 +1287,22 @@ esp_err_t web_server_start(frame_hub_t *hub) {
         .ws_post_handshake_cb = ws_video_post_handshake_cb,
 #endif
     };
+    httpd_uri_t ws_input_uri = {
+        .uri = "/ws",
+        .method = HTTP_GET,
+        .handler = ws_input_handler,
+        .user_ctx = NULL,
+        .is_websocket = true,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = NULL,
+#ifdef CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
+        .ws_pre_handshake_cb = ws_input_pre_handshake_cb,
+#endif
+#ifdef CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
+        .ws_post_handshake_cb = ws_input_post_handshake_cb,
+#endif
+    };
+
 
     if (httpd_register_uri_handler(server, &static_root_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &static_js_uri) != ESP_OK ||
@@ -1097,7 +1311,8 @@ esp_err_t web_server_start(frame_hub_t *hub) {
         httpd_register_uri_handler(server, &setup_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &login_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &logout_uri) != ESP_OK ||
-        (hub && httpd_register_uri_handler(server, &ws_video_uri) != ESP_OK)) {
+        (hub && httpd_register_uri_handler(server, &ws_video_uri) != ESP_OK) ||
+        httpd_register_uri_handler(server, &ws_input_uri) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register URI handlers");
         httpd_ssl_stop(server);
         return ESP_FAIL;
@@ -1132,4 +1347,24 @@ int web_server_ws_client_count(void)
     int active_clients = ws_clients_count(&s_ws_core.clients);
     xSemaphoreGive(s_ws_mutex);
     return active_clients;
+}
+
+void web_server_set_hid_sink(const hid_sink_t *sink) {
+    hid_sink_t value = {0};
+    if (sink) value = *sink;
+    if (!s_ws_input_mutex) {
+        s_hid_sink_cfg = value; // before web_server_start(): picked up by hid_logic_init()
+        return;
+    }
+    xSemaphoreTake(s_ws_input_mutex, portMAX_DELAY);
+    s_hid_sink_cfg = value;
+    s_hid_logic.sink = value;
+    xSemaphoreGive(s_ws_input_mutex);
+}
+
+void web_server_notify_usb_mounted(void) {
+    if (!s_ws_input_mutex) return;
+    xSemaphoreTake(s_ws_input_mutex, portMAX_DELAY);
+    ws_input_core_on_usb_mounted(&s_ws_input_core);
+    xSemaphoreGive(s_ws_input_mutex);
 }
