@@ -17,7 +17,9 @@
 
 **ファズの検査**(全 tick の後): (1) モックの違反フラグ(全線 High でない `set_addr`、同時に 2 本の `assert_line`、範囲外の引数)が立たない (2) 同時に有効な線は 1 本以下 (3) フォールト後は `assert_line` / `set_addr` / `release_line` が 0 回、`release_all` が tick ごとに 1 回、線はラッチの次の tick までに全部下がる (4) すべての `assert_line` の `max_ms` は種別の上限以下(ATX は `KVM_ATX_HARD_MAX_*`) (5) 線が有効なのは、対応する `kvm_logic` の状態(KVM: `SWITCH_PULSE`、ATX: `ATX_PULSE` かつ LED == 現在チャンネル)のときだけ (6) フォールトでなければ、ボードの A0/A1 が `kvm_logic` の出力と一致する (7) 要求の結果が、状態から決まる期待値(WEB_API.md 7 章の判定順序を独立に実装した oracle)と一致し、受理のときだけ `op_id` が 1 進み、要求は HAL を呼ばない (8) 実行中の操作は、対応する状態にいる間だけで、フォールトなら残らない。
 
-空振りでないことの確認(件数の下限)も入れている。実測(固定シードなので毎回同じ): HAL が正常な 150 シード x 20000 tick で、切替の受理 18632 件、電源操作の受理 13171 件、KVM パルス 1881 回、ATX パルス 1361 回、操作の完了 21233 件・中断 10474 件、フォールト 0 回。HAL の失敗を注入する 150 シード x 20000 tick で、フォールト 892 回(`set_addr` 168、`assert_line` 184、`release_line` 156、`read_led` 384)と、フォールトからの再起動 890 回。
+モックの呼び出しの記録(`MOCK_LOG_MAX` = 4096 件)は、ファズが **tick ごとに空にする**(`calls[]` の累積カウンターは残す)。空にしないと、記録が数百 tick で満杯になり、以降の tick で (4) の検査とパルスの集計が何も見なくなる(PR #102 の指摘。修正前は、KVM パルスの集計が 1881 回、ATX パルスが 1361 回にとどまっていた)。1 tick の中で記録が溢れたら、ファズが失敗する。
+
+空振りでないことの確認(件数の下限)も入れている。実測(固定シードなので毎回同じ): HAL が正常な 150 シード x 20000 tick で、切替の受理 18632 件、電源操作の受理 13171 件、KVM パルス 18480 回、ATX パルス 12856 回、操作の完了 21233 件・中断 10474 件、フォールト 0 回。HAL の失敗を注入する 150 シード x 20000 tick で、フォールト 892 回(`set_addr` 168、`assert_line` 184、`release_line` 156、`read_led` 384)と、フォールトからの再起動 890 回(KVM パルス 17762 回、ATX パルス 13055 回)。
 
 ## 2. ミューテーションテスト
 
@@ -31,9 +33,11 @@ python3 tools/test/mutate_kvm_ctrl.py <repo> <スクラッチ> tools/test/kvm_ct
 
 | 実行した数 | 殺した数 | 生き残った数(すべて同値と判断) | ビルドエラー |
 |---|---|---|---|
-| 189 | 177 | 12 | 0 |
+| 190 | 178 | 12 | 0 |
 
-クールダウンの起点を「受理」から「ATX 操作の終了(完了または中断)」に変えた際に、`kvm_ctrl.c` の変更に合わせてミュータントの old 文字列を更新し、起点に関するミュータント(M182 から M189 の 8 個。M86、M159 から M164 の書き直しも含む)を足して、**全体を最初から実行し直した**のが上の結果。
+経緯: (1) クールダウンの起点を「受理」から「ATX 操作の終了(完了または中断)」に変えた際に、ミュータントの old 文字列を更新し、起点に関するミュータント(M182 から M189 の 8 個)を足して全体を実行し直した(189 個、177 個を殺し、12 個が同値)。(2) その後、ファズのモックの記録を tick ごとに空にする修正を入れ、`M190` を足して、**全体(190 個)を最初から実行し直した**のが上の結果。
+
+**ファズの修正で確認したこと(M190 と max_ms の不変条件)**: `M190`(`line_max_ms` の上限が、起動から 60 秒経った後だけ外れる)を、修正前のファズ(記録が数百 tick で満杯になる版)で実行すると**生き残った**(単体テストの時間は短いので見逃し、ファズの (4) の検査も、記録が満杯の tick では何も見ていなかった)。修正後のファズでは**殺した**。同じ修正前のファズで、上限を外す M21、M22、M23、M25 は、序盤の tick で検出できて殺していた(= 修正前のファズは、序盤は見ていて、後半を見ていなかった)。今回の実行で、ファズのテストだけが殺したミュータントは、M134(select が channel 5 を受理する)、M153(power が channel 0 を受理する)、M154(power が channel 5 を受理する)、M190 の 4 個で、前回の実行(M190 なし)と、ファズが殺すミュータントの結果は変わらなかった(前回は M134、M153、M154 の 3 個)。
 
 経緯(変更前の、起点が「受理」だった版): 最初の実行(181 個)では、16 個が生き残り、9 個がビルドエラー(ミュータントの書き方の問題。-Werror の未使用警告。書き直した)だった。生き残ったもののうち 5 個は同値でなかったので、殺すテストを足した(下表)。残りは同値と判断した。テストを足した後に 181 個を最初から実行し直すと、170 個を殺し、11 個が生き残った(同値)。起点の変更後の実行では、同値のミュータントが 1 個(M161)増えた。
 
@@ -61,7 +65,7 @@ python3 tools/test/mutate_kvm_ctrl.py <repo> <スクラッチ> tools/test/kvm_ct
 | M132 | tick: logic stepped with now_ms+1 | `kvm_logic` の内部時刻は、すべて引数の `now_ms` から導出した相対値(経過時間の比較だけ)なので、全時刻を 1 ms ずらしても挙動は変わらない(初期値 0 のタイマーは最初の `step` で上書きされるか、LED が無効(unknown)のままで状態遷移に影響しない)。`kvm_ctrl` 自身の時刻(クールダウン)は別に `now_ms` を使う |
 | M161 | power: cooldown not disarmed on accept | 受理できるのは `cooldown_remaining() == 0`(終了から `atx_min_interval_ms` 以上)のときだけで、経過時間は単調に増えるだけなので、受理時に `armed` を落とさなくても、実行中の `cooldown_ms` は 0 のまま。落とすのは、意図を明示するための冗長な処理 |
 
-### 2.2 殺したミュータントの一覧(177 個)
+### 2.2 殺したミュータントの一覧(178 個)
 
 「殺したテスト」は、失敗したテストのうち先頭の 2 つ(ほかにも落ちるものがあれば省略)。
 
@@ -229,6 +233,7 @@ python3 tools/test/mutate_kvm_ctrl.py <repo> <スクラッチ> tools/test/kvm_ct
 | M187 | update_op: end time off by one (now - 1) | `test_cooldown_boundary_is_exact`, `test_cooldown_counts_from_the_end_of_a_force_pulse` |
 | M188 | update_op: end time off by one (now + 1) | `test_cooldown_boundary_is_exact`, `test_cooldown_counts_from_the_end_of_a_force_pulse` |
 | M189 | update_op: cooldown armed before the op result is decided (inside pending branch) | `test_cooldown_boundary_is_exact`, `test_cooldown_counts_from_the_end_of_a_force_pulse` |
+| M190 | line_max_ms: hard cap dropped after 60 s of uptime | `test_fuzz_invariants_without_hal_failures`, `test_fuzz_invariants_with_hal_failures` |
 | M167 | map_state: TRACKING -> SWITCHING | `test_select_busy_while_switching_or_tracking`, `test_select_overtaken_by_manual_switch_is_aborted` |
 | M168 | map_state: ATX -> IDLE | `test_power_actions_use_right_line_max_ms_and_order`, `test_each_action_uses_its_own_configured_pulse_length` |
 | M169 | map_state: SWITCH_REVERT_SETUP -> TRACKING | `test_select_full_sequence_and_trace`, `test_status_state_mapping_covers_every_logic_state` |

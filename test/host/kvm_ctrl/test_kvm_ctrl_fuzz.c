@@ -135,9 +135,14 @@ static void run_seed(int seed, bool inject_faults, long ticks) {
         }
 
         /* ---- tick(まず時刻を進めてから) ---- */
+        /* 呼び出しの記録だけを空にする(calls[] の累積カウンターは残す)。記録は 1 tick 分だけ見ればよく、
+         * 空にしないと 4096 件で満杯になり、以降の tick で max_ms の検査とパルスの集計が何も見なくなる */
+        M.log_len = 0;
+        M.log_dropped = 0;
         size_t log_before = M.log_len;
         kvm_ctrl_result_t tr = fx_tick(now);
         (void)tr;
+        CHECK(M.log_dropped == 0, "mock log overflowed within one tick");
         kvm_ctrl_status_t st = fx_status();
 
         /* 件数 */

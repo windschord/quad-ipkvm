@@ -202,6 +202,8 @@ MUTANTS = [
     M("M187", "update_op: end time off by one (now - 1)", ("    c->atx_last_ms = c->now_ms;\n    c->atx_cooldown_armed = true;", "    c->atx_last_ms = c->now_ms - 1;\n    c->atx_cooldown_armed = true;")),
     M("M188", "update_op: end time off by one (now + 1)", ("    c->atx_last_ms = c->now_ms;\n    c->atx_cooldown_armed = true;", "    c->atx_last_ms = c->now_ms + 1;\n    c->atx_cooldown_armed = true;")),
     M("M189", "update_op: cooldown armed before the op result is decided (inside pending branch)", ("    if (c->logic.state == KVM_STATE_ATX_WAIT_SETUP || c->logic.state == KVM_STATE_ATX_PULSE) return;\n    c->last_op.result", "    c->atx_cooldown_armed = true; c->atx_last_ms = c->now_ms;\n    if (c->logic.state == KVM_STATE_ATX_WAIT_SETUP || c->logic.state == KVM_STATE_ATX_PULSE) return;\n    c->last_op.result")),
+    # ---- ファズの記録の修正で追加: max_ms の上限が、後半(時刻が進んでから)だけ外れる(単体テストは短時間なので見逃す) ----
+    M("M190", "line_max_ms: hard cap dropped after 60 s of uptime", ("if (sum > cap) sum = cap;", "if (sum > cap && c->now_ms < 60000) sum = cap;")),
     # ---- status ----
     M("M167", "map_state: TRACKING -> SWITCHING", ("        case KVM_STATE_MANUAL_TRACK_WAIT_LED:\n        case KVM_STATE_MANUAL_TRACK_WAIT_VIDEO:\n            return KVM_CTRL_STATE_TRACKING;", "        case KVM_STATE_MANUAL_TRACK_WAIT_LED:\n        case KVM_STATE_MANUAL_TRACK_WAIT_VIDEO:\n            return KVM_CTRL_STATE_SWITCHING;")),
     M("M168", "map_state: ATX -> IDLE", ("        case KVM_STATE_ATX_WAIT_SETUP:\n        case KVM_STATE_ATX_PULSE:\n            return KVM_CTRL_STATE_ATX;", "        case KVM_STATE_ATX_WAIT_SETUP:\n        case KVM_STATE_ATX_PULSE:\n            return KVM_CTRL_STATE_IDLE;")),
