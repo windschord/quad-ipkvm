@@ -22,8 +22,10 @@
  *   now_ms は単調増加のミリ秒（uint64_t）。同じ値の繰り返しは許す。**巻き戻ったら**（now_ms が前回の tick より
  *   小さい）、kvm_logic の経過時間（符号なしの引き算）が巨大になり、セットアップ時間などが一瞬で満了してしまうので、
  *   即座に release_all してフォールトをラッチする（安全側。復旧は再起動）。
- *   要求 API は now_ms を取らない。クールダウンの判定と記録には「直近の tick の now_ms」を使う
- *   （tick の周期 KVM_TICK_MS の分だけ粗い）。
+ *   要求 API は now_ms を取らない。クールダウンの判定には「直近の tick の now_ms」を使う
+ *   （tick の周期 KVM_TICK_MS の分だけ粗い）。クールダウンの起点は「ATX 操作が終わった tick」
+ *   （パルスを出し終えた、または中断した時点。強制断のような長いパルスの直後にも間隔を空けるため）。
+ *   実行中の ATX 操作がある間は busy で拒否されるので、cooldown_ms は 0。
  */
 
 #include <stdint.h>
@@ -46,7 +48,8 @@ typedef struct {
     uint32_t reset_ms;             /* TODO(hw-verify): リセットボタン */
     uint32_t force_ms;             /* TODO(hw-verify): 電源ボタンの長押し（強制断） */
 
-    uint32_t atx_min_interval_ms;  /* TODO(hw-verify): ソフトのクールダウン。0 = クールダウンなし */
+    uint32_t atx_min_interval_ms;  /* TODO(hw-verify): ソフトのクールダウン。ATX 操作が終わってから（完了でも中断でも）
+                                      次の ATX を受理するまでの最小間隔。0 = クールダウンなし */
     uint32_t assert_margin_ms;     /* assert_line の max_ms = パルス長 + この余裕。1 以上。
                                       tick の周期とジッタより大きくすること（ボードのタイマーが、ソフトの正常な解除より
                                       先に切れないように）。TODO(hw-verify) */
@@ -64,7 +67,7 @@ typedef enum {
     KVM_CTRL_ERR_UNKNOWN_STATE,         /* 現在チャンネルを確定できない */
     KVM_CTRL_ERR_CHANNEL_MISMATCH,      /* power: channel が現在のチャンネルと違う */
     KVM_CTRL_ERR_ATX_LOCKED,            /* ATX ロック中 */
-    KVM_CTRL_ERR_COOLDOWN,              /* 前回の ATX 受理から atx_min_interval_ms が経っていない */
+    KVM_CTRL_ERR_COOLDOWN,              /* 前回の ATX 操作が終わってから atx_min_interval_ms が経っていない */
     KVM_CTRL_ERR_FAULT,                 /* フォールトがラッチされている（tick / init の戻り値としても使う） */
     KVM_CTRL_ERR_NOT_READY              /* kvm_ctrl_init が成功していない（ctrl が使えない） */
 } kvm_ctrl_result_t;
@@ -144,8 +147,8 @@ typedef struct {
     bool has_last_op;
     kvm_ctrl_op_t last_op;
 
-    bool atx_has_last;                  /* 受理した ATX 操作がある */
-    uint64_t atx_last_ms;               /* 最後に ATX を受理した時刻（直近の tick の now_ms） */
+    bool atx_cooldown_armed;            /* クールダウンを数えている（直近に受理した ATX 操作が終わった）。実行中は false */
+    uint64_t atx_last_ms;               /* 直近の ATX 操作が終わった（完了または中断した）tick の now_ms */
 } kvm_ctrl_t;
 
 /* ---- API ---- */
@@ -176,6 +179,7 @@ kvm_ctrl_result_t kvm_ctrl_select(kvm_ctrl_t *ctrl, uint8_t channel, uint32_t *o
 /**
  * 電源操作（ATX）の要求（HAL は呼ばない）。パルス長はサーバーの設定（config）から決まる。
  * 判定の順序（WEB_API.md 7.3）: 引数 -> fault -> unknown -> busy -> channel_mismatch -> atx_locked -> cooldown -> 受理。
+ * cooldown は、直近の ATX 操作が終わってから atx_min_interval_ms が経つまで。
  * unknown / busy / channel_mismatch / atx_locked の判定は kvm_logic_request_atx の中で行う
  * （事前に自前で比較して TOCTOU を作らない）。
  */

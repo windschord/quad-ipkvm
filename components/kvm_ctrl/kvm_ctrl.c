@@ -168,6 +168,9 @@ static void update_op(kvm_ctrl_t *c, const kvm_logic_outputs_t *out) {
     if (c->logic.state == KVM_STATE_ATX_WAIT_SETUP || c->logic.state == KVM_STATE_ATX_PULSE) return;
     c->last_op.result = (c->logic.state == KVM_STATE_IDLE && !out->atx_anomaly_detected) ? KVM_CTRL_OP_COMPLETED
                                                                                          : KVM_CTRL_OP_ABORTED;
+    /* クールダウンは、操作が終わった（完了または中断した）この tick から数える */
+    c->atx_last_ms = c->now_ms;
+    c->atx_cooldown_armed = true;
 }
 
 static void record_op(kvm_ctrl_t *c, kvm_ctrl_op_kind_t kind, uint8_t channel, uint32_t *op_id) {
@@ -191,9 +194,10 @@ static kvm_ctrl_result_t map_logic_result(kvm_result_t r) {
     }
 }
 
-/* クールダウンの残り(ms)。直近の tick の時刻で数える（now_ms は単調なので、引き算は負にならない） */
+/* クールダウンの残り(ms)。起点は「ATX 操作が終わった時刻」（完了でも中断でも）。操作が実行中の間は数えない
+ * （その間は busy で拒否される）。直近の tick の時刻で数える（now_ms は単調なので、引き算は負にならない） */
 static uint32_t cooldown_remaining(const kvm_ctrl_t *c) {
-    if (!c->atx_has_last || c->config.atx_min_interval_ms == 0) return 0;
+    if (!c->atx_cooldown_armed || c->config.atx_min_interval_ms == 0) return 0;
     uint64_t elapsed = c->now_ms - c->atx_last_ms;
     if (elapsed >= c->config.atx_min_interval_ms) return 0;
     return (uint32_t)(c->config.atx_min_interval_ms - elapsed);
@@ -336,8 +340,7 @@ kvm_ctrl_result_t kvm_ctrl_power(kvm_ctrl_t *c, uint8_t channel, kvm_ctrl_power_
     if (cooldown_remaining(c) > 0) return KVM_CTRL_ERR_COOLDOWN;
 
     c->logic = trial;
-    c->atx_has_last = true;
-    c->atx_last_ms = c->now_ms;
+    c->atx_cooldown_armed = false; /* 実行中は数えない。操作が終わった tick（update_op）で数え始める */
     record_op(c, kind, channel, op_id);
     return KVM_CTRL_OK;
 }

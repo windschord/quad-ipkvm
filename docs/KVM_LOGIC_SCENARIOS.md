@@ -105,12 +105,17 @@
 
 ### 5.5 クールダウン
 
+起点は「ATX 操作が終わった（完了または中断した）tick」。実行中は数えない（busy で拒否され、`cooldown_ms` は 0）。
+
 | シナリオ | 期待動作 | テスト名 |
 | --- | --- | --- |
-| 境界 | 受理から `atx_min_interval_ms - 1` 後は `COOLDOWN`（残り 1 ms）、ちょうど `atx_min_interval_ms` 後は受理 | `test_cooldown_boundary_is_exact` |
+| 境界 | 終了から `atx_min_interval_ms - 1` 後は `COOLDOWN`（残り 1 ms）、ちょうど `atx_min_interval_ms` 後は受理。実行中は `cooldown_ms` が 0 で、終了の tick から数え直す | `test_cooldown_boundary_is_exact` |
+| 長いパルス（force）の直後 | 受理からは 2000 ms を過ぎていても、終了から数える。パルス中は `cooldown_ms` が 0 で `BUSY` | `test_cooldown_counts_from_the_end_of_a_force_pulse` |
+| 中断（anomaly）の後 | 準備中・パルス中のどちらで中断しても、中断した tick から数える | `test_cooldown_counts_from_an_aborted_op` |
+| フォールトで中断 | 数えない（どうせ要求は `FAULT`） | `test_fault_abort_does_not_start_cooldown` (fault) |
+| select との関係 | select は影響を受けず、始めもせず、終了も起点を動かさない | `test_cooldown_does_not_apply_to_select_and_select_does_not_start_it`, `test_cooldown_does_not_count_while_a_select_runs_or_after_it` |
 | 拒否は状態を進めない | `COOLDOWN` で拒否しても `kvm_logic` の状態・`op_id` は変わらない | `test_cooldown_rejection_leaves_logic_untouched` |
 | 0 = なし | 完了直後に再受理できる | `test_cooldown_disabled_when_interval_is_zero` |
-| select との関係 | select は影響を受けず、始めもしない | `test_cooldown_does_not_apply_to_select_and_select_does_not_start_it` |
 | 時刻 | 要求は `now_ms` を取らず、直近の tick の時刻で数える | `test_cooldown_uses_time_of_last_tick` |
 
 ### 5.6 操作の記録・状態の報告

@@ -505,9 +505,10 @@ void test_order_unknown_beats_mismatch_and_cooldown(void) {
 }
 
 void test_order_busy_beats_mismatch_and_cooldown(void) {
-    fx_boot(2);
-    TEST_ASSERT_EQUAL(KVM_CTRL_OK, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_FORCE, NULL));
-    fx_steps(3); /* パルス中。クールダウン中でもある */
+    boot_with_cooldown_active();
+    /* select はクールダウンの影響を受けない。切替中は busy で、クールダウンも残っている */
+    TEST_ASSERT_EQUAL(KVM_CTRL_OK, kvm_ctrl_select(&C, 1, NULL));
+    fx_steps(3);
     TEST_ASSERT_TRUE(fx_status().cooldown_ms > 0);
     TEST_ASSERT_EQUAL(KVM_CTRL_ERR_BUSY, kvm_ctrl_power(&C, 3, KVM_CTRL_POWER_PRESS, NULL)); /* mismatch でもある */
     TEST_ASSERT_EQUAL(KVM_CTRL_ERR_BUSY, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_PRESS, NULL)); /* cooldown でもある */
@@ -547,24 +548,78 @@ void test_order_invalid_params_beat_everything(void) {
 /* ---- クールダウン ---- */
 
 void test_cooldown_boundary_is_exact(void) {
-    boot_with_cooldown_active(); /* 受理は T=60。interval = 2000 */
-    const uint64_t accepted_at = 60;
-    kvm_ctrl_status_t st = fx_status();
-    TEST_ASSERT_EQUAL_UINT32(2000 - (uint32_t)(T - accepted_at), st.cooldown_ms);
+    boot_with_cooldown_active(); /* press を T=60 に受理。パルスは 80..280 ms で、280 ms の tick で終わる。いまは T=290 */
+    const uint64_t ended_at = 280;
+    TEST_ASSERT_EQUAL_UINT64(ended_at, C.atx_last_ms); /* 起点は受理(60)ではなく、終了の tick */
+    TEST_ASSERT_EQUAL_UINT32(2000 - (uint32_t)(T - ended_at), fx_status().cooldown_ms);
 
-    fx_tick(accepted_at + 1999);
+    fx_tick(ended_at + 1999);
     TEST_ASSERT_EQUAL_UINT32(1, fx_status().cooldown_ms);
     uint32_t op = 77;
     TEST_ASSERT_EQUAL(KVM_CTRL_ERR_COOLDOWN, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_PRESS, &op));
     TEST_ASSERT_EQUAL_UINT32(0, op);
 
-    fx_tick(accepted_at + 2000);
+    fx_tick(ended_at + 2000);
     TEST_ASSERT_EQUAL_UINT32(0, fx_status().cooldown_ms);
     TEST_ASSERT_EQUAL(KVM_CTRL_OK, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_PRESS, &op));
     TEST_ASSERT_EQUAL_UINT32(2, op);
 
-    fx_tick(accepted_at + 2000 + 1);
-    TEST_ASSERT_EQUAL_UINT32(2000 - 1, fx_status().cooldown_ms); /* 新しい受理(T=2060)からの数え直し */
+    /* 実行中は数えない: cooldown_ms は 0 で、要求は busy */
+    fx_step();
+    TEST_ASSERT_EQUAL_UINT32(0, fx_status().cooldown_ms);
+    TEST_ASSERT_EQUAL(KVM_CTRL_ERR_BUSY, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_PRESS, NULL));
+    /* 終わった tick から、また 2000 ms */
+    TEST_ASSERT_TRUE(fx_run_until(fx_state_is_idle, 100));
+    TEST_ASSERT_EQUAL_UINT32(2000, fx_status().cooldown_ms);
+}
+
+void test_cooldown_counts_from_the_end_of_a_force_pulse(void) {
+    fx_boot(2);
+    TEST_ASSERT_EQUAL(KVM_CTRL_OK, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_FORCE, NULL)); /* T=60 に受理。パルスは 80..4580 ms */
+    fx_steps(3);
+    TEST_ASSERT_EQUAL(KVM_CTRL_STATE_ATX, fx_status().state);
+    TEST_ASSERT_EQUAL_UINT32(0, fx_status().cooldown_ms); /* パルス中は、クールダウンの値を見せない */
+    TEST_ASSERT_EQUAL(KVM_CTRL_ERR_BUSY, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_PRESS, NULL));
+    TEST_ASSERT_TRUE(fx_run_until(fx_state_is_idle, 1000));
+    TEST_ASSERT_EQUAL_UINT64(4580, T);
+    TEST_ASSERT_EQUAL_UINT64(4580, C.atx_last_ms);
+    TEST_ASSERT_EQUAL_UINT32(2000, fx_status().cooldown_ms);
+    /* 受理(60 ms)から数えれば 2000 ms はとうに過ぎているが、終了(4580 ms)から数える */
+    TEST_ASSERT_EQUAL(KVM_CTRL_ERR_COOLDOWN, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_PRESS, NULL));
+    fx_tick(4580 + 1999);
+    TEST_ASSERT_EQUAL(KVM_CTRL_ERR_COOLDOWN, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_PRESS, NULL));
+    fx_tick(4580 + 2000);
+    TEST_ASSERT_EQUAL(KVM_CTRL_OK, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_PRESS, NULL));
+}
+
+void test_cooldown_counts_from_an_aborted_op(void) {
+    for (int variant = 0; variant < 2; variant++) {
+        fx_boot(2);
+        TEST_ASSERT_EQUAL(KVM_CTRL_OK, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_RESET, NULL));
+        if (variant == 0) fx_steps(3); /* パルス中(T=90) */
+        else fx_step();                /* 準備中(T=70) */
+        TEST_ASSERT_EQUAL_UINT32(0, fx_status().cooldown_ms);
+        mock_set_led_channel(&M, 3);
+        fx_step();                     /* 中断した tick */
+        uint64_t aborted_at = T;
+        TEST_ASSERT_EQUAL(KVM_CTRL_OP_ABORTED, fx_status().last_op.result);
+        TEST_ASSERT_EQUAL_UINT64(aborted_at, C.atx_last_ms);
+        TEST_ASSERT_EQUAL_UINT32(2000, fx_status().cooldown_ms);
+        mock_set_led_channel(&M, 2);
+        TEST_ASSERT_TRUE(fx_run_until(fx_state_is_idle, 300));
+        fx_tick(aborted_at + 1999);
+        TEST_ASSERT_EQUAL(KVM_CTRL_ERR_COOLDOWN, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_RESET, NULL));
+        fx_tick(aborted_at + 2000);
+        TEST_ASSERT_EQUAL(KVM_CTRL_OK, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_RESET, NULL));
+    }
+}
+
+void test_cooldown_does_not_count_while_a_select_runs_or_after_it(void) {
+    boot_with_cooldown_active();
+    TEST_ASSERT_EQUAL(KVM_CTRL_OK, kvm_ctrl_select(&C, 1, NULL));
+    uint64_t before = C.atx_last_ms;
+    fx_complete_switch(1);
+    TEST_ASSERT_EQUAL_UINT64(before, C.atx_last_ms); /* select の完了は、起点を動かさない */
 }
 
 void test_cooldown_rejection_leaves_logic_untouched(void) {
@@ -608,10 +663,10 @@ void test_cooldown_does_not_apply_to_select_and_select_does_not_start_it(void) {
 void test_cooldown_uses_time_of_last_tick(void) {
     /* 要求は now_ms を取らない。クールダウンは直近の tick の時刻で数える */
     boot_with_cooldown_active();
-    fx_tick(60 + 1999);
+    fx_tick(280 + 1999);
     TEST_ASSERT_EQUAL(KVM_CTRL_ERR_COOLDOWN, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_PRESS, NULL));
     TEST_ASSERT_EQUAL(KVM_CTRL_ERR_COOLDOWN, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_PRESS, NULL)); /* tick が無ければ変わらない */
-    fx_tick(60 + 2000);
+    fx_tick(280 + 2000);
     TEST_ASSERT_EQUAL(KVM_CTRL_OK, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_PRESS, NULL));
 }
 
@@ -750,6 +805,9 @@ int main(void) {
     RUN_TEST(test_order_mismatch_beats_cooldown_without_tick_in_between);
     RUN_TEST(test_order_invalid_params_beat_everything);
     RUN_TEST(test_cooldown_boundary_is_exact);
+    RUN_TEST(test_cooldown_counts_from_the_end_of_a_force_pulse);
+    RUN_TEST(test_cooldown_counts_from_an_aborted_op);
+    RUN_TEST(test_cooldown_does_not_count_while_a_select_runs_or_after_it);
     RUN_TEST(test_cooldown_rejection_leaves_logic_untouched);
     RUN_TEST(test_cooldown_disabled_when_interval_is_zero);
     RUN_TEST(test_cooldown_does_not_apply_to_select_and_select_does_not_start_it);

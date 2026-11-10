@@ -1,6 +1,6 @@
 # kvm_ctrl のテストとミューテーションテストの結果
 
-作成: 2026-11-10(Issue #85、C-5a)。`components/kvm_ctrl`(`kvm_logic` と HAL の結線)とモック HAL(`test/host/kvm_board/`)のホスト単体テストの構成と、`kvm_ctrl.c` に対するミューテーションテストの結果。シナリオとテストの対応は `docs/KVM_LOGIC_SCENARIOS.md` の 5 章。
+作成: 2026-11-10、更新: 2026-11-10(クールダウンの起点を ATX 操作の終了に変更)(Issue #85、C-5a)。`components/kvm_ctrl`(`kvm_logic` と HAL の結線)とモック HAL(`test/host/kvm_board/`)のホスト単体テストの構成と、`kvm_ctrl.c` に対するミューテーションテストの結果。シナリオとテストの対応は `docs/KVM_LOGIC_SCENARIOS.md` の 5 章。
 
 ## 1. テストの構成
 
@@ -8,16 +8,16 @@
 |---|---|---|
 | `test/host/kvm_board/test_kvm_board_mock.c` | モック HAL 自身(ボード側の義務の再現、失敗の注入、違反フラグ、記録) | 25 |
 | `test/host/kvm_ctrl/test_kvm_ctrl_init.c` | 初期化の手順、設定・HAL の検証、LED の変換、起動直後の状態 | 21 |
-| `test/host/kvm_ctrl/test_kvm_ctrl_ops.c` | 切替・ATX の出力と順序、判定の順序、クールダウン、操作の記録、状態の報告 | 42 |
-| `test/host/kvm_ctrl/test_kvm_ctrl_fault.c` | HAL の失敗・時刻の巻き戻り・`kvm_logic` の出力の不整合 -> フォールトのラッチ | 23 |
+| `test/host/kvm_ctrl/test_kvm_ctrl_ops.c` | 切替・ATX の出力と順序、判定の順序、クールダウン、操作の記録、状態の報告 | 45 |
+| `test/host/kvm_ctrl/test_kvm_ctrl_fault.c` | HAL の失敗・時刻の巻き戻り・`kvm_logic` の出力の不整合 -> フォールトのラッチ | 24 |
 | `test/host/kvm_ctrl/test_kvm_ctrl_fuzz.c` | 不変条件を全 tick で検査するファズ(固定シード、ASan/UBSan) | 2 |
 | `test/host/kvm_ctrl/kc_common.h` | テスト共通の部品(フィクスチャ、HAL の呼び出しの文字列化) | - |
 
-合計 113 件(`test/host/CMakeLists.txt` の既存の自動発見で、ctest の実行ファイルは 5 つ増える)。
+合計 117 件(`test/host/CMakeLists.txt` の既存の自動発見で、ctest の実行ファイルは 5 つ増える)。
 
 **ファズの検査**(全 tick の後): (1) モックの違反フラグ(全線 High でない `set_addr`、同時に 2 本の `assert_line`、範囲外の引数)が立たない (2) 同時に有効な線は 1 本以下 (3) フォールト後は `assert_line` / `set_addr` / `release_line` が 0 回、`release_all` が tick ごとに 1 回、線はラッチの次の tick までに全部下がる (4) すべての `assert_line` の `max_ms` は種別の上限以下(ATX は `KVM_ATX_HARD_MAX_*`) (5) 線が有効なのは、対応する `kvm_logic` の状態(KVM: `SWITCH_PULSE`、ATX: `ATX_PULSE` かつ LED == 現在チャンネル)のときだけ (6) フォールトでなければ、ボードの A0/A1 が `kvm_logic` の出力と一致する (7) 要求の結果が、状態から決まる期待値(WEB_API.md 7 章の判定順序を独立に実装した oracle)と一致し、受理のときだけ `op_id` が 1 進み、要求は HAL を呼ばない (8) 実行中の操作は、対応する状態にいる間だけで、フォールトなら残らない。
 
-空振りでないことの確認(件数の下限)も入れている。実測(固定シードなので毎回同じ): HAL が正常な 150 シード x 20000 tick で、切替の受理 18120 件、電源操作の受理 14146 件、KVM パルス 1849 回、ATX パルス 1458 回、操作の完了 21573 件・中断 10600 件、フォールト 0 回。HAL の失敗を注入する 150 シード x 20000 tick で、フォールト 887 回(`set_addr` 164、`assert_line` 187、`release_line` 156、`read_led` 380)と、フォールトからの再起動 884 回。
+空振りでないことの確認(件数の下限)も入れている。実測(固定シードなので毎回同じ): HAL が正常な 150 シード x 20000 tick で、切替の受理 18632 件、電源操作の受理 13171 件、KVM パルス 1881 回、ATX パルス 1361 回、操作の完了 21233 件・中断 10474 件、フォールト 0 回。HAL の失敗を注入する 150 シード x 20000 tick で、フォールト 892 回(`set_addr` 168、`assert_line` 184、`release_line` 156、`read_led` 384)と、フォールトからの再起動 890 回。
 
 ## 2. ミューテーションテスト
 
@@ -31,18 +31,20 @@ python3 tools/test/mutate_kvm_ctrl.py <repo> <スクラッチ> tools/test/kvm_ct
 
 | 実行した数 | 殺した数 | 生き残った数(すべて同値と判断) | ビルドエラー |
 |---|---|---|---|
-| 181 | 170 | 11 | 0 |
+| 189 | 177 | 12 | 0 |
 
-経緯: 最初の実行(181 個)では、16 個が生き残り、9 個がビルドエラー(ミュータントの書き方の問題。-Werror の未使用警告。書き直した)だった。生き残ったもののうち 5 個は同値でなかったので、殺すテストを足した(下表)。残り 11 個は同値と判断し、理由を 2.1 に残した。テストを足した後に、181 個すべてを最初から実行し直したのが、上の結果。
+クールダウンの起点を「受理」から「ATX 操作の終了(完了または中断)」に変えた際に、`kvm_ctrl.c` の変更に合わせてミュータントの old 文字列を更新し、起点に関するミュータント(M182 から M189 の 8 個。M86、M159 から M164 の書き直しも含む)を足して、**全体を最初から実行し直した**のが上の結果。
 
-| 最初の実行で生き残ったミュータント | 足したテスト |
+経緯(変更前の、起点が「受理」だった版): 最初の実行(181 個)では、16 個が生き残り、9 個がビルドエラー(ミュータントの書き方の問題。-Werror の未使用警告。書き直した)だった。生き残ったもののうち 5 個は同値でなかったので、殺すテストを足した(下表)。残りは同値と判断した。テストを足した後に 181 個を最初から実行し直すと、170 個を殺し、11 個が生き残った(同値)。起点の変更後の実行では、同値のミュータントが 1 個(M161)増えた。
+
+| 変更前の最初の実行で生き残ったミュータント | 足したテスト |
 |---|---|
 | M29(RESET が `press_ms` を使う) | `test_each_action_uses_its_own_configured_pulse_length`(既定値では偶然、press と reset の `max_ms` がどちらも 200 になって区別できなかった) |
 | M65(ATX の完了判定が idle を見ない) | `test_atx_op_is_aborted_if_logic_leaves_atx_states_without_anomaly` |
 | M80(`kvm_logic` の `INVALID_PARAM` の対応) | `test_logic_invalid_param_maps_to_invalid_param` |
 | M102、M103(reset / force の上限がクランプ前の値) | `test_init_validates_pulse_lengths_and_margin` に、reset / force のクランプのケースを追加 |
 
-### 2.1 同値のミュータント(11 個)
+### 2.1 同値のミュータント(12 個)
 
 | ID | 変更箇所 | 同値の理由 |
 |---|---|---|
@@ -57,8 +59,9 @@ python3 tools/test/mutate_kvm_ctrl.py <repo> <スクラッチ> tools/test/kvm_ct
 | M110 | init: set_addr uses 1 (equivalent to logic initial output) | `kvm_logic_init` は初期出力の `a0a1_channel` を 1 に固定しているので、`initial` は常に 1 |
 | M118 | tick: rewind check ignores ticked (first tick; equivalent) | 初回の `tick` では `c->now_ms == 0` なので、符号なしの `now_ms < 0` は常に偽。`ticked` の条件がなくても同じ |
 | M132 | tick: logic stepped with now_ms+1 | `kvm_logic` の内部時刻は、すべて引数の `now_ms` から導出した相対値(経過時間の比較だけ)なので、全時刻を 1 ms ずらしても挙動は変わらない(初期値 0 のタイマーは最初の `step` で上書きされるか、LED が無効(unknown)のままで状態遷移に影響しない)。`kvm_ctrl` 自身の時刻(クールダウン)は別に `now_ms` を使う |
+| M161 | power: cooldown not disarmed on accept | 受理できるのは `cooldown_remaining() == 0`(終了から `atx_min_interval_ms` 以上)のときだけで、経過時間は単調に増えるだけなので、受理時に `armed` を落とさなくても、実行中の `cooldown_ms` は 0 のまま。落とすのは、意図を明示するための冗長な処理 |
 
-### 2.2 殺したミュータントの一覧(170 個)
+### 2.2 殺したミュータントの一覧(177 個)
 
 「殺したテスト」は、失敗したテストのうち先頭の 2 つ(ほかにも落ちるものがあれば省略)。
 
@@ -126,7 +129,7 @@ python3 tools/test/mutate_kvm_ctrl.py <repo> <スクラッチ> tools/test/kvm_ct
 | M64 | update_op: ATX completion ignores anomaly flag | `test_power_with_anomaly_flag_at_the_end_is_not_completed` |
 | M65 | update_op: ATX completion ignores idle (non-idle also completed) | `test_atx_op_is_aborted_if_logic_leaves_atx_states_without_anomaly` |
 | M66 | update_op: ATX results swapped | `test_power_actions_use_right_line_max_ms_and_order`, `test_power_anomaly_during_pulse_releases_immediately` |
-| M67 | update_op: do not skip decided ops (result != PENDING check removed) | `test_fuzz_invariants_without_hal_failures`, `test_fuzz_invariants_with_hal_failures` |
+| M67 | update_op: do not skip decided ops (result != PENDING check removed) | `test_anomaly_flag_clears_when_next_pulse_starts`, `test_cooldown_boundary_is_exact` |
 | M69 | record_op: pre-increment op_id | `test_select_full_sequence_and_trace`, `test_select_accepts_null_op_id` |
 | M70 | record_op: op_id not advanced | `test_cooldown_boundary_is_exact`, `test_op_ids_increment_and_only_last_op_is_kept` |
 | M71 | record_op: initial result COMPLETED | `test_select_full_sequence_and_trace`, `test_select_busy_while_switching_or_tracking` |
@@ -140,10 +143,10 @@ python3 tools/test/mutate_kvm_ctrl.py <repo> <スクラッチ> tools/test/kvm_ct
 | M79 | map: UNKNOWN_STATE -> BUSY | `test_power_is_rejected_in_unknown_state`, `test_order_unknown_beats_mismatch_and_cooldown` |
 | M80 | map: INVALID_PARAM -> BUSY | `test_logic_invalid_param_maps_to_invalid_param` |
 | M82 | cooldown: interval==0 check inverted | `test_order_unknown_beats_mismatch_and_cooldown`, `test_order_busy_beats_mismatch_and_cooldown` |
-| M84 | cooldown: boundary elapsed >= interval - 1 | `test_cooldown_boundary_is_exact`, `test_cooldown_uses_time_of_last_tick` |
-| M85 | cooldown: remaining returns elapsed | `test_cooldown_boundary_is_exact` |
-| M86 | cooldown: ignores atx_has_last | `test_status_right_after_init`, `test_power_actions_use_right_line_max_ms_and_order` |
-| M87 | cooldown: remaining off by one | `test_cooldown_boundary_is_exact` |
+| M84 | cooldown: boundary elapsed >= interval - 1 | `test_cooldown_boundary_is_exact`, `test_cooldown_counts_from_the_end_of_a_force_pulse` |
+| M85 | cooldown: remaining returns elapsed | `test_cooldown_boundary_is_exact`, `test_cooldown_counts_from_the_end_of_a_force_pulse` |
+| M86 | cooldown: ignores armed flag | `test_status_right_after_init`, `test_power_actions_use_right_line_max_ms_and_order` |
+| M87 | cooldown: remaining off by one | `test_cooldown_boundary_is_exact`, `test_cooldown_counts_from_the_end_of_a_force_pulse` |
 | M88 | init: set_addr pointer not required | `test_kvm_ctrl_init:crash/rc=1` |
 | M89 | init: assert_line pointer not required | `test_init_rejects_incomplete_hal_without_touching_hardware` |
 | M90 | init: release_line pointer not required | `test_init_rejects_incomplete_hal_without_touching_hardware` |
@@ -212,13 +215,20 @@ python3 tools/test/mutate_kvm_ctrl.py <repo> <スクラッチ> tools/test/kvm_ct
 | M157 | power: cooldown check removed | `test_order_locked_beats_cooldown`, `test_order_mismatch_beats_cooldown_without_tick_in_between` |
 | M158 | power: cooldown checked before kvm_logic (order) | `test_order_unknown_beats_mismatch_and_cooldown`, `test_order_busy_beats_mismatch_and_cooldown` |
 | M159 | power: accepted trial not committed | `test_power_actions_use_right_line_max_ms_and_order`, `test_each_action_uses_its_own_configured_pulse_length` |
-| M160 | power: request applied to real logic before cooldown check | `test_cooldown_boundary_is_exact`, `test_cooldown_rejection_leaves_logic_untouched` |
-| M161 | power: atx_has_last not set | `test_order_unknown_beats_mismatch_and_cooldown`, `test_order_busy_beats_mismatch_and_cooldown` |
-| M162 | power: atx_last_ms not recorded | `test_cooldown_boundary_is_exact`, `test_cooldown_uses_time_of_last_tick` |
-| M163 | power: cooldown started at time 0 instead of now | `test_cooldown_boundary_is_exact`, `test_cooldown_uses_time_of_last_tick` |
-| M164 | power: cooldown also set for non-accepted (set before trial result) | `test_power_actions_use_right_line_max_ms_and_order`, `test_power_does_not_pulse_longer_than_configured` |
+| M160 | power: request applied to real logic before cooldown check | `test_cooldown_boundary_is_exact`, `test_cooldown_counts_from_the_end_of_a_force_pulse` |
+| M162 | update_op: end time not recorded | `test_cooldown_boundary_is_exact`, `test_cooldown_counts_from_the_end_of_a_force_pulse` |
+| M163 | update_op: cooldown starts at time 0 | `test_cooldown_boundary_is_exact`, `test_cooldown_counts_from_the_end_of_a_force_pulse` |
+| M164 | power: cooldown starts at acceptance (old behaviour) | `test_cooldown_boundary_is_exact`, `test_cooldown_counts_from_the_end_of_a_force_pulse` |
 | M165 | power: op recorded with SELECT kind | `test_power_actions_use_right_line_max_ms_and_order`, `test_each_action_uses_its_own_configured_pulse_length` |
 | M166 | power: op_id not cleared on entry | `test_power_channel_mismatch_outputs_nothing_and_does_not_consume_cooldown`, `test_power_rejects_invalid_parameters` |
+| M182 | update_op: cooldown never armed | `test_order_unknown_beats_mismatch_and_cooldown`, `test_order_busy_beats_mismatch_and_cooldown` |
+| M183 | update_op: only completed ops start the cooldown | `test_cooldown_counts_from_an_aborted_op` |
+| M184 | update_op: select ops start the cooldown too | `test_cooldown_does_not_count_while_a_select_runs_or_after_it`, `test_cooldown_does_not_apply_to_select_and_select_does_not_start_it` |
+| M185 | update_op: cooldown counted while the pulse runs | `test_cooldown_boundary_is_exact`, `test_cooldown_counts_from_the_end_of_a_force_pulse` |
+| M186 | cooldown: armed check inverted | `test_status_right_after_init`, `test_power_actions_use_right_line_max_ms_and_order` |
+| M187 | update_op: end time off by one (now - 1) | `test_cooldown_boundary_is_exact`, `test_cooldown_counts_from_the_end_of_a_force_pulse` |
+| M188 | update_op: end time off by one (now + 1) | `test_cooldown_boundary_is_exact`, `test_cooldown_counts_from_the_end_of_a_force_pulse` |
+| M189 | update_op: cooldown armed before the op result is decided (inside pending branch) | `test_cooldown_boundary_is_exact`, `test_cooldown_counts_from_the_end_of_a_force_pulse` |
 | M167 | map_state: TRACKING -> SWITCHING | `test_select_busy_while_switching_or_tracking`, `test_select_overtaken_by_manual_switch_is_aborted` |
 | M168 | map_state: ATX -> IDLE | `test_power_actions_use_right_line_max_ms_and_order`, `test_each_action_uses_its_own_configured_pulse_length` |
 | M169 | map_state: SWITCH_REVERT_SETUP -> TRACKING | `test_select_full_sequence_and_trace`, `test_status_state_mapping_covers_every_logic_state` |

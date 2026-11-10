@@ -180,6 +180,18 @@ void test_fault_release_all_keeps_being_retried_and_failure_does_not_unlatch(voi
     expect_latched_and_quiet(KVM_CTRL_FAULT_READ_LED, 50);
 }
 
+void test_fault_abort_does_not_start_cooldown(void) {
+    /* フォールトで中断した場合は、どうせ要求が拒否される。クールダウンの起点は動かさない */
+    fx_boot(2);
+    TEST_ASSERT_EQUAL(KVM_CTRL_OK, kvm_ctrl_power(&C, 2, KVM_CTRL_POWER_PRESS, NULL));
+    fx_steps(2);
+    mock_fail_nth(&M, MOCK_FN_READ_LED, 1);
+    TEST_ASSERT_EQUAL(KVM_CTRL_ERR_FAULT, fx_step());
+    TEST_ASSERT_EQUAL(KVM_CTRL_OP_ABORTED, fx_status().last_op.result);
+    TEST_ASSERT_FALSE(C.atx_cooldown_armed);
+    TEST_ASSERT_EQUAL_UINT32(0, fx_status().cooldown_ms);
+}
+
 void test_fault_keeps_first_reason(void) {
     fx_boot(2);
     TEST_ASSERT_EQUAL(KVM_CTRL_OK, kvm_ctrl_select(&C, 1, NULL));
@@ -408,6 +420,7 @@ int main(void) {
     RUN_TEST(test_fault_read_led_while_line_is_asserted);
     RUN_TEST(test_fault_read_led_persistent);
     RUN_TEST(test_fault_release_all_keeps_being_retried_and_failure_does_not_unlatch);
+    RUN_TEST(test_fault_abort_does_not_start_cooldown);
     RUN_TEST(test_fault_keeps_first_reason);
     RUN_TEST(test_fault_does_not_change_completed_op);
     RUN_TEST(test_time_rewind_latches_fault);
