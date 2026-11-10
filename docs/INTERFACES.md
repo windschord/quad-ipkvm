@@ -220,4 +220,5 @@ typedef struct {
 
 ### 6.4 Antigravity への依頼（A-9）
 - 実機の `kvm_board_hal_t` 実装（GPIO、フォトカプラの極性、ハードウェアタイマーの自動解除）。**このインターフェースに合意できるか**を、Issue #85 のコメントで回答してほしい。変えたい点（例: 自動解除を `gptimer` ではなく別の手段にする）があれば、`contract` ラベルの Issue で。
+- **`kvm_service_start(const kvm_board_hal_t *hal)`（`components/kvm_service/include/kvm_service.h`）の呼び出し元は A-9**（実機の HAL ができたら `main/main.c` から呼ぶ）。C-5b の時点では呼ばれないので、`web_server` の KVM / ATX の API は 503 `not_ready` を返す。HAL の `ctx` は起動後もずっと有効であること。パルス長・間隔・余裕・tick 周期は Kconfig（`ATX_*`、`KVM_*`）で、値はすべて `TODO(hw-verify)`。
 - それまで、ホストでは**モック HAL**（`test/host/kvm_board/`）で検証する。モックは、上の「ボード側の義務」の 2 と 4 も再現し、`kvm_ctrl` が不変条件に反した順序で呼ばないことをテストで固定する。

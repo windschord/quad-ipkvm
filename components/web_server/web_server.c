@@ -9,6 +9,8 @@
 #include "auth_worker_slot.h"
 #include "http_guard.h"
 #include "web_status_map.h"
+#include "kvm_api.h"
+#include "kvm_service.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -1100,6 +1102,114 @@ static esp_err_t logout_handler(httpd_req_t *req) {
 }
 
 
+// ---- KVM switch / ATX API (docs/WEB_API.md 7, Issue #85) ----
+// The order is fixed: Host / session / Origin / Content-Type by http_guard_decide() FIRST (an unauthenticated, Origin-less
+// or non-JSON request never reaches kvm_api_handle(), and its body is not even read), then Content-Length (411 / 413),
+// then the body, then kvm_api_handle() (pure C; the checks of the body, kvm_ctrl and the HTTP mapping live there).
+// The handler never blocks long: the kvm_ctrl mutex is waited for at most CONFIG_KVM_LOCK_TIMEOUT_MS (else 503 not_ready).
+
+static const char *kvm_http_status_line(int status) {
+    switch (status) {
+        case 200: return "200 OK";
+        case 202: return "202 Accepted";
+        case 400: return "400 Bad Request";
+        case 409: return "409 Conflict";
+        case 429: return "429 Too Many Requests";
+        case 503: return "503 Service Unavailable";
+        default:  return "500 Internal Server Error";
+    }
+}
+
+static esp_err_t kvm_api_http_handler(httpd_req_t *req, kvm_api_endpoint_t ep, http_guard_path_e guard_path) {
+    add_security_headers(req, NULL); // Cache-Control: no-store etc.
+    const bool is_post = (ep != KVM_API_EP_STATUS);
+
+    // The Origin is mandatory for POST only (WEB_API.md 7). check_host_origin() checks the Host in both cases.
+    bool host_ok = check_host_origin(req, is_post);
+
+    uint8_t token[32];
+    bool has_token = get_session_token(req, token);
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    bool valid = false;
+    if (has_token) {
+        valid = (auth_logic_validate_session(&s_auth_ctx, token, sizeof(token), esp_timer_get_time() / 1000) == 0);
+    }
+    auth_state_e state = s_auth_ctx.state;
+    xSemaphoreGive(s_auth_mutex);
+
+    bool is_json = false;
+    if (is_post) {
+        char ctype[64];
+        if (httpd_req_get_hdr_value_str(req, "Content-Type", ctype, sizeof(ctype)) == ESP_OK) {
+            if (strncmp(ctype, "application/json", 16) == 0) is_json = true;
+        }
+    }
+
+    http_guard_action_e action = http_guard_decide(state, is_post ? HTTP_GUARD_METHOD_POST : HTTP_GUARD_METHOD_GET,
+                                                   guard_path, valid, host_ok, is_json, host_ok);
+    if (action != HTTP_GUARD_ACTION_ALLOW) {
+        return send_action_error(req, action);
+    }
+
+    char body[KVM_API_BODY_MAX];
+    size_t body_len = 0;
+    if (is_post) {
+        if (req->content_len == 0 || req->content_len > KVM_API_BODY_MAX) {
+            httpd_resp_set_type(req, "application/json");
+            if (req->content_len > KVM_API_BODY_MAX) {
+                httpd_resp_set_status(req, "413 Payload Too Large");
+                httpd_resp_sendstr(req, "{\"error\":\"payload_too_large\"}");
+            } else {
+                httpd_resp_set_status(req, "411 Length Required");
+                httpd_resp_sendstr(req, "{\"error\":\"length_required\"}");
+            }
+            return ESP_OK;
+        }
+        while (body_len < req->content_len) {
+            int ret = httpd_req_recv(req, body + body_len, req->content_len - body_len);
+            if (ret <= 0) {
+                if (ret == HTTPD_SOCK_ERR_TIMEOUT) httpd_resp_send_408(req);
+                return ESP_FAIL;
+            }
+            body_len += (size_t)ret;
+        }
+    }
+
+    kvm_api_response_t rsp;
+    kvm_api_handle(kvm_service_backend(), ep, body, body_len, &rsp);
+
+    // Log: kind, channel and reason only (no session, no raw body). The status poll is not logged.
+    if (rsp.log) {
+        ESP_LOGI(TAG, "kvm api: %s channel=%u -> %d %s", rsp.log_kind, (unsigned)rsp.log_channel, rsp.status, rsp.log_reason);
+    }
+
+    char retry_after[12];
+    if (rsp.has_retry_after) {
+        snprintf(retry_after, sizeof(retry_after), "%" PRIu32, rsp.retry_after_s);
+        httpd_resp_set_hdr(req, "Retry-After", retry_after);
+    }
+    httpd_resp_set_status(req, kvm_http_status_line(rsp.status));
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, rsp.body, (ssize_t)rsp.body_len);
+}
+
+static esp_err_t kvm_status_handler(httpd_req_t *req) {
+    return kvm_api_http_handler(req, KVM_API_EP_STATUS, HTTP_GUARD_PATH_KVM_STATUS);
+}
+static esp_err_t kvm_select_handler(httpd_req_t *req) {
+    return kvm_api_http_handler(req, KVM_API_EP_SELECT, HTTP_GUARD_PATH_KVM_SELECT);
+}
+static esp_err_t power_press_handler(httpd_req_t *req) {
+    return kvm_api_http_handler(req, KVM_API_EP_POWER_PRESS, HTTP_GUARD_PATH_POWER);
+}
+static esp_err_t power_reset_handler(httpd_req_t *req) {
+    return kvm_api_http_handler(req, KVM_API_EP_POWER_RESET, HTTP_GUARD_PATH_POWER);
+}
+static esp_err_t power_force_handler(httpd_req_t *req) {
+    return kvm_api_http_handler(req, KVM_API_EP_POWER_FORCE, HTTP_GUARD_PATH_POWER);
+}
+
+
 esp_err_t web_server_start(frame_hub_t *hub) {
     ESP_LOGI(TAG, "Starting web server...");
 
@@ -1183,7 +1293,8 @@ esp_err_t web_server_start(frame_hub_t *hub) {
     conf.httpd.max_open_sockets = CONFIG_WEB_SERVER_WS_MAX_CLIENTS + CONFIG_WEB_SERVER_INPUT_MAX_CONNECTIONS + 5; // Max clients + 5 for status, API etc.
     conf.httpd.lru_purge_enable = true;
     conf.httpd.stack_size = 10240; // 10KB to ensure PBKDF2/mbedTLS have enough space
-    conf.httpd.max_uri_handlers = 17; // Increased for WS
+    // 3 static + 4 auth + /video + /ws + 5 KVM/ATX (status, select, power press/reset/force) = 14 (<= 17)
+    conf.httpd.max_uri_handlers = 17; // Increased for WS and the KVM/ATX API
     conf.httpd.send_wait_timeout = CONFIG_WEB_SERVER_SEND_WAIT_TIMEOUT;
     conf.httpd.close_fn = ws_video_close_fn;
 #ifdef CONFIG_HTTPD_WS_SUPPORT
@@ -1271,6 +1382,11 @@ esp_err_t web_server_start(frame_hub_t *hub) {
     httpd_uri_t setup_uri = { .uri = "/api/v1/auth/setup", .method = HTTP_POST, .handler = setup_handler, .user_ctx = NULL };
     httpd_uri_t login_uri = { .uri = "/api/v1/auth/login", .method = HTTP_POST, .handler = login_handler, .user_ctx = NULL };
     httpd_uri_t logout_uri = { .uri = "/api/v1/auth/logout", .method = HTTP_POST, .handler = logout_handler, .user_ctx = NULL };
+    httpd_uri_t kvm_status_uri = { .uri = "/api/v1/kvm/status", .method = HTTP_GET, .handler = kvm_status_handler, .user_ctx = NULL };
+    httpd_uri_t kvm_select_uri = { .uri = "/api/v1/kvm/select", .method = HTTP_POST, .handler = kvm_select_handler, .user_ctx = NULL };
+    httpd_uri_t power_press_uri = { .uri = "/api/v1/power/press", .method = HTTP_POST, .handler = power_press_handler, .user_ctx = NULL };
+    httpd_uri_t power_reset_uri = { .uri = "/api/v1/power/reset", .method = HTTP_POST, .handler = power_reset_handler, .user_ctx = NULL };
+    httpd_uri_t power_force_uri = { .uri = "/api/v1/power/force", .method = HTTP_POST, .handler = power_force_handler, .user_ctx = NULL };
 
     httpd_uri_t ws_video_uri = {
         .uri = "/video",
@@ -1311,6 +1427,11 @@ esp_err_t web_server_start(frame_hub_t *hub) {
         httpd_register_uri_handler(server, &setup_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &login_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &logout_uri) != ESP_OK ||
+        httpd_register_uri_handler(server, &kvm_status_uri) != ESP_OK ||
+        httpd_register_uri_handler(server, &kvm_select_uri) != ESP_OK ||
+        httpd_register_uri_handler(server, &power_press_uri) != ESP_OK ||
+        httpd_register_uri_handler(server, &power_reset_uri) != ESP_OK ||
+        httpd_register_uri_handler(server, &power_force_uri) != ESP_OK ||
         (hub && httpd_register_uri_handler(server, &ws_video_uri) != ESP_OK) ||
         httpd_register_uri_handler(server, &ws_input_uri) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register URI handlers");

@@ -168,6 +168,10 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE kvm_ctrl kvm_board_mock)
     endif()
 
+    if (test_source MATCHES "/kvm_api/")
+        target_link_libraries(${test_name} PRIVATE kvm_api kvm_ctrl kvm_board_mock http_guard auth_logic)
+    endif()
+
 
 
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})
@@ -213,6 +217,9 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/net_eth ${CMAKE_BINARY_DIR
 # Setup kvm_board (HAL header) and kvm_ctrl (kvm_logic <-> HAL glue, pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_board ${CMAKE_BINARY_DIR}/kvm_board)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_ctrl ${CMAKE_BINARY_DIR}/kvm_ctrl)
+
+# kvm_api (HTTP API of KVM/ATX: strict body parser, JSON, result -> HTTP mapping, pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_api ${CMAKE_BINARY_DIR}/kvm_api)
 
 # Mock kvm_board_hal_t (reproduces the board-side obligations of docs/INTERFACES.md 6.2)
 add_library(kvm_board_mock STATIC ${CMAKE_SOURCE_DIR}/kvm_board/kvm_board_mock.c)

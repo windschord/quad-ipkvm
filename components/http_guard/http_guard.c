@@ -610,6 +610,19 @@ http_guard_action_e http_guard_decide(auth_state_e state, http_guard_method_e me
             return HTTP_GUARD_ACTION_ALLOW;
         }
 
+        // KVM / ATX API (docs/WEB_API.md 7). A valid session is already required above.
+        // The status is a plain GET (the page's own fetch() sends no Origin on a same-origin GET).
+        // select and power change the hardware: POST only, Origin and a JSON Content-Type are mandatory.
+        if (path == HTTP_GUARD_PATH_KVM_STATUS) {
+            return (method == HTTP_GUARD_METHOD_GET) ? HTTP_GUARD_ACTION_ALLOW : HTTP_GUARD_ACTION_405;
+        }
+        if (path == HTTP_GUARD_PATH_KVM_SELECT || path == HTTP_GUARD_PATH_POWER) {
+            if (method != HTTP_GUARD_METHOD_POST) return HTTP_GUARD_ACTION_405;
+            if (!origin_ok) return HTTP_GUARD_ACTION_403_ORIGIN;
+            if (!is_json) return HTTP_GUARD_ACTION_415;
+            return HTTP_GUARD_ACTION_ALLOW;
+        }
+
         // Other protected resources
         if (method == HTTP_GUARD_METHOD_POST) {
             if (!origin_ok) return HTTP_GUARD_ACTION_403_ORIGIN;
