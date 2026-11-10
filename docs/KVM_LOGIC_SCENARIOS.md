@@ -143,3 +143,20 @@
 | `kvm_logic` が 2 本以上の Ē を Low にする | `test_fault_when_logic_enables_two_lines`, `test_fault_when_logic_enables_two_lines_including_the_matching_one` |
 | 対応する受理済みの操作がない線 | `test_line_is_enabled_only_for_matching_pending_op`, `test_finished_op_does_not_justify_a_line` |
 | A0/A1 が範囲外、線が有効なときの A0/A1 の変更 | `test_fault_when_logic_a0a1_out_of_range`, `test_fault_when_addr_changes_while_a_line_is_asserted`, `test_fault_when_addr_changes_in_the_same_tick_as_a_new_line` |
+
+## 6. KVM / ATX の HTTP API（`kvm_api`、Issue #85 C-5b）
+
+仕様は `docs/WEB_API.md` 7 章。テストは `test/host/kvm_api/`（`test_kvm_api_*`）と `test/host/http_guard/test_decide_kvm.c`。ミューテーションの結果は `docs/KVM_API_TESTS.md`。
+
+| シナリオ | 期待動作 | テスト名 |
+| --- | --- | --- |
+| ボディの解析 | `{"channel":N}`（N は 1..4）だけ受理。ほかのキー、重複、文字列、小数、指数、負数、先頭ゼロ、2 桁以上、巨大な数、余計な文字、NUL、空、65 バイト以上は不正。64 バイトちょうどは受理 | `test_valid_*`, `test_range_boundaries`, `test_number_forms`, `test_huge_numbers_do_not_wrap_into_range`, `test_length_limit_64` ほか (parse)、`test_parser_matches_independent_oracle` (fuzz) |
+| 状態の JSON | 7.1 の例と一致。unknown は `active_channel: null`、`last_op` なしは `null`。バッファ不足は失敗 | `test_doc_example_exact`, `test_unknown_state_has_null_channel_and_no_last_op`, `test_buffer_boundaries` (format) |
+| 結果コードの対応 | 受理 202、already_selected 200、invalid_request 400、busy / unknown_state / channel_mismatch / atx_locked 409、cooldown 429 + Retry-After、hw_fault / not_ready 503、想定外 500 | `test_select_*`, `test_power_*`, `test_channel_mismatch_*`, `test_unexpected_results_are_500` (handle) |
+| Retry-After | 残りを切り上げた秒、最小 1（0 ms でも 1）。同じロックの中で読む | `test_cooldown_retry_after_rounds_up_with_minimum_1`, `test_cooldown_retry_after_for_every_ms_up_to_5_seconds` (handle) |
+| 判定の順序（形式 -> 未起動 -> kvm_ctrl の順序） | 不正なボディは未起動でも 400。未起動なら kvm_ctrl に触れない。kvm_ctrl 内の順序は 5.4 | `test_form_error_beats_not_ready`, `test_order_unknown_beats_mismatch_and_cooldown`, `test_power_flow_busy_cooldown_and_retry_after` (integration) |
+| lock / unlock の対応 | lock が取れたときだけ、全経路で unlock を 1 回。lock の外で kvm_ctrl を呼ばない | `be_assert_balanced`（handle の全テスト）、`test_handle_invariants_with_random_backend` (fuzz) |
+| サービス未起動 | backend が NULL、ready が false、lock 不可、関数ポインタ欠落、kvm_ctrl 未初期化: 503 `not_ready`。status の未起動はログに出さない | `test_not_ready_cases_for_every_post_endpoint`, `test_backend_with_missing_function_is_not_ready`, `test_status_not_ready_cases`, `test_service_not_started_is_503_not_ready` |
+| 実際の kvm_ctrl + モック HAL | select -> 受理 -> 切替完了 -> status、power の mismatch は何も出さない、フォールト後は 503 | `test_select_flow_to_completion_is_reflected_in_status`, `test_power_mismatch_is_409_and_outputs_nothing`, `test_fault_gives_503_hw_fault_and_nothing_is_driven` (integration) |
+| ガード | 未認証・Origin なし・JSON でないリクエストは kvm_api に届かない | `test_exhaustive_kvm_paths`, `test_check_order_session_method_origin_json` (decide_kvm)、`test_backend_is_touched_only_when_every_condition_holds` (gate) |
+| 電源操作は現在チャンネルのときだけ | ランダムな API 列で、受理は常に「その時点の現在チャンネル」への操作 | `test_random_api_sequences_on_real_ctrl` (fuzz) |
