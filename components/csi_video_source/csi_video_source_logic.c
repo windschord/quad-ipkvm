@@ -375,6 +375,23 @@ csi_mode_action_t csi_mode_tracker_check_stall(csi_mode_tracker_t *m, uint64_t n
     return CSI_MODE_ACT_KEEP_STREAMING;
 }
 
+csi_mode_action_t csi_mode_tracker_poll(csi_mode_tracker_t *m, bool sample_ok,
+                                        const csi_mode_sample_t *s)
+{
+    if (!m) {
+        return CSI_MODE_ACT_WAIT;
+    }
+    if (!sample_ok || !s) {
+        m->sample_errors++;
+        return m->streaming ? CSI_MODE_ACT_KEEP_STREAMING : CSI_MODE_ACT_WAIT;
+    }
+    csi_mode_action_t act = csi_mode_tracker_step(m, s);
+    if (act == CSI_MODE_ACT_KEEP_STREAMING) {
+        act = csi_mode_tracker_check_stall(m, s->now_ms);
+    }
+    return act;
+}
+
 void csi_mode_tracker_abort_start(csi_mode_tracker_t *m)
 {
     if (!m) {

@@ -29,8 +29,10 @@ typedef struct {
 void csi_video_source_configure(tc358743_handle_t tc_dev, const csi_video_source_cfg_t *cfg);
 
 // Returns the singleton video_source_t ("csi") whose start() spawns the publisher task
-// without blocking and whose stop() halts CSI DMA and frees capture/JPEG resources
-// (docs/INTERFACES.md §1.1).
+// without blocking and whose stop() requests shutdown and waits up to 2.5 s for the task
+// to halt CSI DMA and free capture/JPEG resources (docs/INTERFACES.md §1.1).
+// Note: if stop() hits the 2.5 s wait bound, teardown may still be completing in the background;
+// callers must NOT destroy frame_hub before the task finishes.
 const video_source_t *csi_video_source_get(void);
 
 // Non-blocking status accessors safe to call from any task or core without locks
