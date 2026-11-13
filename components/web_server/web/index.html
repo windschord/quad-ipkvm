@@ -32,10 +32,17 @@
 
         <div id="view-dashboard" class="view-hidden">
             <h2>ログイン済み</h2>
+            <div class="controls">
+                <button id="btn-input-toggle">入力を有効にする</button>
+                <button id="btn-pointer-lock" disabled>マウス(相対)切替</button>
+                <span id="input-status">入力: 無効</span>
+                <span id="usb-status">ターゲット: 未接続</span>
+            </div>
             <div>
-                <canvas id="video" width="1280" height="720" ></canvas>
+                <canvas id="video" width="1280" height="720" tabindex="0"></canvas>
             </div>
             <div id="video-status">接続中...</div>
+            <p class="hint">入力を無効にするには Esc キーを長押しするか、ボタンを押してください。</p>
             <button id="btn-logout">ログアウト</button>
         </div>
 
