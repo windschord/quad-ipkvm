@@ -21,7 +21,8 @@
 - **メソッド**: `GET`
 - **パス**: `/status`
 - **認証**: 不要 (Host ヘッダの検証は行われます)
-- **応答例**: `{"state":"needs_setup", "authenticated":false}`
+- **応答例**: `{"state":"needs_setup", "authenticated":false}`、映像専用のサーバーがあるとき `{"state":"ready","authenticated":true,"video_port":8444}`
+- **`video_port`**（整数、1〜65535。任意）: 映像専用の HTTPS サーバー（`docs/VIDEO_TRANSPORT.md` 5 章）のポート。ビューアは、これがあれば `wss://<location.hostname>:<video_port>/video` に接続する。**キーがない（サーバー側の値が 0）ときは、映像専用のサーバーなし = メインのポートの `/video`**（従来どおり）。ビューアは、整数で 1〜65535 以外（文字列、小数、`null`、範囲外）を無視して従来の接続先にする。
 - **ステータス**:
   - `200 OK` (成功時)
   - `403 Forbidden` (不正な Host ヘッダ)
@@ -94,6 +95,7 @@
 
 
 ### 5. WebSocket 映像ストリーム
+> **ビューアの接続先と証明書の案内**: ビューアは、状態の取得（§1）の `video_port` から接続先を決める。映像の接続が**開く前に失敗**し、かつ `video_port` が別のポートのときは、`https://<ホスト名>:<video_port>/` へのリンクと「証明書を受け入れてから再読み込み」の案内を出す（自己署名の証明書の例外が、ポートごとのため。接続に成功すると消える）。映像サーバーの `GET /` は、動的な値を含まない静的な信頼ページ（`web/video_trust.html`、認証なし）を返す。ビューアの検査は `docs/VIDEO_VIEWER_TESTS.md`。
 > **変更予定（`docs/VIDEO_TRANSPORT.md`、Issue #82 ③ / オーナー決定 B-3）**: 映像は、**映像専用の HTTPS サーバー**（別のポート `video_port`、既定 8444）の `/video` に移る。認証・Origin の規則は下のとおりで、**Origin は「ページの Origin（メインのポート）」と一致すること**（ホスト名は Host と一致、ポートはメインのポート）。実装が入るまで、下の記述（メインのポートの `/video`）が現在の挙動。
 - **メソッド**: `GET`
 - **パス**: `/video`

@@ -220,3 +220,11 @@ target_include_directories(kvm_board_mock PUBLIC ${CMAKE_SOURCE_DIR}/kvm_board)
 target_link_libraries(kvm_board_mock PUBLIC kvm_board)
 target_compile_options(kvm_board_mock PRIVATE ${TEST_COMPILE_OPTIONS})
 target_link_options(kvm_board_mock PRIVATE ${TEST_LINK_OPTIONS})
+
+# Browser-side code (components/web_server/web/app.js) checked with node (no dependencies). Skipped when node is absent.
+find_program(NODE_EXECUTABLE node)
+if(NODE_EXECUTABLE)
+    add_test(NAME check_video_viewer COMMAND ${NODE_EXECUTABLE} ${CMAKE_SOURCE_DIR}/../../tools/test/check_video_viewer.js)
+else()
+    message(STATUS "node not found: check_video_viewer is not registered")
+endif()

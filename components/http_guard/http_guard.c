@@ -708,11 +708,18 @@ int http_guard_format_error(const char *msg, char *out, size_t out_len) {
     return 0;
 }
 
-int http_guard_format_status(auth_state_e state, bool authenticated, char *out, size_t out_len) {
+int http_guard_format_status(auth_state_e state, bool authenticated, uint16_t video_port, char *out, size_t out_len) {
     if (!out || out_len == 0) return -1;
     const char *state_str = (state == AUTH_STATE_NEEDS_SETUP) ? "needs_setup" : "ready";
     const char *auth_str = authenticated ? "true" : "false";
-    int ret = snprintf(out, out_len, "{\"state\":\"%s\",\"authenticated\":%s}", state_str, auth_str);
+    int ret;
+    if (video_port == 0) {
+        // 映像専用のサーバーなし(映像はメインのポートの /video)。後方互換のため video_port を出さない。
+        ret = snprintf(out, out_len, "{\"state\":\"%s\",\"authenticated\":%s}", state_str, auth_str);
+    } else {
+        ret = snprintf(out, out_len, "{\"state\":\"%s\",\"authenticated\":%s,\"video_port\":%u}",
+                       state_str, auth_str, (unsigned)video_port);
+    }
     if (ret < 0 || (size_t)ret >= out_len) return -1;
     return 0;
 }

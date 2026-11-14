@@ -86,7 +86,7 @@ DNS リバインディング攻撃を防ぐため、`Host` ヘッダを厳密に
 ## 3. エラー語彙仕様 (`http_guard_format_*`)
 HTTP レスポンスに乗せる JSON は、入力値を埋め込まずに固定の語彙のみを使用します。
 *   エラー応答: `{"error":"<メッセージ>"}`
-*   ステータス応答: `{"state":"needs_setup" | "ready", "authenticated": true | false}`
+*   ステータス応答: `{"state":"needs_setup" | "ready", "authenticated": true | false}`。映像専用のサーバーがあるときは、末尾に整数の `"video_port":N`（1〜65535）が付く（`http_guard_format_status` の引数 `video_port`。0 は「なし」で、キーを出さない）。
 
 ## 4. 静的アセット
 静的ページ（ログイン画面や設定画面）用のパス（`HTTP_GUARD_PATH_STATIC`）は、認証状態に関わらず GET を許可します。このパスから配信されるアセット（HTML, JS, CSS）には秘密情報を含めないでください。
