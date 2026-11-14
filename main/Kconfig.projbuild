@@ -284,7 +284,7 @@ menu "Quad IP-KVM Configuration"
 
     config WEB_SERVER_WS_FRAME_DEADLINE_BASE_MS
         int "WS Video frame deadline base (ms)"
-        default 200
+        default 800
         range 50 10000
         help
             Base per-frame deadline in milliseconds added to size * 1000 / min_rate.
@@ -292,10 +292,10 @@ menu "Quad IP-KVM Configuration"
 
     config WEB_SERVER_WS_FRAME_MIN_RATE_KBPS
         int "WS Video frame min rate (kB/s, 1000 B/s)"
-        default 1000
+        default 500
         range 0 100000
         help
-            Minimum sustained throughput in kB/s (1000 bytes/s; default 1000 = 1,000,000 B/s = 8 Mbps)
+            Minimum sustained throughput in kB/s (1000 bytes/s; default 500 = 500,000 B/s = 4 Mbps)
             used to compute the per-frame transmission deadline. Set 0 to disable.
             TODO(hw-verify): verify slow client threshold on real hardware.
 

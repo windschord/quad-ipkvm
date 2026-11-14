@@ -22,7 +22,9 @@
 
 #include "lwip/sockets.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <string.h>
+#include "esp_rom_sys.h"
 #include "auth_crypto_mbedtls.h"
 #include "web_assets.h"
 #include "web_headers.h"
@@ -832,6 +834,7 @@ typedef struct {
     bool started;
     uint64_t start_ms;
     uint64_t deadline_ms;
+    uint64_t stalled_until_ms;
 } ws_send_work_t;
 
 static size_t build_ws_binary_header(uint8_t hdr[10], size_t payload_len) {
@@ -888,14 +891,60 @@ static void ws_video_finish_send(int fd, bool ok) {
     xSemaphoreGive(s_ws_mutex);
 }
 
+// Send a single chunk (<= 4096 B mbedTLS record) non-blockingly, retrying briefly up to
+// SO_SNDTIMEO without relying on select() (which lwIP's TCP_SNDLOWAT can leave blind).
+static int ws_socket_send_chunk(httpd_handle_t server, int fd, const char *buf, size_t len,
+                                bool allow_wait, bool *timed_out_out) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0 && !(flags & O_NONBLOCK)) {
+        (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+
+    int ret = httpd_socket_send(server, fd, buf, len, 0);
+    if (ws_send_is_wouldblock(ret) && allow_wait) {
+        // On a healthy LAN client, TCP ACKs arrive within ~0.3-1 ms and tcpip_thread
+        // updates pcb->snd_buf even when <= TCP_SNDLOWAT (2881 B with default
+        // TCP_SND_BUF=5760), which select() cannot observe. Retry twice after 500 us
+        // first, then wait per tick up to CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS.
+        for (int us_tries = 0; ws_send_is_wouldblock(ret) && us_tries < 2; us_tries++) {
+            esp_rom_delay_us(500);
+            ret = httpd_socket_send(server, fd, buf, len, 0);
+        }
+        int ticks = (CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS + portTICK_PERIOD_MS - 1) / portTICK_PERIOD_MS;
+        if (ticks < 1) {
+            ticks = 1;
+        }
+        for (int t = 0; ws_send_is_wouldblock(ret) && t < ticks; t++) {
+            vTaskDelay(1);
+            ret = httpd_socket_send(server, fd, buf, len, 0);
+        }
+        if (ws_send_is_wouldblock(ret) && timed_out_out) {
+            *timed_out_out = true;
+        }
+    }
+
+    if (flags >= 0 && !(flags & O_NONBLOCK)) {
+        (void)fcntl(fd, F_SETFL, flags);
+    }
+    return ret;
+}
+
 static void ws_send_slice_work_cb(void *arg) {
     ws_send_work_t *work = (ws_send_work_t *)arg;
     if (!work) return;
 
     uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
     bool active = false;
+    int sending_count = 0;
 
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    for (int i = 0; i < s_ws_core.config.max_clients; i++) {
+        if (s_ws_core.clients.clients[i].state == WS_CLIENT_ACTIVE &&
+            s_ws_core.clients.clients[i].is_sending &&
+            !s_ws_core.close_requested[i]) {
+            sending_count++;
+        }
+    }
     int slot = ws_clients_find(&s_ws_core.clients, work->fd);
     if (slot >= 0 &&
         s_ws_core.clients.clients[slot].state == WS_CLIENT_ACTIVE &&
@@ -929,13 +978,17 @@ static void ws_send_slice_work_cb(void *arg) {
         return;
     }
 
+    bool allow_wait = (sending_count <= 1) || (now_ms >= work->stalled_until_ms);
+    bool timed_out = false;
     bool hdr_blocked = false;
     if (work->hdr_sent < work->hdr_len) {
         size_t hdr_rem = work->hdr_len - work->hdr_sent;
-        int ret = httpd_socket_send(work->server, work->fd,
-                                    (const char *)(work->hdr + work->hdr_sent), hdr_rem, 0);
+        int ret = ws_socket_send_chunk(work->server, work->fd,
+                                       (const char *)(work->hdr + work->hdr_sent),
+                                       hdr_rem, allow_wait, &timed_out);
         if (ret > 0) {
             work->hdr_sent += (size_t)ret;
+            work->stalled_until_ms = 0;
         } else if (!ws_send_is_wouldblock(ret)) {
             ESP_LOGW(TAG, "WS video header send failed fd=%d ret=%d", work->fd, ret);
             ws_video_finish_send(work->fd, false);
@@ -946,16 +999,25 @@ static void ws_send_slice_work_cb(void *arg) {
         }
     }
 
-    if (!hdr_blocked && work->hdr_sent == work->hdr_len && work->payload_sent < work->len) {
+    size_t slice_sent = 0;
+    while (!hdr_blocked && work->hdr_sent == work->hdr_len && work->payload_sent < work->len) {
         size_t rem = work->len - work->payload_sent;
-        size_t slice = (rem > (size_t)CONFIG_WEB_SERVER_WS_SLICE_BYTES)
-                           ? (size_t)CONFIG_WEB_SERVER_WS_SLICE_BYTES
-                           : rem;
-        int ret = httpd_socket_send(work->server, work->fd,
-                                    (const char *)(work->data + work->payload_sent), slice, 0);
+        // Cap each call at 4096 B (MBEDTLS_SSL_OUT_CONTENT_LEN) so esp_mbedtls_write never loops
+        // across multiple TLS records and masks WANT_WRITE with a partial byte count.
+        size_t chunk = (rem > 4096u) ? 4096u : rem;
+        if (slice_sent > 0 && slice_sent + chunk > (size_t)CONFIG_WEB_SERVER_WS_SLICE_BYTES) {
+            break;
+        }
+        int ret = ws_socket_send_chunk(work->server, work->fd,
+                                       (const char *)(work->data + work->payload_sent),
+                                       chunk, allow_wait, &timed_out);
         if (ret > 0) {
             work->payload_sent += (size_t)ret;
-        } else if (!ws_send_is_wouldblock(ret)) {
+            slice_sent += (size_t)ret;
+            work->stalled_until_ms = 0;
+        } else if (ws_send_is_wouldblock(ret)) {
+            break;
+        } else {
             ESP_LOGW(TAG, "WS video payload send failed fd=%d ret=%d (sent=%zu/%zu B)",
                      work->fd, ret, work->payload_sent, work->len);
             ws_video_finish_send(work->fd, false);
@@ -971,6 +1033,9 @@ static void ws_send_slice_work_cb(void *arg) {
     }
 
     uint64_t after_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    if (timed_out) {
+        work->stalled_until_ms = after_ms + (uint64_t)CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS;
+    }
     if (ws_send_exceeded(work, after_ms, &is_deadline)) {
         ESP_LOGW(TAG, "WS video fd=%d send %s exceeded after slice (elapsed=%" PRIu64 " ms, deadline=%" PRIu64 " ms, sent=%zu/%zu B)",
                  work->fd, is_deadline ? "deadline" : "stall",
@@ -1129,6 +1194,22 @@ static esp_err_t ws_input_pre_handshake_cb(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static esp_err_t ws_configure_sock_opts(int fd, const char *label) {
+    struct timeval tv = {
+        .tv_sec = CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS / 1000,
+        .tv_usec = (CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS % 1000) * 1000,
+    };
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+        ESP_LOGW(TAG, "Failed to set SO_SNDTIMEO on %s fd=%d (errno=%d)", label, fd, errno);
+        return ESP_FAIL;
+    }
+    int nodelay = 1;
+    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay)) < 0) {
+        ESP_LOGW(TAG, "Failed to set TCP_NODELAY on %s fd=%d (errno=%d)", label, fd, errno);
+    }
+    return ESP_OK;
+}
+
 static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
     uint8_t token[32];
     if (!get_session_token(req, token)) {
@@ -1136,12 +1217,7 @@ static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
     }
 
     int fd = httpd_req_to_sockfd(req);
-    struct timeval tv = {
-        .tv_sec = CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS / 1000,
-        .tv_usec = (CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS % 1000) * 1000,
-    };
-    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
-        ESP_LOGW(TAG, "Failed to set SO_SNDTIMEO on WS video fd=%d (errno=%d)", fd, errno);
+    if (ws_configure_sock_opts(fd, "WS video") != ESP_OK) {
         return ESP_FAIL;
     }
 
@@ -1166,12 +1242,7 @@ static esp_err_t ws_input_post_handshake_cb(httpd_req_t *req) {
     }
 
     int fd = httpd_req_to_sockfd(req);
-    struct timeval tv = {
-        .tv_sec = CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS / 1000,
-        .tv_usec = (CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS % 1000) * 1000,
-    };
-    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
-        ESP_LOGW(TAG, "Failed to set SO_SNDTIMEO on WS input fd=%d (errno=%d)", fd, errno);
+    if (ws_configure_sock_opts(fd, "WS input") != ESP_OK) {
         return ESP_FAIL;
     }
 
