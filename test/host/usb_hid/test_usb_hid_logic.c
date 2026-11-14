@@ -136,6 +136,8 @@ void test_config_descriptors_fs_and_hs_structure(void) {
     TEST_ASSERT_EQUAL_UINT8(USB_HID_CONFIG_DESC_LEN & 0xFFu, fs[2]);
     TEST_ASSERT_EQUAL_UINT8((USB_HID_CONFIG_DESC_LEN >> 8) & 0xFFu, fs[3]);
     TEST_ASSERT_EQUAL_UINT8(USB_HID_ITF_COUNT, fs[4]);
+    TEST_ASSERT_EQUAL_UINT8(0xC0u, fs[7]); /* bmAttributes: self-powered */
+    TEST_ASSERT_EQUAL_UINT8(0u, fs[8]);    /* bMaxPower: 0 mA */
 
     /* Verify FS and HS match everywhere except Endpoint bInterval bytes (offsets 33, 58, 83). */
     for (size_t i = 0; i < USB_HID_CONFIG_DESC_LEN; i++) {
@@ -161,6 +163,7 @@ void test_config_descriptors_fs_and_hs_structure(void) {
     TEST_ASSERT_EQUAL_UINT8(0u, itf0[9 + 8]);
     TEST_ASSERT_EQUAL_UINT8(USB_HID_EP_KEYBOARD, itf0[18 + 2]);
     TEST_ASSERT_EQUAL_UINT8(8u, itf0[18 + 4]);
+    TEST_ASSERT_EQUAL_UINT8(0u, itf0[18 + 5]);
 
     /* ITF 1: Absolute Pointer (SubClass=0, Protocol=0, EP 0x82, ReportDescLen=63) */
     TEST_ASSERT_EQUAL_UINT8(1u, itf1[2]);
@@ -168,8 +171,10 @@ void test_config_descriptors_fs_and_hs_structure(void) {
     TEST_ASSERT_EQUAL_UINT8(0x00u, itf1[6]);
     TEST_ASSERT_EQUAL_UINT8(0x00u, itf1[7]);
     TEST_ASSERT_EQUAL_UINT8(63u, itf1[9 + 7]);
+    TEST_ASSERT_EQUAL_UINT8(0u, itf1[9 + 8]);
     TEST_ASSERT_EQUAL_UINT8(USB_HID_EP_ABS_MOUSE, itf1[18 + 2]);
     TEST_ASSERT_EQUAL_UINT8(8u, itf1[18 + 4]);
+    TEST_ASSERT_EQUAL_UINT8(0u, itf1[18 + 5]);
 
     /* ITF 2: Relative Boot Mouse (SubClass=1, Protocol=2, EP 0x83, ReportDescLen=52) */
     TEST_ASSERT_EQUAL_UINT8(2u, itf2[2]);
@@ -177,15 +182,17 @@ void test_config_descriptors_fs_and_hs_structure(void) {
     TEST_ASSERT_EQUAL_UINT8(0x01u, itf2[6]);
     TEST_ASSERT_EQUAL_UINT8(0x02u, itf2[7]);
     TEST_ASSERT_EQUAL_UINT8(52u, itf2[9 + 7]);
+    TEST_ASSERT_EQUAL_UINT8(0u, itf2[9 + 8]);
     TEST_ASSERT_EQUAL_UINT8(USB_HID_EP_REL_MOUSE, itf2[18 + 2]);
     TEST_ASSERT_EQUAL_UINT8(8u, itf2[18 + 4]);
+    TEST_ASSERT_EQUAL_UINT8(0u, itf2[18 + 5]);
 }
 
 void test_pack_keyboard_abs_and_rel_reports(void) {
     uint8_t kbd_buf[USB_HID_KBD_REPORT_LEN];
     hid_kbd_report_t kbd = {
         .modifiers = 0x05u,
-        .keys = {0x04u, 0x1Eu, 0u, 0u, 0u, 0x28u},
+        .keys = {0x04u, 0x1Eu, 0x1Fu, 0x20u, 0x21u, 0x28u},
     };
     memset(kbd_buf, 0xAA, sizeof(kbd_buf));
     TEST_ASSERT_TRUE(usb_hid_pack_keyboard(&kbd, kbd_buf));
@@ -193,12 +200,28 @@ void test_pack_keyboard_abs_and_rel_reports(void) {
     TEST_ASSERT_EQUAL_UINT8(0x00u, kbd_buf[1]);
     TEST_ASSERT_EQUAL_UINT8(0x04u, kbd_buf[2]);
     TEST_ASSERT_EQUAL_UINT8(0x1Eu, kbd_buf[3]);
-    TEST_ASSERT_EQUAL_UINT8(0x00u, kbd_buf[4]);
+    TEST_ASSERT_EQUAL_UINT8(0x1Fu, kbd_buf[4]);
+    TEST_ASSERT_EQUAL_UINT8(0x20u, kbd_buf[5]);
+    TEST_ASSERT_EQUAL_UINT8(0x21u, kbd_buf[6]);
     TEST_ASSERT_EQUAL_UINT8(0x28u, kbd_buf[7]);
     TEST_ASSERT_FALSE(usb_hid_pack_keyboard(NULL, kbd_buf));
     TEST_ASSERT_FALSE(usb_hid_pack_keyboard(&kbd, NULL));
 
     uint8_t abs_buf[USB_HID_ABS_REPORT_LEN];
+    hid_abs_report_t abs_in_range = {
+        .buttons = 0x05u,
+        .x = 0x1234u,
+        .y = 0x5678u,
+        .wheel = 12,
+    };
+    TEST_ASSERT_TRUE(usb_hid_pack_abs_mouse(&abs_in_range, abs_buf));
+    TEST_ASSERT_EQUAL_UINT8(0x05u, abs_buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(0x34u, abs_buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(0x12u, abs_buf[2]);
+    TEST_ASSERT_EQUAL_UINT8(0x78u, abs_buf[3]);
+    TEST_ASSERT_EQUAL_UINT8(0x56u, abs_buf[4]);
+    TEST_ASSERT_EQUAL_INT8(12, (int8_t)abs_buf[5]);
+
     hid_abs_report_t abs = {
         .buttons = 0xFFu, /* Upper unused bits must be masked to 0x07 */
         .x = 0x1234u,

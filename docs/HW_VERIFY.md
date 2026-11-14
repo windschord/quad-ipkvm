@@ -218,6 +218,12 @@ PHY は IP101GRI。B 章の GPIO 候補（ATX・パネル用）とは重複し�
   - Interface 0: Boot Keyboard（`SubClass=1, Protocol=1`, EP `0x81`, 入力 8B + 出力 LED 1B EP0 経由, Report Desc 65B）
   - Interface 1: Absolute Pointer（`SubClass=0, Protocol=0`, EP `0x82`, 入力 6B: `buttons` + LE `x/y 0..32767` + `wheel -127..127`, Report Desc 63B）
   - Interface 2: Relative Boot Mouse（`SubClass=1, Protocol=2`, EP `0x83`, 入力 4B: `buttons` + `dx/dy/wheel -127..127`, Report Desc 52B）
+- **記述子・電源属性 / PHY 設定（PR #105 レビュー反映）**:
+  - 構成記述子の `bmAttributes = 0xC0`（セルフパワー）、`bMaxPower = 0`（0 mA）。3 本線 `J3`（VBUS 非接続）に合わせる（旧 `0x80 / 100 mA` から変更。ターゲット PC / BIOS での挙動差は **`TODO(hw-verify)`**）。
+  - `tusb_cfg.phy.self_powered = false`, `tusb_cfg.phy.vbus_monitor_io = -1` を維持: `esp_tinyusb` `v2.4.0`（`tinyusb.c:1564-1595`）が `phy.self_powered = true` 時に `tinyusb_vbus_monitor_init()` へ有効な `vbus_monitor_io` GPIO を要求するため（ソフト `GOTGCTL` BVALID 上書き運用時の既定仕様、`TODO(hw-verify)`）。
+- **Kconfig / ビルド依存上の注意（PR #105 レビュー反映）**:
+  - `components/usb_hid/Kconfig` の `TINYUSB_HID_COUNT = 3` 上書きは、`esp_tinyusb/Kconfig` との評価順に依存する。変更時は `idf.py reconfigure` 後に `grep CONFIG_TINYUSB_HID_COUNT=3 sdkconfig` を確認すること（#105 時点で `=3` 確認済み）。
+  - `main/CMakeLists.txt` の `REQUIRES usb_hid` は無条件のため、`CONFIG_USB_DEVICE_ENABLE=n` 時でも IDF Component Manager が `components/usb_hid/idf_component.yml`（`espressif/esp_tinyusb`）を解決する（完全オフラインビルドでは `managed_components` キャッシュが必要）。
 - **実機起動ログ（ESP32-P4 rev v1.3、`CONFIG_USB_DEVICE_ENABLE=y`, `CONFIG_USB_DEVICE_BVALID_OVERRIDE=y`）**:
   - **HS 既定（`CONFIG_USB_DEVICE_FORCE_FULL_SPEED=n`、バイナリサイズ `0xcd720` B / 1 MiB 空き 20%）**:
     - `TinyUSB: TinyUSB Driver installed on port 1`
@@ -228,7 +234,9 @@ PHY は IP101GRI。B 章の GPIO 候補（ATX・パネル用）とは重複し�
     - 起動約 420ms 後（`I (5546)`）: `USB attached (rhport=1, speed=2)`（`TUSB_SPEED_HIGH`）を観測。
   - **FS 固定（`CONFIG_USB_DEVICE_FORCE_FULL_SPEED=y`）**:
     - `force-fs`: `gotgctl=0x04c900cc dcfg=0x08100005`（`devspd=1`）、`post-config-connect` 後に `I (5336) usb_hid: USB attached (rhport=1, speed=0)`（`TUSB_SPEED_FULL`）を観測。
-  - **補足（ホスト側未確認）**: 作業用 Mac の `ioreg -rc IOUSBHostDevice` には `0x303a`/`0x4004` が現れず、接続先ホスト（オーナー環境の配線先機器）の OS 列挙リストや BIOS 画面でのキー入力・クリック動作（特に BIOS での絶対ポインタ `Interface 1` 対 相対ブートマウス `Interface 2` の効き方）は未確認（**`TODO(hw-verify)`**、PR / Issue #89 コメントのオーナー手順で実測依頼）。
+  - **列挙ホストの切り分けと未確認範囲（PR #105 レビュー反映）**:
+    - `esp_tinyusb` `v2.4.0`（`tinyusb.c:1315-1339`）のソース確認により、`TINYUSB_EVENT_ATTACHED` は TinyUSB の `tud_mount_cb()` のみから発行され、ホストから `SET_CONFIGURATION(n)`（`n != 0`）を受信したときに呼ばれることを確認した。
+    - 作業用 Mac（Type-C USB-Serial-JTAG `/dev/cu.usbmodem5B5F0916061` のみ接続）の `ioreg -rc IOUSBHostDevice` には `0x303a`/`0x4004` は現れていないため、上記 `USB attached`（HS `speed=2` / FS `speed=0`）は `J3` 側に接続されていたオーナー環境のホストが `SET_CONFIGURATION` を完了した挙動と判断される（`J3` 側の具体的な接続先ホスト名・OS 列挙リスト・BIOS 画面でのキー/クリック実動作はオーナー確認待ち: **`TODO(hw-verify)`**、Issue #89）。
   - **既定ビルド確認（`CONFIG_USB_DEVICE_ENABLE=n`）**: `0xb05a0` バイト（1 MiB 空き 31%）。確認後、実機には本番検証用バイナリ（`build_a7_live1080/quad-ipkvm.bin`）を再書き込みし `GET /api/v1/auth/status` = `{"state":"ready","authenticated":false}` を確認済み。
 
 ## Z. WS /video タスク未確認一覧

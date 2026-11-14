@@ -208,12 +208,14 @@ typedef struct {
 
 純 C。`kvm_logic` の出力を HAL に適用する。**1 回の `kvm_ctrl_tick(now_ms)`** で: LED と映像を読む → LED のビットマスクを `led_raw_state` に変換（**ちょうど 1 ビットなら `1..4`、無点灯は `0`、複数点灯は `0xFF`**）→ `kvm_logic_step` → 出力を**安全な順序**で適用する。
 
-- **適用の順序**: ① 無効にすべき線を `release_line` → ② A0/A1 が変わるなら、**全線が High のときに** `set_addr` → ③ 新たに有効にする線を `assert_line`（種別は ATX の操作から決める: `press` → `POWER`、`force` → `POWER_FORCE`、`reset` → `RESET`、切替 → `KVM`。`max_ms` は、そのパルスの長さ + 余裕。ボードが上限で丸める）。
+- **適用の順序**: ① 無効にすべき線を `release_line` → ② A0/A1 が変わるなら、**全線が High のときに** `set_addr` → ③ 新たに有効にする線を `assert_line`（種別は ATX の操作から決める: `press` → `POWER`、`force` → `POWER_FORCE`、`reset` → `RESET`、切替 → `KVM`。`max_ms` は、そのパルスの長さ + 余裕。ATX は `kvm_logic` のハード上限（`KVM_ATX_HARD_MAX_*`）で頭打ちにする。ボードが上限で丸める）。
+- **線を有効にしてよい条件**（`kvm_ctrl` の防御）: 線を有効にするのは、**対応する受理済みの操作が実行中（pending）の間だけ**（切替 → `KVM`、`press` → `POWER`、`force` → `POWER_FORCE`、`reset` → `RESET`）。`kvm_logic` の出力が、対応する操作のない `e_*_low` を出したとき、2 本以上の `e_*_low` を同時に出したとき、**線を有効にする tick で A0/A1 も変わるとき**（セットアップ時間を守れない）は、HAL の失敗と同じく、`release_all` してフォールトをラッチする。
 - **初期化**（`kvm_ctrl_init`）: ① `release_all` → ② 全線が High の状態で、`kvm_logic` の初期出力のアドレス（現在は `a0a1_channel = 1`）を `set_addr` で**必ず**設定する（ボードの実際のアドレスが違っても、論理の出力が変化しないので、差分適用では設定されない。これを省くと、LED が ch1 を示すとき、ATX が別の PC に届く）→ ③ 以後は差分適用。①か②が失敗したら、初期化の失敗として**フォールトをラッチ**して始まる。
 - **HAL の失敗**（`< 0`）: 即座に `release_all` → **フォールトをラッチ**（以降の要求は `hw_fault`）。**ラッチ後の `kvm_ctrl_tick` は、`kvm_logic_step` の出力を HAL に適用しない**（`set_addr` も `assert_line` も呼ばない。LED の読み取りが回復しても、状態機械が切替パルスなどを再開できないようにする）。`release_all` の再試行だけを続ける。`release_all` が失敗しても、ラッチは変わらない。ラッチを解くのは、再起動だけ。
 - **操作の記録**: 受理するたびに `op_id` を 1 つ進め、直近 1 件を `last_op`（種別、チャンネル、`pending` / `completed` / `aborted`）として保持する。結果は、`kvm_logic` の状態の遷移から決める（切替: `idle` に戻り `active == 目標` なら `completed`、それ以外は `aborted`。ATX: パルスが `atx_anomaly` なしで終われば `completed`、中断またはフォールトなら `aborted`）。
 - **要求 API**: `kvm_ctrl_select(channel)`、`kvm_ctrl_power(channel, action)`（いずれも `op_id` を返す）。前者は `unknown` のとき `UNKNOWN_STATE` を返す（現在の `kvm_logic` は `unknown` での切替要求を `SWITCHING` で返すので、`kvm_ctrl` が先に区別する）。後者は、パルス長を**サーバーの設定**から決めて `kvm_logic_request_atx` を呼ぶ。`channel` の照合は `kvm_logic` の中で行う。
-- **ソフトのクールダウン**: 受理した ATX 操作の後 `ATX_MIN_INTERVAL_MS`（`TODO(hw-verify)`、既定は保守的な値）が経つまで、次の ATX を `COOLDOWN` で拒否（マウス連打、フォームの二重送信を防ぐ）。
+- **ソフトのクールダウン**: ATX 操作が**終わった**（完了または中断した）後 `ATX_MIN_INTERVAL_MS`（`TODO(hw-verify)`、既定は保守的な値）が経つまで、次の ATX を `COOLDOWN` で拒否（マウス連打、フォームの二重送信を防ぐ）。起点を「受理」ではなく「終了」にするのは、強制断のような長いパルスの直後に、次の操作が受理されないようにするため。操作の実行中は `busy` で拒否されるので、`cooldown_ms` は 0（クールダウンは終了の tick から数え始める）。フォールトによる中断では数えない（どうせ要求は `hw_fault` で拒否される）。
+- **時刻**: `kvm_ctrl_tick(now_ms)` の `now_ms` は単調増加の `uint64_t` ミリ秒（同じ値の繰り返しは許す）。**巻き戻ったら**、`kvm_logic` の経過時間（符号なしの引き算）が巨大になってセットアップ時間などが一瞬で満了するので、HAL の失敗と同じく、`release_all` してフォールトをラッチする。要求 API（`kvm_ctrl_select` / `kvm_ctrl_power`）は `now_ms` を取らず、クールダウンの判定には**直近の `tick` の `now_ms`** を使う（`KVM_TICK_MS` の分だけ粗い）。
 - **スレッド**: 呼び出し側が 1 つのミューテックスで直列化する（`kvm_ctrl` 自体はロックしない）。`kvm_service` が、`tick` 用のタスク（周期 `KVM_TICK_MS`、`TODO`: 既定 20）で回す。
 
 ### 6.4 Antigravity への依頼（A-9）

@@ -164,6 +164,14 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE usb_hid_logic)
     endif()
 
+    if (test_source MATCHES "/kvm_board/")
+        target_link_libraries(${test_name} PRIVATE kvm_board_mock)
+    endif()
+
+    if (test_source MATCHES "/kvm_ctrl/")
+        target_link_libraries(${test_name} PRIVATE kvm_ctrl kvm_board_mock)
+    endif()
+
 
 
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})
@@ -208,3 +216,14 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/net_eth ${CMAKE_BINARY_DIR
 
 # Setup usb_hid_logic component (pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/usb_hid ${CMAKE_BINARY_DIR}/usb_hid)
+
+# Setup kvm_board (HAL header) and kvm_ctrl (kvm_logic <-> HAL glue, pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_board ${CMAKE_BINARY_DIR}/kvm_board)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_ctrl ${CMAKE_BINARY_DIR}/kvm_ctrl)
+
+# Mock kvm_board_hal_t (reproduces the board-side obligations of docs/INTERFACES.md 6.2)
+add_library(kvm_board_mock STATIC ${CMAKE_SOURCE_DIR}/kvm_board/kvm_board_mock.c)
+target_include_directories(kvm_board_mock PUBLIC ${CMAKE_SOURCE_DIR}/kvm_board)
+target_link_libraries(kvm_board_mock PUBLIC kvm_board)
+target_compile_options(kvm_board_mock PRIVATE ${TEST_COMPILE_OPTIONS})
+target_link_options(kvm_board_mock PRIVATE ${TEST_LINK_OPTIONS})

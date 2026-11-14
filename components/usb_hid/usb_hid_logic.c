@@ -142,10 +142,11 @@ _Static_assert(sizeof(s_rel_report_desc) == USB_HID_REL_REPORT_DESC_LEN, "rel de
 
 #define COMPOSITE_CONFIG_DESC(ep_interval) { \
     /* Configuration Descriptor (9B) */ \
+    /* TODO(hw-verify): bmAttributes=0xC0 (self-powered) / bMaxPower=0 (0 mA) matches 3-wire J3 without VBUS; verify BIOS/host compatibility */ \
     9u, USB_DESC_TYPE_CONF, \
     (uint8_t)(USB_HID_CONFIG_DESC_LEN & 0xFFu), \
     (uint8_t)((USB_HID_CONFIG_DESC_LEN >> 8) & 0xFFu), \
-    USB_HID_ITF_COUNT, 1u, 0u, 0x80u, 50u, \
+    USB_HID_ITF_COUNT, 1u, 0u, 0xC0u, 0u, \
     /* Interface 0: Boot Keyboard */ \
     HID_ITF_DESC_BLOCK(USB_HID_ITF_KEYBOARD, 4u, USB_SUBCLASS_BOOT_VAL, USB_PROTO_KBD_VAL, \
                        USB_HID_KBD_REPORT_DESC_LEN, USB_HID_EP_KEYBOARD, (ep_interval)), \

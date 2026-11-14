@@ -12,6 +12,8 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 #include "soc/usb_dwc_struct.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
@@ -29,6 +31,7 @@ static hid_sink_t s_sink;
 static usb_hid_sink_ctx_t s_sink_ctx;
 static char s_serial_str[17] = "QUADIPKVM0001";
 
+static portMUX_TYPE s_report_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint8_t s_last_kbd_report[USB_HID_KBD_REPORT_LEN];
 static uint8_t s_last_abs_report[USB_HID_ABS_REPORT_LEN];
 static uint8_t s_last_rel_report[USB_HID_REL_REPORT_LEN];
@@ -102,6 +105,11 @@ static bool hw_send_report(void *hw_ctx, uint8_t itf, uint8_t report_id,
     if (!s_initialized || !data || itf >= USB_HID_ITF_COUNT) {
         return false;
     }
+    bool sent = tud_hid_n_report(itf, report_id, data, len);
+    if (!sent) {
+        return false;
+    }
+    portENTER_CRITICAL(&s_report_mux);
     if (itf == USB_HID_ITF_KEYBOARD && len == sizeof(s_last_kbd_report)) {
         memcpy(s_last_kbd_report, data, sizeof(s_last_kbd_report));
     } else if (itf == USB_HID_ITF_ABS_MOUSE && len == sizeof(s_last_abs_report)) {
@@ -109,7 +117,8 @@ static bool hw_send_report(void *hw_ctx, uint8_t itf, uint8_t report_id,
     } else if (itf == USB_HID_ITF_REL_MOUSE && len == sizeof(s_last_rel_report)) {
         memcpy(s_last_rel_report, data, sizeof(s_last_rel_report));
     }
-    return tud_hid_n_report(itf, report_id, data, len);
+    portEXIT_CRITICAL(&s_report_mux);
+    return true;
 }
 
 static const usb_hid_hw_ops_t s_hw_ops = {
@@ -161,33 +170,33 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
                                hid_report_type_t report_type,
                                uint8_t *buffer, uint16_t reqlen) {
     (void)report_id;
-    if (!buffer) {
+    if (!buffer || reqlen == 0) {
         return 0;
     }
+    uint16_t copy_len = 0;
+    portENTER_CRITICAL(&s_report_mux);
     if (report_type == HID_REPORT_TYPE_OUTPUT && instance == USB_HID_ITF_KEYBOARD && reqlen >= 1) {
         buffer[0] = s_last_kbd_leds;
-        return 1;
+        copy_len = 1;
+    } else if (report_type == HID_REPORT_TYPE_INPUT) {
+        const uint8_t *src = NULL;
+        uint16_t src_len = 0;
+        if (instance == USB_HID_ITF_KEYBOARD) {
+            src = s_last_kbd_report;
+            src_len = sizeof(s_last_kbd_report);
+        } else if (instance == USB_HID_ITF_ABS_MOUSE) {
+            src = s_last_abs_report;
+            src_len = sizeof(s_last_abs_report);
+        } else if (instance == USB_HID_ITF_REL_MOUSE) {
+            src = s_last_rel_report;
+            src_len = sizeof(s_last_rel_report);
+        }
+        if (src) {
+            copy_len = (reqlen < src_len) ? reqlen : src_len;
+            memcpy(buffer, src, copy_len);
+        }
     }
-    if (report_type != HID_REPORT_TYPE_INPUT) {
-        return 0;
-    }
-    const uint8_t *src = NULL;
-    uint16_t src_len = 0;
-    if (instance == USB_HID_ITF_KEYBOARD) {
-        src = s_last_kbd_report;
-        src_len = sizeof(s_last_kbd_report);
-    } else if (instance == USB_HID_ITF_ABS_MOUSE) {
-        src = s_last_abs_report;
-        src_len = sizeof(s_last_abs_report);
-    } else if (instance == USB_HID_ITF_REL_MOUSE) {
-        src = s_last_rel_report;
-        src_len = sizeof(s_last_rel_report);
-    }
-    if (!src || reqlen == 0) {
-        return 0;
-    }
-    uint16_t copy_len = (reqlen < src_len) ? reqlen : src_len;
-    memcpy(buffer, src, copy_len);
+    portEXIT_CRITICAL(&s_report_mux);
     return copy_len;
 }
 
@@ -198,8 +207,11 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
     if (instance == USB_HID_ITF_KEYBOARD &&
         report_type == HID_REPORT_TYPE_OUTPUT &&
         buffer && bufsize >= 1) {
-        s_last_kbd_leds = buffer[0];
-        ESP_LOGD(TAG, "Keyboard LEDs updated: 0x%02x", s_last_kbd_leds);
+        uint8_t leds = buffer[0];
+        portENTER_CRITICAL(&s_report_mux);
+        s_last_kbd_leds = leds;
+        portEXIT_CRITICAL(&s_report_mux);
+        ESP_LOGD(TAG, "Keyboard LEDs updated: 0x%02x", leds);
     }
 }
 
@@ -243,6 +255,12 @@ esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
                         ESP_ERR_INVALID_SIZE, TAG, "Invalid config descriptor");
 
     tinyusb_config_t tusb_cfg = TINYUSB_CONFIG_HIGH_SPEED(usb_hid_event_cb, NULL);
+    /*
+     * In espressif/esp_tinyusb v2.4.0 (tinyusb.c:1564-1595), setting phy.self_powered = true
+     * triggers VBUS GPIO monitoring via tinyusb_vbus_monitor_init(), which rejects vbus_monitor_io == -1.
+     * Keep phy.self_powered = false when relying on DWC2 GOTGCTL software BVALID override without a
+     * VBUS sense GPIO; TODO(hw-verify): confirm enumeration behavior with 0xC0 / 0 mA descriptor on target BIOS/PC.
+     */
     tusb_cfg.phy.self_powered = false;
     tusb_cfg.phy.vbus_monitor_io = -1;
     tusb_cfg.descriptor.device = &s_device_desc;

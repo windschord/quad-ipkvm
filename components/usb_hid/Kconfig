@@ -1,3 +1,6 @@
+# Note: TINYUSB_HID_COUNT default override depends on Kconfig evaluation order relative to
+# managed_components/espressif__esp_tinyusb/Kconfig (currently usb_hid is evaluated after esp_tinyusb,
+# giving 3 when USB_DEVICE_ENABLE=y). If upstream ordering changes, verify CONFIG_TINYUSB_HID_COUNT=3 in sdkconfig.
 config TINYUSB_HID_COUNT
     int
     default 3 if USB_DEVICE_ENABLE

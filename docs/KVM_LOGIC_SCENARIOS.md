@@ -45,3 +45,101 @@
 | 【不変条件3】 ATX LED監視 | ATXパルス前後・中のLED監視と上限。 | `test_fuzz_invariants` (test_atx.c で網羅) |
 | 【不変条件4】 A0/A1変更手順 | A0/A1の変更時は、必ず「全Ē High -> A0/A1変更 -> セットアップ時間 -> Ē Low」の順序を守ること。いかなる時も Ē が Low の状態で A0/A1 を変更してはならない。 | `test_invariant_4_a0a1_change_sequence`, `test_fuzz_invariants` |
 | タイムスタンプ・ラップアラウンド安全確認 | 外部注入される `now_ms` のラップアラウンド耐性。uint32ではなくuint64を想定するが、ロジック内のタイマー差分計算が安全か。 | `test_time_wraparound_safety` |
+
+## 5. `kvm_ctrl`（`kvm_logic` と HAL の結線）のシナリオ
+
+`components/kvm_ctrl` は、`kvm_logic` の出力を `kvm_board_hal_t` に安全な順序で適用する（契約: `docs/INTERFACES.md` 6.3）。テストは `test/host/kvm_ctrl/`、モック HAL は `test/host/kvm_board/`。ミューテーションテストの結果は `docs/KVM_CTRL_TESTS.md`。
+表のテスト名は、特に書かない限り `test_kvm_ctrl_ops.c`（ops）、`test_kvm_ctrl_init.c`（init）、`test_kvm_ctrl_fault.c`（fault）にある。
+
+### 5.1 初期化・起動直後
+
+| シナリオ | 期待動作 | テスト名 |
+| --- | --- | --- |
+| 初期化の手順 | `release_all` -> `set_addr(1)`。ボードが最初から 1 でも `set_addr` を省かない。ほかの HAL は呼ばない | `test_init_releases_all_then_sets_addr_1_even_when_board_already_at_1`, `test_init_forces_addr_1_when_board_was_elsewhere`, `test_init_makes_no_other_hal_calls` (init) |
+| 初期化の失敗 | `release_all` の失敗は `set_addr` を呼ばずにフォールトで始まる。`set_addr` の失敗は `release_all` してフォールトで始まる | `test_init_release_all_failure_latches_fault_and_skips_set_addr`, `test_init_set_addr_failure_latches_fault_and_releases_all` (init) |
+| HAL・引数・設定の検証 | NULL、不完全な HAL（6 つの関数ポインタのどれが NULL でも）、パルス長・余裕・上限の境界は拒否し、HAL を一切呼ばない。拒否した `ctrl` はすべての API が `NOT_READY` | `test_init_rejects_null_arguments`, `test_init_rejects_incomplete_hal_without_touching_hardware`, `test_init_validates_pulse_lengths_and_margin`, `test_init_validates_embedded_logic_config`, `test_config_default_is_valid_and_within_limits` (init) |
+| LED の変換 | ちょうど 1 ビットなら 1..4、無点灯 0、複数点灯 0xFF、ビット 4 以上は無視 | `test_led_mask_to_raw`, `test_led_mask_upper_bits_are_ignored_by_tick` (init) |
+| 起動直後の確定 | LED が安定するまで unknown で出力を動かさない。確定したら全線 High で `set_addr` | `test_boot_with_led_ch3_sets_addr_3_with_all_lines_high`, `test_boot_with_led_ch1_does_not_set_addr_again`, `test_status_right_after_init` (init) |
+| 無点灯・複数点灯・チャタリング | unknown / 追従のまま。出力を一切動かさない | `test_dark_led_stays_unknown_and_outputs_nothing`, `test_multi_lit_led_is_unknown`, `test_chattering_led_never_settles` (init), `test_led_chatter_during_idle_never_outputs_and_blocks_requests` (ops) |
+| 映像の同期状態の結線 | 毎 tick 読む。範囲外は UNKNOWN。切替の完了時間に反映される | `test_video_sync_is_read_every_tick_and_reported` (init), `test_video_sync_is_wired_into_switch_completion` (ops) |
+
+### 5.2 切替（select）
+
+| シナリオ | 期待動作 | テスト名 |
+| --- | --- | --- |
+| 成功 | 要求は HAL を呼ばない。tick で `set_addr`（全線 High）-> `assert_line(KVM, パルス長 + 余裕)` -> `release_line`。LED と映像の確認後に completed | `test_select_full_sequence_and_trace` |
+| すでにそのチャンネルで idle | `ALREADY_SELECTED`。何も押さず、`op_id` は進まない | `test_select_already_selected_does_nothing` |
+| unknown | `UNKNOWN_STATE`（現在のチャンネルへの要求でも `ALREADY_SELECTED` にしない） | `test_select_unknown_state_is_distinguished` |
+| 切替中・追従中 | `BUSY`（現在のチャンネルへの要求も、idle でなければ `BUSY`） | `test_select_busy_while_switching_or_tracking` |
+| 引数 | チャンネル 0、5 以上は `INVALID_PARAM`（`op_id` は 0）。`op_id` は NULL でもよい | `test_select_rejects_invalid_channels`, `test_select_accepts_null_op_id` |
+| LED が変わらない | タイムアウトで A0/A1 を戻し（全線 High）、aborted | `test_select_timeout_reverts_a0a1_and_aborts` |
+| 手動切替に追い越される | 追従中は pending、idle に戻ったとき active != 目標なら aborted、== なら completed | `test_select_overtaken_by_manual_switch_is_aborted`, `test_select_completes_when_idle_matches_target_after_tracking` |
+| 手動切替への追従 | 線は動かさず、LED が安定してから `set_addr` だけ。受理した操作ではない（`last_op` は変わらない） | `test_manual_switch_is_tracked_with_no_output_lines` |
+
+### 5.3 電源操作（ATX）
+
+| シナリオ | 期待動作 | テスト名 |
+| --- | --- | --- |
+| press / reset / force | それぞれ `POWER` / `RESET` / `POWER_FORCE` を、準備（setup）の後に `assert_line`。`max_ms` = パルス長 + 余裕。パルス長ちょうどで `release_line`。`A0/A1` は変えない | `test_power_actions_use_right_line_max_ms_and_order`, `test_each_action_uses_its_own_configured_pulse_length`, `test_power_does_not_pulse_longer_than_configured` |
+| `max_ms` の上限 | ATX は `KVM_ATX_HARD_MAX_*` を超えない。余裕が大きくても桁あふれしない | `test_assert_max_ms_is_capped_at_hard_max`, `test_assert_max_ms_does_not_overflow_with_huge_margin`, `test_assert_max_ms_for_kvm_is_pulse_plus_margin` |
+| パルス中の LED の変化 | 検出した tick の中で直ちに `release_line`。anomaly、aborted。LED が戻っても再開しない | `test_power_anomaly_during_pulse_releases_immediately` |
+| 準備中の LED の変化 | 一度も `assert_line` しない | `test_power_anomaly_before_assert_never_asserts` |
+| anomaly の寿命 | 次の ATX パルスの開始で消える | `test_anomaly_flag_clears_when_next_pulse_starts` |
+| `channel` の不一致 | 何も出さず、クールダウンも消費しない | `test_power_channel_mismatch_outputs_nothing_and_does_not_consume_cooldown` |
+| 引数・unknown | `INVALID_PARAM`（channel、action）、`UNKNOWN_STATE` | `test_power_rejects_invalid_parameters`, `test_power_is_rejected_in_unknown_state` |
+| anomaly なしで終わらなかった | 状態が ATX を出た（anomaly なし）、またはフラグが立ったまま終わったら completed にしない | `test_atx_op_is_aborted_if_logic_leaves_atx_states_without_anomaly`, `test_power_with_anomaly_flag_at_the_end_is_not_completed` |
+
+### 5.4 判定の順序（WEB_API.md 7.3）
+
+引数 -> フォールト -> unknown -> busy -> channel_mismatch -> atx_locked -> cooldown -> 受理。複数の条件が重なるケースごとにテストする。
+
+| 重なる条件 | 期待 | テスト名 |
+| --- | --- | --- |
+| unknown + mismatch + cooldown | `UNKNOWN_STATE` | `test_order_unknown_beats_mismatch_and_cooldown` |
+| busy + mismatch + cooldown | `BUSY` | `test_order_busy_beats_mismatch_and_cooldown` |
+| mismatch + locked + cooldown | `CHANNEL_MISMATCH` | `test_order_mismatch_beats_locked_and_cooldown`, `test_order_mismatch_beats_cooldown_without_tick_in_between` |
+| locked + cooldown | `ATX_LOCKED`、ロックが解ければ `COOLDOWN` | `test_order_locked_beats_cooldown` |
+| 引数が不正 + 上記のすべて | `INVALID_PARAM` | `test_order_invalid_params_beat_everything` |
+| フォールト + 他のすべて | `FAULT`（引数が正しいとき） | `expect_latched_and_quiet`（fault の全テスト） |
+| ファズ | 乱数の状態で、独立に書いた期待値と一致 | `test_fuzz_invariants_without_hal_failures`, `test_fuzz_invariants_with_hal_failures` (fuzz) |
+
+### 5.5 クールダウン
+
+起点は「ATX 操作が終わった（完了または中断した）tick」。実行中は数えない（busy で拒否され、`cooldown_ms` は 0）。
+
+| シナリオ | 期待動作 | テスト名 |
+| --- | --- | --- |
+| 境界 | 終了から `atx_min_interval_ms - 1` 後は `COOLDOWN`（残り 1 ms）、ちょうど `atx_min_interval_ms` 後は受理。実行中は `cooldown_ms` が 0 で、終了の tick から数え直す | `test_cooldown_boundary_is_exact` |
+| 長いパルス（force）の直後 | 受理からは 2000 ms を過ぎていても、終了から数える。パルス中は `cooldown_ms` が 0 で `BUSY` | `test_cooldown_counts_from_the_end_of_a_force_pulse` |
+| 中断（anomaly）の後 | 準備中・パルス中のどちらで中断しても、中断した tick から数える | `test_cooldown_counts_from_an_aborted_op` |
+| フォールトで中断 | 数えない（どうせ要求は `FAULT`） | `test_fault_abort_does_not_start_cooldown` (fault) |
+| select との関係 | select は影響を受けず、始めもせず、終了も起点を動かさない | `test_cooldown_does_not_apply_to_select_and_select_does_not_start_it`, `test_cooldown_does_not_count_while_a_select_runs_or_after_it` |
+| 拒否は状態を進めない | `COOLDOWN` で拒否しても `kvm_logic` の状態・`op_id` は変わらない | `test_cooldown_rejection_leaves_logic_untouched` |
+| 0 = なし | 完了直後に再受理できる | `test_cooldown_disabled_when_interval_is_zero` |
+| 時刻 | 要求は `now_ms` を取らず、直近の tick の時刻で数える | `test_cooldown_uses_time_of_last_tick` |
+
+### 5.6 操作の記録・状態の報告
+
+| シナリオ | 期待動作 | テスト名 |
+| --- | --- | --- |
+| `op_id` と `last_op` | 受理のたびに 1 進み、直近の 1 件だけを保持。拒否・`ALREADY_SELECTED` は進めない | `test_op_ids_increment_and_only_last_op_is_kept` |
+| pending は必ず決着 | 次の受理の前に completed / aborted になっている | `test_pending_op_is_always_resolved_before_next_accept` |
+| `state` の対応 | `kvm_logic` の 11 状態を 5 つの `state` に対応づけ、`active_channel` は unknown のときだけ 0 | `test_status_state_mapping_covers_every_logic_state` |
+| そのほかのフィールド | `video_sync`、`atx_locked`、`atx_anomaly`、`cooldown_ms` | `test_status_reports_lock_anomaly_cooldown_and_sync` |
+
+### 5.7 フォールト（HAL の失敗、時刻の巻き戻り、`kvm_logic` の出力の不整合）
+
+各テストは、失敗した呼び出しの直後に `release_all` が呼ばれ、フォールトがラッチされ、以後の要求が `FAULT`、**LED が回復しても `assert_line` / `set_addr` / `release_line` が 0 回**、`release_all` が tick ごとに 1 回であることを確認する（`expect_latched_and_quiet`）。
+
+| 失敗 | テスト名 (fault) |
+| --- | --- |
+| `set_addr`（切替中、追従中） | `test_fault_set_addr_during_select`, `test_fault_set_addr_during_manual_tracking` |
+| `assert_line`（KVM、ATX） | `test_fault_assert_line_kvm`, `test_fault_assert_line_atx` |
+| `release_line`（パルス終了時、anomaly 時） | `test_fault_release_line_at_pulse_end`, `test_fault_release_line_at_anomaly` |
+| `read_led_mask`（idle、線が有効な間、続けて失敗） | `test_fault_read_led_while_idle`, `test_fault_read_led_while_line_is_asserted`, `test_fault_read_led_persistent` |
+| `release_all` の失敗と再試行 | `test_fault_release_all_keeps_being_retried_and_failure_does_not_unlatch` |
+| 最初の原因の保持、完了済みの操作は変えない | `test_fault_keeps_first_reason`, `test_fault_does_not_change_completed_op` |
+| `now_ms` の巻き戻り | `test_time_rewind_latches_fault`, `test_time_does_not_rewind_with_equal_or_large_jumps`, `test_first_tick_may_start_at_any_time` |
+| `kvm_logic` が 2 本以上の Ē を Low にする | `test_fault_when_logic_enables_two_lines`, `test_fault_when_logic_enables_two_lines_including_the_matching_one` |
+| 対応する受理済みの操作がない線 | `test_line_is_enabled_only_for_matching_pending_op`, `test_finished_op_does_not_justify_a_line` |
+| A0/A1 が範囲外、線が有効なときの A0/A1 の変更 | `test_fault_when_logic_a0a1_out_of_range`, `test_fault_when_addr_changes_while_a_line_is_asserted`, `test_fault_when_addr_changes_in_the_same_tick_as_a_new_line` |
