@@ -115,3 +115,42 @@ bool csi_pp_release(csi_pp_t *pp, int idx) {
 void csi_pp_stop(csi_pp_t *pp) {
     pp->writing = CSI_PP_NONE;
 }
+
+csi_jpeg_bitstream_result_t csi_jpeg_validate_bitstream(const uint8_t *buf,
+                                                        size_t max_output_bytes,
+                                                        size_t encoded_bytes) {
+    if (!buf || max_output_bytes == 0u) {
+        return CSI_JPEG_BITSTREAM_ERR_MARKERS;
+    }
+    if (encoded_bytes > max_output_bytes) {
+        return CSI_JPEG_BITSTREAM_ERR_OVERSIZE;
+    }
+    if (encoded_bytes < 4u ||
+        buf[0] != 0xFFu || buf[1] != 0xD8u ||
+        buf[encoded_bytes - 2u] != 0xFFu || buf[encoded_bytes - 1u] != 0xD9u) {
+        return CSI_JPEG_BITSTREAM_ERR_MARKERS;
+    }
+    return CSI_JPEG_BITSTREAM_OK;
+}
+
+void csi_jpeg_arm_overflow_sentinel(uint8_t *tail_buf, size_t tail_len) {
+    if (!tail_buf || tail_len == 0u) {
+        return;
+    }
+    for (size_t i = 0u; i < tail_len; i++) {
+        tail_buf[i] = (i & 1u) ? 0xA5u : 0xFFu;
+    }
+}
+
+bool csi_jpeg_overflow_sentinel_tripped(const uint8_t *tail_buf, size_t tail_len) {
+    if (!tail_buf || tail_len == 0u) {
+        return false;
+    }
+    for (size_t i = 0u; i < tail_len; i++) {
+        uint8_t expected = (i & 1u) ? 0xA5u : 0xFFu;
+        if (tail_buf[i] != expected) {
+            return true;
+        }
+    }
+    return false;
+}

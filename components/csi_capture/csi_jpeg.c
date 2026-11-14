@@ -6,6 +6,7 @@
 #include "driver/jpeg_encode.h"
 #include "driver/ppa.h"
 #include "esp_cache.h"
+#include "esp_private/esp_cache_private.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 
@@ -19,7 +20,9 @@ struct csi_jpeg_t {
     jpeg_encoder_handle_t eng;
     ppa_client_handle_t ppa_srm;
     uint8_t *out_buf;
+    size_t max_output_bytes;
     size_t out_buf_bytes;
+    size_t sentinel_bytes;
     uint8_t *ppa_buf;
     size_t ppa_buf_bytes;
     size_t ppa_valid_bytes;
@@ -31,20 +34,19 @@ struct csi_jpeg_t {
 
 static esp_err_t validate_jpeg_bitstream(const uint8_t *buf, size_t cap, uint32_t encoded_bytes)
 {
-    if ((size_t)encoded_bytes > cap) {
+    csi_jpeg_bitstream_result_t r = csi_jpeg_validate_bitstream(buf, cap, (size_t)encoded_bytes);
+    if (r == CSI_JPEG_BITSTREAM_ERR_OVERSIZE) {
         ESP_LOGE(TAG, "JPEG output exceeded buffer capacity: len=%" PRIu32 " cap=%u",
                  encoded_bytes, (unsigned)cap);
         return CSI_JPEG_ERR_OUTPUT_OVERSIZE;
     }
-    if (encoded_bytes < 4u ||
-        buf[0] != 0xFFu || buf[1] != 0xD8u ||
-        buf[encoded_bytes - 2u] != 0xFFu || buf[encoded_bytes - 1u] != 0xD9u) {
+    if (r != CSI_JPEG_BITSTREAM_OK) {
         ESP_LOGE(TAG, "Invalid JPEG output: len=%" PRIu32 " head=%02x%02x tail=%02x%02x",
                  encoded_bytes,
-                 encoded_bytes >= 1u ? buf[0] : 0u,
-                 encoded_bytes >= 2u ? buf[1] : 0u,
-                 encoded_bytes >= 2u ? buf[encoded_bytes - 2u] : 0u,
-                 encoded_bytes >= 1u ? buf[encoded_bytes - 1u] : 0u);
+                 (buf && encoded_bytes >= 1u) ? buf[0] : 0u,
+                 (buf && encoded_bytes >= 2u) ? buf[1] : 0u,
+                 (buf && encoded_bytes >= 2u) ? buf[encoded_bytes - 2u] : 0u,
+                 (buf && encoded_bytes >= 1u) ? buf[encoded_bytes - 1u] : 0u);
         return ESP_ERR_INVALID_RESPONSE;
     }
     return ESP_OK;
@@ -59,7 +61,7 @@ esp_err_t csi_jpeg_open(const csi_jpeg_config_t *cfg, csi_jpeg_handle_t *out)
 
     if (cfg->quality < 1u || cfg->quality > 100u ||
         cfg->max_output_bytes < CSI_JPEG_MIN_BUF_BYTES ||
-        cfg->max_output_bytes > (size_t)UINT32_MAX) {
+        cfg->max_output_bytes > (size_t)UINT32_MAX - CSI_JPEG_OVERFLOW_GUARD_BYTES) {
         ESP_LOGE(TAG, "Invalid JPEG config: quality=%u max_output_bytes=%u",
                  (unsigned)cfg->quality, (unsigned)cfg->max_output_bytes);
         return ESP_ERR_INVALID_ARG;
@@ -84,6 +86,7 @@ esp_err_t csi_jpeg_open(const csi_jpeg_config_t *cfg, csi_jpeg_handle_t *out)
     if (!h) {
         return ESP_ERR_NO_MEM;
     }
+    h->max_output_bytes = cfg->max_output_bytes;
     h->quality = cfg->quality;
 
     // Source: ESP-IDF v6.0.1 components/esp_driver_jpeg/jpeg_encode.c:102-168.
@@ -101,13 +104,24 @@ esp_err_t csi_jpeg_open(const csi_jpeg_config_t *cfg, csi_jpeg_handle_t *out)
     // Source: ESP-IDF v6.0.1 components/esp_driver_jpeg/jpeg_encode.c:177, 380-396.
     // JPEG_ENC_ALLOC_OUTPUT_BUFFER aligns both base address and buffer size to the PSRAM
     // data-cache line size so DMA2D writes and M2C cache invalidation cannot fault or corrupt neighbors.
+    // Allocate CSI_JPEG_OVERFLOW_GUARD_BYTES past cfg->max_output_bytes so borderline oversize
+    // frames still finish DMA2D (caught cleanly by validate_jpeg_bitstream) and larger bursts
+    // overwrite the trailing cache-line sentinel before hitting JPEG_DMA2D_RX_DESC_EMPTY.
+    size_t cache_align = 0u;
+    (void)esp_cache_get_alignment(MALLOC_CAP_SPIRAM, &cache_align);
+    if (cache_align == 0u || cache_align > CSI_JPEG_OVERFLOW_GUARD_BYTES) {
+        cache_align = CSI_JPEG_PPA_ALIGN;
+    }
+    h->sentinel_bytes = cache_align;
+
+    size_t req_dma_bytes = cfg->max_output_bytes + CSI_JPEG_OVERFLOW_GUARD_BYTES;
     jpeg_encode_memory_alloc_cfg_t mem_cfg = {
         .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER,
     };
     size_t alloc_bytes = 0;
-    h->out_buf = (uint8_t *)jpeg_alloc_encoder_mem(cfg->max_output_bytes, &mem_cfg, &alloc_bytes);
-    if (!h->out_buf || alloc_bytes < cfg->max_output_bytes) {
-        ESP_LOGE(TAG, "jpeg_alloc_encoder_mem(%u) failed", (unsigned)cfg->max_output_bytes);
+    h->out_buf = (uint8_t *)jpeg_alloc_encoder_mem(req_dma_bytes, &mem_cfg, &alloc_bytes);
+    if (!h->out_buf || alloc_bytes < req_dma_bytes || alloc_bytes > (size_t)UINT32_MAX) {
+        ESP_LOGE(TAG, "jpeg_alloc_encoder_mem(%u) failed", (unsigned)req_dma_bytes);
         (void)csi_jpeg_close(h);
         return ESP_ERR_NO_MEM;
     }
@@ -146,6 +160,45 @@ esp_err_t csi_jpeg_open(const csi_jpeg_config_t *cfg, csi_jpeg_handle_t *out)
     return ESP_OK;
 }
 
+static esp_err_t run_jpeg_encoder(csi_jpeg_handle_t h,
+                                const jpeg_encode_cfg_t *enc_cfg,
+                                const uint8_t *in_buf, uint32_t in_bytes,
+                                const uint8_t **out_jpeg, size_t *out_len)
+{
+    // Arm the trailing cache-line sentinel so even a hard DMA2D RX exhaustion
+    // (JPEG_DMA2D_RX_DESC_EMPTY -> ESP_ERR_INVALID_STATE) is distinguishable from
+    // encoder status or alignment errors.
+    uint8_t *sentinel_ptr = h->out_buf + (h->out_buf_bytes - h->sentinel_bytes);
+    csi_jpeg_arm_overflow_sentinel(sentinel_ptr, h->sentinel_bytes);
+    (void)esp_cache_msync(sentinel_ptr, h->sentinel_bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+
+    uint32_t encoded_bytes = 0;
+    esp_err_t err = jpeg_encoder_process(h->eng, enc_cfg,
+                                         in_buf, in_bytes,
+                                         h->out_buf, (uint32_t)h->out_buf_bytes,
+                                         &encoded_bytes);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_INVALID_STATE) {
+            (void)esp_cache_msync(sentinel_ptr, h->sentinel_bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+            if (csi_jpeg_overflow_sentinel_tripped(sentinel_ptr, h->sentinel_bytes)) {
+                ESP_LOGW(TAG, "JPEG DMA2D RX buffer exhausted (cap=%u, dma_buf=%u); reporting CSI_JPEG_ERR_OUTPUT_OVERSIZE",
+                         (unsigned)h->max_output_bytes, (unsigned)h->out_buf_bytes);
+                return CSI_JPEG_ERR_OUTPUT_OVERSIZE;
+            }
+        }
+        return err;
+    }
+
+    err = validate_jpeg_bitstream(h->out_buf, h->max_output_bytes, encoded_bytes);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    *out_jpeg = h->out_buf;
+    *out_len = (size_t)encoded_bytes;
+    return ESP_OK;
+}
+
 esp_err_t csi_jpeg_encode(csi_jpeg_handle_t h,
                           const uint8_t *bgr24_in, size_t in_bytes,
                           uint32_t width, uint32_t height,
@@ -180,22 +233,7 @@ esp_err_t csi_jpeg_encode(csi_jpeg_handle_t h,
         .pixel_reverse = false,
     };
 
-    uint32_t encoded_bytes = 0;
-    esp_err_t err = jpeg_encoder_process(h->eng, &enc_cfg,
-                                         bgr24_in, (uint32_t)in_bytes,
-                                         h->out_buf, (uint32_t)h->out_buf_bytes,
-                                         &encoded_bytes);
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = validate_jpeg_bitstream(h->out_buf, h->out_buf_bytes, encoded_bytes);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    *out_jpeg = h->out_buf;
-    *out_len = (size_t)encoded_bytes;
-    return ESP_OK;
+    return run_jpeg_encoder(h, &enc_cfg, bgr24_in, (uint32_t)in_bytes, out_jpeg, out_len);
 }
 
 esp_err_t csi_jpeg_ppa_swap_uyvy(csi_jpeg_handle_t h,
@@ -300,27 +338,12 @@ esp_err_t csi_jpeg_encode_swapped_uyvy(csi_jpeg_handle_t h,
         .pixel_reverse = false,
     };
 
-    uint32_t encoded_bytes = 0;
-    esp_err_t err = jpeg_encoder_process(h->eng, &enc_cfg,
-                                         h->ppa_buf, (uint32_t)h->ppa_valid_bytes,
-                                         h->out_buf, (uint32_t)h->out_buf_bytes,
-                                         &encoded_bytes);
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = validate_jpeg_bitstream(h->out_buf, h->out_buf_bytes, encoded_bytes);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    *out_jpeg = h->out_buf;
-    *out_len = (size_t)encoded_bytes;
-    return ESP_OK;
+    return run_jpeg_encoder(h, &enc_cfg, h->ppa_buf, (uint32_t)h->ppa_valid_bytes, out_jpeg, out_len);
 }
 
 size_t csi_jpeg_output_capacity(csi_jpeg_handle_t h)
 {
-    return h ? h->out_buf_bytes : 0u;
+    return h ? h->max_output_bytes : 0u;
 }
 
 size_t csi_jpeg_ppa_capacity(csi_jpeg_handle_t h)
