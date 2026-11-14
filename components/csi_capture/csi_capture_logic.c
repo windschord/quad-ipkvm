@@ -1,5 +1,12 @@
 #include "csi_capture_logic.h"
 
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#define CSI_CAPTURE_IRAM_ATTR IRAM_ATTR
+#else
+#define CSI_CAPTURE_IRAM_ATTR
+#endif
+
 uint32_t csi_pixel_format_bpp(csi_pixel_format_t fmt) {
     if (fmt == CSI_PIXEL_FORMAT_RGB888) return 24u;
     if (fmt == CSI_PIXEL_FORMAT_UYVY) return 16u;
@@ -59,11 +66,15 @@ void csi_pp_init(csi_pp_t *pp, uint32_t skip_frames) {
     pp->overwritten = 0;
 }
 
-int csi_pp_next_dma(csi_pp_t *pp) {
+// Conservation invariant across all transitions:
+//   published == acquired + overwritten + (latest != CSI_PP_NONE ? 1 : 0)
+int CSI_CAPTURE_IRAM_ATTR csi_pp_next_dma(csi_pp_t *pp) {
     if (pp->writing != CSI_PP_NONE) {
         pp->completed++;
         if (pp->completed > pp->skip_frames) {
-            if (pp->latest != CSI_PP_NONE) pp->overwritten++;  // previous latest was never consumed
+            if (pp->latest != CSI_PP_NONE && pp->latest != pp->writing) {
+                pp->overwritten++;  // previous unconsumed latest is being replaced
+            }
             pp->latest = pp->writing;
             pp->published++;
         }
@@ -78,7 +89,7 @@ int csi_pp_next_dma(csi_pp_t *pp) {
         }
     }
     if (next == CSI_PP_NONE) {
-        // Both buffers are taken (one held, one latest): overwrite the unconsumed latest frame.
+        // Both buffers are taken (one held, one latest): reclaim the unconsumed latest frame.
         next = pp->latest;
         pp->latest = CSI_PP_NONE;
         pp->overwritten++;

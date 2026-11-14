@@ -58,14 +58,31 @@ menu "Quad IP-KVM Configuration"
             bool "UYVY 4:2:2 (16 bpp, PPA 4B swap -> HW JPEG YUV422)"
     endchoice
 
-    config TC358743_CSI_LANE_RATE_MBPS
-        int "TC358743 & ESP32-P4 CSI lane bit rate (Mbps)"
-        default 972
-        range 445 972
+    choice TC358743_CSI_LANE_RATE_SELECT
+        prompt "TC358743 & ESP32-P4 CSI lane bit rate"
+        default TC358743_CSI_LANE_RATE_972
         depends on TC358743_START_CSI
         help
-            CSI-2 per-lane bit rate in Mbps (must be 972, 594, or 445 for the 445.5 Mbps P2b-8 mode).
+            CSI-2 per-lane bit rate in Mbps (972, 594, or 445 for the 445.5 Mbps P2b-8 mode).
             Both TC358743 PLL/timings and ESP32-P4 CSI D-PHY use this value.
+
+        config TC358743_CSI_LANE_RATE_972
+            bool "972 Mbps/lane (default)"
+
+        config TC358743_CSI_LANE_RATE_594
+            bool "594 Mbps/lane"
+
+        config TC358743_CSI_LANE_RATE_445
+            bool "445.5 Mbps/lane (445)"
+    endchoice
+
+    config TC358743_CSI_LANE_RATE_MBPS
+        int
+        default 972 if TC358743_CSI_LANE_RATE_972
+        default 594 if TC358743_CSI_LANE_RATE_594
+        default 445 if TC358743_CSI_LANE_RATE_445
+        default 972
+        depends on TC358743_START_CSI
     config TC358743_INIT
         bool "Initialize TC358743 on startup"
         default n

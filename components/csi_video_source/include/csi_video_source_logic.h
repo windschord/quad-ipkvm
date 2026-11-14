@@ -147,12 +147,19 @@ typedef struct {
     uint32_t mode_switches;
     uint32_t hpd_nudges;
     uint32_t stall_recoveries;
+    uint32_t sample_errors;             // transient I2C/signal read failures skipped by poll
 } csi_mode_tracker_t;
 
 void csi_mode_tracker_init(csi_mode_tracker_t *m);
 csi_mode_action_t csi_mode_tracker_step(csi_mode_tracker_t *m, const csi_mode_sample_t *s);
 void csi_mode_tracker_on_frame(csi_mode_tracker_t *m, uint64_t now_ms);
 csi_mode_action_t csi_mode_tracker_check_stall(csi_mode_tracker_t *m, uint64_t now_ms);
+// Poll-cycle entry point: when sample_ok is false (e.g. transient I2C NACK/timeout on shared bus),
+// records sample_errors and skips BOTH csi_mode_tracker_step() and csi_mode_tracker_check_stall(),
+// returning KEEP_STREAMING if currently streaming or WAIT if unlocked. When sample_ok is true,
+// runs csi_mode_tracker_step() and, if KEEP_STREAMING, csi_mode_tracker_check_stall().
+csi_mode_action_t csi_mode_tracker_poll(csi_mode_tracker_t *m, bool sample_ok,
+                                        const csi_mode_sample_t *s);
 // If CSI start/reconfigure fails after CSI_MODE_ACT_START_MODE, revert streaming state so the
 // next 200 ms poll retries cleanly instead of thinking DMA is running.
 void csi_mode_tracker_abort_start(csi_mode_tracker_t *m);
