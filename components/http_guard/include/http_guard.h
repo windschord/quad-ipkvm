@@ -26,6 +26,19 @@ int http_guard_extract_session_cookie(const char *cookie_header, size_t header_l
 bool http_guard_host_ok(const char *host, size_t host_len, const char *const *allowed_names, size_t allowed_count);
 bool http_guard_origin_ok(const char *origin, size_t origin_len, const char *host, size_t host_len);
 
+/**
+ * 映像専用の httpd(別ポート)用の Origin 検査 (docs/VIDEO_TRANSPORT.md 5 章)。
+ * ブラウザの Origin は「ページの Origin」(メインのポート) で、映像サーバーの Host とはポートだけが違う。
+ * 許可する条件 (すべて):
+ *  - Origin が "https://" で始まる (大小文字を区別しない)。
+ *  - Origin のホスト名が、Host のホスト名 (":ポート" を除く) と一致する (大小文字を区別しない)。
+ *  - Origin のポートが page_port と一致する。Origin にポートが無ければ 443 と見なす (page_port == 443 のとき ":443" があってもよい)。
+ *    Host のポート (映像サーバーのポート) は、形式だけを検査し、値は問わない。
+ * 拒否: "null"、"@"、"["(IPv6)、末尾・先頭・連続の "."、ポートが空・数字でない・範囲外 (1〜65535)・先頭ゼロ、
+ *       スキームが違う、Origin に "/" などが続く、host が空、page_port == 0 など。
+ */
+bool http_guard_origin_ok_for_port(const char *origin, size_t origin_len, const char *host, size_t host_len, uint16_t page_port);
+
 // --- JSON Parsing ---
 
 typedef struct {
