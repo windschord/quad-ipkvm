@@ -145,7 +145,7 @@
 `hid_logic` は、不正なメッセージ（無効な型・長さ・範囲）を **数えて捨てる**。接続を閉じるのは、プロトコル違反（テキスト、長さ超過、断片化）と、レート超過が続いたときだけ。**メッセージの内容は、ログに出さない**（キー入力に、パスワードが含まれうる）。
 
 ### 7. KVM 切替と ATX 電源（`/api/v1/kvm/*`、`/api/v1/power/*`）
-4 台の切替（前段の 4ch HDMI KVM）と、選択中の PC への電源操作（ATX）。Issue #85（C-5）。**認証が必須**。`POST` は **Origin 必須**（Host と一致）で、`Content-Type: application/json` のみ受け付ける（それ以外は 415）。ボディは 64 バイト以下（超過は 413、`Content-Length` なしは 411）。
+4 台の切替（前段の 4ch HDMI KVM）と、選択中の PC への電源操作（ATX）。Issue #85（C-5）。**認証が必須**。`POST` は **Origin 必須**（Host と一致。無ければ 403）で、`Content-Type: application/json` のみ受け付ける（それ以外は 415）。`GET /api/v1/kvm/status` は Origin 不要（同一オリジンの GET に、ブラウザは Origin を付けない）。メソッドが違えば 405。ボディは 64 バイト以下（超過は 413、`Content-Length` なしは 411。認証・Origin・Content-Type の検査の**後**に判定する）。実装は `components/kvm_api`（純 C）、`http_guard_decide` の KVM 用パス、`kvm_service`（タスク + ミューテックス）、`web_server`。
 
 **基本方針**
 - **KVM の LED が「状態の真実」**。切替要求は、KVM 本体のボタンを押して LED の変化を待つ。成功は、LED が確定したことで決まる（要求の受理 ≠ 切替の完了）。
@@ -154,6 +154,8 @@
 - 受理した操作は**非同期**に実行する（`202`）。各操作には**操作 ID**（`op_id`、起動からの通し番号、u32）が付き、`202` の応答で返る。結果は `GET /api/v1/kvm/status` の `last_op` で見る（下記）。**結果を保持するのは直近の 1 操作だけ**: 後続の操作を受理すると、前の操作の結果は消える（`op_id` が違えば、クライアントは「結果は不明」として扱う）。操作は一度に 1 つしか実行しないので（`busy`）、自分の操作の完了を待ってから次を出せば、結果を取りこぼさない。
 
 #### 7.1 状態取得 `GET /api/v1/kvm/status`
+サービス未起動（実機のボードの HAL が起動していない、またはミューテックスを短い上限内に取れない）のときは `503 {"error":"not_ready"}`。ログには出さない（ポーリングされるため）。`fault` がラッチされていても、状態そのものは `200`（`"fault":true`）。
+
 `200`:
 ```json
 {"state":"idle","active_channel":2,"video_sync":"locked","atx_locked":false,"atx_anomaly":false,"fault":false,"cooldown_ms":0,"last_op":{"op_id":7,"kind":"power_press","channel":2,"result":"completed"}}
@@ -166,7 +168,7 @@
 | `atx_locked` | ATX が拒否される状態（`unknown`、切替中、切替直後の安定待ち） |
 | `atx_anomaly` | ATX のパルス（またはその準備）中に LED が変化・不正になった（パルスは中断済み）。**LED がほかの有効なチャンネルを示していれば `tracking`、無点灯・複数点灯なら `unknown`** に移る（`kvm_logic` の現在の挙動）。**次の ATX パルスの開始で消える** |
 | `fault` | ボードの HAL が失敗した（ラッチ。**全 Ē を High にして停止し、以後 tick は出力を一切有効にしない**。`release_all` の再試行だけ続ける。再起動まで解除しない） |
-| `cooldown_ms` | 次の ATX 操作を、**クールダウンのために**受け付けない残り時間（ms）。**0 は「クールダウンによる拒否がない」だけの意味**: `state` が `unknown` / `switching` / `tracking` / `atx`、`atx_locked`、`fault` のときは、0 でも ATX は拒否される |
+| `cooldown_ms` | 次の ATX 操作を、**クールダウンのために**受け付けない残り時間（ms）。クールダウンは **ATX 操作が終わった時点**（完了でも中断でも）から数える。**実行中は `busy` で拒否されるので 0**。**0 は「クールダウンによる拒否がない」だけの意味**: `state` が `unknown` / `switching` / `tracking` / `atx`、`atx_locked`、`fault` のときは、0 でも ATX は拒否される |
 | `last_op` | 直近に**受理した**操作（まだ無ければ `null`）。`op_id`、`kind`（`select` / `power_press` / `power_reset` / `power_force`）、`channel`、`result`: `pending`（実行中）、`completed`（切替: LED と映像の確認まで済んだ。ATX: パルスを異常なく出し終えた）、`aborted`（切替: タイムアウトか、手動切替に追い越された。ATX: パルス中に LED が変わって中断した、または `fault`）。`kvm_ctrl` が `kvm_logic` の状態の遷移から判定する |
 
 #### 7.2 切替 `POST /api/v1/kvm/select`
@@ -175,7 +177,7 @@
 |---|---|
 | 受理 | `202 {"result":"accepted","channel":3,"op_id":8}` |
 | すでにそのチャンネルで `idle` | `200 {"result":"already_selected","channel":3}`（何も押さない） |
-| ボディ不正、`channel` が欠落・範囲外・整数でない | `400 {"error":"invalid_request"}` |
+| ボディ不正、`channel` が欠落・範囲外・整数でない | `400 {"error":"invalid_request"}`（受け付けるのは `{"channel":N}` だけ。N は `1`〜`4` の 1 桁の整数。`"3"`、`3.0`、`3e0`、`03`、`-3`、`10`、重複キー、ほかのキー、キーのエスケープ、`}` の後の空白以外の文字、NUL、空は不正。記号の前後の JSON の空白は許す） |
 | 切替中、ATX パルス中、追従中 | `409 {"error":"busy"}` |
 | `state` が `unknown` | `409 {"error":"unknown_state"}`（現在の実装の `kvm_logic` は、`unknown` では切替を受け付けない。LED が確定すれば受け付ける） |
 | ボードが `fault` | `503 {"error":"hw_fault"}` |
@@ -197,13 +199,17 @@
 | 切替中・ATX パルス中 | `409 {"error":"busy"}` |
 | ATX ロック中 | `409 {"error":"atx_locked"}` |
 | `state` が `unknown` | `409 {"error":"unknown_state"}` |
-| 前回の ATX 操作から `ATX_MIN_INTERVAL_MS`（`TODO(hw-verify)`）が経っていない | `429 {"error":"cooldown"}` + `Retry-After: <秒>` |
+| 前回の ATX 操作が**終わってから** `ATX_MIN_INTERVAL_MS`（`TODO(hw-verify)`）が経っていない | `429 {"error":"cooldown"}` + `Retry-After: <秒>`（残り時間を**切り上げた秒**、最小 1） |
 | ボードが `fault` | `503 {"error":"hw_fault"}` |
 | サービス未起動 | `503 {"error":"not_ready"}` |
 
+`channel_mismatch` の `active_channel` は 1〜4（`unknown` のときは `unknown_state` が先に返るので、`null` にはならない）。想定外の内部結果（バグ）は `500 {"error":"internal_error"}` で、何も実行したことにしない。
+
 **判定の順序**（複数当てはまるときの優先。テストで固定する）: 認証 → Origin → 形式 → `channel` の範囲 → サービス未起動/`fault`（503）→ `unknown_state` → `busy` → `channel_mismatch` → `atx_locked` → `cooldown` → 受理。`channel_mismatch` を `cooldown` より先にするのは、「別の PC への操作」を、時間の問題として隠さないため。
 
-**ログ**: 受理した操作と拒否の理由（`channel_mismatch` など）を、チャンネルと種類だけ記録する（セッション情報は出さない）。
+**ログ**: 受理した操作と拒否の理由（`channel_mismatch` など）を、チャンネルと種類と理由だけ記録する（`ESP_LOGI`。セッション情報とボディの生データは出さない。ボディが不正でチャンネルが分からないときは `channel=0`）。`status` の成功は記録しない。
+
+**サービスの起動**: `kvm_service_start()` を呼ぶのは、実機のボードの HAL を実装する A-9（Antigravity）。呼ばれるまで、`status` と `select` と `power/*` は、認証と形式の検査を通ったうえで `503 not_ready` を返す。
 
 ## セキュリティ上の前提
 - **ネットワーク環境**: 本システムは VPN などの安全な LAN 内で使用されることを前提としています。

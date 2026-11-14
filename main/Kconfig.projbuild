@@ -296,4 +296,72 @@ menu "Quad IP-KVM Configuration"
         int "HID token bucket burst size"
         default 100
         range 10 1000
+
+    config KVM_TICK_MS
+        int "KVM/ATX control tick interval (ms)"
+        default 20
+        range 5 100
+        help
+            Period of the kvm_service task that runs kvm_ctrl_tick() (LED read, kvm_logic step, output apply).
+            Must be well below the kvm_logic timings (setup time, LED stability).
+            The ATX cooldown and the pulse end are judged on this granularity.
+            TODO(hw-verify): confirm that the board HAL (A-9) can be read/driven at this rate.
+
+    config KVM_TASK_STACK_SIZE
+        int "KVM service task stack size (bytes)"
+        default 4096
+        range 2048 16384
+        help
+            Stack size of the kvm_service task.
+            TODO(hw-verify): confirm the stack high water mark on the device (the HAL is not implemented yet).
+
+    config KVM_LOCK_TIMEOUT_MS
+        int "KVM service lock wait limit for HTTP handlers (ms)"
+        default 50
+        range 1 1000
+        help
+            How long an HTTP handler waits for the kvm_ctrl mutex before answering 503 not_ready.
+            Keep it short: the handler runs on the single httpd task.
+
+    config KVM_ASSERT_MARGIN_MS
+        int "Margin added to the pulse length for the board-side auto release (ms)"
+        default 100
+        range 1 1000
+        help
+            assert_line max_ms = pulse length + this margin. Must be larger than the tick period and its jitter,
+            so that the board's hardware timer never cuts a normal pulse before the software releases it.
+            TODO(hw-verify)
+
+    config ATX_PRESS_MS
+        int "ATX power button short press pulse (ms)"
+        default 200
+        range 1 500
+        help
+            Server-side length of POWER press (the client cannot choose it). The hard limit (500 ms) is KVM_ATX_HARD_MAX_POWER_MS.
+            TODO(hw-verify): confirm the value and the limit with the target PCs.
+
+    config ATX_RESET_MS
+        int "ATX reset button pulse (ms)"
+        default 100
+        range 1 200
+        help
+            Server-side length of RESET. The hard limit (200 ms) is KVM_ATX_HARD_MAX_RESET_MS.
+            TODO(hw-verify)
+
+    config ATX_FORCE_MS
+        int "ATX power button long press (force off) pulse (ms)"
+        default 4500
+        range 1 5000
+        help
+            Server-side length of POWER force (hold). The hard limit (5000 ms) is KVM_ATX_HARD_MAX_FORCE_MS.
+            TODO(hw-verify): confirm the hold time the target PCs need for a forced power off.
+
+    config ATX_MIN_INTERVAL_MS
+        int "ATX minimum interval between operations (ms)"
+        default 2000
+        range 0 600000
+        help
+            Software cooldown. After an ATX operation ends (completed or aborted), the next ATX request is
+            refused with 429 for this long. 0 disables the cooldown.
+            TODO(hw-verify)
 endmenu

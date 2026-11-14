@@ -40,6 +40,13 @@ const char *web_headers_allow_for_uri(const char *uri) {
     if (len == 18 && strncmp(uri, "/api/v1/auth/login", 18) == 0) return "POST";
     if (len == 19 && strncmp(uri, "/api/v1/auth/logout", 19) == 0) return "POST";
 
+    /* KVM / ATX API (docs/WEB_API.md 7) */
+    if (len == 18 && strncmp(uri, "/api/v1/kvm/status", 18) == 0) return "GET";
+    if (len == 18 && strncmp(uri, "/api/v1/kvm/select", 18) == 0) return "POST";
+    if (len == 19 && strncmp(uri, "/api/v1/power/press", 19) == 0) return "POST";
+    if (len == 19 && strncmp(uri, "/api/v1/power/reset", 19) == 0) return "POST";
+    if (len == 19 && strncmp(uri, "/api/v1/power/force", 19) == 0) return "POST";
+
     return NULL;
 }
 

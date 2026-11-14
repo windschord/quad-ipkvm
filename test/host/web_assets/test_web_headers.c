@@ -137,6 +137,19 @@ void test_web_headers_allow_for_uri(void) {
     TEST_ASSERT_EQUAL_STRING("POST", web_headers_allow_for_uri("/api/v1/auth/login"));
     TEST_ASSERT_EQUAL_STRING("POST", web_headers_allow_for_uri("/api/v1/auth/logout"));
 
+    // KVM / ATX API (docs/WEB_API.md 7): the status is GET, the rest POST
+    TEST_ASSERT_EQUAL_STRING("GET", web_headers_allow_for_uri("/api/v1/kvm/status"));
+    TEST_ASSERT_EQUAL_STRING("POST", web_headers_allow_for_uri("/api/v1/kvm/select"));
+    TEST_ASSERT_EQUAL_STRING("POST", web_headers_allow_for_uri("/api/v1/power/press"));
+    TEST_ASSERT_EQUAL_STRING("POST", web_headers_allow_for_uri("/api/v1/power/reset"));
+    TEST_ASSERT_EQUAL_STRING("POST", web_headers_allow_for_uri("/api/v1/power/force"));
+    TEST_ASSERT_EQUAL_STRING("GET", web_headers_allow_for_uri("/api/v1/kvm/status?x=1"));
+    TEST_ASSERT_NULL(web_headers_allow_for_uri("/api/v1/kvm/status/"));
+    TEST_ASSERT_NULL(web_headers_allow_for_uri("/api/v1/kvm/selec"));
+    TEST_ASSERT_NULL(web_headers_allow_for_uri("/api/v1/power/"));
+    TEST_ASSERT_NULL(web_headers_allow_for_uri("/api/v1/power/press2"));
+    TEST_ASSERT_NULL(web_headers_allow_for_uri("/api/v1/power/off"));
+
     // With query params
     TEST_ASSERT_EQUAL_STRING("GET", web_headers_allow_for_uri("/?cache=123"));
     TEST_ASSERT_EQUAL_STRING("POST", web_headers_allow_for_uri("/api/v1/auth/login?x=1"));
