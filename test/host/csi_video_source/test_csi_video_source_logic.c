@@ -1,5 +1,6 @@
 #include "unity.h"
 #include "csi_video_source_logic.h"
+#include "jpeg_quality_ctrl.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -477,6 +478,258 @@ static void test_mode_tracker_stall_recovery_and_cooldown(void)
     TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_KEEP_STREAMING, csi_mode_tracker_check_stall(&m, 12499u));
     TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_RECOVER_STALL, csi_mode_tracker_check_stall(&m, 12500u));
     TEST_ASSERT_EQUAL_UINT32(2u, m.stall_recoveries);
+
+    // Not streaming: csi_mode_tracker_on_frame MUST NOT update last_frame_ms (#82 item 11).
+    TEST_ASSERT_FALSE(m.streaming);
+    uint64_t prev_last_frame = m.last_frame_ms;
+    csi_mode_tracker_on_frame(&m, 999999u);
+    TEST_ASSERT_EQUAL_UINT64(prev_last_frame, m.last_frame_ms);
+    csi_mode_tracker_on_frame(NULL, 999999u);
+}
+
+static void test_mode_tracker_poll_skips_step_and_stall_on_i2c_failure(void)
+{
+    csi_mode_tracker_t m;
+    csi_mode_tracker_init(&m);
+
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_poll(NULL, true, NULL));
+
+    // 1. Unlocked with 1 candidate hit: transient I2C read failure (sample_ok = false)
+    //    must return WAIT without resetting cand_hits, so the next valid sample starts CSI!
+    csi_mode_sample_t s1 = make_sample(1000u, true, true, true, 1280u, 720u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_poll(&m, true, &s1));
+    TEST_ASSERT_EQUAL_UINT32(1u, m.cand_hits);
+
+    csi_mode_sample_t zero_sample = make_sample(1200u, false, false, false, 0u, 0u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_poll(&m, false, &zero_sample));
+    TEST_ASSERT_EQUAL_UINT32(1u, m.sample_errors);
+    TEST_ASSERT_EQUAL_UINT32(1u, m.cand_hits);
+    TEST_ASSERT_FALSE(m.streaming);
+
+    csi_mode_sample_t s2 = make_sample(1400u, true, true, true, 1280u, 720u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_START_MODE, csi_mode_tracker_poll(&m, true, &s2));
+    TEST_ASSERT_TRUE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(1280u, m.active_w);
+    TEST_ASSERT_EQUAL_UINT32(720u, m.active_h);
+
+    // 2. Streaming: even if zero_sample looks like NO_SIGNAL AND now_ms (5000) exceeds the
+    //    2000 ms stall threshold (1400 + 2000 = 3400), sample_ok == false MUST NOT call
+    //    csi_mode_tracker_step() or csi_mode_tracker_check_stall() — stream stays alive!
+    csi_mode_sample_t failed_poll = make_sample(5000u, false, false, false, 0u, 0u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_KEEP_STREAMING,
+                          csi_mode_tracker_poll(&m, false, &failed_poll));
+    TEST_ASSERT_TRUE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(1280u, m.active_w);
+    TEST_ASSERT_EQUAL_UINT32(720u, m.active_h);
+    TEST_ASSERT_EQUAL_UINT32(0u, m.stall_recoveries);
+    TEST_ASSERT_EQUAL_UINT32(2u, m.sample_errors);
+
+    // NULL sample pointer while streaming also counts as failed sample and keeps streaming.
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_KEEP_STREAMING,
+                          csi_mode_tracker_poll(&m, true, NULL));
+    TEST_ASSERT_TRUE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(3u, m.sample_errors);
+
+    // 3. When the next I2C poll succeeds while still stalled (>= 2000 ms without frames),
+    //    csi_mode_tracker_poll runs step() -> KEEP_STREAMING -> check_stall() -> RECOVER_STALL!
+    csi_mode_sample_t valid_stalled = make_sample(5200u, true, true, true, 1280u, 720u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_RECOVER_STALL,
+                          csi_mode_tracker_poll(&m, true, &valid_stalled));
+    TEST_ASSERT_FALSE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(1u, m.stall_recoveries);
+    TEST_ASSERT_EQUAL_UINT32(0u, m.consecutive_sample_errors);
+}
+
+static void test_mode_tracker_poll_stops_on_max_consecutive_i2c_errors(void)
+{
+    csi_mode_tracker_t m;
+    csi_mode_tracker_init(&m);
+
+    csi_mode_sample_t s1 = make_sample(1000u, true, true, true, 1920u, 1080u);
+    csi_mode_sample_t s2 = make_sample(1200u, true, true, true, 1920u, 1080u);
+    (void)csi_mode_tracker_poll(&m, true, &s1);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_START_MODE, csi_mode_tracker_poll(&m, true, &s2));
+    csi_mode_tracker_on_frame(&m, 1200u);
+
+    // 24 consecutive I2C errors keep streaming.
+    for (uint32_t i = 0u; i < CSI_MODE_MAX_CONSEC_SAMPLE_ERRORS - 1u; i++) {
+        TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_KEEP_STREAMING,
+                              csi_mode_tracker_poll(&m, false, NULL));
+        TEST_ASSERT_TRUE(m.streaming);
+    }
+    TEST_ASSERT_EQUAL_UINT32(CSI_MODE_MAX_CONSEC_SAMPLE_ERRORS - 1u,
+                             m.consecutive_sample_errors);
+
+    // One valid poll resets consecutive_sample_errors to 0, while cumulative sample_errors stays.
+    csi_mode_sample_t ok = make_sample(1400u, true, true, true, 1920u, 1080u);
+    csi_mode_tracker_on_frame(&m, 1400u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_KEEP_STREAMING,
+                          csi_mode_tracker_poll(&m, true, &ok));
+    TEST_ASSERT_EQUAL_UINT32(0u, m.consecutive_sample_errors);
+    TEST_ASSERT_EQUAL_UINT32(CSI_MODE_MAX_CONSEC_SAMPLE_ERRORS - 1u, m.sample_errors);
+
+    // Now 25 consecutive failures while streaming trigger STOP_NO_SIGNAL.
+    for (uint32_t i = 0u; i < CSI_MODE_MAX_CONSEC_SAMPLE_ERRORS - 1u; i++) {
+        TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_KEEP_STREAMING,
+                              csi_mode_tracker_poll(&m, false, NULL));
+    }
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_STOP_NO_SIGNAL,
+                          csi_mode_tracker_poll(&m, false, NULL));
+    TEST_ASSERT_FALSE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(0u, m.active_w);
+    TEST_ASSERT_EQUAL_UINT32(0u, m.active_h);
+    TEST_ASSERT_EQUAL_UINT32(CSI_MODE_MAX_CONSEC_SAMPLE_ERRORS,
+                             m.consecutive_sample_errors);
+
+    // Subsequent failures while unlocked stay WAIT (do not emit STOP_NO_SIGNAL repeatedly).
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_poll(&m, false, NULL));
+}
+
+// --- 5. Adaptive JPEG quality controller (docs/VIDEO_TRANSPORT.md §2) ---
+
+static void test_jpeg_quality_ctrl_init_and_floor_clamp(void)
+{
+    jpeg_quality_ctrl_t c;
+
+    // NULL safety
+    jpeg_quality_ctrl_init(NULL, 70u, 262144u);
+    jpeg_quality_ctrl_reset_mode(NULL);
+    TEST_ASSERT_EQUAL_UINT8(0u, jpeg_quality_ctrl_on_frame(NULL, 1000u, false));
+
+    // Standard q_cfg = 70 -> q_min = 30
+    jpeg_quality_ctrl_init(&c, 70u, 262144u);
+    TEST_ASSERT_EQUAL_UINT8(70u, c.q_cfg);
+    TEST_ASSERT_EQUAL_UINT8(30u, c.q_min);
+    TEST_ASSERT_EQUAL_UINT8(70u, c.q_cur);
+
+    // q_cfg < 30 must keep q_min = q_cfg so downward adjustment never raises quality.
+    jpeg_quality_ctrl_init(&c, 20u, 262144u);
+    TEST_ASSERT_EQUAL_UINT8(20u, c.q_cfg);
+    TEST_ASSERT_EQUAL_UINT8(20u, c.q_min);
+    TEST_ASSERT_EQUAL_UINT8(20u, jpeg_quality_ctrl_on_frame(&c, 300000u, true));
+    TEST_ASSERT_EQUAL_UINT32(0u, c.down_steps);
+
+    // Out-of-range q_cfg clamps to [1, 100].
+    jpeg_quality_ctrl_init(&c, 0u, 262144u);
+    TEST_ASSERT_EQUAL_UINT8(1u, c.q_cfg);
+    TEST_ASSERT_EQUAL_UINT8(1u, c.q_min);
+
+    jpeg_quality_ctrl_init(&c, 150u, 262144u);
+    TEST_ASSERT_EQUAL_UINT8(100u, c.q_cfg);
+    TEST_ASSERT_EQUAL_UINT8(30u, c.q_min);
+
+    // max_frame_bytes == 0 is a no-op returning q_cur.
+    jpeg_quality_ctrl_init(&c, 70u, 0u);
+    TEST_ASSERT_EQUAL_UINT8(70u, jpeg_quality_ctrl_on_frame(&c, 1000u, true));
+}
+
+static void test_jpeg_quality_ctrl_oversize_and_proactive_step_down(void)
+{
+    jpeg_quality_ctrl_t c;
+    // max = 1000 -> 85% = 850, 60% = 600
+    jpeg_quality_ctrl_init(&c, 70u, 1000u);
+
+    // Exact 85% boundary (850 <= 850) must NOT step down proactively.
+    TEST_ASSERT_EQUAL_UINT8(70u, jpeg_quality_ctrl_on_frame(&c, 850u, false));
+    TEST_ASSERT_EQUAL_UINT32(0u, c.down_steps);
+
+    // Above 85% (851) -> q -= 5 -> 65.
+    TEST_ASSERT_EQUAL_UINT8(65u, jpeg_quality_ctrl_on_frame(&c, 851u, false));
+    TEST_ASSERT_EQUAL_UINT32(1u, c.down_steps);
+
+    // Exact 100% boundary (1000) without encode_oversize is > 85% -> q -= 5 -> 60.
+    TEST_ASSERT_EQUAL_UINT8(60u, jpeg_quality_ctrl_on_frame(&c, 1000u, false));
+    TEST_ASSERT_EQUAL_UINT32(2u, c.down_steps);
+
+    // Oversize by size (1001 > 1000) -> q -= 10 -> 50.
+    TEST_ASSERT_EQUAL_UINT8(50u, jpeg_quality_ctrl_on_frame(&c, 1001u, false));
+    TEST_ASSERT_EQUAL_UINT32(3u, c.down_steps);
+
+    // Oversize by flag with smaller reported size -> q -= 10 -> 40.
+    TEST_ASSERT_EQUAL_UINT8(40u, jpeg_quality_ctrl_on_frame(&c, 100u, true));
+    TEST_ASSERT_EQUAL_UINT32(4u, c.down_steps);
+
+    // Step down from 33 by -10 clamps at q_min = 30; further oversize does not increment down_steps.
+    jpeg_quality_ctrl_init(&c, 33u, 1000u);
+    TEST_ASSERT_EQUAL_UINT8(30u, jpeg_quality_ctrl_on_frame(&c, 1001u, true));
+    TEST_ASSERT_EQUAL_UINT32(1u, c.down_steps);
+    TEST_ASSERT_EQUAL_UINT8(30u, jpeg_quality_ctrl_on_frame(&c, 1001u, true));
+    TEST_ASSERT_EQUAL_UINT32(1u, c.down_steps);
+}
+
+static void test_jpeg_quality_ctrl_recovery_hysteresis_and_reset(void)
+{
+    jpeg_quality_ctrl_t c;
+    jpeg_quality_ctrl_init(&c, 70u, 1000u);
+
+    // Step down: 70 -> 60 (oversize) -> 55 (proactive >85%).
+    TEST_ASSERT_EQUAL_UINT8(60u, jpeg_quality_ctrl_on_frame(&c, 1200u, true));
+    TEST_ASSERT_EQUAL_UINT8(55u, jpeg_quality_ctrl_on_frame(&c, 851u, false));
+
+    // Exact 60% boundary (600) is NOT < 60%, so low_streak remains 0.
+    TEST_ASSERT_EQUAL_UINT8(55u, jpeg_quality_ctrl_on_frame(&c, 600u, false));
+    TEST_ASSERT_EQUAL_UINT32(0u, c.low_streak);
+
+    // 89 consecutive frames < 60% (599) do not raise quality; 90th raises +5 to 60.
+    for (uint32_t i = 0u; i < JPEG_QUALITY_CTRL_RECOVER_FRAMES - 1u; i++) {
+        TEST_ASSERT_EQUAL_UINT8(55u, jpeg_quality_ctrl_on_frame(&c, 599u, false));
+    }
+    TEST_ASSERT_EQUAL_UINT32(JPEG_QUALITY_CTRL_RECOVER_FRAMES - 1u, c.low_streak);
+    TEST_ASSERT_EQUAL_UINT32(0u, c.up_steps);
+
+    TEST_ASSERT_EQUAL_UINT8(60u, jpeg_quality_ctrl_on_frame(&c, 599u, false));
+    TEST_ASSERT_EQUAL_UINT32(0u, c.low_streak);
+    TEST_ASSERT_EQUAL_UINT32(1u, c.up_steps);
+
+    // Deadband (60%..85%) resets low_streak, preventing premature recovery.
+    for (uint32_t i = 0u; i < 89u; i++) {
+        TEST_ASSERT_EQUAL_UINT8(60u, jpeg_quality_ctrl_on_frame(&c, 599u, false));
+    }
+    TEST_ASSERT_EQUAL_UINT8(60u, jpeg_quality_ctrl_on_frame(&c, 600u, false));
+    TEST_ASSERT_EQUAL_UINT32(0u, c.low_streak);
+    for (uint32_t i = 0u; i < 89u; i++) {
+        TEST_ASSERT_EQUAL_UINT8(60u, jpeg_quality_ctrl_on_frame(&c, 599u, false));
+    }
+    TEST_ASSERT_EQUAL_UINT8(60u, c.q_cur);
+    TEST_ASSERT_EQUAL_UINT8(65u, jpeg_quality_ctrl_on_frame(&c, 599u, false));
+    TEST_ASSERT_EQUAL_UINT32(2u, c.up_steps);
+
+    // Downward adjustment resets low_streak immediately.
+    for (uint32_t i = 0u; i < 50u; i++) {
+        TEST_ASSERT_EQUAL_UINT8(65u, jpeg_quality_ctrl_on_frame(&c, 599u, false));
+    }
+    TEST_ASSERT_EQUAL_UINT32(50u, c.low_streak);
+    TEST_ASSERT_EQUAL_UINT8(60u, jpeg_quality_ctrl_on_frame(&c, 851u, false));
+    TEST_ASSERT_EQUAL_UINT32(0u, c.low_streak);
+    TEST_ASSERT_EQUAL_UINT32(3u, c.down_steps);
+
+    // Mode reset restores q_cur to q_cfg and clears low_streak while keeping counters.
+    c.low_streak = 42u;
+    jpeg_quality_ctrl_reset_mode(&c);
+    TEST_ASSERT_EQUAL_UINT8(70u, c.q_cur);
+    TEST_ASSERT_EQUAL_UINT32(0u, c.low_streak);
+    TEST_ASSERT_EQUAL_UINT32(3u, c.down_steps);
+    TEST_ASSERT_EQUAL_UINT32(2u, c.up_steps);
+
+    // At q_cur == q_cfg, low frames keep low_streak at 0 and do not overshoot.
+    for (uint32_t i = 0u; i < JPEG_QUALITY_CTRL_RECOVER_FRAMES + 5u; i++) {
+        TEST_ASSERT_EQUAL_UINT8(70u, jpeg_quality_ctrl_on_frame(&c, 500u, false));
+    }
+    TEST_ASSERT_EQUAL_UINT32(0u, c.low_streak);
+    TEST_ASSERT_EQUAL_UINT32(2u, c.up_steps);
+
+    // Ceiling clamp when q_cfg - q_cur < 5 (33 -> 30 -> 33 after 90 low frames) and
+    // fractional percentage thresholds on 256 KiB (262144 * 60% = 157286.4, 85% = 222822.4).
+    jpeg_quality_ctrl_init(&c, 33u, 262144u);
+    TEST_ASSERT_EQUAL_UINT8(33u, jpeg_quality_ctrl_on_frame(&c, 222822u, false)); // <= 85%
+    TEST_ASSERT_EQUAL_UINT8(30u, jpeg_quality_ctrl_on_frame(&c, 222823u, false)); // > 85%, clamped at 30
+    TEST_ASSERT_EQUAL_UINT8(30u, jpeg_quality_ctrl_on_frame(&c, 157287u, false)); // >= 60%
+    TEST_ASSERT_EQUAL_UINT32(0u, c.low_streak);
+    for (uint32_t i = 0u; i < JPEG_QUALITY_CTRL_RECOVER_FRAMES - 1u; i++) {
+        TEST_ASSERT_EQUAL_UINT8(30u, jpeg_quality_ctrl_on_frame(&c, 157286u, false)); // < 60%
+    }
+    TEST_ASSERT_EQUAL_UINT8(33u, jpeg_quality_ctrl_on_frame(&c, 157286u, false));
+    TEST_ASSERT_EQUAL_UINT32(1u, c.up_steps);
 }
 
 int main(void)
@@ -496,5 +749,10 @@ int main(void)
     RUN_TEST(test_mode_tracker_out_of_range_and_abort_start);
     RUN_TEST(test_mode_tracker_hpd_nudge_10_20_40_backoff);
     RUN_TEST(test_mode_tracker_stall_recovery_and_cooldown);
+    RUN_TEST(test_mode_tracker_poll_skips_step_and_stall_on_i2c_failure);
+    RUN_TEST(test_mode_tracker_poll_stops_on_max_consecutive_i2c_errors);
+    RUN_TEST(test_jpeg_quality_ctrl_init_and_floor_clamp);
+    RUN_TEST(test_jpeg_quality_ctrl_oversize_and_proactive_step_down);
+    RUN_TEST(test_jpeg_quality_ctrl_recovery_hysteresis_and_reset);
     return UNITY_END();
 }
