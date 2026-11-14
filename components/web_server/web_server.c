@@ -859,6 +859,7 @@ typedef struct {
     const uint8_t *data;
     size_t len;
     size_t payload_sent;
+    size_t pending_chunk;
     uint8_t hdr[10];
     size_t hdr_len;
     size_t hdr_sent;
@@ -1044,13 +1045,19 @@ static void ws_send_slice_work_cb(void *arg) {
     size_t slice_sent = 0;
     while (!hdr_blocked && work->hdr_sent == work->hdr_len && work->payload_sent < work->len &&
            slice_sent < slice_limit) {
-        size_t rem = work->len - work->payload_sent;
-        size_t slice_rem = slice_limit - slice_sent;
-        size_t chunk = (rem < slice_rem) ? rem : slice_rem;
-        // Cap each call at 4096 B (MBEDTLS_SSL_OUT_CONTENT_LEN) so esp_mbedtls_write never loops
-        // across multiple TLS records and masks WANT_WRITE with a partial byte count.
-        if (chunk > 4096u) {
-            chunk = 4096u;
+        size_t chunk;
+        if (work->pending_chunk > 0) {
+            // Retry the exact pending chunk length required by Mbed TLS after WANT_WRITE/READ.
+            chunk = work->pending_chunk;
+        } else {
+            size_t rem = work->len - work->payload_sent;
+            size_t slice_rem = slice_limit - slice_sent;
+            chunk = (rem < slice_rem) ? rem : slice_rem;
+            // Cap each call at 4096 B (MBEDTLS_SSL_OUT_CONTENT_LEN) so esp_mbedtls_write never loops
+            // across multiple TLS records and masks WANT_WRITE with a partial byte count.
+            if (chunk > 4096u) {
+                chunk = 4096u;
+            }
         }
         int ret = ws_socket_send_chunk(work->server, work->fd,
                                        (const char *)(work->data + work->payload_sent),
@@ -1059,7 +1066,9 @@ static void ws_send_slice_work_cb(void *arg) {
             work->payload_sent += (size_t)ret;
             slice_sent += (size_t)ret;
             work->stalled_until_ms = 0;
+            work->pending_chunk = 0;
         } else if (ws_send_is_wouldblock(ret)) {
+            work->pending_chunk = chunk;
             break;
         } else {
             ESP_LOGW(TAG, "WS video payload send failed fd=%d ret=%d (sent=%zu/%zu B)",

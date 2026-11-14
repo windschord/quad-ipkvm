@@ -175,9 +175,9 @@ void test_web_headers_format_html_csp(void) {
     TEST_ASSERT_NULL(strstr(buf, "*"));
     TEST_ASSERT_NULL(strstr(buf, "unsafe-inline"));
 
-    // Strips optional :port from Host header
-    TEST_ASSERT_EQUAL_INT(0, web_headers_format_html_csp("kvm_01.local:443", 9443, buf, sizeof(buf)));
-    TEST_ASSERT_NOT_NULL(strstr(buf, "connect-src 'self' wss://kvm_01.local:9443;"));
+    // Strips optional :port from Host header (hyphens allowed per RFC 1123 / CSP3)
+    TEST_ASSERT_EQUAL_INT(0, web_headers_format_html_csp("kvm-01.local:443", 9443, buf, sizeof(buf)));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "connect-src 'self' wss://kvm-01.local:9443;"));
 
     // Bracketed IPv6 literal with and without :port
     TEST_ASSERT_EQUAL_INT(0, web_headers_format_html_csp("[fe80::1]", 8444, buf, sizeof(buf)));
@@ -185,7 +185,9 @@ void test_web_headers_format_html_csp(void) {
     TEST_ASSERT_EQUAL_INT(0, web_headers_format_html_csp("[2001:db8::1]:443", 8444, buf, sizeof(buf)));
     TEST_ASSERT_NOT_NULL(strstr(buf, "connect-src 'self' wss://[2001:db8::1]:8444;"));
 
-    // Rejects bad inputs, invalid characters, bad ports, overlong host, and short output buffers
+    // Rejects bad inputs, invalid characters (including '_'), bad ports, overlong host, and short output buffers
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm_01.local", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm_01.local:443", 9443, buf, sizeof(buf)));
     TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm.local", 8444, NULL, sizeof(buf)));
     TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm.local", 8444, buf, 0));
     TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm.local", 0, buf, 10));
