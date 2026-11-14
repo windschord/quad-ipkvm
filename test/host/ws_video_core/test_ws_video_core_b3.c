@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #define MAXFD 16
 #define MAXID 16
@@ -294,6 +295,50 @@ void test_on_send_begin_ignored_for_unknown_or_idle_fd(void) {
     TEST_ASSERT_EQUAL_UINT64(0, core.send_started_ms[0]);
     ws_video_core_tick(&core, 100);
     TEST_ASSERT_FALSE(core.send_begun[0]);            // 以前の呼び出しが、次の送信に残らない
+}
+
+/* 未知の fd (slot = -1) で、core の配列の手前を読み書きしないこと。
+ * ASan は、インストルメントされていないライブラリのコードの範囲外アクセスを検出できないので、
+ * core の直前に「送信中」の偽のクライアントを置き、手前の要素が書き換わらないことを見る。 */
+void test_on_send_begin_unknown_fd_does_not_touch_memory_before_arrays(void) {
+    static struct {
+        ws_client_t guard;          // clients[-1] に当たる位置
+        ws_video_core_t c;
+    } w;
+    TEST_ASSERT_EQUAL_PTR((char *)&w.guard + sizeof(w.guard), (char *)&w.c);
+    reset_all();
+    ws_video_core_config_t cfg = {
+        .max_clients = 2,
+        .session_check_interval_ms = 1000000000ull,
+        .send_timeout_ms = 3000,
+        .queue_timeout_ms = 10000,
+        .frame_deadline_base_ms = 200,
+        .frame_min_rate_bytes_per_s = 1000000,
+        .hub_register = m_register,
+        .hub_unregister = m_unregister,
+        .hub_get_latest = m_get_latest,
+        .hub_release = m_release,
+        .io_begin_send = m_begin_send,
+        .io_request_close = m_close,
+        .io_validate_session = m_validate,
+    };
+    TEST_ASSERT_EQUAL(0, ws_video_core_init(&w.c, &cfg));
+    memset(&w.guard, 0, sizeof(w.guard));
+    w.guard.is_sending = true;
+    w.guard.state = WS_CLIENT_ACTIVE;
+    uint8_t tok[32] = {1};
+    TEST_ASSERT_EQUAL(0, ws_video_core_on_connect(&w.c, (ws_video_conn_t)(uintptr_t)10, 10, tok, 0));
+    ws_video_core_tick(&w.c, 0);
+
+    const int64_t last_seq7 = w.c.last_seqs[WS_CLIENTS_MAX - 1];
+    const uint64_t queued7 = w.c.queued_ms[WS_CLIENTS_MAX - 1];
+    ws_video_core_on_send_begin(&w.c, 99, 5);   // 未知の fd (別のクライアントは送信中)
+    TEST_ASSERT_FALSE(w.c.send_begun[0]);
+    TEST_ASSERT_EQUAL_INT64(last_seq7, w.c.last_seqs[WS_CLIENTS_MAX - 1]);
+    TEST_ASSERT_EQUAL_UINT64(queued7, w.c.queued_ms[WS_CLIENTS_MAX - 1]);
+    TEST_ASSERT_FALSE(w.c.send_begun[WS_CLIENTS_MAX - 1]);
+    ws_video_core_on_send_done(&w.c, 10, true);
+    ws_video_core_destroy(&w.c);
 }
 
 void test_second_on_send_begin_does_not_extend_the_start(void) {
@@ -822,6 +867,7 @@ int main(void) {
     RUN_TEST(test_legacy_mode_queue_timeout_zero_counts_from_queued_time);
     RUN_TEST(test_legacy_mode_on_send_begin_restarts_the_clock);
     RUN_TEST(test_on_send_begin_ignored_for_unknown_or_idle_fd);
+    RUN_TEST(test_on_send_begin_unknown_fd_does_not_touch_memory_before_arrays);
     RUN_TEST(test_second_on_send_begin_does_not_extend_the_start);
     RUN_TEST(test_send_done_without_begin_cleans_up);
     RUN_TEST(test_send_done_failure_without_begin_closes_once);

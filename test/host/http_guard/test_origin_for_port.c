@@ -205,8 +205,33 @@ void test_reject_bad_ports(void) {
         {"https://kvm.local", "kvm.local:8444:1", 443, false, "Host のポートが 2 つ"},
         {"https://kvm.local", "kvm.local:123456", 443, false, "Host のポートが 6 桁"},
         {"https://kvm.local", ":8444", 443, false, "Host のホスト名が空"},
+        // 数字より小さい文字を含むポート。符号なしの計算で、有効な値に見えてしまう場合がある ((4 * 10 - 1) * 10 + 3 = 393)
+        {"https://kvm.local:4/3", "kvm.local:8444", 393, false, "Origin のポートに '/' (計算すると 393)"},
+        {"https://kvm.local", "kvm.local:4/3", 443, false, "Host のポートに '/' (計算すると 393)"},
+        {"https://kvm.local:1+5", "kvm.local:8444", 95, false, "Origin のポートに '+' (計算すると 95)"},
+        {"https://kvm.local", "kvm.local:2-1", 443, false, "Host のポートに '-'"},
     };
     run_table(t, N(t));
+}
+
+/* スキームの 8 文字のどの位置が違っても拒否する。後ろの 8 文字を飛ばした残りがホスト名に一致する形にして、
+ * スキームの検査がなければ受理されてしまうようにしておく。 */
+void test_scheme_mismatch_at_every_position(void) {
+    static const char good[] = "https://";
+    for (size_t pos = 0; pos < 8; pos++) {
+        char o[40];
+        memcpy(o, good, 8);
+        o[pos] = (good[pos] == 'x') ? 'y' : 'x';
+        memcpy(o + 8, "kvm.local", 9);
+        char msg[60];
+        snprintf(msg, sizeof(msg), "scheme differs at position %zu", pos);
+        TEST_ASSERT_FALSE_MESSAGE(http_guard_origin_ok_for_port(o, 17, "kvm.local:8444", 14, 443), msg);
+    }
+    // 基準 (同じ形で、スキームが正しい)
+    TEST_ASSERT_TRUE(http_guard_origin_ok_for_port("https://kvm.local", 17, "kvm.local:8444", 14, 443));
+    // 7 文字のスキーム + 1 文字 + ホスト名
+    TEST_ASSERT_FALSE(chk("http://Xkvm.local", "kvm.local:8444", 443));
+    TEST_ASSERT_FALSE(chk("wss://xxxkvm.local", "kvm.local:8444", 443));
 }
 
 void test_reject_empty_and_null_inputs(void) {
@@ -465,6 +490,7 @@ int main(void) {
     RUN_TEST(test_reject_scheme);
     RUN_TEST(test_reject_userinfo_ipv6_trailing_dot_path);
     RUN_TEST(test_reject_bad_ports);
+    RUN_TEST(test_scheme_mismatch_at_every_position);
     RUN_TEST(test_reject_empty_and_null_inputs);
     RUN_TEST(test_length_arguments_are_respected);
     RUN_TEST(test_extreme_lengths);
