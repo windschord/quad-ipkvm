@@ -71,7 +71,7 @@
   - `UYVY` 直接入力または `UYVY -> YUV420` の HW 変換はいずれも rev v3.0 以降（`CHIP_SUPPORT_MIN_REV >= 300`）向けの機能である `[確認]`。
 
 > [!NOTE]
-> `1920x1080` で `YUV420` 入力を使う場合、`1080` は 16 の倍数ではないため（`1080 = 67 * 16 + 8`）、`esp_h264` の `O_UYY_E_VYY` バッファ確保・PPA 出力サイズ・16px アライン（`1088` パディング可否や PPA のクロップ/ピッチ仕様）の整合を実装時に設計・確認する必要がある `[確認・注意点]`。
+> `1920x1080` で `YUV420` 入力を使う場合、`1080` は 16 の倍数ではない（`1080 = 67 * 16 + 8`）ため、実機ベンチ（`a7_a12_bench`）では `esp_h264_enc_cfg_hw_t.res = {1920, 1080}` を指定したうえで、入力 `O_UYY_E_VYY` バッファを 16px アライン高さ `1088` 分（`1920 * 1088 * 3 / 2 = 3,133,440 B`）確保してゼロ初期化し、PPA からは `pic_w = 1920, pic_h = 1080`（`3,110,400 B`）で先頭へ出力した。生成された SPS（§3.2）は `68 MB`（`1088 px`）＋ `frame_cropping_flag = 1`・`frame_crop_bottom_offset = 4`（下端 `8 px` クロップ）を自動付与して `1920x1080` としてデコードされるため、本番実装時もこの `3,133,440 B` バッファ確保とパディング整合を維持する必要がある `[確認・注意点]`。
 
 ---
 
@@ -110,6 +110,11 @@
 ### 3.2 1920x1080（1080p）結果 `[確認]`
 
 *(参考: 現行のライブ MJPEG 実機配信実績（`docs/HW_VERIFY.md` P2b-8、Ubuntu デスクトップ `q=70`）: **`15.00 fps`**, エンコード平均 `52.70 ms`)*
+
+- **1080p 測定条件 `[確認]`（`a7_a12_bench` 実装および出力 SPS NALU 解析より）**:
+  - **エンコーダに渡した高さ（`esp_h264_enc_cfg_hw_t.res`）**: `width = 1920`, `height = 1080`（`esp_h264_enc_hw_new()` へ直接指定）。
+  - **PPA の出力サイズ（`ppa_srm_oper_config_t.out`）**: `pic_w = 1920`, `pic_h = 1080`（`PPA_SRM_COLOR_MODE_YUV420`、`buffer_size = 1920 * 1080 * 3 / 2 = 3,110,400 B`）。
+  - **パディング方法（PPA 出力バッファの末尾ゼロパディング＋エンコーダ SPS クロップ）**: `O_UYY_E_VYY` 入力バッファを 16px アライン高さ `mb_h = 1088` 分（`enc_yuv_bytes = 1920 * 1088 * 3 / 2 = 3,133,440 B`）確保して `memset(0)` でゼロ初期化し、先頭 `3,110,400 B` に PPA 出力（`1920x1080`）を書き込んで（末尾 8 ライン相当 `23,040 B` はゼロパディング）`esp_h264_enc_process()` へ `in_frame.raw_data.len = 3,133,440 B` を渡した。生成された SPS（下掲 `67 42 c0 29 95 a0 1e 00 89 79 61 ...`）のビット解析では `pic_width_in_mbs_minus1 = 119`（`1920 px`）、`pic_height_in_map_units_minus1 = 67`（`68 MB = 1088 px`）、`frame_cropping_flag = 1`、`frame_crop_bottom_offset = 4`（YUV420 の `CropUnitY = 2` により下端 `8 px` クロップ）が自動設定されており、デコーダ表示解像度は `1920x1080` となる。
 
 | シーン | 形式・設定 | PPA 平均 / 最大 | エンコード / 合計平均 (上限 fps) | 静的サイズ | 小変化 (cursorP) | 大変化 (panP / forced IDR) |
 |---|---|---|---|---|---|---|
@@ -172,20 +177,26 @@
 
 現行契約（`docs/INTERFACES.md` §1、`components/frame_hub/include/frame_hub.h`、`components/frame_hub/frame_hub.c`、`docs/WEB_API.md` §5）を確認したところ、P7 実装時には次の **5 点で契約・定数設計の見直しが必要 `[確認]`** となる。
 
-1. **最新フレームスキップ（P フレーム欠落）と H.264 の非互換 (`components/frame_hub/frame_hub.c:266-279`) `[確認]`**:
-   - 現行 `frame_hub_get_latest_frame()` は読み取り時に無条件で `hub->latest_slot` に飛び、中間の `seq` を飛ばす（MJPEG では仕様通り正しい）。
-   - しかし H.264 は P フレームが直前フレームに依存するため、**1 フレームでも飛ばすと IDR まで映像が破綻する**。
+1. **最新フレームスキップ（P フレーム欠落）およびエンコード後公開失敗と H.264 の非互換 (`components/frame_hub/frame_hub.c:177-178, 266-279`) `[確認]`**:
+   - 現行 `frame_hub_get_latest_frame()` は読み取り時に無条件で `hub->latest_slot` に飛び、中間の `seq` を飛ばす（MJPEG では仕様通り正しい）。また `frame_hub` は `seq` を **`frame_hub_commit()` の成功時にのみ進める**（`components/frame_hub/frame_hub.c:177-178`）。
+   - しかし H.264 は P フレームが直前フレームに依存するため、**1 フレームでも飛ばすと IDR まで映像が破綻する**。さらに、`esp_h264_enc_process()` が成功して HW エンコーダの参照状態だけが進んだ後に `frame_hub_begin_publish()` 等の公開処理が失敗した場合、**`seq` 自体は欠番にならず連続して見える**ため、受信側の `seq` 不連続検査だけでは欠落を検出できない。
    - **対策案 `[推測]`**:
-     - (案 A・推奨) 配信タスク側でクライアントごとの `last_seen_seq` と受け取った `frame->seq` の連続性を検査し、**`frame->seq != expected_seq`（飛び発生）または新規 WS 接続参加時に `video_source` へ `request_keyframe()`（内部で `esp_h264_enc_force_idr`）を要求**し、次の IDR が来るまで該当クライアントの P フレーム送信を抑止する（既存の「遅延クライアントを最新へ追いつかせる」設計を保ちつつ H.264 を壊さない）。
+     - (案 A・推奨) 配信契約として次の **3 条件すべて**で `video_source` に `request_keyframe()`（内部で `esp_h264_enc_force_idr`）を要求し、次の IDR が到着するまで該当クライアント（および公開欠落後の全クライアント）への P フレーム配信を抑止する（既存の「遅延クライアントを最新へ追いつかせる」設計を保ちつつ H.264 を壊さない）:
+       1. 配信タスク側でクライアントごとの `frame->seq != expected_seq`（リング上書き等による `seq` 不連続）を検出したとき、
+       2. 新規 `WS /video` 接続が参加したとき、
+       3. **`video_source` 側で `esp_h264_enc_process()` 実行後の `frame_hub` 公開処理（`frame_hub_begin_publish()` 等）が失敗したとき**（`seq` が連続に見えてしまうため、`video_source` 自身が即座に次回フレームの `force_idr` フラグを立てて次公開フレームを必ず IDR にする）。
      - (案 B) リング全フレーム読み出し API を足すが、遅いクライアントがプール（既定 3 スロット）を枯渇させる問題が出るため案 A が優位。
 2. **`video_frame_t` へのメタデータ追加 (`components/frame_hub/include/frame_hub.h`) `[確認]`**:
    - 現在 `video_frame_t` には `data, size, width, height, timestamp_ms, seq` しかなく、フレームが **JPEG か H.264 か、また H.264 のとき IDR (key) か P (delta) か** を判別できない。
    - 最低限 `codec`（例: `JPEG` / `H264_ANNEXB`）と `flags`（`KEYFRAME` 等。WebCodecs の `EncodedVideoChunk({ type })` に必須）の追加が要る。
 3. **`video_source_t` へのモード切替・IDR 要求インタフェース (`components/frame_hub/include/video_source.h`) `[確認]`**:
-   - 現在 `start` / `stop` のみ。「設定で MJPEG / H.264 切替」「新規クライアント接続時・フレームドロップ復帰時の `force_idr()` 要求」を扱う拡張（コールバック追加または制御関数）が必要。
-4. **`WS /video` プロトコル (`docs/WEB_API.md` §5) `[確認]`**:
+   - 現在 `start` / `stop` のみ。「設定で MJPEG / H.264 切替」「新規クライアント接続時・`seq` 不連続検知時・エンコード後公開失敗時の `request_keyframe()` / `force_idr()` 要求」を扱う拡張（コールバック追加または制御関数）が必要。
+4. **`WS /video` プロトコルと複数クライアント同時接続時のコーデック方針 (`docs/WEB_API.md` §5 / `docs/INTERFACES.md` §1) `[確認 + 推測]`**:
    - 現在は「1 バイナリメッセージ = JPEG 1 フレーム」固定。
    - P7 では「URL クエリ（例: `/video?codec=h264`）＋バイナリメッセージ先頭の数バイトヘッダ（コーデック・keyframe フラグ・タイムスタンプまたは codec string 情報）」や制御メッセージの導入が必要。
+   - **異種コーデック同時要求時の方針（未決定・契約フェーズで確定）**: §2.2 / §3 の実測通り `video_source` の生成ストリームは単一コーデックに制約され、1080p で JPEG（`~37.5 ms`）と PPA＋H.264（`~109.6 ms`）を同時生成すると `~147 ms`/frame（`< 7 fps`）となりメモリも二重化するため **両形式の同時生成・同時配信は行わない**。複数接続で異なるコーデックが要求された場合（例: 一方が H.264 視聴中に他方が MJPEG フォールバックを要求）の扱いは §5.1 の契約フェーズで次のいずれかを選択し、`docs/WEB_API.md` と `docs/INTERFACES.md` に明記する（本レポート段階は実装前評価のため共有契約文書は未変更）:
+     - **選択肢 A（互換優先・MJPEG 自動フォールバック共有）**: MJPEG のみを再生可能なクライアントが 1 台でも接続中の間は映像ソースを MJPEG に降格して全クライアントへ配信（フレームヘッダの codec 識別子で既存接続も自動追従）し、全クライアントが H.264 対応時のみ H.264 で生成する。
+     - **選択肢 B（現行モード維持・追従または明示拒否）**: サーバ設定（または先着接続）でアクティブな生成コーデックに後続接続を合わせるか、一致しないコーデックを要求した接続を WebSocket Close `1008`（または HTTP `409 Conflict`）で明示拒否する。
 5. **`FRAME_HUB_MAX_FRAME_KB` の配慮 (`docs/HW_VERIFY.md`・今回ベンチ) `[確認]`**:
    - 1080p 高情報量 IDE 画面の HW H.264 IDR が **`507,122 B`**（`495.2 KiB`）を実測しており、現行 `256 KiB` 枠では起動直後や `forceIDR` 時にドロップされる。H.264 モード有効時は `FRAME_HUB_MAX_FRAME_KB >= 512`（あるいは 768〜1024 KiB）の確保が必要（`1920x1080` パディング/バッファ確保も考慮）。
 
@@ -196,13 +207,13 @@
 P7 に進むと決定した場合、Claude 側と合意のうえ以下の段階構成で実装するのが最小リスクである。
 
 1. **契約フェーズ（`contract` ラベル Issue 作成 → 合意）**:
-   - 上記 §4.2 の項目（`video_frame_t` 拡張、`video_source_t` の `request_keyframe` / コーデック設定、`WS /video` の H.264 フレーミング、`FRAME_HUB_MAX_FRAME_KB` 上限方針）を `docs/INTERFACES.md` / `docs/WEB_API.md` に固定する。
+   - 上記 §4.2 の項目（`video_frame_t` 拡張、`video_source_t` の `request_keyframe` / コーデック設定、エンコード後公開失敗時の自己 `force_idr` 要求、`WS /video` の H.264 フレーミング、**単一エンコーダ制約下での複数クライアント異種コーデック同時要求ポリシー（自動 MJPEG 降格共有 vs 既存形式追従/不一致拒否）**、`FRAME_HUB_MAX_FRAME_KB` 上限方針）を決定し、`docs/INTERFACES.md` と `docs/WEB_API.md` に固定する。
    - 新 Kconfig 接頭辞（例: `VIDEO_H264_*` または `CSI_H264_*`）と `CONFIG_*` 既定（既定は MJPEG のまま、または実行時設定で切替）を明確化。
 2. **エンコーダモジュール作成（Antigravity: `components/csi_capture` / `components/csi_video_source`）**:
-   - `csi_h264` ラッパー（PPA `RGB888 -> YUV420` + `esp_h264_enc_hw_new`、`1080p` 時の 16px アライン確認、内部にホストテスト可能な純 C 制御ロジック分離）。
-   - `csi_video_source` にコーデック切替と `force_idr` スロット（ロックフリー要求フラグ）を追加し、MJPEG と同様に `frame_hub` へ publish。
+   - `csi_h264` ラッパー（PPA `RGB888 -> YUV420` + `esp_h264_enc_hw_new`、`1080p` 時の `1920x1088` バッファ確保・末尾ゼロパディング維持、内部にホストテスト可能な純 C 制御ロジック分離）。
+   - `csi_video_source` にコーデック切替と `force_idr` スロット（ロックフリー要求フラグ＋`frame_hub_begin_publish()` 等公開失敗時の自己セット）を追加し、MJPEG と同様に `frame_hub` へ publish。
    - **重要**: `slowclient` や解像度変更時に H.264 コンテキストの再初期化（PPS/SPS 再発行）をテスト。
 3. **配信・ビューア対応（Claude: `web_server` / `ws_video_core` / フロントエンド）**:
-   - `WS /video` でのキーフレーム待ち制御（新規接続・`seq` 不連続時に `request_keyframe()`）、WebCodecs `VideoDecoder` + `isConfigSupported()` による自動フォールバック再生 UI。
+   - `WS /video` でのキーフレーム待ち制御（新規接続・`seq` 不連続検知時に `request_keyframe()`）、確定した同時接続コーデック方針の適用、WebCodecs `VideoDecoder` + `isConfigSupported()` による自動フォールバック再生 UI。
 4. **実機検証（オーナー協力）**:
    - Chrome / Safari / Firefox（HTTPS 経由）での長時間再生・チャンネル切替復帰・低帯域（例: WAN / SSH トンネル相当）での体感遅延と実測ビットレートの確認（`docs/HW_VERIFY.md` 記録）。
