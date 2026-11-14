@@ -118,12 +118,14 @@ void test_web_headers_static(void) {
 
 void test_web_headers_allow_for_uri(void);
 void test_web_headers_allow_for_uri_mutations(void);
+void test_web_headers_format_html_csp(void);
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_web_headers_api);
     RUN_TEST(test_web_headers_static);
-        RUN_TEST(test_web_headers_allow_for_uri);
-        RUN_TEST(test_web_headers_allow_for_uri_mutations);
+    RUN_TEST(test_web_headers_allow_for_uri);
+    RUN_TEST(test_web_headers_allow_for_uri_mutations);
+    RUN_TEST(test_web_headers_format_html_csp);
     return UNITY_END();
 }
 
@@ -156,4 +158,57 @@ void test_web_headers_allow_for_uri_mutations(void) {
 
     // 3. Unregistered returns non-null
     // TEST_ASSERT_NOT_NULL(web_headers_allow_for_uri("/nonexistent")); // Fails if default is non-null
+}
+
+void test_web_headers_format_html_csp(void) {
+    char buf[384];
+
+    // Disabled video server (port 0) falls back to strict 'self'
+    TEST_ASSERT_EQUAL_INT(0, web_headers_format_html_csp("192.168.11.39", 0, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING(
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        buf);
+
+    // IPv4 and hostname with custom port
+    TEST_ASSERT_EQUAL_INT(0, web_headers_format_html_csp("192.168.11.39", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "connect-src 'self' wss://192.168.11.39:8444;"));
+    TEST_ASSERT_NULL(strstr(buf, "*"));
+    TEST_ASSERT_NULL(strstr(buf, "unsafe-inline"));
+
+    // Strips optional :port from Host header
+    TEST_ASSERT_EQUAL_INT(0, web_headers_format_html_csp("kvm_01.local:443", 9443, buf, sizeof(buf)));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "connect-src 'self' wss://kvm_01.local:9443;"));
+
+    // Bracketed IPv6 literal with and without :port
+    TEST_ASSERT_EQUAL_INT(0, web_headers_format_html_csp("[fe80::1]", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "connect-src 'self' wss://[fe80::1]:8444;"));
+    TEST_ASSERT_EQUAL_INT(0, web_headers_format_html_csp("[2001:db8::1]:443", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "connect-src 'self' wss://[2001:db8::1]:8444;"));
+
+    // Rejects bad inputs, invalid characters, bad ports, overlong host, and short output buffers
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm.local", 8444, NULL, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm.local", 8444, buf, 0));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm.local", 0, buf, 10));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm.local", 65536, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp(NULL, 8444, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp(":443", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm; evil", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm.local:", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm.local:0443", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm.local:abc", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm.local:65536", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm.local:123456", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("[::1", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("[]", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("[::g]", 8444, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("[::1]extra", 8444, buf, sizeof(buf)));
+
+    char too_long[260];
+    memset(too_long, 'a', sizeof(too_long) - 1);
+    too_long[sizeof(too_long) - 1] = '\0';
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp(too_long, 8444, buf, sizeof(buf)));
+
+    char tiny[32];
+    TEST_ASSERT_EQUAL_INT(-1, web_headers_format_html_csp("kvm.local", 8444, tiny, sizeof(tiny)));
 }

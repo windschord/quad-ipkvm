@@ -81,6 +81,15 @@ static ws_ctx_t s_ws_ctx;
 static SemaphoreHandle_t s_ws_mutex;
 static TaskHandle_t s_ws_task;
 
+#define WS_VIDEO_CTRL_MAX_PAYLOAD 125u
+typedef struct {
+    bool pending_pong;
+    uint8_t pong_len;
+    uint8_t pong_payload[WS_VIDEO_CTRL_MAX_PAYLOAD];
+    bool pending_close;
+} ws_video_ctrl_t;
+static ws_video_ctrl_t s_ws_video_ctrl[CONFIG_WEB_SERVER_WS_MAX_CLIENTS];
+
 static SemaphoreHandle_t s_ws_input_mutex;
 static TaskHandle_t s_ws_input_task;
 // The sink given by web_server_set_hid_sink(). It may be set before web_server_start() (the mutex does not exist yet)
@@ -309,12 +318,15 @@ static esp_err_t save_auth_state(void) {
     return err;
 }
 
-static void add_security_headers(httpd_req_t *req, const char *content_type) {
+static void add_security_headers_csp(httpd_req_t *req, const char *content_type, const char *csp_override) {
     web_header_t headers[4];
     size_t count;
 
     if (content_type) {
         count = web_headers_get_static(content_type, headers, 4);
+        if (count > 0 && csp_override) {
+            headers[0].value = csp_override;
+        }
     } else {
         count = web_headers_get_api(headers, 4);
     }
@@ -324,6 +336,10 @@ static void add_security_headers(httpd_req_t *req, const char *content_type) {
             ESP_LOGW(TAG, "Failed to set security header: %s", headers[i].name);
         }
     }
+}
+
+static void add_security_headers(httpd_req_t *req, const char *content_type) {
+    add_security_headers_csp(req, content_type, NULL);
 }
 
 static uint32_t get_client_ip(httpd_req_t *req) {
@@ -446,7 +462,7 @@ static esp_err_t send_action_error(httpd_req_t *req, http_guard_action_e action)
     return ESP_OK;
 }
 
-static esp_err_t serve_asset_from_table(httpd_req_t *req, const web_asset_t *table, size_t count) {
+static esp_err_t serve_asset_from_table(httpd_req_t *req, const web_asset_t *table, size_t count, const char *video_csp_host) {
     const web_asset_t *asset = web_assets_find(table, count, req->uri);
     if (!asset) {
         add_security_headers(req, NULL);
@@ -456,7 +472,21 @@ static esp_err_t serve_asset_from_table(httpd_req_t *req, const web_asset_t *tab
         return ESP_OK;
     }
 
-    add_security_headers(req, asset->content_type);
+    // Main HTML connects to wss://<host>:<CONFIG_WEB_SERVER_VIDEO_PORT>/video when the dedicated video server is active.
+    // Keep web_assets_csp() strict ('self' only) and format the validated host-specific port override per request.
+    char csp_buf[384];
+    const char *csp_override = NULL;
+    if (video_csp_host && asset->content_type && strcmp(asset->content_type, "text/html") == 0) {
+        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+        unsigned int video_port = (s_ws_ctx.video_server != NULL) ? (unsigned int)CONFIG_WEB_SERVER_VIDEO_PORT : 0u;
+        xSemaphoreGive(s_ws_mutex);
+        if (video_port > 0u &&
+            web_headers_format_html_csp(video_csp_host, video_port, csp_buf, sizeof(csp_buf)) == 0) {
+            csp_override = csp_buf;
+        }
+    }
+
+    add_security_headers_csp(req, asset->content_type, csp_override);
     httpd_resp_set_type(req, asset->content_type);
     httpd_resp_send(req, (const char *)asset->data, asset->len);
     return ESP_OK;
@@ -467,7 +497,8 @@ static esp_err_t static_handler(httpd_req_t *req) {
     auth_state_e state = s_auth_ctx.state;
     xSemaphoreGive(s_auth_mutex);
 
-    bool host_ok = check_host_origin(req, false);
+    char host_buf[128] = {0};
+    bool host_ok = check_allowed_host_header(req, host_buf, sizeof(host_buf));
     http_guard_action_e action = http_guard_decide(state, HTTP_GUARD_METHOD_GET, HTTP_GUARD_PATH_STATIC, false, host_ok, false, host_ok);
 
     if (action != HTTP_GUARD_ACTION_ALLOW) {
@@ -475,7 +506,7 @@ static esp_err_t static_handler(httpd_req_t *req) {
         return send_action_error(req, action);
     }
 
-    return serve_asset_from_table(req, s_web_assets, s_web_assets_count);
+    return serve_asset_from_table(req, s_web_assets, s_web_assets_count, host_buf);
 }
 
 static esp_err_t video_trust_get_handler(httpd_req_t *req) {
@@ -485,7 +516,7 @@ static esp_err_t video_trust_get_handler(httpd_req_t *req) {
         return send_action_error(req, HTTP_GUARD_ACTION_403_HOST);
     }
 
-    return serve_asset_from_table(req, s_video_trust_assets, s_video_trust_assets_count);
+    return serve_asset_from_table(req, s_video_trust_assets, s_video_trust_assets_count, NULL);
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {
@@ -885,8 +916,17 @@ static bool ws_send_exceeded(const ws_send_work_t *work, uint64_t now_ms, bool *
     return false;
 }
 
+static void ws_video_ctrl_clear_slot_locked(int slot) {
+    if (slot >= 0 && slot < CONFIG_WEB_SERVER_WS_MAX_CLIENTS) {
+        memset(&s_ws_video_ctrl[slot], 0, sizeof(s_ws_video_ctrl[slot]));
+    }
+}
+
 static void ws_video_finish_send(int fd, bool ok) {
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    if (!ok) {
+        ws_video_ctrl_clear_slot_locked(ws_clients_find(&s_ws_core.clients, fd));
+    }
     ws_video_core_on_send_done(&s_ws_core, fd, ok);
     xSemaphoreGive(s_ws_mutex);
 }
@@ -958,6 +998,7 @@ static void ws_send_slice_work_cb(void *arg) {
             ws_video_core_on_send_begin(&s_ws_core, work->fd, now_ms);
         }
     } else if (slot >= 0) {
+        ws_video_ctrl_clear_slot_locked(slot);
         ws_video_core_on_send_done(&s_ws_core, work->fd, false);
     }
     xSemaphoreGive(s_ws_mutex);
@@ -999,14 +1040,17 @@ static void ws_send_slice_work_cb(void *arg) {
         }
     }
 
+    const size_t slice_limit = (size_t)CONFIG_WEB_SERVER_WS_SLICE_BYTES;
     size_t slice_sent = 0;
-    while (!hdr_blocked && work->hdr_sent == work->hdr_len && work->payload_sent < work->len) {
+    while (!hdr_blocked && work->hdr_sent == work->hdr_len && work->payload_sent < work->len &&
+           slice_sent < slice_limit) {
         size_t rem = work->len - work->payload_sent;
+        size_t slice_rem = slice_limit - slice_sent;
+        size_t chunk = (rem < slice_rem) ? rem : slice_rem;
         // Cap each call at 4096 B (MBEDTLS_SSL_OUT_CONTENT_LEN) so esp_mbedtls_write never loops
         // across multiple TLS records and masks WANT_WRITE with a partial byte count.
-        size_t chunk = (rem > 4096u) ? 4096u : rem;
-        if (slice_sent > 0 && slice_sent + chunk > (size_t)CONFIG_WEB_SERVER_WS_SLICE_BYTES) {
-            break;
+        if (chunk > 4096u) {
+            chunk = 4096u;
         }
         int ret = ws_socket_send_chunk(work->server, work->fd,
                                        (const char *)(work->data + work->payload_sent),
@@ -1027,7 +1071,49 @@ static void ws_send_slice_work_cb(void *arg) {
     }
 
     if (work->hdr_sent == work->hdr_len && work->payload_sent == work->len) {
-        ws_video_finish_send(work->fd, true);
+        bool send_pong = false;
+        uint8_t pong_len = 0;
+        uint8_t pong_payload[WS_VIDEO_CTRL_MAX_PAYLOAD] = {0};
+        bool send_close = false;
+
+        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+        int done_slot = ws_clients_find(&s_ws_core.clients, work->fd);
+        if (done_slot >= 0 && done_slot < CONFIG_WEB_SERVER_WS_MAX_CLIENTS) {
+            send_pong = s_ws_video_ctrl[done_slot].pending_pong;
+            pong_len = s_ws_video_ctrl[done_slot].pong_len;
+            if (send_pong && pong_len > 0) {
+                memcpy(pong_payload, s_ws_video_ctrl[done_slot].pong_payload, pong_len);
+            }
+            send_close = s_ws_video_ctrl[done_slot].pending_close;
+            ws_video_ctrl_clear_slot_locked(done_slot);
+        }
+        xSemaphoreGive(s_ws_mutex);
+
+        bool ok = true;
+        if (send_pong && !send_close) {
+            httpd_ws_frame_t pong_pkt = {
+                .type = HTTPD_WS_TYPE_PONG,
+                .len = pong_len,
+                .payload = (pong_len > 0) ? pong_payload : NULL,
+                .final = true,
+            };
+            if (httpd_ws_send_frame_async(work->server, work->fd, &pong_pkt) != ESP_OK) {
+                ESP_LOGW(TAG, "WS video deferred PONG failed fd=%d", work->fd);
+                ok = false;
+            }
+        }
+        if (send_close) {
+            httpd_ws_frame_t close_pkt = {
+                .type = HTTPD_WS_TYPE_CLOSE,
+                .len = 0,
+                .payload = NULL,
+                .final = true,
+            };
+            (void)httpd_ws_send_frame_async(work->server, work->fd, &close_pkt);
+            ok = false;
+        }
+
+        ws_video_finish_send(work->fd, ok);
         free(work);
         return;
     }
@@ -1223,6 +1309,9 @@ static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
 
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     int ret = ws_video_core_on_connect(&s_ws_core, (ws_video_conn_t)(intptr_t)fd, fd, token, esp_timer_get_time() / 1000);
+    if (ret >= 0) {
+        ws_video_ctrl_clear_slot_locked(ws_clients_find(&s_ws_core.clients, fd));
+    }
     xSemaphoreGive(s_ws_mutex);
 
     if (ret < 0) {
@@ -1267,29 +1356,96 @@ static esp_err_t ws_video_handler(httpd_req_t *req) {
 
     httpd_ws_frame_t ws_pkt;
     memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
-    ws_pkt.type = HTTPD_WS_TYPE_TEXT;
 
     esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
     if (ret != ESP_OK) {
         return ret;
     }
 
-    if (ws_pkt.len > 125) {
-        // Discard large frames immediately, likely DoS or invalid protocol
-    } else if (ws_pkt.len) {
-        uint8_t *buf = calloc(1, ws_pkt.len + 1);
-        if (buf) {
-            ws_pkt.payload = buf;
-            httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
-            free(buf);
+    int fd = httpd_req_to_sockfd(req);
+    bool is_ctrl = (ws_pkt.type == HTTPD_WS_TYPE_PING ||
+                    ws_pkt.type == HTTPD_WS_TYPE_PONG ||
+                    ws_pkt.type == HTTPD_WS_TYPE_CLOSE);
+    if (!is_ctrl) {
+        if (ws_pkt.len > 0 && ws_pkt.len <= WS_VIDEO_CTRL_MAX_PAYLOAD) {
+            uint8_t discard_buf[WS_VIDEO_CTRL_MAX_PAYLOAD];
+            ws_pkt.payload = discard_buf;
+            (void)httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
+        }
+        // Any incoming data message results in closing connection
+        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+        ws_video_core_on_client_data(&s_ws_core, fd);
+        xSemaphoreGive(s_ws_mutex);
+        return ESP_OK;
+    }
+
+    // RFC 6455 control frames must have FIN=1 and payload <= 125 B
+    if (!ws_pkt.final || ws_pkt.len > WS_VIDEO_CTRL_MAX_PAYLOAD) {
+        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+        ws_video_core_on_client_data(&s_ws_core, fd);
+        xSemaphoreGive(s_ws_mutex);
+        return ESP_OK;
+    }
+
+    uint8_t ctrl_payload[WS_VIDEO_CTRL_MAX_PAYLOAD] = {0};
+    if (ws_pkt.len > 0) {
+        ws_pkt.payload = ctrl_payload;
+        ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
+        if (ret != ESP_OK) {
+            return ret;
         }
     }
 
-    // Any incoming message results in closing connection
-    int fd = httpd_req_to_sockfd(req);
+    if (ws_pkt.type == HTTPD_WS_TYPE_PONG) {
+        return ESP_OK;
+    }
+
+    // Defer PONG/CLOSE if a sliced video binary frame send is in flight so control bytes never
+    // interleave inside an incomplete WebSocket binary frame payload on the wire.
+    bool send_now = false;
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
-    ws_video_core_on_client_data(&s_ws_core, fd);
+    int slot = ws_clients_find(&s_ws_core.clients, fd);
+    if (slot >= 0 && slot < CONFIG_WEB_SERVER_WS_MAX_CLIENTS &&
+        s_ws_core.clients.clients[slot].state == WS_CLIENT_ACTIVE &&
+        !s_ws_core.close_requested[slot]) {
+        if (s_ws_core.clients.clients[slot].is_sending) {
+            if (ws_pkt.type == HTTPD_WS_TYPE_PING) {
+                s_ws_video_ctrl[slot].pending_pong = true;
+                s_ws_video_ctrl[slot].pong_len = (uint8_t)ws_pkt.len;
+                if (ws_pkt.len > 0) {
+                    memcpy(s_ws_video_ctrl[slot].pong_payload, ctrl_payload, ws_pkt.len);
+                }
+            } else {
+                s_ws_video_ctrl[slot].pending_close = true;
+            }
+        } else {
+            send_now = true;
+        }
+    }
     xSemaphoreGive(s_ws_mutex);
+
+    if (send_now) {
+        httpd_ws_frame_t reply = {0};
+        reply.final = true;
+        if (ws_pkt.type == HTTPD_WS_TYPE_PING) {
+            reply.type = HTTPD_WS_TYPE_PONG;
+            reply.len = ws_pkt.len;
+            reply.payload = (ws_pkt.len > 0) ? ctrl_payload : NULL;
+            if (httpd_ws_send_frame(req, &reply) != ESP_OK) {
+                xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+                ws_video_core_on_client_data(&s_ws_core, fd);
+                xSemaphoreGive(s_ws_mutex);
+            }
+        } else {
+            reply.type = HTTPD_WS_TYPE_CLOSE;
+            reply.len = 0;
+            reply.payload = NULL;
+            (void)httpd_ws_send_frame(req, &reply);
+            xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+            ws_video_core_on_client_data(&s_ws_core, fd);
+            xSemaphoreGive(s_ws_mutex);
+        }
+    }
 
     return ESP_OK;
 }
@@ -1336,7 +1492,11 @@ static esp_err_t ws_input_handler(httpd_req_t *req) {
 static void ws_video_close_fn(httpd_handle_t handle, int sockfd) {
     (void)handle;
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
-    bool tracked = (ws_clients_find(&s_ws_core.clients, sockfd) >= 0);
+    int slot = ws_clients_find(&s_ws_core.clients, sockfd);
+    bool tracked = (slot >= 0);
+    if (tracked) {
+        ws_video_ctrl_clear_slot_locked(slot);
+    }
     ws_video_core_on_close(&s_ws_core, sockfd);
     xSemaphoreGive(s_ws_mutex);
     if (tracked) {
@@ -1584,7 +1744,7 @@ esp_err_t web_server_start(frame_hub_t *hub) {
         .handler = ws_video_handler,
         .user_ctx = NULL,
         .is_websocket = true,
-        .handle_ws_control_frames = false,
+        .handle_ws_control_frames = true,
         .supported_subprotocol = NULL,
 #ifdef CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
         .ws_pre_handshake_cb = ws_video_pre_handshake_cb,
