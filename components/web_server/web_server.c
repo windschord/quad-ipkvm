@@ -462,7 +462,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
 
     if (action == HTTP_GUARD_ACTION_ALLOW) {
         char buf[256];
-        http_guard_format_status(state, valid, buf, sizeof(buf));
+        http_guard_format_status(state, valid, 0 /* TODO(video-viewer-b3): 映像専用サーバーのポートに結線 */, buf, sizeof(buf));
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, buf);
     } else {

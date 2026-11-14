@@ -93,7 +93,12 @@ http_guard_action_e http_guard_decide(auth_state_e state, http_guard_method_e me
 // --- Response ---
 
 int http_guard_format_error(const char *msg, char *out, size_t out_len);
-int http_guard_format_status(auth_state_e state, bool authenticated, char *out, size_t out_len);
+/**
+ * 状態の応答 {"state":...,"authenticated":...[,"video_port":N]} を out に書く。成功で 0、バッファ不足などで -1。
+ * video_port: 映像専用の HTTPS サーバーのポート(docs/VIDEO_TRANSPORT.md 5 章)。0 は「映像専用のサーバーなし
+ * (映像はメインのポートの /video)」で、video_port のキーを出さない(後方互換)。それ以外は整数で出す。
+ */
+int http_guard_format_status(auth_state_e state, bool authenticated, uint16_t video_port, char *out, size_t out_len);
 
 #ifdef __cplusplus
 }
