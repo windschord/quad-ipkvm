@@ -160,6 +160,10 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE mcp23017_logic)
     endif()
 
+    if (test_source MATCHES "/usb_hid/")
+        target_link_libraries(${test_name} PRIVATE usb_hid_logic)
+    endif()
+
 
 
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})
@@ -201,3 +205,6 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/auth_worker_slot ${CMAKE_B
 
 # Setup net_eth_util component (pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/net_eth ${CMAKE_BINARY_DIR}/net_eth)
+
+# Setup usb_hid_logic component (pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/usb_hid ${CMAKE_BINARY_DIR}/usb_hid)

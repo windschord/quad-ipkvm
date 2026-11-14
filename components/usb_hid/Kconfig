@@ -1,0 +1,4 @@
+config TINYUSB_HID_COUNT
+    int
+    default 3 if USB_DEVICE_ENABLE
+    default 0

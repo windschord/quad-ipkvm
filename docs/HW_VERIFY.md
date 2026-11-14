@@ -200,13 +200,36 @@ PHY は IP101GRI。B 章の GPIO 候補（ATX・パネル用）とは重複し�
 | ID | 項目 | 確認方法 | 状態 |
 |---|---|---|---|
 | H1 | `J3` の配線: 1 = `VCC_5V`、2 = `USBD_N`、3 = `USBD_P`、4 = `GND`。`USBD_N` / `USBD_P` は、ESP32-P4 の `DM` / `DP` のピンへ**直結**（直列抵抗なし） | 回路図 | **[確認]**（2026-11-08） |
-| H2 | **VBUS を検出する経路がない**: `J3` のピン 1 は `VCC_5V`（ボードの 5V 電源）で、ESP32-P4 のどのピンにも繋がっていない。**ファームウェアが VBUS の検出を前提にすると、列挙できない恐れ**。TinyUSB（`dwc2`）の ESP32-P4 向けの設定が、VBUS なし（B セッション有効の上書き）で動くかは、ESP-IDF v6.0.1 のソースで確認する | 回路図、ESP-IDF v6.0.1 のソース | **[確認]**（回路図）。**[未確認]**（ソース。Antigravity、A-8） |
-| H3 | **[懸念・高] ピン 1 をターゲット PC の VBUS に繋がない**: `VCC_5V` は、Type-C の VBUS → `TVS1` → `Q2` → `D2` を通ったボードの電源（`docs/HW_STATE.md`）。PC の VBUS を直結すると、**2 つの 5V 電源が接続される**。**電流の向きと分担は、両方の電圧が未測定のため、不明**（`D2` の電圧降下だけでは決まらない）。電源どうしのぶつかり、PC のポートの過電流、ボードの電源の不安定を避けるため、**ピン 1 は、PC の VBUS に直結しない**。**配線は、D+（ピン 3）・D−（ピン 2）・GND（ピン 4）の 3 本だけで、ピン 1 は繋がない（オーナー決定、2026-11-08）。この配線では VBUS を検出できないため、H2（VBUS なしで列挙できるか）と H5（PC が OFF の間の D+ のプルアップ）が、そのまま残る** | 回路図 | **[決定]**（配線は 3 本。2026-11-08、オーナー）。**[懸念]**（実機では未確認） |
-| H4 | **[懸念・中] ESD / サージの保護がない**: `J3` のデータ線・ピン 1 に、ESD や TVS の素子がない（回路図で ESD 素子があるのは、`RESET` / `BOOT` のボタンだけ。Type-C 側の VBUS には `TVS1`）。ターゲット PC との**抜き差しで、ESP32-P4 の USB を傷める恐れ**。対策（保護素子を入れるか）は、オーナーが決める | 回路図 | **[確認]**（回路図）。**[懸念]**（影響は未確認） |
-| H5 | **[懸念・中] ターゲット PC の電源が切れている間の D+ のプルアップ**: VBUS を検出しないので、ESP32-P4 が起動している間、ターゲット PC が OFF（ATX で電源を切る運用）でも、**D+ のプルアップが有効なまま**になり得る（USB の仕様は、VBUS がないとき、デバイスがプルアップを外すことを求める。**一般論で、この基板の実測ではない**）。外付けのプルアップは回路図にない。影響は、**オーナーが、ターゲット PC が OFF の状態で、次を測って確認する**: (a) **PC 側の USB ポートの VBUS と GND の間の電圧**（OFF でも、USB ポートに給電が残る PC がある。**`J3` のピン 1 とは繋がない、別のブレークアウトやケーブルで**）、(b) D+ と GND の間の電圧。**D+ の電圧だけでは、VBUS の有無も、PC への回り込み電流も、判定できない**。回り込み電流を確認するなら、**電流の測定を別に行う**。対策案（ターゲットの VBUS を分圧して GPIO に入れ、ソフトで切断する）は、**部品の値を推測で決めない**（`TODO(hw-verify)`） | 回路図、テスタ | **[未確認]** |
-| H6 | **[懸念・低〜中] 信号品質**: HS（480Mbps）は、差動 90Ω・短い配線が前提。`J3` は 4 ピンのコネクタ + ケーブルで、直列抵抗も保護もない。**短い、ツイストペアのケーブル（シールド付きの USB ケーブルを切って使うなど）**にする。HS が安定しなければ、**FS（12Mbps）で足りる**（HID は低帯域）。A-8 で、FS に固定できるようにしておく | 回路図 | **[懸念]**（実機では未確認） |
-| H7 | `J3` の**実物のコネクタの形状・ピッチ・ピンの向き**（silk、部品番号） | 実物 | **[未確認]**（オーナー） |
-| H8 | 開発機（Type-C 側）とターゲット PC（`J3` 側）の **GND が、基板で繋がる**（USB のケーブルでは普通。接地の電位差が大きい環境では、電流が流れ得る） | 回路図 | **[懸念・低]** |
+| H2 | **VBUS を検出する経路がない**: `J3` のピン 1 は `VCC_5V`（ボードの 5V 電源）で、ESP32-P4 のどのピンにも繋がっていない。**ファームウェアが VBUS の検出を前提にすると、列挙できない恐れ**。TinyUSB（`dwc2`）の ESP32-P4 向けの設定が、VBUS なし（B セッション有効の上書き）で動くかは、ESP-IDF v6.0.1 のソースで確認する | 回路図、ESP-IDF v6.0.1 のソース | **[確認]**（回路図・ソース: Antigravity、2026-11-14）。HS OTG にはハードウェア VBUS 検出がなく、`.phy.self_powered=false` + `USB_DWC_HS.gotgctl_reg` の BVALID/VBVALID 上書き（`CONFIG_USB_DEVICE_BVALID_OVERRIDE=y`）で `bsesvld=1`・`SET_CONFIGURATION` 到達まで確認（詳細は H.1）。ターゲット PC 側での実認識・入力は `TODO(hw-verify)` |
+| H3 | **[懸念・高] ピン 1 をターゲット PC の VBUS に繋がない**: `VCC_5V` は、Type-C の VBUS → `TVS1` → `Q2` → `D2` を通ったボードの電源（`docs/HW_STATE.md`）。PC の VBUS を直結すると、**2 つの 5V 電源が接続される**。**電流の向きと分担は、両方の電圧が未測定のため、不明**（`D2` の電圧降下だけでは決まらない）。電源どうしのぶつかり、PC のポートの過電流、ボードの電源の不安定を避けるため、**ピン 1 は、PC の VBUS に直結しない**。**配線は、D+（ピン 3）・D−（ピン 2）・GND（ピン 4）の 3 本だけで、ピン 1 は繋がない（オーナー決定、2026-11-08）。この配線では VBUS を検出できないため、H2（VBUS なしで列挙できるか）と H5（PC が OFF の間の D+ のプルアップ）が、そのまま残る** | 回路図 | **[決定]**（配線は 3 本。2026-11-08、オーナー）。**[懸念]**（`TODO(hw-verify)`: オーナーの実配線・実機確認） |
+| H4 | **[懸念・中] ESD / サージの保護がない**: `J3` のデータ線・ピン 1 に、ESD や TVS の素子がない（回路図で ESD 素子があるのは、`RESET` / `BOOT` のボタンだけ。Type-C 側の VBUS には `TVS1`）。ターゲット PC との**抜き差しで、ESP32-P4 の USB を傷める恐れ**。対策（保護素子を入れるか）は、オーナーが決める | 回路図 | **[確認]**（回路図）。**[懸念]**（`TODO(hw-verify)`: 影響は未確認） |
+| H5 | **[懸念・中] ターゲット PC の電源が切れている間の D+ のプルアップ**: VBUS を検出しないので、ESP32-P4 が起動している間、ターゲット PC が OFF（ATX で電源を切る運用）でも、**D+ のプルアップが有効なまま**になり得る（USB の仕様は、VBUS がないとき、デバイスがプルアップを外すことを求める。**一般論で、この基板の実測ではない**）。外付けのプルアップは回路図にない。影響は、**オーナーが、ターゲット PC が OFF の状態で、次を測って確認する**: (a) **PC 側の USB ポートの VBUS と GND の間の電圧**（OFF でも、USB ポートに給電が残る PC がある。**`J3` のピン 1 とは繋がない、別のブレークアウトやケーブルで**）、(b) D+ と GND の間の電圧。**D+ の電圧だけでは、VBUS の有無も、PC への回り込み電流も、判定できない**。回り込み電流を確認するなら、**電流の測定を別に行う**。対策案（ターゲットの VBUS を分圧して GPIO に入れ、ソフトで切断する）は、**部品の値を推測で決めない**（`TODO(hw-verify)`） | 回路図、テスタ | **`TODO(hw-verify)`（オーナー実測待ち）**。ソフト切断 API（`usb_hid_set_connected(bool)` / `DCTL.sftdiscon`）は実装済み |
+| H6 | **[懸念・低〜中] 信号品質**: HS（480Mbps）は、差動 90Ω・短い配線が前提。`J3` は 4 ピンのコネクタ + ケーブルで、直列抵抗も保護もない。**短い、ツイストペアのケーブル（シールド付きの USB ケーブルを切って使うなど）**にする。HS が安定しなければ、**FS（12Mbps）で足りる**（HID は低帯域）。A-8 で、FS に固定できるようにしておく | 回路図 | **FS 固定切替は実装・レジスタ確認済み**（`CONFIG_USB_DEVICE_FORCE_FULL_SPEED=y` → `DCFG.devspd=1`, `speed=0`）。実ケーブル・ターゲット PC での HS/FS 安定性と BIOS 操作は **`TODO(hw-verify)`**（オーナー） |
+| H7 | `J3` の**実物のコネクタの形状・ピッチ・ピンの向き**（silk、部品番号） | 実物 | `TODO(hw-verify)`（オーナー） |
+| H8 | 開発機（Type-C 側）とターゲット PC（`J3` 側）の **GND が、基板で繋がる**（USB のケーブルでは普通。接地の電位差が大きい環境では、電流が流れ得る） | 回路図 | **[懸念・低]** / `TODO(hw-verify)` |
+
+### H.1 ESP-IDF v6.0.1 ソース確認と OTG_HS 実機レジスタ・列挙ログ（2026-11-14、Antigravity、A-8 / #89）
+
+- **ESP-IDF v6.0.1 ソース確認**:
+  - `espressif/esp_tinyusb` `v2.4.0` + `espressif/tinyusb` `v0.21.0~6`（参照ローカルキャッシュ: `0.21.0~2`）。
+  - **コントローラ / 端点制約**（`dwc2_esp32.h`, `esp_hal_usb/esp32p4/usb_dwc_periph.c`）: Port 0 = OTG_FS（`0x50040000`, `ep_count=7`, `ep_in_count=5`, GPIO 26/27）、Port 1 = OTG_HS（`0x50000000`, `ep_count=16`, `ep_in_count=8` = EP0 + 7 IN 端点, 内蔵 UTMI HS PHY ⇄ `J3`）。`components/usb_hid/` は `0x81` / `0x82` / `0x83` の 3 つの IN 端点を使用（上限内）。`usbd.c` は `tud_init(rhport)` で `_usbd_rhport = 1` を保持し、`usbd_edpt_claim` / `usbd_edpt_xfer` / `tud_connect` / `tud_disconnect` が内部で `_usbd_rhport` に上書きする。
+  - **ESP32-P4 rev v1.3 制約**（`esp_hw_support/usb_phy/usb_phy.c`, `tinyusb.c`, `dcd_dwc2.c`）: `CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y` では UTMI 15k プルダウンはハードウェア自動制御（`usb_utmi_ll_enable_precise_detection` は rev >= v3 のみ）。HS OTG はハードウェア VBUS 検出を持たないため `.phy.self_powered = false`, `.phy.vbus_monitor_io = -1` を指定。また `dcd_init()`（`dcd_dwc2.c:517`）が `GOTGCTL_BVALOEN | GOTGCTL_BVALOVAL | GOTGCTL_VBVALOVAL` をクリアするため、`usb_hid_init()` 内で `tud_disconnect()` 後に `USB_DWC_HS.gotgctl_reg` の `vbvalidoven=1`, `vbvalidovval=1`, `bvalidoven=1`, `bvalidovval=1`（`CONFIG_USB_DEVICE_BVALID_OVERRIDE=y`）および任意で `dcfg.devspd=1`（`CONFIG_USB_DEVICE_FORCE_FULL_SPEED=y`）を設定して `tud_connect()` している。
+- **複合 HID 構成（レポート ID なし・3 インターフェース構成）**:
+  - Interface 0: Boot Keyboard（`SubClass=1, Protocol=1`, EP `0x81`, 入力 8B + 出力 LED 1B EP0 経由, Report Desc 65B）
+  - Interface 1: Absolute Pointer（`SubClass=0, Protocol=0`, EP `0x82`, 入力 6B: `buttons` + LE `x/y 0..32767` + `wheel -127..127`, Report Desc 63B）
+  - Interface 2: Relative Boot Mouse（`SubClass=1, Protocol=2`, EP `0x83`, 入力 4B: `buttons` + `dx/dy/wheel -127..127`, Report Desc 52B）
+- **実機起動ログ（ESP32-P4 rev v1.3、`CONFIG_USB_DEVICE_ENABLE=y`, `CONFIG_USB_DEVICE_BVALID_OVERRIDE=y`）**:
+  - **HS 既定（`CONFIG_USB_DEVICE_FORCE_FULL_SPEED=n`、バイナリサイズ `0xcd720` B / 1 MiB 空き 20%）**:
+    - `TinyUSB: TinyUSB Driver installed on port 1`
+    - `post-install`: `gotgctl=0x04c10000 dcfg=0x08100004 dctl=0x00000000 dsts=0x00400002`
+    - `soft-disconnect`: `dctl=0x00000002`（`DCTL.sftdiscon=1`）
+    - `bvalid-override`: `gotgctl=0x04c100cc dctl=0x00000002 dsts=0x00000002`
+    - `post-config-connect`: `gotgctl=0x04c900cc dcfg=0x08100004 dctl=0x00000000 dsts=0x00400002`（`bsesvld=1`）、初期化直後は `ready=0`
+    - 起動約 420ms 後（`I (5546)`）: `USB attached (rhport=1, speed=2)`（`TUSB_SPEED_HIGH`）を観測。
+  - **FS 固定（`CONFIG_USB_DEVICE_FORCE_FULL_SPEED=y`）**:
+    - `force-fs`: `gotgctl=0x04c900cc dcfg=0x08100005`（`devspd=1`）、`post-config-connect` 後に `I (5336) usb_hid: USB attached (rhport=1, speed=0)`（`TUSB_SPEED_FULL`）を観測。
+  - **補足（ホスト側未確認）**: 作業用 Mac の `ioreg -rc IOUSBHostDevice` には `0x303a`/`0x4004` が現れず、接続先ホスト（オーナー環境の配線先機器）の OS 列挙リストや BIOS 画面でのキー入力・クリック動作（特に BIOS での絶対ポインタ `Interface 1` 対 相対ブートマウス `Interface 2` の効き方）は未確認（**`TODO(hw-verify)`**、PR / Issue #89 コメントのオーナー手順で実測依頼）。
+  - **既定ビルド確認（`CONFIG_USB_DEVICE_ENABLE=n`）**: `0xb05a0` バイト（1 MiB 空き 31%）。確認後、実機には本番検証用バイナリ（`build_a7_live1080/quad-ipkvm.bin`）を再書き込みし `GET /api/v1/auth/status` = `{"state":"ready","authenticated":false}` を確認済み。
 
 ## Z. WS /video タスク未確認一覧
 測定条件（2026-10-28）: ESP-IDF v6.0.1、`29c4173` に D10 の検証用パッチ（ワーカーの `add_security_headers` の削除）と、`ws_video` タスクが 5 秒ごとにヒープ/スタックを出すログ（どちらもコミットしていない）を当てたビルド、`CONFIG_NET_ETH_INIT=y`、テストパターン（`CONFIG_TEST_PATTERN_FPS=10`、JPEG 約 6.9KB）。クライアントは PC の Python（`websockets`、同一 LAN、Ethernet 100M のボード）。ブラウザでの確認は含まない。
