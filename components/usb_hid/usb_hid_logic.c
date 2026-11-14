@@ -256,19 +256,17 @@ static bool sink_ctx_valid(const usb_hid_sink_ctx_t *sc) {
     return sc && sc->ops && sc->ops->mounted && sc->ops->itf_ready && sc->ops->send_report;
 }
 
-static bool sink_can_send(const usb_hid_sink_ctx_t *sc, uint8_t itf) {
-    if (!sink_ctx_valid(sc)) {
-        return false;
-    }
-    if (!sc->ops->mounted(sc->hw_ctx)) {
-        return false;
-    }
-    return sc->ops->itf_ready(sc->hw_ctx, itf);
+static bool sink_is_mounted(const usb_hid_sink_ctx_t *sc) {
+    return sink_ctx_valid(sc) && sc->ops->mounted(sc->hw_ctx);
 }
 
 static bool sink_ready(void *ctx) {
-    /* Non-blocking check: requires USB enumeration + primary keyboard EP idle. */
-    return sink_can_send((const usb_hid_sink_ctx_t *)ctx, USB_HID_ITF_KEYBOARD);
+    /* Non-blocking check: USB enumeration state only; per-EP busy state is checked per interface in send_*. */
+    return sink_is_mounted((const usb_hid_sink_ctx_t *)ctx);
+}
+
+static bool sink_can_send(const usb_hid_sink_ctx_t *sc, uint8_t itf) {
+    return sink_is_mounted(sc) && sc->ops->itf_ready(sc->hw_ctx, itf);
 }
 
 static bool sink_send_keyboard(void *ctx, const hid_kbd_report_t *r) {

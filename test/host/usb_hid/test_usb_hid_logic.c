@@ -310,14 +310,19 @@ void test_sink_nonblocking_ready_and_routing(void) {
     TEST_ASSERT_FALSE(sink.send_rel(sink.ctx, &rel));
     TEST_ASSERT_EQUAL_UINT32(4u, (uint32_t)s_hw.send_calls);
 
-    /* Keyboard EP busy causes ready() to return false */
+    /* Keyboard EP busy keeps ready() true while mounted, blocks only send_keyboard, and allows abs/rel */
     s_hw.mounted = true;
     s_hw.ready[USB_HID_ITF_KEYBOARD] = false;
-    TEST_ASSERT_FALSE(sink.ready(sink.ctx));
+    TEST_ASSERT_TRUE(sink.ready(sink.ctx));
     TEST_ASSERT_FALSE(sink.send_keyboard(sink.ctx, &kbd));
     TEST_ASSERT_EQUAL_UINT32(4u, (uint32_t)s_hw.send_calls);
+    TEST_ASSERT_TRUE(sink.send_abs(sink.ctx, &abs));
+    TEST_ASSERT_TRUE(sink.send_rel(sink.ctx, &rel));
+    TEST_ASSERT_EQUAL_UINT32(6u, (uint32_t)s_hw.send_calls);
 
-    /* NULL report rejected cleanly */
+    /* NULL ctx and NULL report rejected cleanly */
+    TEST_ASSERT_FALSE(sink.ready(NULL));
+    TEST_ASSERT_FALSE(sink.send_keyboard(NULL, &kbd));
     s_hw.ready[USB_HID_ITF_KEYBOARD] = true;
     TEST_ASSERT_FALSE(sink.send_keyboard(sink.ctx, NULL));
     TEST_ASSERT_FALSE(sink.send_abs(sink.ctx, NULL));

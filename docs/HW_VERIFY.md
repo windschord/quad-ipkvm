@@ -222,7 +222,7 @@ PHY は IP101GRI。B 章の GPIO 候補（ATX・パネル用）とは重複し�
   - 構成記述子の `bmAttributes = 0xC0`（セルフパワー）、`bMaxPower = 0`（0 mA）。3 本線 `J3`（VBUS 非接続）に合わせる（旧 `0x80 / 100 mA` から変更。ターゲット PC / BIOS での挙動差は **`TODO(hw-verify)`**）。
   - `tusb_cfg.phy.self_powered = false`, `tusb_cfg.phy.vbus_monitor_io = -1` を維持: `esp_tinyusb` `v2.4.0`（`tinyusb.c:1564-1595`）が `phy.self_powered = true` 時に `tinyusb_vbus_monitor_init()` へ有効な `vbus_monitor_io` GPIO を要求するため（ソフト `GOTGCTL` BVALID 上書き運用時の既定仕様、`TODO(hw-verify)`）。
 - **Kconfig / ビルド依存上の注意（PR #105 レビュー反映）**:
-  - `components/usb_hid/Kconfig` の `TINYUSB_HID_COUNT = 3` 上書きは、`esp_tinyusb/Kconfig` との評価順に依存する。変更時は `idf.py reconfigure` 後に `grep CONFIG_TINYUSB_HID_COUNT=3 sdkconfig` を確認すること（#105 時点で `=3` 確認済み）。
+  - `sdkconfig.defaults` で `CONFIG_TINYUSB_HID_COUNT=3` を明示設定し、`components/usb_hid/Kconfig` と合わせて `esp_tinyusb/Kconfig` との評価順に依存しない構成とした（`idf.py build` 時に `CONFIG_TINYUSB_HID_COUNT=3` を確認済み）。
   - `main/CMakeLists.txt` の `REQUIRES usb_hid` は無条件のため、`CONFIG_USB_DEVICE_ENABLE=n` 時でも IDF Component Manager が `components/usb_hid/idf_component.yml`（`espressif/esp_tinyusb`）を解決する（完全オフラインビルドでは `managed_components` キャッシュが必要）。
 - **実機起動ログ（ESP32-P4 rev v1.3、`CONFIG_USB_DEVICE_ENABLE=y`, `CONFIG_USB_DEVICE_BVALID_OVERRIDE=y`）**:
   - **HS 既定（`CONFIG_USB_DEVICE_FORCE_FULL_SPEED=n`、バイナリサイズ `0xcd720` B / 1 MiB 空き 20%）**:
