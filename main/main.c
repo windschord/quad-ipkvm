@@ -60,6 +60,9 @@
 #if CONFIG_WEB_SERVER_ENABLE
 #include "web_server.h"
 #endif
+#if CONFIG_USB_DEVICE_ENABLE
+#include "usb_hid.h"
+#endif
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -291,6 +294,23 @@ void app_main(void)
                 } else {
                     ESP_LOGE(TAG, "Web server failed to start");
                 }
+            }
+        }
+#endif
+#if CONFIG_USB_DEVICE_ENABLE
+        {
+#if CONFIG_WEB_SERVER_ENABLE
+            usb_hid_mounted_cb_t on_mounted = web_server_notify_usb_mounted;
+#else
+            usb_hid_mounted_cb_t on_mounted = NULL;
+#endif
+            esp_err_t usb_err = usb_hid_init(on_mounted);
+            if (usb_err != ESP_OK) {
+                ESP_LOGE(TAG, "usb_hid_init failed: %s", esp_err_to_name(usb_err));
+            } else {
+#if CONFIG_WEB_SERVER_ENABLE
+                web_server_set_hid_sink(usb_hid_get_sink());
+#endif
             }
         }
 #endif

@@ -296,4 +296,49 @@ menu "Quad IP-KVM Configuration"
         int "HID token bucket burst size"
         default 100
         range 10 1000
+
+    config USB_DEVICE_ENABLE
+        bool "Enable composite USB HID device on OTG_HS (J3)"
+        default n
+        help
+            Enable composite TinyUSB HID device (Boot Keyboard + Absolute Pointer +
+            Relative Boot Mouse) on ESP32-P4 OTG_HS (J3 connector).
+
+    config USB_DEVICE_VID
+        hex "USB Device Vendor ID (idVendor)"
+        default 0x303A
+        depends on USB_DEVICE_ENABLE
+
+    config USB_DEVICE_PID
+        hex "USB Device Product ID (idProduct)"
+        default 0x4004
+        depends on USB_DEVICE_ENABLE
+
+    config USB_DEVICE_MANUFACTURER
+        string "USB Device Manufacturer String"
+        default "Quad-IPKVM"
+        depends on USB_DEVICE_ENABLE
+
+    config USB_DEVICE_PRODUCT
+        string "USB Device Product String"
+        default "Quad-IPKVM Composite HID"
+        depends on USB_DEVICE_ENABLE
+
+    config USB_DEVICE_BVALID_OVERRIDE
+        bool "Assert DWC2 BVALID override for 3-wire J3 cable without 5V VBUS"
+        default y
+        depends on USB_DEVICE_ENABLE
+        help
+            Enable GOTGCTL BVALID/VBVALID software override on OTG_HS after
+            tinyusb_driver_install(), because J3 pin 1 (5V) is left unconnected
+            in the 3-wire (GND, D-, D+) cable to avoid power backfeed.
+
+    config USB_DEVICE_FORCE_FULL_SPEED
+        bool "Force Full-Speed (12 Mbps) on OTG_HS UTMI PHY"
+        default n
+        depends on USB_DEVICE_ENABLE
+        help
+            Set DWC2 DCFG.devspd=1 (Full-Speed on HS UTMI PHY) after driver install
+            as a fallback if High-Speed enumeration fails due to cable integrity
+            or BIOS USB stack quirks.
 endmenu
