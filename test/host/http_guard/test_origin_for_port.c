@@ -300,6 +300,28 @@ void test_name_of_255_with_trailing_dot(void) {
     TEST_ASSERT_FALSE(http_guard_origin_ok_for_port(o, 8 + 255, h, 255, 443));
 }
 
+void test_hostname_charset_boundaries(void) {
+    // 受理する文字の両端
+    static const row_t ok[] = {
+        {"https://09azAZ-_.09", "09azAZ-_.09:8444", 443, true, "各範囲の両端 (0 9 a z A Z - _ .)"},
+        {"https://zzz.ZZZ", "ZZZ.zzz", 443, true, "z と Z"},
+        {"https://0.9", "0.9", 443, true, "数字だけ"},
+    };
+    run_table(ok, N(ok));
+    // 受理する範囲のすぐ外側の文字 ('/' = '0' - 1、'@' = 'A' - 1、'[' = 'Z' + 1、'`' = 'a' - 1、'{' = 'z' + 1 など) を
+    // 1 文字だけ含む名前は、Origin と Host が同じでも拒否する (':' はポートの区切りなので除く)
+    static const char bad[] = {'/', '@', '[', '`', '{', '^', '\\', ']', '!', '~', 0x01, 0x1f, 0x7f, (char)0x80, (char)0xff,
+                               '=', '<', '>', ',', ';', '+', '(', ')', '\'', '"', '$', '&', '*', '%', '|', ' ', '?', '#'};
+    for (size_t i = 0; i < sizeof(bad); i++) {
+        char o[32], h[32];
+        int ol = snprintf(o, sizeof(o), "https://a%cb", bad[i]);
+        int hl = snprintf(h, sizeof(h), "a%cb", bad[i]);
+        char msg[80];
+        snprintf(msg, sizeof(msg), "char 0x%02x accepted", (unsigned)(unsigned char)bad[i]);
+        TEST_ASSERT_FALSE_MESSAGE(http_guard_origin_ok_for_port(o, (size_t)ol, h, (size_t)hl, 443), msg);
+    }
+}
+
 /* 既存の http_guard_origin_ok と、同じ入力に対して矛盾しない */
 void test_consistent_with_existing_origin_ok(void) {
     static const char *const hosts[] = {"192.168.1.100", "my-kvm.local", "a", "x.y.z"};
@@ -447,6 +469,7 @@ int main(void) {
     RUN_TEST(test_length_arguments_are_respected);
     RUN_TEST(test_extreme_lengths);
     RUN_TEST(test_name_of_255_with_trailing_dot);
+    RUN_TEST(test_hostname_charset_boundaries);
     RUN_TEST(test_consistent_with_existing_origin_ok);
     RUN_TEST(test_fuzz_against_oracle);
     return UNITY_END();
