@@ -194,6 +194,21 @@ static void log_periodic_stats(const csi_video_pub_stats_t *pub,
              (unsigned)uxTaskGetStackHighWaterMark(NULL));
 }
 
+static void apply_adaptive_quality(csi_jpeg_handle_t jpeg, jpeg_quality_ctrl_t *q_ctrl,
+                                   size_t frame_bytes, bool encode_oversize,
+                                   size_t max_frame_bytes)
+{
+    uint8_t prev_q = q_ctrl->q_cur;
+    uint8_t next_q = jpeg_quality_ctrl_on_frame(q_ctrl, frame_bytes, encode_oversize);
+    if (next_q != prev_q) {
+        (void)csi_jpeg_set_quality(jpeg, next_q);
+        ESP_LOGI(TAG, "Adaptive JPEG quality: %u -> %u (%s, frame=%u B, max=%u B)",
+                 (unsigned)prev_q, (unsigned)next_q,
+                 encode_oversize ? "oversize" : "normal",
+                 (unsigned)frame_bytes, (unsigned)max_frame_bytes);
+    }
+}
+
 static void csi_video_task(void *arg)
 {
     (void)arg;
@@ -470,6 +485,9 @@ static void csi_video_task(void *arg)
                 ESP_LOGW(TAG, "HW JPEG/PPA encode failed (count=%" PRIu64 "): %s",
                          pub_stats.encode_errors, esp_err_to_name(enc_err));
             }
+            if (enc_err == CSI_JPEG_ERR_OUTPUT_OVERSIZE) {
+                apply_adaptive_quality(jpeg, &q_ctrl, 0u, true, s_cfg.hub_max_frame_bytes);
+            }
         } else {
             csi_jpeg_frame_err_t ferr = csi_jpeg_check_frame(
                 jpeg_data, jpeg_len, s_cfg.hub_max_frame_bytes);
@@ -502,15 +520,9 @@ static void csi_video_task(void *arg)
             }
 
             if (ferr == CSI_JPEG_FRAME_OK || ferr == CSI_JPEG_FRAME_ERR_OVERSIZE) {
-                uint8_t prev_q = q_ctrl.q_cur;
-                uint8_t next_q = jpeg_quality_ctrl_on_frame(
-                    &q_ctrl, jpeg_len, ferr == CSI_JPEG_FRAME_ERR_OVERSIZE);
-                if (next_q != prev_q) {
-                    (void)csi_jpeg_set_quality(jpeg, next_q);
-                    ESP_LOGI(TAG, "Adaptive JPEG quality: %u -> %u (frame=%u B, max=%u B)",
-                             (unsigned)prev_q, (unsigned)next_q,
-                             (unsigned)jpeg_len, (unsigned)s_cfg.hub_max_frame_bytes);
-                }
+                apply_adaptive_quality(jpeg, &q_ctrl, jpeg_len,
+                                       ferr == CSI_JPEG_FRAME_ERR_OVERSIZE,
+                                       s_cfg.hub_max_frame_bytes);
             }
         }
 

@@ -20,6 +20,10 @@
 extern "C" {
 #endif
 
+// Returned by csi_jpeg_encode() / csi_jpeg_encode_swapped_uyvy() when the encoded
+// bitstream exceeds the configured reusable output buffer capacity.
+#define CSI_JPEG_ERR_OUTPUT_OVERSIZE ((esp_err_t)0x6101)
+
 typedef struct csi_jpeg_t *csi_jpeg_handle_t;
 
 typedef struct {
@@ -36,6 +40,7 @@ esp_err_t csi_jpeg_open(const csi_jpeg_config_t *cfg, csi_jpeg_handle_t *out);
 // Encodes one width x height BGR24 (CSI RGB888) frame into the internal aligned PSRAM buffer.
 // On ESP_OK, *out_jpeg points to the internal buffer (valid until the next csi_jpeg_encode()
 // or csi_jpeg_close()) and *out_len is the baseline JPEG byte count (SOI FFD8 .. EOI FFD9).
+// Returns CSI_JPEG_ERR_OUTPUT_OVERSIZE if encoded output exceeds the internal buffer capacity.
 esp_err_t csi_jpeg_encode(csi_jpeg_handle_t h,
                           const uint8_t *bgr24_in, size_t in_bytes,
                           uint32_t width, uint32_t height,
@@ -51,6 +56,7 @@ esp_err_t csi_jpeg_ppa_swap_uyvy(csi_jpeg_handle_t h,
 
 // P2b-8 step 2: Encodes the most recently PPA-swapped width x height UYVY frame into baseline JPEG
 // (src_type = JPEG_ENCODE_IN_FORMAT_YUV422, sub_sample = JPEG_DOWN_SAMPLING_YUV422).
+// Returns CSI_JPEG_ERR_OUTPUT_OVERSIZE if encoded output exceeds the internal buffer capacity.
 esp_err_t csi_jpeg_encode_swapped_uyvy(csi_jpeg_handle_t h,
                                        uint32_t width, uint32_t height,
                                        const uint8_t **out_jpeg, size_t *out_len);

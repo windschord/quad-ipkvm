@@ -31,7 +31,12 @@ struct csi_jpeg_t {
 
 static esp_err_t validate_jpeg_bitstream(const uint8_t *buf, size_t cap, uint32_t encoded_bytes)
 {
-    if (encoded_bytes < 4u || (size_t)encoded_bytes > cap ||
+    if ((size_t)encoded_bytes > cap) {
+        ESP_LOGE(TAG, "JPEG output exceeded buffer capacity: len=%" PRIu32 " cap=%u",
+                 encoded_bytes, (unsigned)cap);
+        return CSI_JPEG_ERR_OUTPUT_OVERSIZE;
+    }
+    if (encoded_bytes < 4u ||
         buf[0] != 0xFFu || buf[1] != 0xD8u ||
         buf[encoded_bytes - 2u] != 0xFFu || buf[encoded_bytes - 1u] != 0xD9u) {
         ESP_LOGE(TAG, "Invalid JPEG output: len=%" PRIu32 " head=%02x%02x tail=%02x%02x",
