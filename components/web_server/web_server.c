@@ -36,6 +36,9 @@ extern const unsigned char app_js_end[]   asm("_binary_app_js_end");
 extern const unsigned char app_css_start[] asm("_binary_app_css_start");
 extern const unsigned char app_css_end[]   asm("_binary_app_css_end");
 
+extern const unsigned char video_trust_html_start[] asm("_binary_video_trust_html_start");
+extern const unsigned char video_trust_html_end[]   asm("_binary_video_trust_html_end");
+
 static web_asset_t s_web_assets[] = {
     { "/", "text/html", index_html_start, 0 },
     { "/app.js", "application/javascript", app_js_start, 0 },
@@ -43,12 +46,18 @@ static web_asset_t s_web_assets[] = {
 };
 static const size_t s_web_assets_count = sizeof(s_web_assets) / sizeof(s_web_assets[0]);
 
+static web_asset_t s_video_trust_assets[] = {
+    { "/", "text/html", video_trust_html_start, 0 }
+};
+static const size_t s_video_trust_assets_count = sizeof(s_video_trust_assets) / sizeof(s_video_trust_assets[0]);
+
 static void init_web_assets_sizes(void) {
     static bool initialized = false;
     if (initialized) return;
     s_web_assets[0].len = index_html_end - index_html_start;
     s_web_assets[1].len = app_js_end - app_js_start;
     s_web_assets[2].len = app_css_end - app_css_start;
+    s_video_trust_assets[0].len = video_trust_html_end - video_trust_html_start;
     initialized = true;
 }
 
@@ -60,10 +69,11 @@ static SemaphoreHandle_t s_auth_mutex;
 static ws_video_core_t s_ws_core;
 static ws_input_core_t s_ws_input_core;
 static hid_logic_t s_hid_logic;
-// Shared context for the ws_video_core callbacks (the core hands the same user_data to all of them).
+// Shared context for the ws_video_core and ws_input_core callbacks.
 typedef struct {
     frame_hub_t *hub;
     httpd_handle_t server;
+    httpd_handle_t video_server;
 } ws_ctx_t;
 static ws_ctx_t s_ws_ctx;
 static SemaphoreHandle_t s_ws_mutex;
@@ -75,7 +85,9 @@ static TaskHandle_t s_ws_input_task;
 // or later; web_server_start() hands it to hid_logic. Without a sink, ready() is NULL = never ready (USB_STATE 0).
 static hid_sink_t s_hid_sink_cfg;
 
-_Static_assert(CONFIG_WEB_SERVER_WS_MAX_CLIENTS + CONFIG_WEB_SERVER_INPUT_MAX_CONNECTIONS + 5 + 3 <= CONFIG_LWIP_MAX_SOCKETS, "Max open sockets exceeds LWIP limit");
+_Static_assert((CONFIG_WEB_SERVER_INPUT_MAX_CONNECTIONS + 5 + 3) +
+               (CONFIG_WEB_SERVER_WS_MAX_CLIENTS + 2 + 3) <= CONFIG_LWIP_MAX_SOCKETS,
+               "CONFIG_LWIP_MAX_SOCKETS is too small for main + video HTTP servers");
 
 // Lock order: `s_ws_input_mutex` -> `s_auth_mutex` (io_validate_session runs under the input lock, and takes the auth lock).
 // NEVER take `s_ws_input_mutex` while holding `s_auth_mutex`. `s_ws_mutex` (video) and `s_ws_input_mutex` are never nested.
@@ -339,9 +351,8 @@ static uint32_t get_client_ip(httpd_req_t *req) {
     return 0;
 }
 
-static bool check_host_origin(httpd_req_t *req, bool is_post) {
-    char host_buf[64] = {0};
-    if (httpd_req_get_hdr_value_str(req, "Host", host_buf, sizeof(host_buf)) != ESP_OK) {
+static bool check_allowed_host_header(httpd_req_t *req, char *host_buf, size_t host_buf_size) {
+    if (httpd_req_get_hdr_value_str(req, "Host", host_buf, host_buf_size) != ESP_OK) {
         return false;
     }
     char config_hosts[] = CONFIG_WEB_SERVER_ALLOWED_HOSTS;
@@ -357,21 +368,40 @@ static bool check_host_origin(httpd_req_t *req, bool is_post) {
         token = strtok_r(NULL, ",", &saveptr);
     }
 
-    if (!http_guard_host_ok(host_buf, strlen(host_buf), allowed_hosts, allowed_count)) {
+    return http_guard_host_ok(host_buf, strlen(host_buf), allowed_hosts, allowed_count);
+}
+
+static bool check_host_origin(httpd_req_t *req, bool is_post) {
+    char host_buf[128] = {0};
+    if (!check_allowed_host_header(req, host_buf, sizeof(host_buf))) {
         return false;
     }
 
     if (is_post) {
         char origin_buf[128] = {0};
-        if (httpd_req_get_hdr_value_str(req, "Origin", origin_buf, sizeof(origin_buf)) == ESP_OK) {
-            if (!http_guard_origin_ok(origin_buf, strlen(origin_buf), host_buf, strlen(host_buf))) {
-                return false;
-            }
-        } else {
+        if (httpd_req_get_hdr_value_str(req, "Origin", origin_buf, sizeof(origin_buf)) != ESP_OK) {
             return false; // POST requires Origin for CSRF protection
+        }
+        if (!http_guard_origin_ok(origin_buf, strlen(origin_buf), host_buf, strlen(host_buf))) {
+            return false;
         }
     }
     return true;
+}
+
+static void check_video_host_and_origin(httpd_req_t *req, bool *host_ok_out, bool *origin_ok_out) {
+    char host_buf[128] = {0};
+    bool host_ok = check_allowed_host_header(req, host_buf, sizeof(host_buf));
+    bool origin_ok = false;
+    if (host_ok) {
+        char origin_buf[128] = {0};
+        if (httpd_req_get_hdr_value_str(req, "Origin", origin_buf, sizeof(origin_buf)) == ESP_OK) {
+            origin_ok = http_guard_origin_ok_for_port(origin_buf, strlen(origin_buf),
+                                                      host_buf, strlen(host_buf), 443);
+        }
+    }
+    *host_ok_out = host_ok;
+    *origin_ok_out = origin_ok;
 }
 
 static bool get_session_token(httpd_req_t *req, uint8_t token[32]) {
@@ -414,6 +444,22 @@ static esp_err_t send_action_error(httpd_req_t *req, http_guard_action_e action)
     return ESP_OK;
 }
 
+static esp_err_t serve_asset_from_table(httpd_req_t *req, const web_asset_t *table, size_t count) {
+    const web_asset_t *asset = web_assets_find(table, count, req->uri);
+    if (!asset) {
+        add_security_headers(req, NULL);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_sendstr(req, "{\"error\":\"not_found\"}");
+        return ESP_OK;
+    }
+
+    add_security_headers(req, asset->content_type);
+    httpd_resp_set_type(req, asset->content_type);
+    httpd_resp_send(req, (const char *)asset->data, asset->len);
+    return ESP_OK;
+}
+
 static esp_err_t static_handler(httpd_req_t *req) {
     xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
     auth_state_e state = s_auth_ctx.state;
@@ -427,20 +473,17 @@ static esp_err_t static_handler(httpd_req_t *req) {
         return send_action_error(req, action);
     }
 
-    const web_asset_t *asset = web_assets_find(s_web_assets, s_web_assets_count, req->uri);
-    if (!asset) {
+    return serve_asset_from_table(req, s_web_assets, s_web_assets_count);
+}
+
+static esp_err_t video_trust_get_handler(httpd_req_t *req) {
+    char host_buf[128] = {0};
+    if (!check_allowed_host_header(req, host_buf, sizeof(host_buf))) {
         add_security_headers(req, NULL);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_set_status(req, "404 Not Found");
-        httpd_resp_sendstr(req, "{\"error\":\"not_found\"}");
-        return ESP_OK;
+        return send_action_error(req, HTTP_GUARD_ACTION_403_HOST);
     }
 
-    add_security_headers(req, asset->content_type);
-    httpd_resp_set_type(req, asset->content_type);
-
-    httpd_resp_send(req, (const char *)asset->data, asset->len);
-    return ESP_OK;
+    return serve_asset_from_table(req, s_video_trust_assets, s_video_trust_assets_count);
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {
@@ -461,8 +504,12 @@ static esp_err_t status_handler(httpd_req_t *req) {
     http_guard_action_e action = http_guard_decide(state, HTTP_GUARD_METHOD_GET, HTTP_GUARD_PATH_STATUS, valid, host_ok, false, host_ok);
 
     if (action == HTTP_GUARD_ACTION_ALLOW) {
+        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+        uint16_t video_port = (s_ws_ctx.video_server != NULL) ? (uint16_t)CONFIG_WEB_SERVER_VIDEO_PORT : 0;
+        xSemaphoreGive(s_ws_mutex);
+
         char buf[256];
-        http_guard_format_status(state, valid, 0 /* TODO(video-viewer-b3): 映像専用サーバーのポートに結線 */, buf, sizeof(buf));
+        http_guard_format_status(state, valid, video_port, buf, sizeof(buf));
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, buf);
     } else {
@@ -773,35 +820,203 @@ static void ws_video_hub_release(void* user_data, int hub_client_id, const video
     if (hub) frame_hub_release_frame(hub, hub_client_id, frame);
 }
 
-static void ws_video_send_done_cb(esp_err_t err, int socket, void *arg) {
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "WS video send failed on fd=%d (err=0x%x)", socket, (unsigned)err);
+typedef struct {
+    httpd_handle_t server;
+    int fd;
+    const uint8_t *data;
+    size_t len;
+    size_t payload_sent;
+    uint8_t hdr[10];
+    size_t hdr_len;
+    size_t hdr_sent;
+    bool started;
+    uint64_t start_ms;
+    uint64_t deadline_ms;
+} ws_send_work_t;
+
+static size_t build_ws_binary_header(uint8_t hdr[10], size_t payload_len) {
+    hdr[0] = 0x82; // FIN=1, binary frame
+    if (payload_len <= 125u) {
+        hdr[1] = (uint8_t)payload_len;
+        return 2;
     }
+    if (payload_len <= 65535u) {
+        hdr[1] = 126;
+        hdr[2] = (uint8_t)((payload_len >> 8) & 0xFFu);
+        hdr[3] = (uint8_t)(payload_len & 0xFFu);
+        return 4;
+    }
+    hdr[1] = 127;
+    uint64_t len64 = (uint64_t)payload_len;
+    for (int i = 0; i < 8; i++) {
+        hdr[2 + i] = (uint8_t)((len64 >> ((7 - i) * 8)) & 0xFFu);
+    }
+    return 10;
+}
+
+static uint32_t ws_video_min_rate_bps(void) {
+    return (CONFIG_WEB_SERVER_WS_FRAME_MIN_RATE_KBPS > 0)
+               ? (uint32_t)CONFIG_WEB_SERVER_WS_FRAME_MIN_RATE_KBPS * 1000u
+               : 0u;
+}
+
+static bool ws_send_is_wouldblock(int ret) {
+    return (ret == 0 ||
+            ret == ESP_TLS_ERR_SSL_WANT_WRITE ||
+            ret == ESP_TLS_ERR_SSL_WANT_READ ||
+            ret == ESP_TLS_ERR_SSL_TIMEOUT ||
+            ret == HTTPD_SOCK_ERR_TIMEOUT);
+}
+
+static bool ws_send_exceeded(const ws_send_work_t *work, uint64_t now_ms, bool *is_deadline_out) {
+    uint64_t elapsed_ms = (now_ms >= work->start_ms) ? (now_ms - work->start_ms) : 0;
+    if (work->deadline_ms != UINT64_MAX && elapsed_ms >= work->deadline_ms) {
+        *is_deadline_out = true;
+        return true;
+    }
+    if (CONFIG_WEB_SERVER_WS_SEND_TIMEOUT_MS > 0 &&
+        elapsed_ms >= (uint64_t)CONFIG_WEB_SERVER_WS_SEND_TIMEOUT_MS) {
+        *is_deadline_out = false;
+        return true;
+    }
+    return false;
+}
+
+static void ws_video_finish_send(int fd, bool ok) {
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
-    ws_video_core_on_send_done(&s_ws_core, socket, err == ESP_OK);
+    ws_video_core_on_send_done(&s_ws_core, fd, ok);
     xSemaphoreGive(s_ws_mutex);
 }
 
+static void ws_send_slice_work_cb(void *arg) {
+    ws_send_work_t *work = (ws_send_work_t *)arg;
+    if (!work) return;
+
+    uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    bool active = false;
+
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    int slot = ws_clients_find(&s_ws_core.clients, work->fd);
+    if (slot >= 0 &&
+        s_ws_core.clients.clients[slot].state == WS_CLIENT_ACTIVE &&
+        s_ws_core.clients.clients[slot].is_sending &&
+        !s_ws_core.close_requested[slot] &&
+        s_ws_ctx.video_server == work->server) {
+        active = true;
+        if (!work->started) {
+            work->started = true;
+            work->start_ms = now_ms;
+            ws_video_core_on_send_begin(&s_ws_core, work->fd, now_ms);
+        }
+    } else if (slot >= 0) {
+        ws_video_core_on_send_done(&s_ws_core, work->fd, false);
+    }
+    xSemaphoreGive(s_ws_mutex);
+
+    if (!active) {
+        free(work);
+        return;
+    }
+
+    bool is_deadline = false;
+    if (ws_send_exceeded(work, now_ms, &is_deadline)) {
+        ESP_LOGW(TAG, "WS video fd=%d send %s exceeded before slice (elapsed=%" PRIu64 " ms, deadline=%" PRIu64 " ms, sent=%zu/%zu B)",
+                 work->fd, is_deadline ? "deadline" : "stall",
+                 (now_ms >= work->start_ms) ? (now_ms - work->start_ms) : 0,
+                 work->deadline_ms, work->payload_sent, work->len);
+        ws_video_finish_send(work->fd, false);
+        free(work);
+        return;
+    }
+
+    bool hdr_blocked = false;
+    if (work->hdr_sent < work->hdr_len) {
+        size_t hdr_rem = work->hdr_len - work->hdr_sent;
+        int ret = httpd_socket_send(work->server, work->fd,
+                                    (const char *)(work->hdr + work->hdr_sent), hdr_rem, 0);
+        if (ret > 0) {
+            work->hdr_sent += (size_t)ret;
+        } else if (!ws_send_is_wouldblock(ret)) {
+            ESP_LOGW(TAG, "WS video header send failed fd=%d ret=%d", work->fd, ret);
+            ws_video_finish_send(work->fd, false);
+            free(work);
+            return;
+        } else {
+            hdr_blocked = true;
+        }
+    }
+
+    if (!hdr_blocked && work->hdr_sent == work->hdr_len && work->payload_sent < work->len) {
+        size_t rem = work->len - work->payload_sent;
+        size_t slice = (rem > (size_t)CONFIG_WEB_SERVER_WS_SLICE_BYTES)
+                           ? (size_t)CONFIG_WEB_SERVER_WS_SLICE_BYTES
+                           : rem;
+        int ret = httpd_socket_send(work->server, work->fd,
+                                    (const char *)(work->data + work->payload_sent), slice, 0);
+        if (ret > 0) {
+            work->payload_sent += (size_t)ret;
+        } else if (!ws_send_is_wouldblock(ret)) {
+            ESP_LOGW(TAG, "WS video payload send failed fd=%d ret=%d (sent=%zu/%zu B)",
+                     work->fd, ret, work->payload_sent, work->len);
+            ws_video_finish_send(work->fd, false);
+            free(work);
+            return;
+        }
+    }
+
+    if (work->hdr_sent == work->hdr_len && work->payload_sent == work->len) {
+        ws_video_finish_send(work->fd, true);
+        free(work);
+        return;
+    }
+
+    uint64_t after_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    if (ws_send_exceeded(work, after_ms, &is_deadline)) {
+        ESP_LOGW(TAG, "WS video fd=%d send %s exceeded after slice (elapsed=%" PRIu64 " ms, deadline=%" PRIu64 " ms, sent=%zu/%zu B)",
+                 work->fd, is_deadline ? "deadline" : "stall",
+                 (after_ms >= work->start_ms) ? (after_ms - work->start_ms) : 0,
+                 work->deadline_ms, work->payload_sent, work->len);
+        ws_video_finish_send(work->fd, false);
+        free(work);
+        return;
+    }
+
+    // Yield to httpd's FIFO work queue so other /video clients interleave between slices.
+    if (httpd_queue_work(work->server, ws_send_slice_work_cb, work) != ESP_OK) {
+        ESP_LOGW(TAG, "WS video fd=%d failed to re-queue slice work", work->fd);
+        ws_video_finish_send(work->fd, false);
+        free(work);
+    }
+}
+
 static int ws_video_io_begin_send(void* user_data, ws_video_conn_t conn, const uint8_t* data, size_t len) {
-    httpd_handle_t server = user_data ? ((ws_ctx_t *)user_data)->server : NULL;
-    if (!server) return -1;
-    int fd = (int)(intptr_t)conn;
-    httpd_ws_frame_t ws_pkt = {
-        .payload = (uint8_t*)data,
-        .len = len,
-        .type = HTTPD_WS_TYPE_BINARY,
-        .final = true
-    };
-    esp_err_t ret = httpd_ws_send_data_async(server, fd, &ws_pkt, ws_video_send_done_cb, NULL);
-    return (ret == ESP_OK) ? 0 : -1;
+    httpd_handle_t video_server = user_data ? ((ws_ctx_t *)user_data)->video_server : NULL;
+    if (!video_server) return -1;
+
+    ws_send_work_t *work = calloc(1, sizeof(ws_send_work_t));
+    if (!work) return -1;
+
+    work->server = video_server;
+    work->fd = (int)(intptr_t)conn;
+    work->data = data;
+    work->len = len;
+    work->hdr_len = build_ws_binary_header(work->hdr, len);
+    work->deadline_ms = ws_video_frame_deadline_ms(
+        len, (uint32_t)CONFIG_WEB_SERVER_WS_FRAME_DEADLINE_BASE_MS, ws_video_min_rate_bps());
+
+    if (httpd_queue_work(video_server, ws_send_slice_work_cb, work) != ESP_OK) {
+        free(work);
+        return -1;
+    }
+    return 0;
 }
 
 static void ws_video_io_request_close(void* user_data, ws_video_conn_t conn) {
-    httpd_handle_t server = user_data ? ((ws_ctx_t *)user_data)->server : NULL;
-    if (!server) return;
+    httpd_handle_t video_server = user_data ? ((ws_ctx_t *)user_data)->video_server : NULL;
+    if (!video_server) return;
     int fd = (int)(intptr_t)conn;
     ESP_LOGI(TAG, "WS video requesting close on fd=%d", fd);
-    httpd_sess_trigger_close(server, fd);
+    httpd_sess_trigger_close(video_server, fd);
 }
 
 static void ws_input_send_done_cb(esp_err_t err, int socket, void *arg) {
@@ -845,8 +1060,9 @@ static bool ws_video_io_validate_session(void* user_data, const uint8_t token[32
 }
 
 static esp_err_t ws_video_pre_handshake_cb(httpd_req_t *req) {
-    bool host_ok = check_host_origin(req, true); // GET but enforce Origin explicitly
-    bool origin_ok = host_ok; // Same strict checks applies using check_host_origin
+    bool host_ok = false;
+    bool origin_ok = false;
+    check_video_host_and_origin(req, &host_ok, &origin_ok);
 
     uint8_t token[32];
     bool has_token = get_session_token(req, token);
@@ -1047,14 +1263,21 @@ static esp_err_t ws_input_handler(httpd_req_t *req) {
 }
 
 static void ws_video_close_fn(httpd_handle_t handle, int sockfd) {
+    (void)handle;
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     bool tracked = (ws_clients_find(&s_ws_core.clients, sockfd) >= 0);
     ws_video_core_on_close(&s_ws_core, sockfd);
     xSemaphoreGive(s_ws_mutex);
     if (tracked) {
-        ESP_LOGI(TAG, "WS video client closed fd=%d", sockfd);
+        ESP_LOGI(TAG, "WS video client closed fd=%d (video httpd stack HWM=%u bytes free)",
+                 sockfd, (unsigned)uxTaskGetStackHighWaterMark(NULL));
     }
 
+    close(sockfd);
+}
+
+static void ws_input_close_fn(httpd_handle_t handle, int sockfd) {
+    (void)handle;
     xSemaphoreTake(s_ws_input_mutex, portMAX_DELAY);
     bool tracked_input = (ws_clients_find(&s_ws_input_core.clients, sockfd) >= 0);
     ws_input_core_on_close(&s_ws_input_core, sockfd);
@@ -1108,10 +1331,14 @@ esp_err_t web_server_start(frame_hub_t *hub) {
     s_ws_mutex = xSemaphoreCreateMutex();
     s_ws_ctx.hub = hub;
     s_ws_ctx.server = NULL;
+    s_ws_ctx.video_server = NULL;
     ws_video_core_config_t ws_config = {
         .max_clients = CONFIG_WEB_SERVER_WS_MAX_CLIENTS,
         .session_check_interval_ms = 5000,
         .send_timeout_ms = CONFIG_WEB_SERVER_WS_SEND_TIMEOUT_MS,
+        .queue_timeout_ms = CONFIG_WEB_SERVER_WS_QUEUE_TIMEOUT_MS,
+        .frame_deadline_base_ms = CONFIG_WEB_SERVER_WS_FRAME_DEADLINE_BASE_MS,
+        .frame_min_rate_bytes_per_s = ws_video_min_rate_bps(),
         .hub_register = ws_video_hub_register,
         .hub_unregister = ws_video_hub_unregister,
         .hub_get_latest = ws_video_hub_get_latest,
@@ -1180,16 +1407,13 @@ esp_err_t web_server_start(frame_hub_t *hub) {
 
 
     httpd_ssl_config_t conf = HTTPD_SSL_CONFIG_DEFAULT();
-    conf.httpd.max_open_sockets = CONFIG_WEB_SERVER_WS_MAX_CLIENTS + CONFIG_WEB_SERVER_INPUT_MAX_CONNECTIONS + 5; // Max clients + 5 for status, API etc.
+    conf.httpd.max_open_sockets = CONFIG_WEB_SERVER_INPUT_MAX_CONNECTIONS + 5; // Input clients + 5 for status, API, static
     conf.httpd.lru_purge_enable = true;
     conf.httpd.stack_size = 10240; // 10KB to ensure PBKDF2/mbedTLS have enough space
     conf.httpd.max_uri_handlers = 17; // Increased for WS
     conf.httpd.send_wait_timeout = CONFIG_WEB_SERVER_SEND_WAIT_TIMEOUT;
-    conf.httpd.close_fn = ws_video_close_fn;
-#ifdef CONFIG_HTTPD_WS_SUPPORT
+    conf.httpd.close_fn = ws_input_close_fn;
 
-
-#endif
     char *cert_pem = NULL;
     size_t cert_len = 0;
     char *key_pem = NULL;
@@ -1233,6 +1457,25 @@ esp_err_t web_server_start(frame_hub_t *hub) {
     httpd_handle_t server = NULL;
     esp_err_t ret = httpd_ssl_start(&server, &conf);
 
+    httpd_handle_t video_server = NULL;
+    esp_err_t video_ret = ESP_OK;
+    httpd_ssl_config_t video_conf = HTTPD_SSL_CONFIG_DEFAULT();
+    if (ret == ESP_OK && hub != NULL) {
+        video_conf.port_secure = CONFIG_WEB_SERVER_VIDEO_PORT;
+        video_conf.httpd.ctrl_port = conf.httpd.ctrl_port + 1;
+        video_conf.httpd.max_open_sockets = CONFIG_WEB_SERVER_WS_MAX_CLIENTS + 2;
+        video_conf.httpd.lru_purge_enable = true;
+        video_conf.httpd.stack_size = CONFIG_WEB_SERVER_VIDEO_STACK_SIZE;
+        video_conf.httpd.max_uri_handlers = 4;
+        video_conf.httpd.send_wait_timeout = CONFIG_WEB_SERVER_SEND_WAIT_TIMEOUT;
+        video_conf.httpd.close_fn = ws_video_close_fn;
+        video_conf.servercert = (const uint8_t *)cert_pem;
+        video_conf.servercert_len = cert_len;
+        video_conf.prvtkey_pem = (const uint8_t *)key_pem;
+        video_conf.prvtkey_len = key_len;
+        video_ret = httpd_ssl_start(&video_server, &video_conf);
+    }
+
     free(cert_pem);
     if (key_pem) {
         mbedtls_platform_zeroize(key_pem, key_len);
@@ -1243,26 +1486,17 @@ esp_err_t web_server_start(frame_hub_t *hub) {
         ESP_LOGE(TAG, "Failed to start HTTPS server!");
         return ret;
     }
-
+    if (hub != NULL && video_ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start video HTTPS server on port %d!", CONFIG_WEB_SERVER_VIDEO_PORT);
+        httpd_ssl_stop(server);
+        return video_ret;
+    }
 
     // The server handle is needed by /ws (io_send, io_request_close) whether or not there is a video hub.
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     s_ws_ctx.server = server;
+    s_ws_ctx.video_server = video_server;
     xSemaphoreGive(s_ws_mutex);
-
-    if (xTaskCreate(ws_input_task, "ws_input", CONFIG_WEB_SERVER_INPUT_TASK_STACK_SIZE, NULL, 4, &s_ws_input_task) != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create ws_input task");
-        httpd_ssl_stop(server);
-        return ESP_FAIL;
-    }
-
-    if (hub) {
-        if (xTaskCreate(ws_video_task, "ws_video", CONFIG_WEB_SERVER_WS_TASK_STACK_SIZE, NULL, 4, &s_ws_task) != pdPASS) {
-            ESP_LOGE(TAG, "Failed to create ws_video task");
-            httpd_ssl_stop(server);
-            return ESP_FAIL;
-        }
-    }
 
     httpd_uri_t static_root_uri = { .uri = "/", .method = HTTP_GET, .handler = static_handler, .user_ctx = NULL };
     httpd_uri_t static_js_uri = { .uri = "/app.js", .method = HTTP_GET, .handler = static_handler, .user_ctx = NULL };
@@ -1272,6 +1506,7 @@ esp_err_t web_server_start(frame_hub_t *hub) {
     httpd_uri_t login_uri = { .uri = "/api/v1/auth/login", .method = HTTP_POST, .handler = login_handler, .user_ctx = NULL };
     httpd_uri_t logout_uri = { .uri = "/api/v1/auth/logout", .method = HTTP_POST, .handler = logout_handler, .user_ctx = NULL };
 
+    httpd_uri_t video_trust_root_uri = { .uri = "/", .method = HTTP_GET, .handler = video_trust_get_handler, .user_ctx = NULL };
     httpd_uri_t ws_video_uri = {
         .uri = "/video",
         .method = HTTP_GET,
@@ -1303,7 +1538,6 @@ esp_err_t web_server_start(frame_hub_t *hub) {
 #endif
     };
 
-
     if (httpd_register_uri_handler(server, &static_root_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &static_js_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &static_css_uri) != ESP_OK ||
@@ -1311,20 +1545,59 @@ esp_err_t web_server_start(frame_hub_t *hub) {
         httpd_register_uri_handler(server, &setup_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &login_uri) != ESP_OK ||
         httpd_register_uri_handler(server, &logout_uri) != ESP_OK ||
-        (hub && httpd_register_uri_handler(server, &ws_video_uri) != ESP_OK) ||
         httpd_register_uri_handler(server, &ws_input_uri) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register URI handlers");
-        httpd_ssl_stop(server);
-        return ESP_FAIL;
+        ESP_LOGE(TAG, "Failed to register URI handlers on main server");
+        goto fail;
     }
     if (httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, err_404_handler) != ESP_OK ||
         httpd_register_err_handler(server, HTTPD_405_METHOD_NOT_ALLOWED, err_405_handler) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register error handlers");
-        httpd_ssl_stop(server);
-        return ESP_FAIL;
+        ESP_LOGE(TAG, "Failed to register error handlers on main server");
+        goto fail;
+    }
+
+    if (video_server) {
+        if (httpd_register_uri_handler(video_server, &video_trust_root_uri) != ESP_OK ||
+            httpd_register_uri_handler(video_server, &ws_video_uri) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to register URI handlers on video server");
+            goto fail;
+        }
+        if (httpd_register_err_handler(video_server, HTTPD_404_NOT_FOUND, err_404_handler) != ESP_OK ||
+            httpd_register_err_handler(video_server, HTTPD_405_METHOD_NOT_ALLOWED, err_405_handler) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to register error handlers on video server");
+            goto fail;
+        }
+    }
+
+    if (xTaskCreate(ws_input_task, "ws_input", CONFIG_WEB_SERVER_INPUT_TASK_STACK_SIZE, NULL, 4, &s_ws_input_task) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create ws_input task");
+        goto fail;
+    }
+
+    if (video_server) {
+        if (xTaskCreate(ws_video_task, "ws_video", CONFIG_WEB_SERVER_WS_TASK_STACK_SIZE, NULL, 4, &s_ws_task) != pdPASS) {
+            ESP_LOGE(TAG, "Failed to create ws_video task");
+            goto fail;
+        }
+        ESP_LOGI(TAG, "Video HTTPS server started on port %d (ctrl_port=%d)",
+                 CONFIG_WEB_SERVER_VIDEO_PORT, video_conf.httpd.ctrl_port);
     }
 
     return ESP_OK;
+
+fail:
+    if (s_ws_input_task) {
+        vTaskDelete(s_ws_input_task);
+        s_ws_input_task = NULL;
+    }
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    s_ws_ctx.video_server = NULL;
+    s_ws_ctx.server = NULL;
+    xSemaphoreGive(s_ws_mutex);
+    if (video_server) {
+        httpd_ssl_stop(video_server);
+    }
+    httpd_ssl_stop(server);
+    return ESP_FAIL;
 }
 
 bool web_server_needs_setup(void)
