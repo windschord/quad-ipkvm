@@ -58,6 +58,10 @@ esp_err_t csi_jpeg_encode_swapped_uyvy(csi_jpeg_handle_t h,
 size_t csi_jpeg_output_capacity(csi_jpeg_handle_t h);
 size_t csi_jpeg_ppa_capacity(csi_jpeg_handle_t h);
 
+// Dynamically updates the JPEG quality (1..100) used by subsequent encode calls.
+esp_err_t csi_jpeg_set_quality(csi_jpeg_handle_t h, uint8_t quality);
+uint8_t csi_jpeg_get_quality(csi_jpeg_handle_t h);
+
 esp_err_t csi_jpeg_close(csi_jpeg_handle_t h);
 
 #ifdef __cplusplus

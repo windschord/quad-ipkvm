@@ -368,6 +368,8 @@ esp_err_t csi_capture_close(csi_capture_handle_t h) {
     if (stop_err != ESP_OK) {
         ESP_LOGW(TAG, "stop during close returned %s; forcing CSI bridge off before freeing",
                  esp_err_to_name(stop_err));
+        // TODO(hw-verify): verify on ESP32-P4 hardware that clearing MIPI_CSI_BRIDGE.csi_en.val = 0
+        // synchronously halts in-flight DW_GDMA transfers before free_handle(h) releases PSRAM buffers.
         MIPI_CSI_BRIDGE.csi_en.val = 0;
     }
     free_handle(h);

@@ -323,6 +323,20 @@ size_t csi_jpeg_ppa_capacity(csi_jpeg_handle_t h)
     return h ? h->ppa_buf_bytes : 0u;
 }
 
+esp_err_t csi_jpeg_set_quality(csi_jpeg_handle_t h, uint8_t quality)
+{
+    if (!h || quality < 1u || quality > 100u) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    h->quality = quality;
+    return ESP_OK;
+}
+
+uint8_t csi_jpeg_get_quality(csi_jpeg_handle_t h)
+{
+    return h ? h->quality : 0u;
+}
+
 esp_err_t csi_jpeg_close(csi_jpeg_handle_t h)
 {
     if (!h) {

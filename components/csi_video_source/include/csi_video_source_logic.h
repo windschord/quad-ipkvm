@@ -103,6 +103,7 @@ void csi_video_pub_stats_on_error(csi_video_pub_stats_t *st);
 #define CSI_MODE_STABLE_COUNT         2u
 #define CSI_MODE_STALL_TIMEOUT_MS     2000u
 #define CSI_MODE_RECOVERY_COOLDOWN_MS 8000u
+#define CSI_MODE_MAX_CONSEC_SAMPLE_ERRORS 25u
 #define CSI_HPD_NUDGE_STEPS           3u
 #define CSI_HPD_NUDGE_DELAY_0_MS      10000u
 #define CSI_HPD_NUDGE_DELAY_1_MS      20000u
@@ -147,7 +148,8 @@ typedef struct {
     uint32_t mode_switches;
     uint32_t hpd_nudges;
     uint32_t stall_recoveries;
-    uint32_t sample_errors;             // transient I2C/signal read failures skipped by poll
+    uint32_t sample_errors;             // cumulative I2C/signal read failures skipped by poll
+    uint32_t consecutive_sample_errors; // consecutive poll failures; reset on valid sample
 } csi_mode_tracker_t;
 
 void csi_mode_tracker_init(csi_mode_tracker_t *m);
