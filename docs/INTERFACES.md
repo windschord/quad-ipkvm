@@ -56,6 +56,24 @@ typedef struct {
 void csi_video_source_get_status(csi_video_status_t *out);
 ```
 
+#### 提供元（`video_status`、C-6a）
+
+KVM 側が、映像ソースの種類（CSI、テストパターン、将来の別ソース）を知らなくて済むように、映像の状態は**映像ソースに依存しない「提供元」**に集める（`components/video_status`、純 C、IDF 非依存。テストと結果は `docs/VIDEO_STATUS_TESTS.md`）。
+
+```c
+typedef struct { kvm_video_sync_state_t state; uint32_t width, height; } video_status_t;  // csi_video_status_t と同じ並び
+typedef void (*video_status_get_fn)(void *ctx, video_status_t *out);
+void video_status_set_provider(video_status_get_fn fn, void *ctx);  // NULL で既定（提供元なし）に戻す
+void video_status_get(video_status_t *out);                          // 既定は UNKNOWN / 0 / 0。out が NULL でも落ちない
+```
+
+- **映像ソースは、自分の状態を `video_status_set_provider()` で登録する**（`csi_video_source_get_status` と同じ意味の関数を渡す。CSI は `main.c` の小さなアダプターで `csi_video_status_t` を `video_status_t` に写す。`test_pattern_source` は、切り替えられる偽の状態 `test_pattern_source_get_status` / `test_pattern_source_set_status` を持つ。既定は `LOCKED`、640x480）。
+- **KVM 側（`kvm_service` -> `kvm_ctrl` -> `kvm_logic`）は、`video_status_get()` だけを読む**。
+- **登録は、読み手のタスクを起動する前に、1 回だけ**。読み手（`kvm_service` のタスクなど）はロックしない。提供元は ctx と fn を 1 つの構造体にして持ち、書き込みは起動前の 1 回の代入だけ（起動後の取り替えは禁止）。**`kvm_service_start` は、映像ソースの登録の後に呼ぶこと**（A-9）。
+- `video_status_get()` は、提供元の値を検査して直す: 範囲外の `state` は `UNKNOWN`、`LOCKED` で `width` / `height` のどちらかが 0 なら `UNKNOWN`、`LOCKED` 以外は `width = height = 0`、提供元が `out` を書かなければ `UNKNOWN`。不整合な値を KVM に渡さない。
+- 提供元がなければ（登録前、CSI の初期化に失敗、など）`UNKNOWN`。`kvm_logic` は、`UNKNOWN` では切替の映像待ちをタイムアウト（`switch_video_sync_timeout_ms`）まで続けてから完了し、idle の ATX は映像に関係なく受理される（`docs/VIDEO_STATUS_TESTS.md` 2 章）。
+- クライアント（ブラウザ）への通知の方法は、このインターフェースの範囲外（C-6b）。
+
 ## 2. Kconfig の名前空間
 
 | 接頭辞 | 担当 | 例 |
@@ -192,7 +210,9 @@ typedef struct {
     int (*release_all)(void *ctx);
     /* KVM の LED の論理値（ビット 0..3 = ch1..4 が点灯）。フォトカプラの極性はボード側で吸収。失敗は < 0 */
     int (*read_led_mask)(void *ctx, uint8_t *mask);
-    /* 映像の同期状態（映像側の状態 1.3 を結線する。HAL を実装しない環境では UNKNOWN を返してよい） */
+    /* 映像の同期状態。kvm_ctrl_init は NULL を拒否する（ホストのモックは値を持つ）。
+     * 実機では kvm_service が、この関数を video_status（1.3 の提供元）を読む関数に置き換えるので、
+     * ボード側は実装しなくてよい（NULL でも UNKNOWN を返す関数でもよい） */
     kvm_video_sync_state_t (*video_sync)(void *ctx);
 } kvm_board_hal_t;
 ```
@@ -220,4 +240,6 @@ typedef struct {
 
 ### 6.4 Antigravity への依頼（A-9）
 - 実機の `kvm_board_hal_t` 実装（GPIO、フォトカプラの極性、ハードウェアタイマーの自動解除）。**このインターフェースに合意できるか**を、Issue #85 のコメントで回答してほしい。変えたい点（例: 自動解除を `gptimer` ではなく別の手段にする）があれば、`contract` ラベルの Issue で。
+- **`kvm_service_start(const kvm_board_hal_t *hal)`（`components/kvm_service/include/kvm_service.h`）の呼び出し元は A-9**（実機の HAL ができたら `main/main.c` から呼ぶ）。C-5b の時点では呼ばれないので、`web_server` の KVM / ATX の API は 503 `not_ready` を返す。HAL の `ctx` は起動後もずっと有効であること。パルス長・間隔・余裕・tick 周期は Kconfig（`ATX_*`、`KVM_*`）で、値はすべて `TODO(hw-verify)`。
+- **`video_sync` は実装不要**（C-6a）。`kvm_service_start` は、渡された HAL を内部にコピーして、`video_sync` だけを `video_status_get()` の `state` を返す関数（`video_status_hal_sync`）に置き換えてから `kvm_ctrl_init` に渡す。映像の状態は、映像ソースが `video_status_set_provider()` で登録する（1.3）。**`kvm_service_start` は、映像ソースの登録（`main.c` の映像ソースのブロック）より後に呼ぶ**（登録は読み手のタスクの起動前に 1 回だけ、という規則のため）。
 - それまで、ホストでは**モック HAL**（`test/host/kvm_board/`）で検証する。モックは、上の「ボード側の義務」の 2 と 4 も再現し、`kvm_ctrl` が不変条件に反した順序で呼ばないことをテストで固定する。

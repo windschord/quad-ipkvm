@@ -53,8 +53,9 @@ typedef struct {
     /* KVM の LED の論理値（ビット 0..3 = ch1..4 が点灯）。フォトカプラの極性はボード側で吸収。失敗は < 0。 */
     int (*read_led_mask)(void *ctx, uint8_t *mask);
 
-    /* 映像の同期状態（映像側の状態 INTERFACES.md 1.3 を結線する）。
-     * HAL を実装しない環境では KVM_VIDEO_SYNC_UNKNOWN を返してよい（関数ポインタ自体は必須）。 */
+    /* 映像の同期状態。kvm_ctrl_init は、関数ポインタが NULL だと拒否する（ホストのテストとモックは、ここに値を持つ）。
+     * 実機では **kvm_service が、この関数を video_status（INTERFACES.md 1.3 の提供元）を読む関数に置き換える**ので、
+     * ボード側（A-9）は実装しなくてよい（NULL でも、KVM_VIDEO_SYNC_UNKNOWN を返す関数でもよい）。 */
     kvm_video_sync_state_t (*video_sync)(void *ctx);
 } kvm_board_hal_t;
 

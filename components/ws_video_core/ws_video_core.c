@@ -1,6 +1,28 @@
 #include "ws_video_core.h"
 #include <string.h>
 
+uint64_t ws_video_frame_deadline_ms(size_t size_bytes, uint32_t base_ms, uint32_t min_rate_bytes_per_s) {
+    if (min_rate_bytes_per_s == 0) return UINT64_MAX;
+
+    /* floor(size * 1000 / rate) を、size * 1000 を作らずに求める:
+     * size = q * rate + r (r < rate <= 2^32) なら、q * 1000 + r * 1000 / rate。r * 1000 < 2^42 で溢れない。 */
+    uint64_t size = (uint64_t)size_bytes;
+    uint64_t rate = (uint64_t)min_rate_bytes_per_s;
+    uint64_t q = size / rate;
+    uint64_t r = size % rate;
+    if (q > UINT64_MAX / 1000u) return UINT64_MAX;
+    uint64_t extra = q * 1000u + (r * 1000u) / rate;
+    if (extra < q * 1000u) return UINT64_MAX; // (加算の溢れ。r*1000/rate < 1000 なので、q*1000 が上限近いときだけ)
+    if (extra > UINT64_MAX - (uint64_t)base_ms) return UINT64_MAX;
+    return (uint64_t)base_ms + extra;
+}
+
+static void reset_send_times(ws_video_core_t* core, int slot) {
+    core->send_started_ms[slot] = 0;
+    core->queued_ms[slot] = 0;
+    core->send_begun[slot] = false;
+}
+
 static void do_request_close(ws_video_core_t* core, int slot) {
     if (!core->close_requested[slot]) {
         core->close_requested[slot] = true;
@@ -67,7 +89,7 @@ int ws_video_core_on_connect(ws_video_core_t* core, ws_video_conn_t conn, int fd
     memcpy(core->tokens[slot], token, 32);
     core->current_frames[slot] = NULL;
     core->last_seqs[slot] = -1;
-    core->send_started_ms[slot] = 0;
+    reset_send_times(core, slot);
     core->close_requested[slot] = false;
 
     return slot;
@@ -87,10 +109,21 @@ void ws_video_core_on_close(ws_video_core_t* core, int fd) {
         // Safe to unregister immediately
         core->config.hub_unregister(core->config.user_data, hub_client_id);
         memset(core->tokens[slot], 0, 32);
-        core->send_started_ms[slot] = 0;
+        reset_send_times(core, slot);
         core->close_requested[slot] = false;
     }
     // If it was sending, the state is now CLOSING. We will unregister in on_send_done.
+}
+
+void ws_video_core_on_send_begin(ws_video_core_t* core, int fd, uint64_t now_ms) {
+    if (!core) return;
+    int slot = ws_clients_find(&core->clients, fd);
+    if (slot < 0) return;
+    if (!core->clients.clients[slot].is_sending) return;
+    if (core->send_begun[slot]) return; // 2 回目は、開始時刻を延ばさない
+
+    core->send_begun[slot] = true;
+    core->send_started_ms[slot] = now_ms;
 }
 
 void ws_video_core_on_send_done(ws_video_core_t* core, int fd, bool ok) {
@@ -106,7 +139,10 @@ void ws_video_core_on_send_done(ws_video_core_t* core, int fd, bool ok) {
     int hub_client_id = core->clients.clients[slot].hub_client_id;
     const video_frame_t* frame = core->current_frames[slot];
 
-     ws_clients_end_send(&core->clients, slot);
+    ws_clients_end_send(&core->clients, slot);
+    // on_send_begin が呼ばれたかどうかに関わらず、この送信の時刻の記録を捨てる
+    core->send_begun[slot] = false;
+    core->queued_ms[slot] = 0;
 
     if (frame) {
         core->config.hub_release(core->config.user_data, hub_client_id, frame);
@@ -121,7 +157,7 @@ void ws_video_core_on_send_done(ws_video_core_t* core, int fd, bool ok) {
         // Was CLOSING, now FREE. Time to unregister.
         core->config.hub_unregister(core->config.user_data, hub_client_id);
         memset(core->tokens[slot], 0, 32);
-        core->send_started_ms[slot] = 0;
+        reset_send_times(core, slot);
         core->close_requested[slot] = false;
     }
 }
@@ -152,12 +188,44 @@ void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
             }
         }
 
-        // Send stall check while a frame is in flight
+        // A frame is in flight: queue wait / send stall / whole-frame deadline
         if (core->clients.clients[i].is_sending) {
-            if (core->config.send_timeout_ms > 0) {
+            if (core->send_begun[i]) {
+                // 実際に送り始めた後。時刻の巻き戻りは、開始時刻を now に合わせて、誤って閉じない。
                 if (now_ms < core->send_started_ms[i]) {
                     core->send_started_ms[i] = now_ms;
-                } else if ((now_ms - core->send_started_ms[i]) >= core->config.send_timeout_ms) {
+                }
+                uint64_t elapsed = now_ms - core->send_started_ms[i];
+
+                if (core->config.send_timeout_ms > 0 && elapsed >= core->config.send_timeout_ms) {
+                    do_request_close(core, i);
+                    continue;
+                }
+                if (core->config.frame_min_rate_bytes_per_s > 0) {
+                    const video_frame_t* f = core->current_frames[i];
+                    size_t size = f ? f->size : 0;
+                    uint64_t deadline = ws_video_frame_deadline_ms(size, core->config.frame_deadline_base_ms,
+                                                                   core->config.frame_min_rate_bytes_per_s);
+                    if (elapsed >= deadline) {
+                        do_request_close(core, i);
+                        continue;
+                    }
+                }
+            } else {
+                // キューに入れたが、まだ送り始めていない
+                if (now_ms < core->queued_ms[i]) {
+                    core->queued_ms[i] = now_ms;
+                }
+                uint64_t waited = now_ms - core->queued_ms[i];
+
+                if (core->config.queue_timeout_ms > 0) {
+                    if (waited >= core->config.queue_timeout_ms) {
+                        do_request_close(core, i);
+                        continue;
+                    }
+                } else if (core->config.send_timeout_ms > 0 && waited >= core->config.send_timeout_ms) {
+                    // 互換 (queue_timeout_ms == 0): on_send_begin を使わない呼び出し側は、従来どおり、
+                    // キューに入れた時刻から送信の停止を数える。
                     do_request_close(core, i);
                     continue;
                 }
@@ -186,7 +254,8 @@ void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
                 // Success
                 core->current_frames[i] = frame;
                 core->last_seqs[i] = frame->seq; // Update last_seq AFTER successful begin_send
-                core->send_started_ms[i] = now_ms;
+                core->queued_ms[i] = now_ms;     // キューに入れた時刻。send_started_ms は on_send_begin で設定する
+                core->send_begun[i] = false;
             } else {
                 // Fail
                 core->config.hub_release(core->config.user_data, hub_client_id, frame);

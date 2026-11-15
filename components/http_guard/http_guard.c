@@ -287,6 +287,83 @@ bool http_guard_origin_ok(const char *origin, size_t origin_len, const char *hos
     return true;
 }
 
+// --- Origin (ページのポートつき) ---
+
+#define HG_AUTHORITY_NAME_MAX 255
+
+/* ホスト名に使える文字: 英数字、'-'、'_'、'.'。先頭・末尾・連続の '.'(空のラベル)は不可。
+ * '@'、'['、']'、'/'、'?'、'#'、':'、空白、制御文字、非 ASCII は、すべてここで拒否される。 */
+static bool hg_hostname_ok(const char *s, size_t n) {
+    if (n == 0 || n > HG_AUTHORITY_NAME_MAX) return false;
+    bool prev_dot = true; // 先頭の '.' を拒否するため、直前が '.' だったことにする
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '.') {
+            if (prev_dot) return false;
+            prev_dot = true;
+            continue;
+        }
+        bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '_';
+        if (!ok) return false;
+        prev_dot = false;
+    }
+    return !prev_dot; // 末尾の '.' を拒否
+}
+
+/* "name" または "name:port" を分ける。port は 1〜65535 の 10 進、先頭ゼロなし、空は不可。 */
+static bool hg_split_authority(const char *a, size_t len, size_t *name_len, bool *has_port, uint32_t *port) {
+    size_t colon = len;
+    for (size_t i = 0; i < len; i++) {
+        if (a[i] == ':') { colon = i; break; }
+    }
+    if (!hg_hostname_ok(a, colon)) return false;
+    *name_len = colon;
+    *has_port = (colon < len);
+    *port = 0;
+    if (colon == len) return true;
+
+    size_t plen = len - colon - 1;
+    if (plen == 0 || plen > 5) return false;
+    if (plen > 1 && a[colon + 1] == '0') return false;
+    uint32_t v = 0;
+    for (size_t i = colon + 1; i < len; i++) {
+        if (a[i] < '0' || a[i] > '9') return false;
+        v = v * 10 + (uint32_t)(a[i] - '0');
+    }
+    if (v < 1 || v > 65535) return false;
+    *port = v;
+    return true;
+}
+
+bool http_guard_origin_ok_for_port(const char *origin, size_t origin_len, const char *host, size_t host_len, uint16_t page_port) {
+    if (!origin || !host || origin_len == 0 || host_len == 0) return false;
+    if (page_port == 0) return false;
+
+    static const char scheme[] = "https://";
+    const size_t scheme_len = 8;
+    if (origin_len <= scheme_len) return false; // "null" もここで落ちる
+    for (size_t i = 0; i < scheme_len; i++) {
+        if (tolower((unsigned char)origin[i]) != scheme[i]) return false;
+    }
+
+    size_t o_name_len = 0, h_name_len = 0;
+    bool o_has_port = false, h_has_port = false;
+    uint32_t o_port = 0, h_port = 0;
+    // パス・ユーザー情報・IPv6 などは、ホスト名の文字の検査で拒否される。
+    if (!hg_split_authority(origin + scheme_len, origin_len - scheme_len, &o_name_len, &o_has_port, &o_port)) return false;
+    if (!hg_split_authority(host, host_len, &h_name_len, &h_has_port, &h_port)) return false;
+
+    // Origin のポートは、ページのポート(Origin に無ければ 443)と一致すること。Host のポート(映像サーバー)は問わない。
+    uint32_t effective_port = o_has_port ? o_port : 443u;
+    if (effective_port != (uint32_t)page_port) return false;
+
+    if (o_name_len != h_name_len) return false;
+    for (size_t i = 0; i < o_name_len; i++) {
+        if (tolower((unsigned char)origin[scheme_len + i]) != tolower((unsigned char)host[i])) return false;
+    }
+    return true;
+}
+
 // --- JSON Parsing & UTF-8 ---
 
 static bool is_valid_utf8(const char *str, size_t len) {
@@ -610,6 +687,19 @@ http_guard_action_e http_guard_decide(auth_state_e state, http_guard_method_e me
             return HTTP_GUARD_ACTION_ALLOW;
         }
 
+        // KVM / ATX API (docs/WEB_API.md 7). A valid session is already required above.
+        // The status is a plain GET (the page's own fetch() sends no Origin on a same-origin GET).
+        // select and power change the hardware: POST only, Origin and a JSON Content-Type are mandatory.
+        if (path == HTTP_GUARD_PATH_KVM_STATUS) {
+            return (method == HTTP_GUARD_METHOD_GET) ? HTTP_GUARD_ACTION_ALLOW : HTTP_GUARD_ACTION_405;
+        }
+        if (path == HTTP_GUARD_PATH_KVM_SELECT || path == HTTP_GUARD_PATH_POWER) {
+            if (method != HTTP_GUARD_METHOD_POST) return HTTP_GUARD_ACTION_405;
+            if (!origin_ok) return HTTP_GUARD_ACTION_403_ORIGIN;
+            if (!is_json) return HTTP_GUARD_ACTION_415;
+            return HTTP_GUARD_ACTION_ALLOW;
+        }
+
         // Other protected resources
         if (method == HTTP_GUARD_METHOD_POST) {
             if (!origin_ok) return HTTP_GUARD_ACTION_403_ORIGIN;
@@ -631,11 +721,18 @@ int http_guard_format_error(const char *msg, char *out, size_t out_len) {
     return 0;
 }
 
-int http_guard_format_status(auth_state_e state, bool authenticated, char *out, size_t out_len) {
+int http_guard_format_status(auth_state_e state, bool authenticated, uint16_t video_port, char *out, size_t out_len) {
     if (!out || out_len == 0) return -1;
     const char *state_str = (state == AUTH_STATE_NEEDS_SETUP) ? "needs_setup" : "ready";
     const char *auth_str = authenticated ? "true" : "false";
-    int ret = snprintf(out, out_len, "{\"state\":\"%s\",\"authenticated\":%s}", state_str, auth_str);
+    int ret;
+    if (video_port == 0) {
+        // 映像専用のサーバーなし(映像はメインのポートの /video)。後方互換のため video_port を出さない。
+        ret = snprintf(out, out_len, "{\"state\":\"%s\",\"authenticated\":%s}", state_str, auth_str);
+    } else {
+        ret = snprintf(out, out_len, "{\"state\":\"%s\",\"authenticated\":%s,\"video_port\":%u}",
+                       state_str, auth_str, (unsigned)video_port);
+    }
     if (ret < 0 || (size_t)ret >= out_len) return -1;
     return 0;
 }
