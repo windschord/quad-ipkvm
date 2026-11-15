@@ -889,17 +889,46 @@ void test_text_deadline_closes_only_that_client(void) {
     TEST_ASSERT_EQUAL(0, close_cnt[11]);
 }
 
+void test_text_deadline_uses_each_clients_own_text_length(void) {
+    ws_video_core_config_t cfg = base_cfg(0);
+    cfg.frame_deadline_base_ms = 100;
+    cfg.frame_min_rate_bytes_per_s = 100;
+    start_cfg(&cfg);
+    connect_fd(10, 0);
+    tick(0);                               // スロット 0: unknown (短いテキスト)
+    size_t len10 = text_log_len[0];
+    status_set(KVM_VIDEO_SYNC_LOCKED, 1280, 720);
+    connect_fd(11, 0);
+    tick(0);                               // スロット 1: locked (長いテキスト)
+    size_t len11 = text_log_len[1];
+    TEST_ASSERT_TRUE(len11 > len10);
+    ws_video_core_on_send_begin(&core, 10, 0);
+    ws_video_core_on_send_begin(&core, 11, 0);
+    uint64_t dl10 = 100 + len10 * 10;
+    uint64_t dl11 = 100 + len11 * 10;
+    tick(dl10 - 1);
+    TEST_ASSERT_EQUAL(0, close_cnt[10]);
+    TEST_ASSERT_EQUAL(0, close_cnt[11]);
+    tick(dl10);                            // 10 の期限だけが来た
+    TEST_ASSERT_EQUAL(1, close_cnt[10]);
+    TEST_ASSERT_EQUAL(0, close_cnt[11]);
+    tick(dl11 - 1);
+    TEST_ASSERT_EQUAL(0, close_cnt[11]);
+    tick(dl11);
+    TEST_ASSERT_EQUAL(1, close_cnt[11]);
+}
+
 void test_text_deadline_not_applied_before_send_begin_but_queue_timeout_is(void) {
     ws_video_core_config_t cfg = base_cfg(0);
     cfg.frame_deadline_base_ms = 100;
     cfg.frame_min_rate_bytes_per_s = 100;
     cfg.queue_timeout_ms = 500;
     start_cfg(&cfg);
-    connect_fd(10, 0);
-    tick(0);                               // キューに入れた (on_send_begin はまだ)
-    tick(499);                             // 期限は、まだ数えない
+    connect_fd(10, 1000);
+    tick(1000);                            // キューに入れた (on_send_begin はまだ)。時刻は 0 でない
+    tick(1499);                            // 期限は、まだ数えない
     TEST_ASSERT_EQUAL(0, close_cnt[10]);
-    tick(500);                             // キュー待ちの上限
+    tick(1500);                            // キュー待ちの上限 (キューに入れた時刻から 500 ms)
     TEST_ASSERT_EQUAL(1, close_cnt[10]);
 }
 
@@ -924,11 +953,11 @@ void test_text_queue_timeout_legacy_mode_counts_from_queued(void) {
     cfg.send_timeout_ms = 300;
     cfg.queue_timeout_ms = 0; // 互換: キューに入れた時刻から数える
     start_cfg(&cfg);
-    connect_fd(10, 0);
-    tick(0);
-    tick(299);
+    connect_fd(10, 1000);
+    tick(1000);
+    tick(1299);
     TEST_ASSERT_EQUAL(0, close_cnt[10]);
-    tick(300);
+    tick(1300);
     TEST_ASSERT_EQUAL(1, close_cnt[10]);
 }
 
@@ -1467,6 +1496,7 @@ int main(void) {
     RUN_TEST(test_text_deadline_uses_text_length);
     RUN_TEST(test_text_deadline_is_not_the_base_only_nor_the_frame_size);
     RUN_TEST(test_text_deadline_closes_only_that_client);
+    RUN_TEST(test_text_deadline_uses_each_clients_own_text_length);
     RUN_TEST(test_text_deadline_not_applied_before_send_begin_but_queue_timeout_is);
     RUN_TEST(test_text_send_timeout_counts_from_send_begin);
     RUN_TEST(test_text_queue_timeout_legacy_mode_counts_from_queued);

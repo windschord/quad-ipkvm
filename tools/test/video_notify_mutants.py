@@ -118,8 +118,7 @@ MUTANTS = [
     M("W55", W, "connect: sending_text/text_len not reset", ("    core->sending_text[slot] = false;\n    core->text_len[slot] = 0;\n\n    return slot;", "\n    return slot;"),
       equiv="sending_text は on_send_done が必ず false に戻す。送信中に接続が解放されることはない (CLOSING は on_send_done まで再利用されない)"),
     M("W56", W, "send_done: sending_text not cleared (leaks to the next frame's deadline)", ("    core->sending_text[slot] = false;\n    core->text_len[slot] = 0;\n\n    ws_clients_end_send", "    core->text_len[slot] = 0;\n\n    ws_clients_end_send")),
-    M("W57", W, "send_done: text_len not cleared", ("    core->sending_text[slot] = false;\n    core->text_len[slot] = 0;\n\n    ws_clients_end_send", "    core->sending_text[slot] = false;\n\n    ws_clients_end_send"),
-      equiv="text_len は sending_text が true のときだけ読まれ、そのたびに begin が設定する。クリアは観測できない (防御)"),
+    M("W57", W, "send_done: text_len not cleared (observable only through the struct: white-box assertion)", ("    core->sending_text[slot] = false;\n    core->text_len[slot] = 0;\n\n    ws_clients_end_send", "    core->sending_text[slot] = false;\n\n    ws_clients_end_send")),
 
     # ================= ws_video_core: tick =================
     M("W60", W, "tick: deadline ignores the text length", ("                    if (core->sending_text[i]) size = core->text_len[i]; // テキストの送信 (期限の size はテキストの長さ)\n", "")),
