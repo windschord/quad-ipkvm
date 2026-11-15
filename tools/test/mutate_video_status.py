@@ -8,6 +8,27 @@ video_status.c を変えたら、ミュータントの old 文字列(1 回だけ
 手本は mutate_kvm_ctrl.py。"""
 import json, os, re, shutil, subprocess, sys, importlib.util
 
+
+def check_workdir(repo, *paths):
+    """作業先(paths)が repo と同じ、repo を内包する、または repo の内側なら、何も消さずにエラーで終了する
+    (repo は変更しない)。シンボリックリンクは realpath で解決して比べる。rmtree / cmake の前に呼ぶこと。"""
+    repo = os.path.realpath(repo)
+    for p in paths:
+        p = os.path.realpath(p)
+        common = os.path.commonpath([p, repo])
+        if common == p or common == repo:
+            print(f"ERROR: work path {p} overlaps the repo {repo}; refusing to delete or write anything", file=sys.stderr)
+            sys.exit(2)
+
+
+def sh(cmd, **kw):
+    """cmd は引数のリスト(シェルを通さない。空白を含むパスでも動く)。実行ファイルがなければ終了コード 127。"""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, **kw)
+    except FileNotFoundError as e:
+        return subprocess.CompletedProcess(cmd, 127, "", str(e))
+
+
 repo, work, mfile, outp = sys.argv[1:5]
 only = set(sys.argv[5:])
 spec = importlib.util.spec_from_file_location("mutants", mfile)
@@ -15,8 +36,10 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 MUTANTS = mod.MUTANTS
 
+work = os.path.realpath(work)
 src_tree = os.path.join(work, "repo")
 build = os.path.join(work, "build")
+check_workdir(repo, src_tree, build)  # 何も消す前に確認する
 if os.path.exists(src_tree):
     shutil.rmtree(src_tree)
 os.makedirs(src_tree)
@@ -27,25 +50,23 @@ orig = open(target_file).read()
 TESTS = ["test_video_status_provider", "test_video_status_fake", "test_video_status_wiring"]
 
 
-def sh(cmd, **kw):
-    return subprocess.run(cmd, shell=True, capture_output=True, text=True, **kw)
 
 
-r = sh(f"cmake -S {src_tree}/test/host -B {build}")
+r = sh(["cmake", "-S", os.path.join(src_tree, "test", "host"), "-B", build])
 if r.returncode:
     print(r.stdout, r.stderr)
     sys.exit(1)
 
 
 def build_and_run():
-    b = sh(f"cmake --build {build} -j8 --target {' '.join(TESTS)}")
+    b = sh(["cmake", "--build", build, "-j8", "--target", *TESTS])
     if b.returncode != 0:
         return "build_error", [], [(b.stdout[-800:] + b.stderr[-800:])]
     failed = []
     names = []
     for t in TESTS:
         try:
-            p = sh(f"{build}/{t}", timeout=120)
+            p = sh([os.path.join(build, t)], timeout=120)
         except subprocess.TimeoutExpired:
             failed.append(t)
             names.append(t + ":timeout")
