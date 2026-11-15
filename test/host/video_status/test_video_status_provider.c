@@ -91,13 +91,13 @@ void test_null_provider_restores_default(void) {
     expect_status(KVM_VIDEO_SYNC_UNKNOWN, 0, 0, get());
 }
 
-void test_null_fn_discards_ctx_so_a_later_fn_without_ctx_sees_null(void) {
+void test_replacing_after_a_null_provider_never_calls_the_old_one(void) {
     spy_t s;
     memset(&s, 0, sizeof(s));
     s.reply.state = KVM_VIDEO_SYNC_NO_SIGNAL;
     video_status_set_provider(spy_provider, &s);
     video_status_set_provider(NULL, &s);
-    /* ctx を引き継いでいたら、NULL の ctx を想定した提供元が s を読んでしまう。ここでは再登録の ctx が使われる */
+    /* 外した提供元（spy_provider）は、再登録のあとも呼ばれない。再登録した提供元が、自分の ctx を受け取る */
     video_status_fake_t f;
     video_status_fake_init(&f);
     video_status_fake_set(&f, KVM_VIDEO_SYNC_LOCKED, 800, 600);
@@ -238,7 +238,7 @@ int main(void) {
     RUN_TEST(test_provider_is_called_once_per_get_and_receives_registered_ctx);
     RUN_TEST(test_provider_can_be_replaced);
     RUN_TEST(test_null_provider_restores_default);
-    RUN_TEST(test_null_fn_discards_ctx_so_a_later_fn_without_ctx_sees_null);
+    RUN_TEST(test_replacing_after_a_null_provider_never_calls_the_old_one);
     RUN_TEST(test_provider_registered_with_null_ctx_gets_null);
     RUN_TEST(test_provider_that_does_not_write_yields_unknown);
     RUN_TEST(test_valid_values_pass_through);
