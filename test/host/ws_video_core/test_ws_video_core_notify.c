@@ -65,6 +65,7 @@ static int dummy_user;
 static video_status_t g_status;
 static int status_get_count;
 static bool status_writes; // false なら status_get は out を書かない
+static bool status_flip;   // true なら status_get は、呼ばれるたびに違う値 (幅が 1 増える LOCKED) を返す
 
 static int m_register(void *u) {
     (void)u;
@@ -148,7 +149,13 @@ static bool m_validate(void *u, const uint8_t t[32]) { (void)u; (void)t; return 
 static void m_status_get(void *u, video_status_t *out) {
     (void)u;
     status_get_count++;
-    if (status_writes) *out = g_status;
+    if (!status_writes) return;
+    *out = g_status;
+    if (status_flip) {
+        out->state = KVM_VIDEO_SYNC_LOCKED;
+        out->width = 100u + (uint32_t)status_get_count;
+        out->height = 50;
+    }
 }
 
 static void reset_all(void) {
@@ -177,6 +184,7 @@ static void reset_all(void) {
     g_status.height = 0;
     status_get_count = 0;
     status_writes = true;
+    status_flip = false;
     val_ret = true;
 }
 
@@ -1055,6 +1063,19 @@ void test_multiple_clients_have_independent_intervals(void) {
     TEST_ASSERT_EQUAL_STRING(J_720, text_log[text_log_n - 1]);
 }
 
+void test_all_clients_in_one_tick_see_the_same_status_snapshot(void) {
+    start(0);
+    status_flip = true; // status_get を呼ぶたびに値が変わる。tick の中で何回呼んでも、全員に同じ値を送ること
+    connect_fd(10, 0);
+    connect_fd(11, 0);
+    connect_fd(12, 0);
+    tick(0);
+    TEST_ASSERT_EQUAL(3, text_log_n);
+    TEST_ASSERT_EQUAL_STRING(text_log[0], text_log[1]);
+    TEST_ASSERT_EQUAL_STRING(text_log[0], text_log[2]);
+    TEST_ASSERT_TRUE(status_get_count >= 1);
+}
+
 void test_each_client_gets_text_on_its_own_connection(void) {
     start(0);
     connect_fd(10, 0);
@@ -1457,6 +1478,7 @@ int main(void) {
 
     RUN_TEST(test_multiple_clients_are_independent);
     RUN_TEST(test_multiple_clients_have_independent_intervals);
+    RUN_TEST(test_all_clients_in_one_tick_see_the_same_status_snapshot);
     RUN_TEST(test_each_client_gets_text_on_its_own_connection);
     RUN_TEST(test_text_buffer_stays_valid_and_unchanged_until_send_done);
     RUN_TEST(test_client_with_close_requested_gets_no_text);
