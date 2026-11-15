@@ -19,7 +19,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const elInputStatus = document.getElementById('input-status');
     const elUsbStatus = document.getElementById('usb-status');
 
+    const elVideoTrustHint = document.getElementById('video-trust-hint');
+    const elVideoTrustLink = document.getElementById('video-trust-link');
+
     let ws = null;
+    let videoTarget = null; // result of VideoTarget.resolve, set from the status response
     let wsReconnectTimer = null;
     let wsReconnectDelay = 1000;
 
@@ -323,13 +327,67 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Where the video WebSocket connects (docs/VIDEO_TRANSPORT.md 5). Pure functions, checked on the host by
+    // tools/test/check_video_viewer.js. loc = { host, hostname, port } (same field names as window.location).
+    const VideoTarget = {
+        // The server's video_port is used only when it is a JSON integer in 1..65535 (no strings, fractions, null).
+        validPort(v) {
+            return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 65535;
+        },
+        // A DNS name / IPv4 address, or a bracketed IPv6 literal as location.hostname spells it.
+        validHostname(h) {
+            if (typeof h !== 'string' || h.length === 0 || h.length > 255) return false;
+            return /^[A-Za-z0-9._-]+$/.test(h) || /^\[[0-9A-Fa-f:.]+\]$/.test(h);
+        },
+        // The port of the page itself: location.port is '' for the default HTTPS port.
+        pagePort(loc) {
+            if (typeof loc.port === 'string' && /^[0-9]{1,5}$/.test(loc.port)) return Number(loc.port);
+            return 443;
+        },
+        // No usable video_port (or the same port as the page): the old URL on the main port. Otherwise the video
+        // server's port on the page's host name. separate = the video server is on another port.
+        resolve(loc, videoPort) {
+            const legacy = { url: 'wss://' + loc.host + '/video', separate: false, port: 0, hostname: '' };
+            if (!this.validPort(videoPort)) return legacy;
+            if (!this.validHostname(loc.hostname)) return legacy;
+            if (videoPort === this.pagePort(loc)) return legacy;
+            return { url: 'wss://' + loc.hostname + ':' + videoPort + '/video', separate: true, port: videoPort, hostname: loc.hostname };
+        },
+        // The "accept the certificate" hint is for a connection that failed before it opened, on another port.
+        needsTrustHint(target, wasOpen) {
+            return !!target && target.separate === true && wasOpen === false;
+        },
+        // The page the viewer links to so the person can accept the certificate (null when there is no hint).
+        trustUrl(target) {
+            if (!target || target.separate !== true) return null;
+            return 'https:' + '//' + target.hostname + ':' + target.port + '/';
+        }
+    };
+
+    function showTrustHint(target) {
+        const url = VideoTarget.trustUrl(target);
+        if (url === null) return;
+        elVideoTrustLink.setAttribute('href', url);
+        elVideoTrustLink.textContent = url;
+        elVideoTrustHint.classList.remove('trust-hint-hidden');
+    }
+
+    function hideTrustHint() {
+        elVideoTrustHint.classList.add('trust-hint-hidden');
+        elVideoTrustLink.removeAttribute('href');
+        elVideoTrustLink.textContent = '';
+    }
+
     function connectWebSocket() {
         if (ws) return;
-        const url = 'wss://' + location.host + '/video';
-        ws = new WebSocket(url);
+        const target = videoTarget || VideoTarget.resolve(location, undefined);
+        let opened = false;
+        ws = new WebSocket(target.url);
         ws.binaryType = "blob";
 
         ws.onopen = () => {
+            opened = true;
+            hideTrustHint();
             elVideoStatus.textContent = '接続完了 / 受信中';
             wsReconnectDelay = 1000; // reset
         };
@@ -353,6 +411,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ws.onclose = () => {
             ws = null;
             elVideoStatus.textContent = '切断されました。再接続します...';
+            if (VideoTarget.needsTrustHint(target, opened)) showTrustHint(target);
             // Exponential backoff
             // Re-check the session first: after a logout or an expired session the page must go back to the login view.
             wsReconnectTimer = setTimeout(fetchStatus, wsReconnectDelay);
@@ -360,7 +419,8 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         ws.onerror = (e) => {
-            // WS Error handled
+            // A failure before the connection opened (typically an untrusted certificate on the video port).
+            if (VideoTarget.needsTrustHint(target, opened)) showTrustHint(target);
         };
     }
 
@@ -431,6 +491,7 @@ document.addEventListener('DOMContentLoaded', () => {
             ws.close();
             ws = null;
         }
+        hideTrustHint();
         elVideoStatus.textContent = '切断されました';
 
         if (wsInputReconnectTimer) {
@@ -582,6 +643,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (data.state === 'ready') {
                 if (data.authenticated) {
                     showView(viewDashboard);
+                    videoTarget = VideoTarget.resolve(location, data.video_port);
                     connectWebSocket();
                     connectInputWebSocket();
                 } else {

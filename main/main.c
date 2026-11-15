@@ -56,6 +56,7 @@
 #include "driver/i2c_master.h"
 #include "frame_hub.h"
 #include "test_pattern_source.h"
+#include "video_status.h"
 #include <stdlib.h>
 #if CONFIG_WEB_SERVER_ENABLE
 #include "web_server.h"
@@ -68,6 +69,16 @@
 #include "freertos/semphr.h"
 
 static const char *TAG = "app_main";
+
+// video_status (docs/INTERFACES.md 1.3): adapts csi_video_source_get_status() to a video_status provider.
+static void csi_status_provider(void *ctx, video_status_t *out) {
+    (void)ctx;
+    csi_video_status_t st;
+    csi_video_source_get_status(&st);
+    out->state = st.state;
+    out->width = st.width;
+    out->height = st.height;
+}
 
 static void* app_alloc(size_t size, void* ctx) {
     (void)ctx;
@@ -281,6 +292,8 @@ void app_main(void)
             if (!CONFIG_VIDEO_SOURCE_CSI) {
                 const video_source_t* vs = test_pattern_source_get();
                 ESP_LOGI(TAG, "Starting video source '%s'...", vs->name);
+                // Once, before any task that reads video_status is started (video_status.h).
+                video_status_set_provider(test_pattern_source_get_status, NULL);
                 vs->start(vs, hub);
             }
         } else {
@@ -392,6 +405,8 @@ void app_main(void)
                 csi_video_source_configure(tc_dev, &vs_cfg);
                 const video_source_t *vs = csi_video_source_get();
                 ESP_LOGI(TAG, "Starting video source '%s'...", vs->name);
+                // Once, before any task that reads video_status is started (video_status.h).
+                video_status_set_provider(csi_status_provider, NULL);
                 if (vs->start(vs, hub) != 0) {
                     ESP_LOGE(TAG, "Failed to start video source '%s'", vs->name);
                 }

@@ -477,6 +477,65 @@ static void test_mode_tracker_stall_recovery_and_cooldown(void)
     TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_KEEP_STREAMING, csi_mode_tracker_check_stall(&m, 12499u));
     TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_RECOVER_STALL, csi_mode_tracker_check_stall(&m, 12500u));
     TEST_ASSERT_EQUAL_UINT32(2u, m.stall_recoveries);
+
+    // Not streaming: csi_mode_tracker_on_frame MUST NOT update last_frame_ms (#82 item 11).
+    TEST_ASSERT_FALSE(m.streaming);
+    uint64_t prev_last_frame = m.last_frame_ms;
+    csi_mode_tracker_on_frame(&m, 999999u);
+    TEST_ASSERT_EQUAL_UINT64(prev_last_frame, m.last_frame_ms);
+    csi_mode_tracker_on_frame(NULL, 999999u);
+}
+
+static void test_mode_tracker_poll_skips_step_and_stall_on_i2c_failure(void)
+{
+    csi_mode_tracker_t m;
+    csi_mode_tracker_init(&m);
+
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_poll(NULL, true, NULL));
+
+    // 1. Unlocked with 1 candidate hit: transient I2C read failure (sample_ok = false)
+    //    must return WAIT without resetting cand_hits, so the next valid sample starts CSI!
+    csi_mode_sample_t s1 = make_sample(1000u, true, true, true, 1280u, 720u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_poll(&m, true, &s1));
+    TEST_ASSERT_EQUAL_UINT32(1u, m.cand_hits);
+
+    csi_mode_sample_t zero_sample = make_sample(1200u, false, false, false, 0u, 0u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_WAIT, csi_mode_tracker_poll(&m, false, &zero_sample));
+    TEST_ASSERT_EQUAL_UINT32(1u, m.sample_errors);
+    TEST_ASSERT_EQUAL_UINT32(1u, m.cand_hits);
+    TEST_ASSERT_FALSE(m.streaming);
+
+    csi_mode_sample_t s2 = make_sample(1400u, true, true, true, 1280u, 720u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_START_MODE, csi_mode_tracker_poll(&m, true, &s2));
+    TEST_ASSERT_TRUE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(1280u, m.active_w);
+    TEST_ASSERT_EQUAL_UINT32(720u, m.active_h);
+
+    // 2. Streaming: even if zero_sample looks like NO_SIGNAL AND now_ms (5000) exceeds the
+    //    2000 ms stall threshold (1400 + 2000 = 3400), sample_ok == false MUST NOT call
+    //    csi_mode_tracker_step() or csi_mode_tracker_check_stall() — stream stays alive!
+    csi_mode_sample_t failed_poll = make_sample(5000u, false, false, false, 0u, 0u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_KEEP_STREAMING,
+                          csi_mode_tracker_poll(&m, false, &failed_poll));
+    TEST_ASSERT_TRUE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(1280u, m.active_w);
+    TEST_ASSERT_EQUAL_UINT32(720u, m.active_h);
+    TEST_ASSERT_EQUAL_UINT32(0u, m.stall_recoveries);
+    TEST_ASSERT_EQUAL_UINT32(2u, m.sample_errors);
+
+    // NULL sample pointer while streaming also counts as failed sample and keeps streaming.
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_KEEP_STREAMING,
+                          csi_mode_tracker_poll(&m, true, NULL));
+    TEST_ASSERT_TRUE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(3u, m.sample_errors);
+
+    // 3. When the next I2C poll succeeds while still stalled (>= 2000 ms without frames),
+    //    csi_mode_tracker_poll runs step() -> KEEP_STREAMING -> check_stall() -> RECOVER_STALL!
+    csi_mode_sample_t valid_stalled = make_sample(5200u, true, true, true, 1280u, 720u);
+    TEST_ASSERT_EQUAL_INT(CSI_MODE_ACT_RECOVER_STALL,
+                          csi_mode_tracker_poll(&m, true, &valid_stalled));
+    TEST_ASSERT_FALSE(m.streaming);
+    TEST_ASSERT_EQUAL_UINT32(1u, m.stall_recoveries);
 }
 
 int main(void)
@@ -496,5 +555,6 @@ int main(void)
     RUN_TEST(test_mode_tracker_out_of_range_and_abort_start);
     RUN_TEST(test_mode_tracker_hpd_nudge_10_20_40_backoff);
     RUN_TEST(test_mode_tracker_stall_recovery_and_cooldown);
+    RUN_TEST(test_mode_tracker_poll_skips_step_and_stall_on_i2c_failure);
     return UNITY_END();
 }

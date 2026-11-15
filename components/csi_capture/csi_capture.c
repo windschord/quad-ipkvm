@@ -74,8 +74,10 @@ static bool IRAM_ATTR on_trans_finished(esp_cam_ctlr_handle_t handle, esp_cam_ct
     (void)trans;
     struct csi_capture_t *h = (struct csi_capture_t *)user_data;
     int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL_SAFE(&h->lock);
     if (h->first_frame_us == 0) h->first_frame_us = now;
     h->last_frame_us = now;
+    portEXIT_CRITICAL_SAFE(&h->lock);
     BaseType_t woken = pdFALSE;
     xSemaphoreGiveFromISR(h->frame_sem, &woken);
     return woken == pdTRUE;
@@ -362,7 +364,12 @@ void csi_capture_log_hw_state(csi_capture_handle_t h, const char *label) {
 
 esp_err_t csi_capture_close(csi_capture_handle_t h) {
     ESP_RETURN_ON_FALSE(h, ESP_ERR_INVALID_ARG, TAG, "null handle");
-    ESP_RETURN_ON_ERROR(csi_capture_stop(h), TAG, "stop failed");
+    esp_err_t stop_err = csi_capture_stop(h);
+    if (stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "stop during close returned %s; forcing CSI bridge off before freeing",
+                 esp_err_to_name(stop_err));
+        MIPI_CSI_BRIDGE.csi_en.val = 0;
+    }
     free_handle(h);
-    return ESP_OK;
+    return stop_err;
 }
