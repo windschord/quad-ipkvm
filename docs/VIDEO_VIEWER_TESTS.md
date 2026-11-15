@@ -64,3 +64,48 @@
 - **IDF のビルド**(`web_server.c` の 1 行の変更を含む)と、実機: 確認していない。
 - **実際のブラウザ**(Chrome / Firefox / Safari)での、`wss://host:8444/video` の接続、証明書の例外の受け入れ、案内の見た目: 確認していない。`app.js` は、偽の DOM で、`onerror` / `onclose` / `onopen` を手で呼んで動かしただけ。実際のブラウザが、証明書の拒否で `onerror` と `onclose` を出す順序・回数は未確認(どちらでも案内を出すので、順序には依存しない)。
 - 信頼ページの CSP: `web_assets_csp("text/html")` の文字列を検査しただけで、ブラウザでは確認していない(スクリプトもスタイルも使わないので、`default-src 'none'` でも壊れないはず)。
+
+## 6. 映像の状態の表示(Issue #86 C-6b のビューア側。`docs/WEB_API.md` §5、`docs/VIDEO_TRANSPORT.md` §8)
+
+作成: 2026-11-15。サーバー側(`ws_video_core`、`web_server.c`)は別の担当で、ここには含まない。**実際のブラウザでの確認はしていない**(下の 6.4)。
+
+### 6.1 変更の要点
+
+- `app.js`: 純関数 `VideoStatus`(`parse`、`resolutionLabel`、`statusLine`、`overlayMessage`、`isResolutionChange`、`changeNotice`)と、表示(`setVideoOverlay`、`resetVideoStatus`、`applyVideoStatus`)。`ws.onmessage` は、`typeof e.data === 'string'` のものだけを `VideoStatus.parse` に渡す。バイナリは従来どおり JPEG(`binaryType` も `"blob"` のまま)。テキストの処理は、復号の重複防止(`isDecoding`)の**前**にあるので、フレームの復号中でも状態が反映され、不正なテキストは復号に影響しない。
+- 採用するもの: `t === "video"`、`state` が `unknown` / `no_signal` / `locked`、`w`・`h` が 0〜65535 の整数。`locked` は `w`・`h` が 1 以上(0 は捨てる)、`locked` 以外は `w` = `h` = 0 に直す。未知のキーは無視。それ以外(壊れた JSON、`null`、配列、型違い、範囲外、1024 文字を超えるもの)は捨てる。
+- 表示: `locked` は重ねる表示なしで、`#video-status` に `接続完了 / 受信中 (1280x720)`。`no_signal` は「信号なし」、`unknown` は「映像の状態を確認中…」を、`#video-overlay`(`role="status"`、`aria-live="polite"`、既定は非表示)に出す。キャンバスは触らない(直前のフレームが残る)。`locked` → 別の解像度の `locked` は、「解像度が変わりました（1920x1080）」を 2000 ms のタイマーで出して消す。次の状態が来たら、すぐ消してタイマーも消す。文は、すべて `textContent` で入れる。
+- リセット(`resetVideoStatus`): 1 か所に集約。`onclose`、`disconnectWebSocket`(ログアウトなど)、新しい接続の開始で、重ねる表示を消し、タイマーを消し、最後の状態を忘れる(前の接続の解像度と比べて、変更の表示を出さない)。
+- `index.html`: `<div class="video-wrap">` の中、キャンバスの後ろに `#video-overlay`。`app.css`: `.video-wrap`(基準の位置)、`.video-overlay`(中央、半透明の背景、`pointer-events: none` でキャンバスのクリックを妨げない)、`prefers-color-scheme: dark` の規則、`.video-overlay-hidden`。
+
+### 6.2 テスト(実際に走らせたもの)
+
+`cmake -S test/host -B <dir> && cmake --build <dir> -j && ctest --test-dir <dir> --output-on-failure`: **63 個すべて成功**(`test_web_pages` は 14 -> 16 ケース。ctest の登録の数は変わらない)。`node tools/test/check_video_viewer.js` も成功。
+
+| 内容 | 場所 | 件数 |
+|---|---|---|
+| `VideoStatus.parse`(正常 3 状態、`locked` 以外の `w`・`h` を 0 に直す、`locked` の 0 を捨てる、`t` 違い、`state` 違い、`w`・`h` の小数・文字列・負数・65536・`null`・真偽値・配列・オブジェクト・欠落・巨大な値、未知のキー、`__proto__`、重複キー、配列・`null`・空文字・壊れた JSON、長さ 1024 / 1025 / 1 MB、文字列でない入力) | `tools/test/check_video_viewer.js` (C) | 95 件 |
+| `isResolutionChange`(11 件)、`resolutionLabel`(4 件)、`statusLine`(4 件)、`overlayMessage`(6 件)、`changeNotice` | 同上 | 26 件 |
+| 偽の DOM / `WebSocket` / タイマーでのシナリオ(接続直後の `locked`、`no_signal` でフレームが残る(キャンバスの呼び出しが `drawImage` だけ、大きさも同じ)、`locked` に戻って消える、`unknown`、解像度の変更の表示と、2000 ms のタイマーで消える、変更の最中に `no_signal` / `unknown` / 同じ `locked` / 別の変更が来て、すぐ消えて古いタイマーが残らない、切断・再接続・ログアウトのボタンで消える、前の接続の解像度を覚えていない、バイナリが状態に影響しない、不正なテキスト 19 種を無視してもバイナリの処理が続く、復号の最中のテキスト、`innerHTML` への代入がない、`binaryType` が `"blob"`、入力用の `/ws` に影響しない、`#video-overlay` の `role`・`aria-live`・既定の非表示) | 同上 (B) | 17 シナリオ |
+| `index.html` の `#video-overlay`(`role`、`aria-live`、既定で非表示、`.video-wrap` の中のキャンバスの後ろの最後の要素、空)、`app.css`(`display: none`、基準の位置、`absolute`、`pointer-events: none`、ダークモード)、`app.js` に `innerHTML` / `outerHTML` / `insertAdjacentHTML` がなく、`textContent` で入れること(既存の `test_app_js` の禁止パターンにも、`app.js` は引き続き通る) | `test/host/web_assets/test_web_pages.c`(Unity) | 2 ケース |
+
+### 6.3 ミューテーションテスト
+
+**ビューアの全体で、`app.js` が 129 個(殺した 119、同値 10、生き残り 0)、`index.html` / `app.css` / C 側が 62 個(殺した 61、同値 1、生き残り 0)。** 今回の追加分は、`app.js` が 69 個、`index.html` / `app.css` が 15 個。
+
+- `app.js`(`node tools/test/check_video_viewer.js --mutations`): 既存の 60 個(J01〜J60。J07 と J57 の置換前の文字列は、新しいコードと重なる / 行が増えたので、一意になるように直した。意味は同じ)に、**V01〜V69 の 69 個**を追加。対象は、`validDimension`(型・小数・下限・上限)、`parse`(長さの上限、型、`try/catch`、`null`、`t`、`state` の 3 つ、`w`・`h` の検査、`locked` の 0、`w`・`h` の入れ替え、`locked` 以外を 0 に直す)、`resolutionLabel`、`statusLine`、`overlayMessage`、`isResolutionChange`(各条件)、表示の文、2000 ms、`setVideoOverlay`(隠す・出す・`textContent` を `innerHTML` に)、`resetVideoStatus`(タイマー・最後の状態・表示)、`applyVideoStatus`(最後の状態、タイマーの取り消し、ステータス行、変更の表示、タイマーの開始・実行、全部の `locked` を変更と見なす)、`onmessage`(文字列の判定、`return` の除去、`null` の判定、`isDecoding` の後ろに移す)、`onclose` / `disconnectWebSocket` / 接続開始のリセット、`binaryType`。
+- 同値の 7 個(今回の追加分):
+  - **V07** `validDimension` の `typeof v === 'number'` を除く: `Number.isInteger` が数値以外を常に `false` にする(二重の防御)。
+  - **V11** `parse` の空文字の検査を除く: 空文字は `JSON.parse` が例外を投げ、`catch` が `null` を返す(二重の防御)。
+  - **V15** `typeof obj !== 'object'` を除く、**V16** `Array.isArray(obj)` を除く: JSON の数・文字列・真偽値・配列は `t` を持たないので、次の `t` の検査が捨てる(二重の防御)。
+  - **V30** `Math.trunc` を除く: `parse` が `w`・`h` を整数に限っているので、結果は変わらない。
+  - **V58** タイマーの実行時に `resolutionNoticeTimer = null` を除く: 実行済みの id への `clearTimeout` は何もしない。
+  - **V68** 接続の開始時の `resetVideoStatus()` を除く: 接続の前には、必ず `onclose` か `disconnectWebSocket` が先に走って消している(二重の防御)。
+- `index.html` / `app.css`(`python3 tools/test/mutate_video_viewer.py <repo> <作業用> <結果.json>`): 既存の 47 個に、**I09〜I16(8 個)、C03〜C09(7 個)の 15 個**を追加し、全体で 62 個を走らせた(殺した 61、同値 1 = 既存の H13、生き残り 0、ビルドエラー 0)。追加分は 15 個とも殺した。内容: 重ねる表示が最初から見える、`role` の除去、`aria-live` の変更、`id` の改名、キャンバスの前に置く、枠の外に出す、枠の名前の変更、最初から文がある、`display: none` を `block` に・規則の除去、基準の位置を外す、`absolute` を `fixed` に、`pointer-events` の除去、ダークモードの規則の除去、規則の名前の変更。
+  - 初回の実行では、I16(重ねる表示を `.video-wrap` の外に出す)が生き残った。`test_web_pages.c` のテストが「閉じタグの直後」を調べていなかったため。テストに、「`#video-overlay` の直後が `.video-wrap` の閉じタグ」の検査を足して、殺せることを確認した。
+
+### 6.4 実行できなかった確認・判断した点
+
+- **実際のブラウザ(Chrome / Firefox / Safari)での表示の確認はしていない。** 重ねる表示の見た目(位置、大きさ、ダークモードの色、`pointer-events: none` でキャンバスのクリックが通ること、`aria-live` での読み上げ)は、CSS を読み、文字列を検査しただけ。`display: none` から表示に切り替えたときに、スクリーンリーダーが `aria-live` の領域の変化を読み上げるかも、未確認(確実にするには、非表示にしない(視覚的にだけ隠す)作りにする必要があるかもしれない)。
+- 実機(device-check)、IDF のビルド、サーバー側との結合(`/video` に実際にテキストフレームが来る)は、確認していない(サーバー側は別の担当)。テストは、`ws.onmessage` に文字列を直接渡している。
+- 実際のブラウザは、テキストフレームを `string`、バイナリを `Blob`(`binaryType = "blob"`)で `e.data` に渡す。テストの偽のフレームは、`Blob` ではなく単なるオブジェクトで、`typeof` が `string` でなければバイナリとして扱う実装の分岐だけを調べている。
+- 契約(`docs/WEB_API.md` §5)に書かれていない判断: (a) `locked` 以外の状態のとき、ステータス行は `接続完了 / 受信中`(解像度なし)に戻す。(b) 1024 文字を超えるテキストは捨てる(契約の上限は 128 バイト。将来のキーの追加の余裕を見た)。(c) `w`・`h` が欠けている(契約は常に含む)テキストは、`no_signal` / `unknown` でも捨てる。(d) 同じ解像度の `locked` が、変更の表示の最中にもう一度来たら、表示を消す(契約では同じ内容は繰り返さないので、起きない想定)。
