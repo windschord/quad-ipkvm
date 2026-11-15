@@ -1,6 +1,7 @@
 #include "kvm_service.h"
 #include "sdkconfig.h"
 #include "kvm_ctrl.h"
+#include "video_status.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -122,8 +123,14 @@ esp_err_t kvm_service_start(const kvm_board_hal_t *hal) {
     s_mutex = xSemaphoreCreateMutex();
     if (s_mutex == NULL) return ESP_ERR_NO_MEM;
 
+    /* video_sync は、ボードではなく video_status（映像ソースが登録した提供元）から読む。
+     * 渡された HAL をコピーして、video_sync だけを置き換える（ボード側は実装不要。NULL でもよい）。
+     * kvm_ctrl_init は video_sync が NULL だと拒否するので、置き換えは kvm_ctrl_init の前。 */
+    kvm_board_hal_t hal_wired = *hal;
+    hal_wired.video_sync = video_status_hal_sync;
+
     /* タスクを作る前なので、ロックなしで初期化してよい（ready は false のまま） */
-    kvm_ctrl_result_t r = kvm_ctrl_init(&s_ctrl, &cfg, hal);
+    kvm_ctrl_result_t r = kvm_ctrl_init(&s_ctrl, &cfg, &hal_wired);
     if (r == KVM_CTRL_ERR_INVALID_PARAM) {
         ESP_LOGE(TAG, "kvm_ctrl_init rejected the configuration or the HAL");
         vSemaphoreDelete(s_mutex);

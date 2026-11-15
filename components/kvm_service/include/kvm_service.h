@@ -24,10 +24,15 @@ extern "C" {
  * KVM / ATX のサービスを起動する（1 回だけ）。
  *  - ミューテックスを作り、kvm_ctrl_init(hal) を呼び（release_all -> 全線 High のまま set_addr）、tick のタスクを作る。
  *  - hal の中身（関数ポインタ）はコピーされる。hal->ctx が指すものは、起動後もずっと有効であること。
+ *  - **hal->video_sync は使わない**。kvm_service は、コピーした HAL の video_sync を、video_status_get() の state を返す関数
+ *    （video_status_hal_sync）に置き換えてから kvm_ctrl_init に渡す。ボード側（A-9）は video_sync を実装しなくてよい
+ *    （NULL でも、UNKNOWN を返す関数でもよい）。映像の状態は、映像ソースが video_status_set_provider() で登録する
+ *    （docs/INTERFACES.md 1.3）。**登録は kvm_service_start の前に、1 回だけ**（video_status.h の「スレッド」）。
+ *    提供元が登録されていなければ、映像は UNKNOWN のまま（切替は映像待ちのタイムアウトで完了する）。
  *  - 設定は Kconfig（KVM_*、ATX_*）から作る。パルス長や間隔はクライアントが決められない。
  * @return ESP_OK: 起動した（kvm_ctrl_init が失敗して**フォールトがラッチされた場合も ESP_OK**: API は 200 の status で
  *         "fault":true を返し、操作は 503 hw_fault になる。再起動まで解除しない）。
- *         ESP_ERR_INVALID_ARG: hal が NULL、関数ポインタの欠落、設定の不備（Kconfig の値がハード上限を超えている等）。
+ *         ESP_ERR_INVALID_ARG: hal が NULL、関数ポインタの欠落（video_sync を除く）、設定の不備（Kconfig の値がハード上限を超えている等）。
  *         ESP_ERR_INVALID_STATE: すでに起動している。
  *         ESP_ERR_NO_MEM: ミューテックスかタスクを作れなかった。
  * 失敗したときは、サービスは起動していない（API は not_ready のまま）。

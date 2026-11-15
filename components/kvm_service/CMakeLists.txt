@@ -3,6 +3,6 @@ if(COMMAND idf_component_register)
     idf_component_register(
         SRCS "kvm_service.c"
         INCLUDE_DIRS "include"
-        REQUIRES kvm_api kvm_ctrl kvm_board kvm_logic freertos esp_timer log
+        REQUIRES kvm_api kvm_ctrl kvm_board kvm_logic video_status freertos esp_timer log
     )
 endif()
