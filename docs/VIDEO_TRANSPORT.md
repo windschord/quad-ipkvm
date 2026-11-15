@@ -59,3 +59,24 @@ Issue #82（A-7 後続）の ②③ への回答。実機の測定は `docs/HW_V
 3. `web_server` の結線: チャンク送信、映像専用の `httpd`、`app.js`、`auth/status` の `video_port`（Claude のサブエージェント。IDF のビルドは、device-check で確認する）。
 4. `jpeg_quality_ctrl` と結線（Antigravity）。
 5. device-check（Antigravity）。
+
+## 8. 映像の状態の通知（C-6b。オーナー決定: `/video` にテキストフレームで混ぜる）
+Issue #86。`video_status`（`docs/INTERFACES.md` §1.3）の状態を、ビューアへ、映像の WebSocket の**テキストフレーム**で送る。形式とタイミングは `docs/WEB_API.md` §5。
+
+**純 C（`ws_video_core`、`video_status`）**:
+- `video_status_format_json(const video_status_t *st, char *out, size_t cap)`: `{"t":"video","state":"…","w":N,"h":N}` を作る（128 バイト以下。バッファ不足は -1。`state` が範囲外なら `unknown`、`locked` 以外は `w` = `h` = 0）。
+- `ws_video_core_config_t` に `status_get`（`void (*)(void *user_data, video_status_t *out)`。`NULL` なら状態の通知なし = 従来どおり）と `io_begin_send_text`（`int (*)(void *user_data, ws_video_conn_t conn, const uint8_t *data, size_t len)`）を足す。
+- クライアントごとに「最後に送った状態」を持つ。**接続直後は、必ず 1 回送る**（`status_sent = false`）。`tick` で、そのクライアントが**送信中でなく**、かつ**現在の状態が最後に送ったものと違う**（状態、または `locked` の解像度）とき、テキストフレームを `io_begin_send_text` で送る。**フレームの送信（`is_sending`）と同じ仕組みで数える**（同時に 2 つ送らない）ので、テキストの送信が終わる（`on_send_done`）まで、次のフレームは送らない。テキストの送信が失敗したら、**そのクライアントを閉じる**（フレームの送信の失敗と同じ）。
+- 同じ `tick` で、状態の通知と映像のフレームの両方が送れるときは、**状態の通知を先に**送る（ビューアが、フレームを描く前に、状態を知れる）。
+- `on_send_done` は、テキストの送信とフレームの送信を区別する（テキストには、解放するフレームがない）。期限（§3）は、テキストにも適用する（`size` = テキストの長さ）。
+- `status_get` は、`tick` から呼ばれる（ロックの下。ブロックしない。上のアダプター経由で `video_status_get()` を呼ぶ）。状態が `UNKNOWN` → `LOCKED` などの揺れで、通知が頻発しないよう、**同じ状態の変化は、最短 `status_min_interval_ms`（既定 200）以内に 2 回送らない**（間隔の間の変化は、間隔が経った後の最新の状態を 1 回だけ送る）。 **途中の状態は送らず、間隔の間に元の状態に戻れば、何も送らない**（`docs/WEB_API.md` §5 と同じ。通知は最大 `status_min_interval_ms` 遅れうる。揺れの抑制を、即時性より優先する）。
+
+**ビューア（`app.js`）**:
+- テキストフレーム（文字列）を JSON として解析し、`t === "video"` のものだけを使う。解析に失敗したテキストは捨てる。バイナリは、従来どおり JPEG。
+- 表示: `locked` は、映像のステータス行に、解像度（例: `1280x720`）を表示。`no_signal` は、キャンバスの上に「信号なし」を重ねる（直前のフレームを残すかは、実機で見て決める。既定は残して、半透明の表示）。`unknown`（確認中）は「映像の状態を確認中…」。`locked` から別の解像度の `locked` に変わったときは、短く「解像度が変わりました」。
+- 状態の値の検査: `state` は 3 つの文字列だけ、`w`・`h` は 0〜65535 の整数。それ以外は、無視する。
+
+**IDF 側（`web_server.c`。Antigravity の B-3 の PR #111 のマージの後）**: テキストフレームを送る関数（`io_begin_send_text`）。分割送信の経路（§4）の、ヘッダーのオペコードを、テキスト（`0x81`）にするだけ。128 バイトなので、1 スライスで送り切れる。`status_get` には、**2 引数のアダプター**（`void (*)(void *user_data, video_status_t *out)`。`user_data` は使わず、`video_status_get(out)` を呼ぶだけ）を渡す（`video_status_get` は 1 引数なので、直接は渡せない）。`max_frame_size` の確認は不要。`slowclient.py` の `40 KB/s` で、**状態の通知が、通常のクライアントに影響しない**ことを確認する。
+
+**検証**: ホスト（純 C のテスト + ミューテーション、ビューアの node のテスト）。実機（device-check）: 映像の入力を抜き差しして、ビューアの表示が変わること、`slowclient.py` で通常のクライアントの fps が変わらないこと。
+
