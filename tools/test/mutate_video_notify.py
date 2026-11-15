@@ -46,6 +46,10 @@ build = os.path.join(work, "build")
 check_workdir(repo, src_tree, build)  # 何も消す前に確認する
 if os.path.exists(src_tree):
     shutil.rmtree(src_tree)
+if os.path.exists(build):
+    # 前回のビルドの残り(最後のミュータントのオブジェクト)を使わない。コピーしたソースの更新時刻は、リポジトリのもの
+    # (古い)なので、残したままだと、make が古いオブジェクトを「最新」と判断して、ミュータントのままリンクしてしまう
+    shutil.rmtree(build)
 os.makedirs(src_tree)
 for d in ("components", "test"):
     shutil.copytree(os.path.join(repo, d), os.path.join(src_tree, d))
