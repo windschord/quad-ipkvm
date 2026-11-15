@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include "frame_hub.h"
 #include "ws_clients.h"
+#include "video_status.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,6 +21,16 @@ typedef void (*ws_video_hub_release_cb)(void* user_data, int hub_client_id, cons
 typedef int (*ws_video_io_begin_send_cb)(void* user_data, ws_video_conn_t conn, const uint8_t* data, size_t len);
 typedef void (*ws_video_io_request_close_cb)(void* user_data, ws_video_conn_t conn);
 typedef bool (*ws_video_io_validate_session_cb)(void* user_data, const uint8_t token[32]);
+
+/* 映像の状態の通知 (docs/VIDEO_TRANSPORT.md 8 章)。
+ * status_get: 現在の映像の状態を out に書く。tick から (ロックの下で) 呼ばれる。ブロックしない。
+ *   呼び出し側は video_status_get を渡す前提 (検査済みの値)。範囲外・不整合な値が来ても、core は落ちない
+ *   (video_status_format_json が unknown に直す)。
+ * io_begin_send_text: テキストフレーム (WebSocket のオペコード 0x1) を 1 つ送り始める。io_begin_send と同じ規則
+ *   (成功 = 0 で、送信の完了を on_send_done で通知する。0 以外はそのクライアントを閉じる)。
+ *   **data は、on_send_done が呼ばれるまで有効** (core が、クライアントごとのバッファに持つ)。 */
+typedef void (*ws_video_status_get_cb)(void* user_data, video_status_t* out);
+typedef int (*ws_video_io_begin_send_text_cb)(void* user_data, ws_video_conn_t conn, const uint8_t* data, size_t len);
 
 typedef struct {
     int max_clients;
@@ -39,6 +50,14 @@ typedef struct {
      * on_send_begin の後で、(now - send_started) >= deadline(そのクライアントのフレームの大きさ) なら、そのクライアントだけを閉じる。 */
     uint32_t frame_deadline_base_ms;          // 期限の固定分
     uint32_t frame_min_rate_bytes_per_s;      // 0 = 期限なし
+
+    /* 映像の状態の通知 (docs/VIDEO_TRANSPORT.md 8 章)。status_get == NULL なら通知なし (従来と全く同じ挙動。
+     * このとき io_begin_send_text と status_min_interval_ms は使わない)。status_get != NULL なら
+     * io_begin_send_text も必須 (ws_video_core_init が -1 を返す)。 */
+    ws_video_status_get_cb status_get;
+    ws_video_io_begin_send_text_cb io_begin_send_text;
+    uint64_t status_min_interval_ms; // 0 = 間隔なし。>0 = 同じクライアントへの通知の間隔の下限 (最後に送った時刻から)。
+                                     // 接続直後の最初の 1 回には適用しない。TODO(hw-verify): 既定 200 は実機で確認する
 
     ws_video_hub_register_cb hub_register;
     ws_video_hub_unregister_cb hub_unregister;
@@ -64,6 +83,14 @@ typedef struct {
     uint64_t queued_ms[WS_CLIENTS_MAX];       // io_begin_send が成功した (キューに入れた) 時刻
     bool send_begun[WS_CLIENTS_MAX];          // on_send_begin が呼ばれた (実際に送り始めた)
     bool close_requested[WS_CLIENTS_MAX];
+
+    /* 映像の状態の通知 (クライアントごと)。status_get == NULL のときは使わない */
+    bool status_sent[WS_CLIENTS_MAX];              // 接続してから、1 回でも送った (キューに入れた)
+    video_status_t status_last[WS_CLIENTS_MAX];    // 最後に送った状態 (status_sent[i] のときだけ有効)
+    uint64_t status_last_ms[WS_CLIENTS_MAX];       // 最後に送った時刻 (status_sent[i] のときだけ有効)
+    bool sending_text[WS_CLIENTS_MAX];             // 送信中のものが、フレームでなくテキスト (is_sending のときだけ有効)
+    size_t text_len[WS_CLIENTS_MAX];               // sending_text[i] のときの、テキストの長さ (期限の size)
+    uint8_t text_buf[WS_CLIENTS_MAX][VIDEO_STATUS_JSON_MAX]; // テキストの本体。on_send_done まで有効
 } ws_video_core_t;
 
 /**

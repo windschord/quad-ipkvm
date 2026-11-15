@@ -63,6 +63,22 @@ void video_status_get(video_status_t *out);
  */
 kvm_video_sync_state_t video_status_hal_sync(void *ctx);
 
+/* ---- 状態の通知用の JSON（C-6b。docs/VIDEO_TRANSPORT.md 8 章、docs/WEB_API.md 5 章） ---- */
+
+/* video_status_format_json が作る文字列の、NUL を含む最大のバイト数（128 以下と契約されている）。
+ * 実際の最長は 60 バイト + NUL（数値が 10 桁ずつのとき）。 */
+#define VIDEO_STATUS_JSON_MAX 128
+
+/*
+ * st を {"t":"video","state":"locked","w":1280,"h":720} の形（キーの順序と、空白なしの書式は固定）で out に書く。
+ *   - state は "unknown" / "no_signal" / "locked"。範囲外の state は "unknown"。
+ *   - LOCKED で w または h が 0 なら "unknown"（video_status_get と同じ補正をここでもかける）。
+ *   - locked 以外は w = h = 0。
+ * 戻り値は、書いた文字数（NUL を除く）。st または out が NULL、cap が足りない（文字数 + 1 未満）ときは -1。
+ * -1 のとき、out != NULL かつ cap > 0 なら out[0] = '\0'（部分的な文字列を残さない）。
+ */
+int video_status_format_json(const video_status_t *st, char *out, size_t cap);
+
 /* ---- 偽の提供元（テストと、デバイスのない確認用） ---- */
 
 /* 値はそのまま保持する（検査しない）。範囲外や不整合な値も、そのまま提供元として返す
