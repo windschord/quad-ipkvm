@@ -74,6 +74,9 @@ typedef enum {
     HTTP_GUARD_PATH_WS_VIDEO,
     HTTP_GUARD_PATH_WS_INPUT,
     HTTP_GUARD_PATH_STATIC,
+    HTTP_GUARD_PATH_KVM_STATUS,   // GET  /api/v1/kvm/status (docs/WEB_API.md 7)
+    HTTP_GUARD_PATH_KVM_SELECT,   // POST /api/v1/kvm/select
+    HTTP_GUARD_PATH_POWER,        // POST /api/v1/power/press|reset|force
     HTTP_GUARD_PATH_OTHER
 } http_guard_path_e;
 

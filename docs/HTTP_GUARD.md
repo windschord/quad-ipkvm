@@ -38,6 +38,13 @@
 | `WS_VIDEO`| `GET` | NO | - | YES | `403_ORIGIN` | WebSocket の CSRF (CSWSH) 防御 |
 | `WS_VIDEO`| `GET`以外 | - | - | YES | `405` | WebSocket は GET のみ |
 | `WS_VIDEO`| 任意 | - | - | NO | `401` | 未認証アクセスの拒否 |
+| `KVM_STATUS` | `GET` | - | - | YES | `ALLOW` | KVM の状態取得（Origin・JSON は不要。docs/WEB_API.md 7） |
+| `KVM_STATUS` | `GET`以外 | - | - | YES | `405` | GET のみ |
+| `KVM_SELECT` / `POWER` | `POST` | YES | YES | YES | `ALLOW` | 切替・電源操作（ハードウェアを動かす） |
+| `KVM_SELECT` / `POWER` | `POST` | NO | - | YES | `403_ORIGIN` | CSRF 防御 |
+| `KVM_SELECT` / `POWER` | `POST` | YES | NO | YES | `415` | Content-Type が JSON ではない |
+| `KVM_SELECT` / `POWER` | `GET`/他 | - | - | YES | `405` | POST のみ（メソッド、Origin、JSON の順に判定） |
+| `KVM_*` / `POWER` | 任意 | - | - | NO | `401` | 未認証アクセスの拒否（セッションが最初） |
 | `OTHER` (保護) | `GET` | - | - | YES | `ALLOW` | 認証済み GET アクセスを許可 |
 | `OTHER` (保護) | `POST` | YES | - | YES | `ALLOW` | 認証済み POST アクセスを許可 |
 | `OTHER` (保護) | `POST` | NO | - | YES | `403_ORIGIN` | CSRF 防御 (POST には Origin 必須) |
