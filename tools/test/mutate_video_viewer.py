@@ -4,14 +4,38 @@
   - http_guard.c の http_guard_format_status(video_port)       -> test/host/http_guard/ の全テスト
   - web/video_trust.html、web/index.html、web/app.css の追加分    -> test_web_pages(Unity)と tools/test/check_video_viewer.js(node)
 app.js のミュータントは、check_video_viewer.js --mutations が自分で実行する(別の道具)。
-使い方: python3 tools/test/mutate_video_viewer.py <repo> <workdir> <out.json>
+使い方: python3 tools/test/mutate_video_viewer.py <repo> <workdir> <out.json> [id ...]  (id を指定すると、そのミュータントだけ実行する)
 repo の components/ test/ tools/ を workdir にコピーして使う(repo は変更しない)。Unity の取得にネットワークが要る。
 1 つでも失敗(アサーション、ASan/UBSan、終了コード非 0、タイムアウト)すれば「殺した」。同値のものは equivalent を付けて数える。"""
 import glob, json, os, re, shutil, subprocess, sys
 
+
+def check_workdir(repo, *paths):
+    """作業先(paths)が repo と同じ、repo を内包する、または repo の内側なら、何も消さずにエラーで終了する
+    (repo は変更しない)。シンボリックリンクは realpath で解決して比べる。rmtree / cmake の前に呼ぶこと。"""
+    repo = os.path.realpath(repo)
+    for p in paths:
+        p = os.path.realpath(p)
+        common = os.path.commonpath([p, repo])
+        if common == p or common == repo:
+            print(f"ERROR: work path {p} overlaps the repo {repo}; refusing to delete or write anything", file=sys.stderr)
+            sys.exit(2)
+
+
+def sh(cmd, **kw):
+    """cmd は引数のリスト(シェルを通さない。空白を含むパスでも動く)。実行ファイルがなければ終了コード 127。"""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, **kw)
+    except FileNotFoundError as e:
+        return subprocess.CompletedProcess(cmd, 127, "", str(e))
+
+
 repo, work, outp = sys.argv[1:4]
+only = set(sys.argv[4:])
+work = os.path.realpath(work)
 src = os.path.join(work, "repo")
 build = os.path.join(work, "build")
+check_workdir(repo, src, build)  # 何も消す前に確認する
 for d in (src, build):  # build も消す(copytree は更新時刻を保つので、古い成果物が新しいと見なされることがある)
     if os.path.exists(d):
         shutil.rmtree(d)
@@ -94,16 +118,12 @@ MUTANTS = [
 ]
 
 
-def sh(cmd, **kw):
-    return subprocess.run(cmd, shell=True, capture_output=True, text=True, **kw)
-
-
 def tests_of(dirname):
     return sorted(os.path.splitext(os.path.basename(p))[0]
                   for p in glob.glob(os.path.join(src, "test/host", dirname, "test_*.c")))
 
 
-r = sh(f"cmake -S {src}/test/host -B {build}")
+r = sh(["cmake", "-S", os.path.join(src, "test", "host"), "-B", build])
 if r.returncode:
     print(r.stdout, r.stderr)
     sys.exit(1)
@@ -113,13 +133,13 @@ C_TESTS = {"http_guard": tests_of("http_guard"), "web": ["test_web_pages"]}
 
 def run_group(group):
     exes = C_TESTS[group]
-    b = sh(f"cmake --build {build} -j8 --target {' '.join(exes)}")
+    b = sh(["cmake", "--build", build, "-j8", "--target", *exes])
     if b.returncode != 0:
         return "build_error", [(b.stdout[-600:] + b.stderr[-600:])]
     failed = []
     for t in exes:
         try:
-            p = sh(f"ASAN_OPTIONS=detect_leaks=0 {build}/{t}", timeout=120)
+            p = sh([os.path.join(build, t)], env=dict(os.environ, ASAN_OPTIONS="detect_leaks=0"), timeout=120)
         except subprocess.TimeoutExpired:
             failed.append(t + ":timeout")
             continue
@@ -128,7 +148,7 @@ def run_group(group):
             failed.append(",".join(names) if names else t + ":crash")
     if group == "web":
         try:
-            p = sh(f"node {src}/tools/test/check_video_viewer.js", timeout=120)
+            p = sh(["node", os.path.join(src, "tools", "test", "check_video_viewer.js")], timeout=120)
             if p.returncode != 0:
                 failed.append("check_video_viewer.js")
         except subprocess.TimeoutExpired:
@@ -145,6 +165,8 @@ for g in C_TESTS:
 
 results = []
 for m in MUTANTS:
+    if only and m["id"] not in only:
+        continue
     f = m["file"]
     orig = ORIG[f]
     text = orig
