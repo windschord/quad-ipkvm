@@ -30,6 +30,47 @@ static void do_request_close(ws_video_core_t* core, int slot) {
     }
 }
 
+/* 映像の状態の通知 (docs/VIDEO_TRANSPORT.md 8 章): このクライアントに、いま状態を送るべきか。
+ * tick で、そのクライアントが ACTIVE・close_requested でない・送信中でないときだけ呼ぶ。 */
+static bool status_due(ws_video_core_t* core, int slot, const video_status_t* cur, uint64_t now_ms) {
+    if (!core->status_sent[slot]) return true; // 接続直後は、間隔に関わらず必ず 1 回送る
+
+    // 時刻の巻き戻り: 最後に送った時刻を now に合わせる (間隔が、いつまでも経たなくならない)
+    if (now_ms < core->status_last_ms[slot]) {
+        core->status_last_ms[slot] = now_ms;
+    }
+
+    const video_status_t* last = &core->status_last[slot];
+    if (cur->state == last->state && cur->width == last->width && cur->height == last->height) return false;
+
+    // 変化がある。最短の間隔が経つまでは送らない (途中の状態は送らず、経った後の最新の 1 回だけを送る)
+    if (core->config.status_min_interval_ms > 0 &&
+        now_ms - core->status_last_ms[slot] < core->config.status_min_interval_ms) {
+        return false;
+    }
+    return true;
+}
+
+/* 状態のテキストフレームを送り始める (呼び出し側が、ws_clients_try_begin_send に成功した後)。
+ * 成功したら、フレームと同じ仕組みで「送信中」になる (on_send_done まで続く)。失敗したらそのクライアントを閉じる。 */
+static void status_begin_send(ws_video_core_t* core, int slot, const video_status_t* cur, uint64_t now_ms) {
+    int n = video_status_format_json(cur, (char*)core->text_buf[slot], sizeof(core->text_buf[slot]));
+    int res = (n > 0) ? core->config.io_begin_send_text(core->config.user_data, core->conns[slot], core->text_buf[slot], (size_t)n)
+                      : -1; // n <= 0 は起こらない (JSON は 128 バイトに収まる)。防御: 閉じる
+    if (res != 0) {
+        ws_clients_end_send(&core->clients, slot);
+        do_request_close(core, slot);
+        return;
+    }
+    core->sending_text[slot] = true;
+    core->text_len[slot] = (size_t)n;
+    core->queued_ms[slot] = now_ms; // キューに入れた時刻 (フレームと同じ。send_started_ms は on_send_begin で設定する)
+    core->send_begun[slot] = false;
+    core->status_last[slot] = *cur;
+    core->status_last_ms[slot] = now_ms;
+    core->status_sent[slot] = true;
+}
+
 int ws_video_core_init(ws_video_core_t* core, const ws_video_core_config_t* config) {
     if (!core || !config) return -1;
     if (config->max_clients < 1 || config->max_clients > WS_CLIENTS_MAX) return -1;
@@ -37,6 +78,10 @@ int ws_video_core_init(ws_video_core_t* core, const ws_video_core_config_t* conf
     // Check all 7 callbacks
     if (!config->hub_register || !config->hub_unregister || !config->hub_get_latest || !config->hub_release ||
         !config->io_begin_send || !config->io_request_close || !config->io_validate_session) {
+        return -1;
+    }
+    // 状態の通知: status_get があるなら、テキストを送る関数も要る
+    if (config->status_get && !config->io_begin_send_text) {
         return -1;
     }
 
@@ -91,6 +136,14 @@ int ws_video_core_on_connect(ws_video_core_t* core, ws_video_conn_t conn, int fd
     core->last_seqs[slot] = -1;
     reset_send_times(core, slot);
     core->close_requested[slot] = false;
+    // 映像の状態の通知: 接続直後は、まだ 1 回も送っていない (tick で必ず 1 回送る)
+    core->status_sent[slot] = false;
+    core->status_last[slot].state = KVM_VIDEO_SYNC_UNKNOWN;
+    core->status_last[slot].width = 0;
+    core->status_last[slot].height = 0;
+    core->status_last_ms[slot] = 0;
+    core->sending_text[slot] = false;
+    core->text_len[slot] = 0;
 
     return slot;
 }
@@ -139,6 +192,10 @@ void ws_video_core_on_send_done(ws_video_core_t* core, int fd, bool ok) {
     int hub_client_id = core->clients.clients[slot].hub_client_id;
     const video_frame_t* frame = core->current_frames[slot];
 
+    // テキスト (映像の状態) の送信の完了。解放するフレームはない (current_frames[slot] は NULL)
+    core->sending_text[slot] = false;
+    core->text_len[slot] = 0;
+
     ws_clients_end_send(&core->clients, slot);
     // on_send_begin が呼ばれたかどうかに関わらず、この送信の時刻の記録を捨てる
     core->send_begun[slot] = false;
@@ -173,6 +230,10 @@ void ws_video_core_on_client_data(ws_video_core_t* core, int fd) {
 void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
     if (!core) return;
 
+    // この tick の映像の状態 (最初に必要になったときに 1 回だけ読む。全クライアントで同じ値を使う)
+    video_status_t status_now = {KVM_VIDEO_SYNC_UNKNOWN, 0, 0}; // status_get が書かなくても UNKNOWN / 0 / 0
+    bool status_read = false;
+
     for (int i = 0; i < core->config.max_clients; i++) {
         if (core->clients.clients[i].state != WS_CLIENT_ACTIVE) continue;
         if (core->close_requested[i]) continue;
@@ -204,6 +265,7 @@ void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
                 if (core->config.frame_min_rate_bytes_per_s > 0) {
                     const video_frame_t* f = core->current_frames[i];
                     size_t size = f ? f->size : 0;
+                    if (core->sending_text[i]) size = core->text_len[i]; // テキストの送信 (期限の size はテキストの長さ)
                     uint64_t deadline = ws_video_frame_deadline_ms(size, core->config.frame_deadline_base_ms,
                                                                    core->config.frame_min_rate_bytes_per_s);
                     if (elapsed >= deadline) {
@@ -235,6 +297,19 @@ void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
 
         // Try to send
         if (ws_clients_try_begin_send(&core->clients, i)) {
+            // 映像の状態の通知は、フレームより先。通知を始めたら、このクライアントのフレームは次の tick 以降
+            // (テキストの送信が終わる = on_send_done まで、is_sending が続くため)
+            if (core->config.status_get) {
+                if (!status_read) {
+                    core->config.status_get(core->config.user_data, &status_now);
+                    status_read = true;
+                }
+                if (status_due(core, i, &status_now, now_ms)) {
+                    status_begin_send(core, i, &status_now, now_ms);
+                    continue;
+                }
+            }
+
             int hub_client_id = core->clients.clients[i].hub_client_id;
             const video_frame_t* frame = core->config.hub_get_latest(core->config.user_data, hub_client_id);
 
