@@ -23,6 +23,50 @@ static void reset_send_times(ws_video_core_t* core, int slot) {
     core->send_begun[slot] = false;
 }
 
+/* need_key を真にする (docs/VIDEO_TRANSPORT.md 9.6)。すでに真なら何もしない (待ちの起点も、要求も、やり直さない)。
+ * 偽 -> 真のときだけ、キーフレームの要求を溜める (request_keyframe がなければ溜めない)。 */
+static void mark_need_key(ws_video_core_t* core, int slot) {
+    if (core->need_key[slot]) return;
+    core->need_key[slot] = true;
+    core->key_waiting[slot] = false;
+    core->need_key_since_ms[slot] = 0;
+    if (core->config.request_keyframe) {
+        core->idr_request_pending = true;
+    }
+}
+
+/* tick の最後: 溜まった要求を、間隔が経っていれば 1 回だけ呼ぶ。誰も need_key でなければ (配れた、閉じた、など)、要求は不要なので捨てる。 */
+static void flush_keyframe_request(ws_video_core_t* core, uint64_t now_ms) {
+    if (!core->idr_request_pending) return;
+
+    bool any_need = false;
+    for (int i = 0; i < core->config.max_clients; i++) {
+        if (core->clients.clients[i].state == WS_CLIENT_ACTIVE && !core->close_requested[i] && core->need_key[i]) {
+            any_need = true;
+            break;
+        }
+    }
+    if (!any_need || !core->config.request_keyframe) {
+        core->idr_request_pending = false;
+        return;
+    }
+
+    if (core->idr_requested) {
+        // 時刻の巻き戻り: 最後に要求した時刻を now に合わせる (間隔が、いつまでも経たなくならない)
+        if (now_ms < core->last_idr_request_ms) {
+            core->last_idr_request_ms = now_ms;
+        }
+        if (core->config.idr_min_interval_ms > 0 &&
+            now_ms - core->last_idr_request_ms < core->config.idr_min_interval_ms) {
+            return; // まだ早い。溜めたまま、間隔が経った tick で 1 回だけ呼ぶ
+        }
+    }
+    core->idr_request_pending = false;
+    core->idr_requested = true;
+    core->last_idr_request_ms = now_ms;
+    core->config.request_keyframe(core->config.user_data);
+}
+
 static void do_request_close(ws_video_core_t* core, int slot) {
     if (!core->close_requested[slot]) {
         core->close_requested[slot] = true;
@@ -144,6 +188,12 @@ int ws_video_core_on_connect(ws_video_core_t* core, ws_video_conn_t conn, int fd
     core->status_last_ms[slot] = 0;
     core->sending_text[slot] = false;
     core->text_len[slot] = 0;
+    // キーフレーム待ち: 接続したときは、必ず need_key (docs/VIDEO_TRANSPORT.md 9.6 (a))
+    core->need_key[slot] = false;
+    core->key_waiting[slot] = false;
+    core->need_key_since_ms[slot] = 0;
+    core->last_codec[slot] = (uint8_t)VIDEO_CODEC_MJPEG;
+    mark_need_key(core, slot);
 
     return slot;
 }
@@ -249,6 +299,17 @@ void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
             }
         }
 
+        // キーフレーム待ちが長い (H.264 の IDR が来ない): send_timeout とは別に閉じる (再接続させる)
+        if (core->need_key[i] && core->key_waiting[i] && core->config.key_wait_timeout_ms > 0) {
+            if (now_ms < core->need_key_since_ms[i]) {
+                core->need_key_since_ms[i] = now_ms; // 時刻の巻き戻り: 起点を now に合わせる
+            }
+            if (now_ms - core->need_key_since_ms[i] >= core->config.key_wait_timeout_ms) {
+                do_request_close(core, i);
+                continue;
+            }
+        }
+
         // A frame is in flight: queue wait / send stall / whole-frame deadline
         if (core->clients.clients[i].is_sending) {
             if (core->send_begun[i]) {
@@ -324,11 +385,37 @@ void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
                 continue;
             }
 
+            // キーフレーム待ち (docs/VIDEO_TRANSPORT.md 9.6)。H.264 以外のコーデックは、MJPEG と同じ扱い (配る)。
+            const bool is_h264 = (frame->codec == (uint8_t)VIDEO_CODEC_H264);
+            const bool is_key = (frame->flags & VIDEO_FRAME_FLAG_KEY) != 0;
+            if (frame->seq != core->last_seqs[i] + 1) {
+                mark_need_key(core, i); // (b) 飛ばした (遅いクライアント、リングの上書き、配らなかったフレーム)
+            }
+            if (is_h264 && core->last_codec[i] != (uint8_t)VIDEO_CODEC_H264) {
+                mark_need_key(core, i); // (c) MJPEG (または初めて) から H.264 に変わった
+            }
+            if (core->need_key[i] && is_h264 && !is_key) {
+                // P フレームは配らない (次の IDR まで待つ)。待ちの起点は、最初に配らなかった時刻
+                if (!core->key_waiting[i]) {
+                    core->key_waiting[i] = true;
+                    core->need_key_since_ms[i] = now_ms;
+                }
+                core->config.hub_release(core->config.user_data, hub_client_id, frame);
+                ws_clients_end_send(&core->clients, i);
+                continue;
+            }
+
             int send_res = core->config.io_begin_send(core->config.user_data, core->conns[i], frame->data, frame->size);
             if (send_res == 0) {
                 // Success
                 core->current_frames[i] = frame;
                 core->last_seqs[i] = frame->seq; // Update last_seq AFTER successful begin_send
+                core->last_codec[i] = (uint8_t)(is_h264 ? VIDEO_CODEC_H264 : VIDEO_CODEC_MJPEG);
+                if (!is_h264 || is_key) {
+                    // MJPEG のフレーム、または H.264 の IDR: 自己完結なので、待ちは終わり
+                    core->need_key[i] = false;
+                    core->key_waiting[i] = false;
+                }
                 core->queued_ms[i] = now_ms;     // キューに入れた時刻。send_started_ms は on_send_begin で設定する
                 core->send_begun[i] = false;
             } else {
@@ -339,4 +426,6 @@ void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
             }
         }
     }
+
+    flush_keyframe_request(core, now_ms);
 }
