@@ -28,7 +28,7 @@
 
 ## 3. ミューテーションテスト
 
-方法: `tools/test/mutate_video_core.py` が、`components/` と `test/` をスクラッチにコピーし、`ws_video_core.c` または `http_guard.c` の 1 か所を置換 -> 再ビルド -> テストを実行、を繰り返す(ミュータントの定義は `tools/test/video_core_mutants.py`)。`ws_video_core.c` のミュータントには `test/host/ws_video_core/` の 2 つの実行ファイル、`http_guard.c` のミュータントには `test/host/http_guard/` の 8 つの実行ファイル(`http_guard` の既存のテストを含む)を実行する。1 つでも失敗(アサーション、ASan/UBSan、クラッシュ、タイムアウト)すれば「殺した」。
+方法: `tools/test/mutate_video_core.py` が、`components/` と `test/` をスクラッチにコピーし、`ws_video_core.c` または `http_guard.c` の 1 か所を置換 -> 再ビルド -> テストを実行、を繰り返す(ミュータントの定義は `tools/test/video_core_mutants.py`)。`ws_video_core.c` のミュータントには `test/host/ws_video_core/` の実行ファイル、`http_guard.c` のミュータントには `test/host/http_guard/` の 8 つの実行ファイル(`http_guard` の既存のテストを含む)を実行する。1 つでも失敗(アサーション、ASan/UBSan、クラッシュ、タイムアウト)すれば「殺した」。
 
 ```
 python3 tools/test/mutate_video_core.py <repo> <スクラッチ> tools/test/video_core_mutants.py <結果.json>
@@ -183,3 +183,166 @@ python3 tools/test/mutate_video_core.py <repo> <スクラッチ> tools/test/vide
 - IDF のビルド(`web_server` への結線、`ws_video_core_config_t` の新しいメンバーを使う側)は、このタスクの範囲外で、実行していない。`ws_video_core_config_t` に足したメンバー(`queue_timeout_ms`、`frame_deadline_base_ms`、`frame_min_rate_bytes_per_s`)は、指定初期化子で書いている呼び出し側では、書かなければ 0(= 無効)になるので、既存の呼び出しは壊れない。
 - 実機での測定(`slowclient.py` の `40 KB/s` など)は、`docs/VIDEO_TRANSPORT.md` 6 章の device-check の担当。
 - 期限の既定(`base` = 200 ms、`min_rate` = 1,000,000 B/s)、`queue_timeout_ms` = 10000 は、契約どおり `TODO(hw-verify)`(IDF 側が渡す値。このコンポーネントは値を持たない)。
+
+## 5. P7: H.264 のキーフレーム待ち(`ws_video_core`)と `frame_hub` の `codec` / `flags`
+
+作成: 2026-11-16(P7。契約は `docs/VIDEO_TRANSPORT.md` 9 章、`docs/INTERFACES.md` 1.4)。純 C で、ホストでテストできる部分だけ。`web_server.c`(`accept=h264` の解析、`request_keyframe` の配線)、`csi_video_source.c`、`main.c` は変更していない。
+
+### 5.1 変更の要点
+
+- `frame_hub`: `video_frame_t` の末尾に `codec` / `flags` を足した(`video_codec_t`、`VIDEO_FRAME_FLAG_KEY`)。`frame_hub_commit_ex(hub, frame, info)` を足し、`frame_hub_commit()` はシグネチャを変えずに `codec = MJPEG`、`flags = KEY` で `commit_ex` に写す。`frame_hub_begin_publish()` が払い出すスロットは、`codec = MJPEG`、`flags = 0` に戻す。`size` の規則(0 と `max_frame_size` 超過は捨てて `dropped_frames`)、二重の commit・未知のフレームの無視は `commit` と同じ。`info == NULL` は、公開できないので `abort_publish` と同じ(スロットを「書き込み中」のまま残さない。数えない)。
+- `video_source_t`: 末尾(`ctx` の後)に `supported_codecs` / `set_codec` / `request_keyframe` を足した。`test_pattern_source.c` と `csi_video_source.c` は、指示付き初期化(`.name = ...`)で変更なしに通る。
+- `ws_video_core`: 設定に `request_keyframe`、`idr_min_interval_ms`、`key_wait_timeout_ms` を足した。クライアントごとに `need_key`(と、待ちの起点、最後に配ったコーデック)、全体に要求の状態を持つ。
+  - `need_key` を真にする: (a) 接続したとき、(b) 配ろうとするフレームの `seq` が `last_seqs + 1` でないとき(戻った場合も含む)、(c) H.264 のフレームで、直前に配ったフレームが MJPEG(または初めて)のとき。すでに真なら何もしない(待ちの起点も要求も、やり直さない)。
+  - `need_key` が真のクライアントには、H.264 で `KEY` の立っていないフレームを配らない(`hub_release` して次の tick)。MJPEG(H.264 以外の値も)と H.264 の IDR は配り、`need_key` を偽にする。
+  - `request_keyframe`: `need_key` を偽 -> 真にしたとき、要求を 1 つ溜める。tick の**最後**に、溜まっていて、まだ待っているクライアントがいれば、`idr_min_interval_ms` が経っていれば 1 回呼ぶ(経っていなければ溜めたまま、経った最初の tick で 1 回だけ)。要求がまとまるのは、複数のクライアント、同じ tick の複数の印、間隔の間の印。誰も待たなくなったら(配れた、切断、閉じる要求)、溜めた要求は捨てる。`request_keyframe == NULL` なら溜めない(待ちと切断は動く)。
+  - `key_wait_timeout_ms`: H.264 のフレームを**最初に配らなかった時刻**から数え、`need_key` が `key_wait_timeout_ms` 以上続いたクライアントを `io_request_close` で閉じる(フレームの送信中・状態のテキストの送信中でも)。0 = 閉じない。
+- MJPEG だけのとき(`codec` がずっと MJPEG)は、フレームを配るたびに `need_key` が偽になり、待ちも切断も起きない。`request_keyframe` が `NULL` の既存の設定では、既存の 3 つのテストファイルは、変更なしで全件通る。
+
+### 5.2 テストの構成
+
+| ファイル | 内容 | 件数(Unity のテストケース) |
+|---|---|---|
+| `test/host/frame_hub/test_frame_hub.c` | 既存 14 件 + P7: `commit` が MJPEG / KEY、`commit_ex` の `codec` / `flags` の受け渡し(`size == max` も)、`begin_publish` での初期化(使い回すスロット)、`commit` が公開側の書き込みを上書きすること、`size` 0 / 超過が `commit` と同じ、誤用(二重・未知・NULL)、`video_source_t` の位置指定・指示付き初期化で P7 の項目が 0 / NULL、P7 の項目、ファズ(20 シード x 1500 ステップ) | 24(+10) |
+| `test/host/ws_video_core/test_ws_video_core_keyframe.c`(新規) | 接続直後(P を配らない / IDR から / IDR が先なら要求も不要)、seq の飛び(境界 +1 / +2、戻り、IDR 自身は配る)、MJPEG は影響されない(飛び、KEY なし、未知のコーデックの値、`KEY` 以外のビット)、MJPEG -> H.264 の切替と戻り、要求のまとめ(複数のクライアント、境界 -1 / ちょうど / +1、誰も待たなくなったら捨てる、間隔 0、`NULL`、`user_data`)、`key_wait_timeout_ms`(境界 -1 / ちょうど、起点の再設定がないこと、IDR で終わった後は閉じない、0 = 閉じない、フレームが来ない間は数えない、ほかのクライアントに影響しない、状態のテキスト・フレームの送信中でも数える)、C-6b との併用、複数のクライアントの独立、同じスロットでの再接続、`begin_send` の失敗、時刻の巻き戻り、ファズ | 46 |
+
+`test/host/CMakeLists.txt` は変更していない(`test_*.c` の自動発見)。ctest の実行ファイルは 66 -> 67 個で、すべて成功。
+
+**ファズ(`test_fuzz_keyframe_gating_matches_model_and_invariants`)**: 固定シード 400 個 x 3000 ステップ。設定(`idr_min_interval_ms` x `key_wait_timeout_ms` x `request_keyframe` の有無 x 状態の通知の有無 x 時刻の巻き戻りの有無)をシードごとに変え、接続・切断・閉じる要求・送信の完了(失敗を含む)・フレームの公開(MJPEG / H.264、IDR、1 回に複数、信号なし)・tick(`begin_send` の失敗を含む)をランダムな順で行う。次の 2 つを毎 tick で検査する。(1) 独立したモデル(クライアントごとに「配る / 配らない / 閉じる / テキスト」と、要求を呼ぶ tick を予測)と、実際の動作(配られた `seq` / `codec` / `flags`、`release` の数、閉じた回数、要求の回数、送信中の状態)が一致する。(2) モデルの規則を使わない不変条件: H.264 の P が配られるのは、直前に**実際に配られた**フレームが H.264 で `seq` が 1 つ前のときだけ(= 接続直後・飛び・コーデックの切替の後に、IDR なしで P が配られない)、1 tick に要求は高々 1 回、(巻き戻りなしのシードで)要求の間隔が `idr_min_interval_ms` 以上、保持と登録が残らない。実測(固定シードなので毎回同じ): 配らなかったフレーム 30474、待ちを IDR で終えた 4661、要求 21989、間隔で溜めた 4095、期限で閉じた 9711、飛びによる印 15688、切替による印 481、状態のテキスト 17270、巻き戻り 14512(いずれも下限を検査して、空振りでないことを確認している)。
+
+### 5.3 ミューテーションテスト(P7 の追加分)
+
+`tools/test/mutate_video_core.py` に `frame_hub.c` のグループを足した(`frame_hub.c` のミュータントには `test/host/frame_hub/` の全部を実行する)。追加したミュータントは、`ws_video_core.c` に 58 個(`K01`〜`K62`。欠番は、実装を簡単にして、冗長な分岐のミュータントが消えたもの)、`frame_hub.c` に 23 個(`F01`〜`F23`)。**最終の全体の実行(既存の 114 個を含む)**:
+
+```
+python3 tools/test/mutate_video_core.py <repo> <スクラッチ> tools/test/video_core_mutants.py <結果.json>
+run: 195 killed: 173 survived: 22 build_error: 0      (ベースラインは 3 つのグループとも全テスト成功)
+```
+
+| グループ | 実行した数 | 殺した数 | 生き残った数(すべて同値と判断) | ビルドエラー |
+|---|---|---|---|---|
+| ws_video_core.c(既存 58 + P7 58) | 116 | 102 | 11(既存) + 3(P7) | 0 |
+| http_guard.c | 56 | 48 | 8(既存) | 0 |
+| frame_hub.c(P7) | 23 | 23 | 0 | 0 |
+| 合計 | 195 | 173 | 22 | 0 |
+
+P7 の追加分だけ見ると、81 個(ID `K` が 58 個、`F` が 23 個)のうち 78 個を殺し、3 個が同値で生き残った。
+
+経緯: 最初の実行で、実装の冗長な分岐に由来する生き残りが出た。(1) `key_waiting` を配ったときに戻す分岐と、`need_key` を戻す条件(`!is_h264 || is_key`)は、`need_key` が真のまま配られるのは MJPEG と IDR だけなので、条件が常に真と同じだった。**テストを足すのではなく、冗長なコードを消して**(配ったら無条件に `need_key` を偽にする。`key_waiting` は `need_key` が偽の間は参照せず、`mark_need_key` が戻す)、その参照を外すと動作が変わるミュータントは、テストで殺した(`test_key_wait_is_not_applied_after_the_wait_ended` が `K28` を殺す)。(2) seq が戻る場合(`K37`)を殺すテスト `test_backward_seq_is_a_discontinuity` を足した。そのあと、**全体を最初から実行し直した**のが上の結果。(途中で、書き換えた箇所に合わなくなったミュータントの old 文字列が `BAD EDIT` で止めたので、直して、やり直した。)
+
+#### 5.3.1 同値のミュータント(P7 の分。3 個)
+
+| ID | 変更箇所 | 同値の理由 |
+|---|---|---|
+| K19 | flush: `request_keyframe` の `NULL` の検査を外す | 要求を溜めるのは `mark_need_key` が `request_keyframe != NULL` のときだけで、`NULL` のまま `flush` に溜まった要求が届くことはない。`NULL` の検査は、設定が実行中に変わる(起こらない)ときのための二重の防御。 |
+| K21 | connect: `last_codec` の初期値を H.264 にする | 接続時に `need_key` を真にしているので、最初に配るフレームの (c) の判定は、すでに真の `need_key` に対する何もしない操作になる。最初のフレームを配ると `last_codec` はそのフレームのもので上書きされる。初期値は、「初めて = MJPEG 扱い」という意味を明示する二重の防御。 |
+| K24 | connect: `last_codec` を戻さない(前のクライアントの値のまま) | K21 と同じ理由(接続後の最初の配信で必ず上書きされ、それまでは `need_key` が真)。 |
+
+(既存の 19 個の同値は、3.1 を参照。)
+
+#### 5.3.2 殺したミュータントの一覧(P7 の分。78 個)
+
+「殺したテスト」は、失敗したテストのうち先頭の 2 つ。
+
+| ID | 変更箇所 | 殺したテスト |
+|---|---|---|
+| K01 | mark: not idempotent (already-true need_key is marked again) | `test_key_wait_timeout_boundary`, `test_key_wait_does_not_restart_on_each_withheld_frame` |
+| K02 | mark: need_key not set | `test_connect_h264_p_is_not_delivered_until_idr`, `test_connect_without_frames_requests_once_at_end_of_first_tick` |
+| K03 | mark: request is not queued | `test_connect_without_frames_requests_once_at_end_of_first_tick`, `test_seq_gap_makes_need_key_until_next_idr` |
+| K04 | mark: request queued even without a request callback | `test_fuzz_keyframe_gating_matches_model_and_invariants` |
+| K05 | flush: queued request not dropped when nobody needs a key | `test_connect_h264_first_frame_idr_is_delivered_at_once_and_no_request`, `test_seq_gap_makes_need_key_until_next_idr` |
+| K06 | flush: close_requested clients count as waiting | `test_failed_begin_send_of_idr_closes_and_does_not_count_as_delivered`, `test_close_requested_client_is_not_served_and_not_counted_as_waiting` |
+| K07 | flush: non-ACTIVE clients count as waiting | `test_pending_request_is_dropped_when_the_waiting_client_is_closed`, `test_fuzz_keyframe_gating_matches_model_and_invariants` |
+| K08 | flush: need_key ignored (any client counts) | `test_connect_h264_first_frame_idr_is_delivered_at_once_and_no_request`, `test_seq_gap_makes_need_key_until_next_idr` |
+| K09 | flush: interval boundary < becomes <= | `test_request_boundary_waits_idr_min_interval_then_one_call`, `test_request_boundary_one_ms_after_interval` |
+| K10 | flush: interval boundary < becomes > (inverted) | `test_request_boundary_waits_idr_min_interval_then_one_call`, `test_request_boundary_one_ms_after_interval` |
+| K11 | flush: interval ignored (always call) | `test_request_boundary_waits_idr_min_interval_then_one_call`, `test_request_boundary_one_ms_after_interval` |
+| K12 | flush: pending not cleared after the call (repeats every tick) | `test_interval_zero_does_not_merge_across_ticks_but_merges_within_a_tick`, `test_fuzz_keyframe_gating_matches_model_and_invariants` |
+| K13 | flush: idr_requested never set (first-call state lost, no throttling) | `test_request_boundary_waits_idr_min_interval_then_one_call`, `test_request_boundary_one_ms_after_interval` |
+| K14 | flush: last request time not recorded | `test_request_boundary_one_ms_after_interval`, `test_clock_rollback_clamps_last_request_time` |
+| K15 | flush: clock rollback clamp removed | `test_clock_rollback_clamps_last_request_time`, `test_fuzz_keyframe_gating_matches_model_and_invariants` |
+| K16 | flush: throttle also applied before the first request | `test_connect_without_frames_requests_once_at_end_of_first_tick`, `test_seq_gap_makes_need_key_until_next_idr` |
+| K17 | flush: request called with NULL user_data | `test_connect_h264_p_is_not_delivered_until_idr`, `test_connect_without_frames_requests_once_at_end_of_first_tick` |
+| K18 | tick: flush_keyframe_request never called | `test_connect_without_frames_requests_once_at_end_of_first_tick`, `test_seq_gap_makes_need_key_until_next_idr` |
+| K20 | connect: need_key not marked (a) | `test_connect_without_frames_requests_once_at_end_of_first_tick`, `test_mjpeg_delivered_regardless_of_need_key_and_clears_it` |
+| K22 | connect: stale need_key not reset (mark returns early) | `test_fuzz_keyframe_gating_matches_model_and_invariants` |
+| K23 | connect: stale key_waiting / need_key / since all kept | `test_reconnect_after_timeout_close_has_a_new_wait`, `test_fuzz_keyframe_gating_matches_model_and_invariants` |
+| K25 | key-wait: boundary >= becomes > | `test_request_keyframe_null_still_gates_and_never_requests`, `test_key_wait_timeout_boundary` |
+| K26 | key-wait: timeout 0 does not disable | `test_key_wait_zero_never_closes`, `test_fuzz_keyframe_gating_matches_model_and_invariants` |
+| K27 | key-wait: counted before any frame was withheld (key_waiting ignored) | `test_key_wait_does_not_count_while_no_frame_arrives`, `test_reconnect_after_timeout_close_has_a_new_wait` |
+| K28 | key-wait: need_key ignored (key_waiting only) | `test_idr_before_timeout_prevents_close_and_new_wait_has_new_origin`, `test_key_wait_is_not_applied_after_the_wait_ended` |
+| K29 | key-wait: never closes | `test_request_keyframe_null_still_gates_and_never_requests`, `test_key_wait_timeout_boundary` |
+| K30 | key-wait: clock rollback clamp removed | `test_clock_rollback_clamps_key_wait_origin`, `test_clock_rollback_to_zero_does_not_underflow` |
+| K31 | key-wait: no continue after the close request | `test_fuzz_keyframe_gating_matches_model_and_invariants` |
+| K32 | key-wait: the check runs only for idle (not sending) clients | `test_key_wait_closes_even_while_a_send_is_in_flight` |
+| K33 | key-wait: timeout shortened by 1 ms (>= timeout - 1) | `test_request_keyframe_null_still_gates_and_never_requests`, `test_key_wait_timeout_boundary` |
+| K34 | gap (b): condition removed (seq gaps ignored) | `test_seq_gap_makes_need_key_until_next_idr`, `test_gap_boundary_seq_plus_one_is_continuous_plus_two_is_not` |
+| K35 | gap (b): expects seq + 2 | `test_connect_h264_p_is_not_delivered_until_idr`, `test_connect_h264_first_frame_idr_is_delivered_at_once_and_no_request` |
+| K36 | gap (b): compares with the last seq itself | `test_connect_h264_p_is_not_delivered_until_idr`, `test_connect_h264_first_frame_idr_is_delivered_at_once_and_no_request` |
+| K37 | gap (b): only a forward gap counts (> instead of !=) | `test_backward_seq_is_a_discontinuity` |
+| K38 | gap (b): a gap of exactly one frame is tolerated (> + 2) | `test_seq_gap_makes_need_key_until_next_idr`, `test_gap_boundary_seq_plus_one_is_continuous_plus_two_is_not` |
+| K39 | codec (c): switch to H.264 not detected | `test_mjpeg_to_h264_switch_sets_need_key`, `test_h264_to_mjpeg_to_h264_sets_need_key_each_time` |
+| K40 | codec (c): marks while the previous frame was H.264 | `test_connect_h264_p_is_not_delivered_until_idr`, `test_connect_h264_first_frame_idr_is_delivered_at_once_and_no_request` |
+| K41 | codec (c): is_h264 dropped (marks on every frame after a non-H.264 one) | `test_fuzz_keyframe_gating_matches_model_and_invariants` |
+| K42 | withhold: an IDR is also withheld (!is_key dropped) | `test_connect_h264_p_is_not_delivered_until_idr`, `test_connect_h264_first_frame_idr_is_delivered_at_once_and_no_request` |
+| K43 | withhold: MJPEG is also withheld (is_h264 dropped) | `test_defer_unregister_during_send`, `test_send_failure_releases_and_closes` |
+| K44 | withhold: need_key ignored (every P is withheld) | `test_connect_h264_p_is_not_delivered_until_idr`, `test_connect_h264_first_frame_idr_is_delivered_at_once_and_no_request` |
+| K45 | withhold: never withholds | `test_connect_h264_p_is_not_delivered_until_idr`, `test_seq_gap_makes_need_key_until_next_idr` |
+| K46 | withhold: frame not released | `test_connect_h264_p_is_not_delivered_until_idr`, `test_seq_gap_makes_need_key_until_next_idr` |
+| K47 | withhold: end_send not called (client stays 'sending') | `test_connect_h264_p_is_not_delivered_until_idr`, `test_seq_gap_makes_need_key_until_next_idr` |
+| K48 | withhold: wait origin not recorded (since stays 0) | `test_request_keyframe_null_still_gates_and_never_requests`, `test_key_wait_timeout_boundary` |
+| K49 | withhold: key_waiting never set | `test_request_keyframe_null_still_gates_and_never_requests`, `test_key_wait_timeout_boundary` |
+| K50 | withhold: wait origin restarts at every withheld frame | `test_key_wait_timeout_boundary`, `test_key_wait_does_not_restart_on_each_withheld_frame` |
+| K51 | is_h264: any codec other than MJPEG counts as H.264 | `test_unknown_codec_value_is_not_gated` |
+| K52 | is_key: any non-zero flags count as a key frame | `test_h264_flag_bits_other_than_key_do_not_count_as_key` |
+| K53 | is_key: only flags == KEY counts (other bits break it) | `test_h264_flag_bits_other_than_key_do_not_count_as_key` |
+| K54 | is_key: flags ignored (no frame is a key frame) | `test_connect_h264_p_is_not_delivered_until_idr`, `test_connect_h264_first_frame_idr_is_delivered_at_once_and_no_request` |
+| K58 | clear: need_key never cleared on delivery | `test_connect_h264_p_is_not_delivered_until_idr`, `test_connect_h264_first_frame_idr_is_delivered_at_once_and_no_request` |
+| K60 | delivered: last_codec not recorded | `test_connect_h264_p_is_not_delivered_until_idr`, `test_connect_h264_first_frame_idr_is_delivered_at_once_and_no_request` |
+| K61 | delivered: last_codec always H.264 | `test_mjpeg_to_h264_switch_sets_need_key`, `test_h264_to_mjpeg_to_h264_sets_need_key_each_time` |
+| K62 | delivered: last_codec always MJPEG | `test_connect_h264_p_is_not_delivered_until_idr`, `test_connect_h264_first_frame_idr_is_delivered_at_once_and_no_request` |
+| F01 | begin_publish: codec not reset | `test_frame_hub_begin_publish_resets_codec_and_flags` |
+| F02 | begin_publish: flags not reset | `test_frame_hub_begin_publish_resets_codec_and_flags` |
+| F03 | begin_publish: codec reset to H.264 | `test_frame_hub_begin_publish_resets_codec_and_flags` |
+| F04 | begin_publish: flags reset to KEY | `test_frame_hub_begin_publish_resets_codec_and_flags` |
+| F05 | commit: codec is H.264 | `test_frame_hub_commit_sets_mjpeg_key`, `test_frame_hub_commit_overrides_dirty_fields` |
+| F06 | commit: flags 0 (not KEY) | `test_frame_hub_commit_sets_mjpeg_key`, `test_frame_hub_commit_overrides_dirty_fields` |
+| F07 | commit: size not passed on | `test_frame_hub_basic_publish_subscribe`, `test_frame_hub_size_alternation` |
+| F08 | commit: width and height swapped | `test_frame_hub_commit_sets_mjpeg_key` |
+| F09 | commit: timestamp not passed on | `test_frame_hub_commit_sets_mjpeg_key` |
+| F10 | commit_ex: codec not stored | `test_frame_hub_commit_ex_passes_codec_and_flags`, `test_frame_hub_commit_overrides_dirty_fields` |
+| F11 | commit_ex: flags not stored | `test_frame_hub_commit_sets_mjpeg_key`, `test_frame_hub_commit_ex_passes_codec_and_flags` |
+| F12 | commit_ex: KEY forced on | `test_frame_hub_commit_ex_passes_codec_and_flags`, `test_frame_hub_codec_flags_fuzz` |
+| F13 | commit_ex: codec forced to MJPEG | `test_frame_hub_commit_ex_passes_codec_and_flags`, `test_frame_hub_codec_flags_fuzz` |
+| F14 | commit_ex: size == max_frame_size rejected (> becomes >=) | `test_frame_hub_commit_ex_passes_codec_and_flags`, `test_frame_hub_commit_ex_size_rules_match_commit` |
+| F15 | commit_ex: size 0 accepted | `test_frame_hub_publish_abort`, `test_frame_hub_commit_ex_size_rules_match_commit` |
+| F16 | commit_ex: oversize accepted | `test_frame_hub_commit_oversize`, `test_frame_hub_commit_ex_size_rules_match_commit` |
+| F17 | commit_ex: size not stored | `test_frame_hub_basic_publish_subscribe`, `test_frame_hub_size_alternation` |
+| F18 | commit_ex: width not stored | `test_frame_hub_commit_sets_mjpeg_key`, `test_frame_hub_commit_ex_passes_codec_and_flags` |
+| F19 | commit_ex: height not stored | `test_frame_hub_commit_sets_mjpeg_key`, `test_frame_hub_commit_ex_passes_codec_and_flags` |
+| F20 | commit_ex: timestamp not stored | `test_frame_hub_commit_sets_mjpeg_key`, `test_frame_hub_commit_ex_passes_codec_and_flags` |
+| F21 | commit_ex: NULL info not handled (dereferenced) | `test_frame_hub:crash/rc=1` |
+| F22 | commit_ex: NULL info leaves the slot in 'writing' | `test_frame_hub_commit_ex_misuse` |
+| F23 | commit_ex: oversize discard not counted | `test_frame_hub_commit_oversize`, `test_frame_hub_publish_abort` |
+
+### 5.4 確認したこと / 未確認 / 契約の解釈
+
+**確認したこと(ホスト)**
+- `cmake` + `ctest`(`-Wall -Wextra -Werror`、ASan / UBSan)で、全 67 件が成功(前は 66 件)。既存のテストは 1 つも書き換えていない。
+- 上のミューテーション(195 個を実行。P7 の追加分 81 個のうち、同値の 3 個を除いて殺した。既存の分も、前と同じ 19 個の同値だけが生き残る)。
+
+**契約(`VIDEO_TRANSPORT.md` 9.6)からの解釈と判断(owner / 親の確認が要る)**
+1. **要求は、`on_connect` ではなく tick の最後に呼ぶ**。接続したとき(a)に、最初の tick で状態のテキストを先に送る(C-6b)と、その tick にフレームを配れず、要求が出る。MJPEG のとき、`core` は、接続した時点ではコーデックを知らないので、`request_keyframe` を渡す設定では、**接続の直後に 1 回、要求が出ることがある**(MJPEG のフレームを同じ tick に配れたときは出ない)。`video_source_t.request_keyframe` が `NULL` の MJPEG だけのソースでは、呼ばれない。MJPEG の接続のたびに要求を出したくないなら、「要求は、H.264 のフレームを配らなかったときだけ」に変えられる(接続直後の IDR は、要求なしで届くので、IDR の無駄が減る)。この変更は、契約(「`need_key` を真にしたら要求」)に合わせて、していない。
+2. **要求は、`need_key` が偽 -> 真に変わったときだけ**(待ちの間に、P を配らないたびには出さない)。要求が失われたときの保険は、契約どおり、映像ソースの周期的な IDR(`CSI_H264_GOP`)と `key_wait_timeout_ms` による再接続。
+3. **溜めた要求は、誰も待たなくなったら捨てる**(IDR が届いた、切断、閉じる要求)。間隔が経っても、不要な IDR(最大 495 KB)は出さない。
+4. **`key_wait_timeout_ms` の起点は、最初に H.264 のフレームを配らなかった時刻**(接続した時刻ではない)。接続した時刻から数えると、フレームが来ない間(信号なし、映像ソース未起動)に、MJPEG のクライアントまで `key_wait_timeout_ms` で閉じてしまい、従来の動作(フレームがなくても接続は続く)と変わるため。フレームが 1 つも来ない間は、閉じない。
+5. `idr_min_interval_ms == 0`(まとめない)でも、同じ tick の要求は 1 回(tick に 1 回まで)。
+6. `video_frame_t.codec` が `VIDEO_CODEC_H264` 以外の値(契約の外)は、MJPEG と同じに配る(配らない側には倒さない)。
+7. `frame_hub_commit_ex(info == NULL)` は `abort_publish` と同じ(契約に規定なし)。
+8. **`video_source_t` の位置指定の初期化 `{name, start, stop, ctx}` は、`-Wextra` の gcc では `-Wmissing-field-initializers` の警告が出る**(足した項目が未指定になるため)。ビルドは通り、足した項目は 0 / `NULL`(テストで確認)。`test_pattern_source.c` と `csi_video_source.c` は指示付き初期化なので、警告は出ない。位置指定で書く新しいコードがあれば、`-Werror` で止まる可能性がある(IDF のビルドは、この環境にない)。
+
+**未確認**
+- IDF のビルド(`web_server.c` への結線: `?accept=h264` の解析、`request_keyframe` を `video_source_t.request_keyframe` に包む関数(tick から、ロックの下で呼ばれるので、ブロックしないこと)、`ws_video_core_config_t` の新しい 3 項目の設定)。`csi_video_source.c` は IDF 専用で、ホストでは構文を見ていない(指示付き初期化の形は、目で確認した)。
+- 既定値(`TODO(hw-verify)`、`core` は値を持たず、渡す側が決める): `idr_min_interval_ms`(契約の `VIDEO_CODEC_IDR_MIN_INTERVAL_MS` = 1000。IDR は 495 KB に達する)、`key_wait_timeout_ms`(契約の `VIDEO_CODEC_KEY_WAIT_MS` = 5000)、`CSI_H264_GOP`(HDMI 担当)。
+- 実機での、IDR の要求から、IDR が届くまでの時間、遅いクライアントでの待ちの長さ、再接続の頻度。
+- `video_codec_policy`(コーデックの方針)、ビューアの H.264 の経路は、このタスクの範囲外。

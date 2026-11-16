@@ -411,11 +411,10 @@ void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
                 core->current_frames[i] = frame;
                 core->last_seqs[i] = frame->seq; // Update last_seq AFTER successful begin_send
                 core->last_codec[i] = (uint8_t)(is_h264 ? VIDEO_CODEC_H264 : VIDEO_CODEC_MJPEG);
-                if (!is_h264 || is_key) {
-                    // MJPEG のフレーム、または H.264 の IDR: 自己完結なので、待ちは終わり
-                    core->need_key[i] = false;
-                    core->key_waiting[i] = false;
-                }
+                // ここまで来たフレームは、MJPEG、H.264 の IDR、または need_key でないときの H.264 のフレーム。
+                // どれも、need_key を偽にしてよい (need_key のまま配るのは、MJPEG と IDR だけ)。
+                // key_waiting は、need_key が偽の間は参照しない (次に need_key を真にするとき、mark_need_key が戻す)。
+                core->need_key[i] = false;
                 core->queued_ms[i] = now_ms;     // キューに入れた時刻。send_started_ms は on_send_begin で設定する
                 core->send_begun[i] = false;
             } else {

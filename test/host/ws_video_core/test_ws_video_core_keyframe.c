@@ -377,6 +377,27 @@ void test_idr_with_seq_gap_is_delivered(void) {
     TEST_ASSERT_EQUAL(0, req_count);
 }
 
+void test_backward_seq_is_a_discontinuity(void) {
+    /* seq が戻る (ハブの作り直し、など): last + 1 でないので、飛びと同じ扱い (P は、IDR まで配らない) */
+    start();
+    connect_fd(10, 0);
+    PUB_IDR(); // 0
+    TEST_ASSERT_TRUE(tick_delivers(10, 0));
+    PUB_P(); // 1
+    TEST_ASSERT_TRUE(tick_delivers(10, 10));
+    PUB_P(); // 2
+    TEST_ASSERT_TRUE(tick_delivers(10, 20));
+    lat_seq = 0;
+    hubc[0].last_seen = -1; // ハブの側の状態も作り直された
+    PUB_P();                // seq 1 (最後に配った 2 より小さい)
+    TEST_ASSERT_FALSE(tick_delivers(10, 30));
+    TEST_ASSERT_TRUE(core.need_key[0]);
+    PUB_P();   // seq 2 (最後に配った seq と同じ値。従来どおり、重複として配らない)
+    TEST_ASSERT_FALSE(tick_delivers(10, 35));
+    PUB_IDR(); // seq 3
+    TEST_ASSERT_TRUE(tick_delivers(10, 40));
+}
+
 void test_gap_boundary_seq_plus_one_is_continuous_plus_two_is_not(void) {
     start();
     connect_fd(10, 0);
@@ -702,6 +723,19 @@ void test_idr_before_timeout_prevents_close_and_new_wait_has_new_origin(void) {
     TEST_ASSERT_EQUAL(0, close_cnt[10]);
     tick(6000 + 5000);
     TEST_ASSERT_EQUAL(1, close_cnt[10]);
+}
+
+void test_key_wait_is_not_applied_after_the_wait_ended(void) {
+    start();
+    connect_fd(10, 0);
+    PUB_P();
+    tick(0); // 待ちの起点 = 0
+    PUB_IDR();
+    TEST_ASSERT_TRUE(tick_delivers(10, 100)); // 待ちは終わり
+    TEST_ASSERT_FALSE(core.need_key[0]);
+    tick(5000); // 起点から 5000 ms 以上: 待っていないので、閉じない
+    tick(100000);
+    TEST_ASSERT_EQUAL(0, close_cnt[10]);
 }
 
 void test_key_wait_zero_never_closes(void) {
@@ -1421,6 +1455,7 @@ int main(void) {
     RUN_TEST(test_seq_gap_makes_need_key_until_next_idr);
     RUN_TEST(test_idr_with_seq_gap_is_delivered);
     RUN_TEST(test_gap_boundary_seq_plus_one_is_continuous_plus_two_is_not);
+    RUN_TEST(test_backward_seq_is_a_discontinuity);
     RUN_TEST(test_seq_gap_after_idr_dropped_by_publisher_is_visible_only_as_gap_in_delivery);
 
     RUN_TEST(test_mjpeg_only_is_unchanged_and_never_waits_or_requests);
@@ -1446,6 +1481,7 @@ int main(void) {
     RUN_TEST(test_key_wait_timeout_boundary);
     RUN_TEST(test_key_wait_does_not_restart_on_each_withheld_frame);
     RUN_TEST(test_idr_before_timeout_prevents_close_and_new_wait_has_new_origin);
+    RUN_TEST(test_key_wait_is_not_applied_after_the_wait_ended);
     RUN_TEST(test_key_wait_zero_never_closes);
     RUN_TEST(test_key_wait_does_not_count_while_no_frame_arrives);
     RUN_TEST(test_key_wait_closes_only_the_waiting_client);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ws_video_core.c と http_guard.c(http_guard_origin_ok_for_port)に 1 か所ずつ変更(ミュータント)を入れて、
+"""ws_video_core.c、http_guard.c(http_guard_origin_ok_for_port)、frame_hub.c(P7 の codec / flags / commit_ex)に 1 か所ずつ変更(ミュータント)を入れて、
 再ビルドし、対応するテストが落ちることを確認する。結果は docs/VIDEO_CORE_TESTS.md の表。
 ミュータントの定義は video_core_mutants.py(同じディレクトリ)。各ミュータントは "file" で対象のファイルを持つ。
 使い方:
@@ -7,7 +7,7 @@
 repo の components/ と test/ を workdir にコピーして使う(repo は変更しない)。Unity の取得にネットワークが要る。
 ソースを変えたら、ミュータントの old 文字列(1 回だけ現れる文字列)も更新する(合わないと BAD EDIT で止まる)。
 実行するテスト: ws_video_core.c のミュータントは test/host/ws_video_core/ の全部、http_guard.c のミュータントは
-test/host/http_guard/ の全部。1 つでも失敗(アサーション、ASan/UBSan、クラッシュ、タイムアウト)すれば「殺した」。"""
+test/host/http_guard/ の全部、frame_hub.c のミュータントは test/host/frame_hub/ の全部。1 つでも失敗(アサーション、ASan/UBSan、クラッシュ、タイムアウト)すれば「殺した」。"""
 import glob, json, os, re, shutil, subprocess, sys, importlib.util
 
 
@@ -51,6 +51,7 @@ for d in ("components", "test"):
 FILES = {
     "ws_video_core": os.path.join(src_tree, "components/ws_video_core/ws_video_core.c"),
     "http_guard": os.path.join(src_tree, "components/http_guard/http_guard.c"),
+    "frame_hub": os.path.join(src_tree, "components/frame_hub/frame_hub.c"),
 }
 ORIG = {k: open(v).read() for k, v in FILES.items()}
 
@@ -60,7 +61,7 @@ def tests_of(dirname):
                   for p in glob.glob(os.path.join(src_tree, "test/host", dirname, "test_*.c")))
 
 
-TESTS = {"ws_video_core": tests_of("ws_video_core"), "http_guard": tests_of("http_guard")}
+TESTS = {"ws_video_core": tests_of("ws_video_core"), "http_guard": tests_of("http_guard"), "frame_hub": tests_of("frame_hub")}
 
 
 r = sh(["cmake", "-S", os.path.join(src_tree, "test", "host"), "-B", build])
