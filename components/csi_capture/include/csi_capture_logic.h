@@ -82,6 +82,35 @@ bool csi_pp_release(csi_pp_t *pp, int idx);
 // Marks the DMA as stopped (no buffer is being written any more).
 void csi_pp_stop(csi_pp_t *pp);
 
+// ---- HW JPEG bitstream & DMA2D RX overflow sentinel helpers ----
+// Extra guard bytes allocated beyond caller's max_output_bytes in csi_jpeg_open() so frames
+// slightly exceeding max_output_bytes complete DMA2D and fail validate_jpeg_bitstream() with
+// CSI_JPEG_ERR_OUTPUT_OVERSIZE, while frames that exhaust the entire DMA2D RX descriptor
+// overwrite the trailing cache-line sentinel before JPEG_DMA2D_RX_DESC_EMPTY.
+#define CSI_JPEG_OVERFLOW_GUARD_BYTES 4096u
+
+typedef enum {
+    CSI_JPEG_BITSTREAM_OK = 0,
+    CSI_JPEG_BITSTREAM_ERR_OVERSIZE,  // encoded_bytes > max_output_bytes
+    CSI_JPEG_BITSTREAM_ERR_MARKERS,   // NULL buf, max_output_bytes == 0, len < 4, or missing SOI/EOI
+} csi_jpeg_bitstream_result_t;
+
+// Validates that buf[0..encoded_bytes-1] fits within max_output_bytes and has SOI (FF D8)
+// and EOI (FF D9) markers.
+csi_jpeg_bitstream_result_t csi_jpeg_validate_bitstream(const uint8_t *buf,
+                                                        size_t max_output_bytes,
+                                                        size_t encoded_bytes);
+
+// Fills the trailing DMA2D RX sentinel region with alternating [0xFF, 0xA5] bytes.
+// Because jpeg_encoder_process() enables hardware 0xFF->0xFF 0x00 byte-stuffing
+// (jpeg_ll_enable_ff_check(hal->dev, true), jpeg_encode.c:247), the 2-byte sequence
+// [0xFF, 0xA5] cannot appear in entropy-coded JPEG scan output.
+void csi_jpeg_arm_overflow_sentinel(uint8_t *tail_buf, size_t tail_len);
+
+// Returns true if tail_buf[0..tail_len-1] was modified from the armed [0xFF, 0xA5] pattern,
+// indicating DMA2D RX filled the output descriptor to the end (JPEG_DMA2D_RX_DESC_EMPTY).
+bool csi_jpeg_overflow_sentinel_tripped(const uint8_t *tail_buf, size_t tail_len);
+
 #ifdef __cplusplus
 }
 #endif
