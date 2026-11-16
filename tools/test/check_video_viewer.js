@@ -10,11 +10,15 @@
 //      accept の申告、JPEG との判別、最初の IDR まで P を捨てる、解像度の変化での作り直し、decodeQueueSize、VideoFrame の close、
 //      フォールバック(1 回だけ)、表示。
 // `--mutations` は、app.js の追加分を 1 か所ずつ変えたコピーに対して (A)(B) を動かし、落ちることを確認する。
-// 使い方: node tools/test/check_video_viewer.js [--mutations]      (依存なし)
+// 使い方: node tools/test/check_video_viewer.js [--mutations [ID ...]]      (依存なし。ID を付けると、そのミュータントだけ)
 'use strict';
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+
+// 処理されない Promise の拒否(app.js の中の、どの catch にも届かない例外)は、失敗として数える。
+const unhandled = [];
+process.on('unhandledRejection', (e) => { unhandled.push(String(e && e.message)); });
 
 const WEB_DIR = path.join(__dirname, '..', '..', 'components', 'web_server', 'web');
 const APP_JS = path.join(WEB_DIR, 'app.js');
@@ -885,6 +889,7 @@ const CLASSIFY_CASES = [
     ['00 00 01 01', '00 00 01 01', null],
     ['00 01 00 01', '00 01 00 01', null],
     ['01 00 00 00 01 (a byte before the start code)', '01 00 00 00 01', null],
+    ['01 00 00 01', '01 00 00 01', null],
     ['00 00 00 01 is not a JPEG even with FF D8 later', '00 00 00 01 ff d8', 'h264'],
     ['GIF', '47 49 46 38 39 61', null],
     ['text "{"', '7b 22 74 22', null],
@@ -904,6 +909,8 @@ const PARSE_H264_CASES = [
     ['the start code alone', '00 00 00 01', []],
     ['the 3-byte start code alone', '00 00 01', []],
     ['empty', '', []],
+    ['a 3-byte start code at the very end', '00 00 01 67 00 00 01', [[7, '67']]],
+    ['two 3-byte start codes in a row', '00 00 01 00 00 01 67', [[7, '67']]],
     ['two start codes in a row (an empty NAL)', '00 00 00 01 00 00 00 01 67 42 c0 1f', [[7, '67 42 c0 1f']]],
     ['forbidden_zero_bit set: the NAL is dropped', '00 00 00 01 e7 42 c0 1f 00 00 00 01 68 ce', [[8, '68 ce']]],
     ['emulation prevention (00 00 03 01) is not a start code', '00 00 00 01 65 00 00 03 01 88', [[5, '65 00 00 03 01 88']]],
@@ -912,6 +919,7 @@ const PARSE_H264_CASES = [
     ['the type is the low 5 bits (nal_ref_idc 3, IDR)', '00 00 00 01 65 88', [[5, '65 88']]],
     ['AUD + SEI + P', auHex('09 f0', '06 05 01 02', NAL_P), [[9, '09 f0'], [6, '06 05 01 02'], [1, NAL_P]]],
     ['a NAL of 1 byte', '00 00 00 01 09', [[9, '09']]],
+    ['type 23 is not an SPS (the type is 5 bits, not 4)', '00 00 00 01 77 42 c0 1f', [[23, '77 42 c0 1f']]],
     ['00 00 00 00 only', '00 00 00 00', []],
     ['garbage without a start code', 'de ad be ef 00 01 02', []],
 ];
@@ -932,6 +940,8 @@ const ANALYZE_CASES = [
     ['IDR with nal_ref_idc 0 (type 5 only)', auHex('05 88'), true, null, 1],
     ['slice data partitions (types 2, 3, 4)', auHex('42 aa', '43 aa', '44 aa'), false, null, 3],
     ['SEI only (type 6)', auHex('06 05 01 02'), false, null, 1],
+    ['type 21 is not an IDR slice (the type is 5 bits, not 4)', auHex('75 88'), false, null, 1],
+    ['type 23 is not an SPS', auHex('77 42 c0 1f'), false, null, 1],
     ['AUD only (type 9)', auHex('09 f0'), false, null, 1],
     ['empty', '', false, null, 0],
     ['garbage', 'de ad be ef', false, null, 0],
@@ -965,6 +975,9 @@ const CODEC_CASES = [
     ['e7 42 c0 1f', null],
     ['87 42 c0 1f', null],
     ['27', null],
+    ['67 0f 0f 0f', 'avc1.0f0f0f'],
+    ['67 10 10 10', 'avc1.101010'],
+    ['67 0a 0b 0c', 'avc1.0a0b0c'],
 ];
 
 function checkH264Pure(source) {
@@ -976,7 +989,8 @@ function checkH264Pure(source) {
         const got = safe('classify ' + name, () => h.classify(hx(hex)));
         if (got !== want) problems.push('classify ' + name + ': expected ' + want + ', got ' + got);
     }
-    for (const bad of [null, undefined, {}, { length: 'x' }, 5]) {
+    const strLen = (len, bytes) => Object.assign({ length: len, subarray() { return this; } }, bytes);
+    for (const bad of [null, undefined, {}, { length: 'x' }, 5, strLen('4', [0, 0, 0, 1]), strLen('2', [0xFF, 0xD8])]) {
         const got = safe('classify ' + String(bad), () => h.classify(bad));
         if (got !== null) problems.push('classify of a non-array ' + String(bad) + ': expected null, got ' + got);
     }
@@ -984,7 +998,7 @@ function checkH264Pure(source) {
         const got = safe('parseAnnexB ' + name, () => h.parseAnnexB(hx(hex)).map((n) => [n.type, hexOf(n.data)]));
         if (got !== undefined && JSON.stringify(got) !== JSON.stringify(want)) problems.push('parseAnnexB ' + name + ': expected ' + JSON.stringify(want) + ', got ' + JSON.stringify(got));
     }
-    for (const bad of [null, undefined, {}, { length: 'x' }, 5]) {
+    for (const bad of [null, undefined, {}, { length: 'x' }, 5, { length: '8', 0: 0, 1: 0, 2: 0, 3: 1, 4: 0x67, 5: 0x42, 6: 0xc0, 7: 0x1f }]) {
         const got = safe('parseAnnexB ' + String(bad), () => h.parseAnnexB(bad));
         if (got !== undefined && JSON.stringify(got) !== '[]') problems.push('parseAnnexB of a non-array ' + String(bad) + ': expected [], got ' + JSON.stringify(got));
     }
@@ -1009,7 +1023,7 @@ function checkH264Pure(source) {
         const got = safe('avcCodecStringFromSps ' + hex, () => h.avcCodecStringFromSps(hx(hex)));
         if (got !== want) problems.push('avcCodecStringFromSps ' + (hex || '(empty)') + ': expected ' + want + ', got ' + got);
     }
-    for (const bad of [null, undefined, {}, { length: 'x' }, 5]) {
+    for (const bad of [null, undefined, {}, { length: 'x' }, 5, { length: '4', 0: 0x67, 1: 0x42, 2: 0xc0, 3: 0x1f }]) {
         const got = safe('avcCodecStringFromSps ' + String(bad), () => h.avcCodecStringFromSps(bad));
         if (got !== null) problems.push('avcCodecStringFromSps of ' + String(bad) + ': expected null, got ' + got);
     }
@@ -1078,7 +1092,7 @@ function makeCodecs(opts) {
             if (env.mode.decodeThrows) throw new Error('decode');
             this.decoded.push(chunk);
         }
-        close() { this.closed = true; }
+        close() { this.closed = true; if (env.mode.closeThrows) throw new Error('close'); }
         emit(frame) { this.output(frame); }
         fail() { this.error(new Error('decoder error')); }
         static isConfigSupported(cfg) {
@@ -1097,7 +1111,7 @@ function makeCodecs(opts) {
         }
     }
     env.frame = (w, h) => {
-        const f = { displayWidth: w, displayHeight: h, codedWidth: w, codedHeight: h, closed: 0, close() { this.closed++; } };
+        const f = { displayWidth: w, displayHeight: h, codedWidth: w, codedHeight: h === 1080 ? 1088 : h, closed: 0, close() { this.closed++; } };
         env.frames.push(f);
         return f;
     };
@@ -1292,8 +1306,11 @@ async function checkH264Browser(source) {
         eq('4 canvas size from the frame', [h.canvas().width, h.canvas().height], [1280, 720]);
         eq('4 frame closed', f1.closed, 1);
         eq('4 status line says H.264', h.statusText(), PLAIN + LABEL);
+        const sizeSets = () => h.canvas()._sets.filter((n) => n === 'width' || n === 'height').length;
+        const setsBefore = sizeSets();
         d.emit(h.env.frame(1280, 720));
         eq('4 the label is not doubled', h.statusText(), PLAIN + LABEL);
+        eq('4 the canvas is not resized (and so not cleared) for a frame of the same size', sizeSets(), setsBefore);
         // C-6b の状態表示は、そのまま動く
         await h.msg(V('locked', 1280, 720));
         eq('4 locked: resolution and codec side by side', h.statusText(), PLAIN + ' (1280x720)' + LABEL);
@@ -1313,7 +1330,10 @@ async function checkH264Browser(source) {
         d.emit(f2);
         eq('4 canvas size falls back to the coded size', [h.canvas().width, h.canvas().height, f2.closed], [1920, 1088, 1]);
         d.emit(h.env.frame(1920, 1080));
-        eq('4 canvas size from the display size', [h.canvas().width, h.canvas().height], [1920, 1080]);
+        eq('4 canvas size from the display size (the coded height of 1080p is 1088)', [h.canvas().width, h.canvas().height], [1920, 1080]);
+        const f3 = { displayWidth: 1366, displayHeight: 768, codedWidth: 1376, codedHeight: 768, closed: 0, close() { this.closed++; } };
+        d.emit(f3);
+        eq('4 the display width wins over a wider coded width', [h.canvas().width, h.canvas().height, f3.closed], [1366, 768, 1]);
     });
     // 5. SPS のない IDR スライス、SPS だけのアクセスユニット
     await guard('h264/IDR without SPS', async () => {
@@ -1321,6 +1341,7 @@ async function checkH264Browser(source) {
         await feed(h, auHex(NAL_IDR));
         await feed(h, auHex(NAL_PPS, NAL_IDR));
         eq('5a no decoder can be made without an SPS', [h.env.probes.length, h.env.decoders.length], [1, 0]);
+        eq('5a and it is no failure', [h.lastVideo().readyState, h.timers.length], [0, 0]);
         await feed(h, auHex(NAL_SPS720));
         eq('5a an SPS-only access unit is a key access unit', [h.env.decoders.length, chunksOf(h.env.decoders[0])], [1, [['key', auHex(NAL_SPS720)]]]);
         await feed(h, auHex(NAL_IDR));
@@ -1473,6 +1494,7 @@ async function checkH264Browser(source) {
         ['isConfigSupported says no', async (h) => { h.env.supported = () => false; await feed(h, AU_IDR720); }],
         ['isConfigSupported rejects', async (h) => { h.env.supported = () => Promise.reject(new Error('x')); await feed(h, AU_IDR720); }],
         ['isConfigSupported throws', async (h) => { h.env.mode.isCfgThrows = true; await feed(h, AU_IDR720); }],
+        ['isConfigSupported answers null', async (h) => { h.env.raw = null; await feed(h, AU_IDR720); }],
         ['isConfigSupported answers without "supported"', async (h) => { h.env.raw = {}; await feed(h, AU_IDR720); }],
         ['the decoder constructor throws', async (h) => { h.env.mode.constructThrows = true; await feed(h, AU_IDR720); }],
         ['configure throws', async (h) => { h.env.mode.configureThrows = true; await feed(h, AU_IDR720); }],
@@ -1493,7 +1515,7 @@ async function checkH264Browser(source) {
             const decodersBefore = h.env.decoders.length;
             await feed(h, AU_IDR720);
             await feed(h, pAu(1));
-            eq(tag + 'input after the fallback is ignored', h.env.decoders.length, decodersBefore);
+            eq(tag + 'input after the fallback is ignored', [h.env.decoders.length, h.env.probes.length], [decodersBefore, probesBefore]);
             if (h.env.decoders[0]) { h.env.decoders[0].fail(); h.env.decoders[0].fail(); }
             eq(tag + 'repeated errors do not repeat the fallback', h.timers.length, 0);
             const delay = await h.closeVideo(true);
@@ -1559,9 +1581,24 @@ async function checkH264Browser(source) {
         eq('12a P before the first IDR of the new connection is dropped', [h.env.decoders.length, h.env.chunks.length], [1, 1]);
         await feed(h, AU_IDR720);
         eq('12a a new decoder for the new connection', [h.env.decoders.length, chunksOf(h.env.decoders[1])], [2, [['key', AU_IDR720]]]);
+        h.env.decoders[1].emit(h.env.frame(1280, 720));
+        eq('12a the label comes back on the new connection', h.statusText(), PLAIN + LABEL);
         const f = h.env.frame(1280, 720);
         d0.emit(f);
-        eq('12a the old decoder cannot draw', [f.closed, draws(h)], [1, 1]);
+        eq('12a the old decoder cannot draw', [f.closed, draws(h)], [1, 2]);
+    });
+    await guard('h264/close() throws', async () => {
+        const h = await page();
+        await feed(h, AU_IDR720);
+        h.env.mode.closeThrows = true;
+        await h.closeVideo(false);
+        eq('12c a decoder that cannot be closed does not break the close of the connection', [h.env.decoders[0].closed, h.timers.length], [true, 1]);
+        h.env.mode.closeThrows = false;
+        h.runTimer(1000);
+        await flush();
+        h.lastVideo().onopen();
+        await feed(h, AU_IDR720);
+        eq('12c the next connection decodes', h.env.decoders.length, 2);
     });
     await guard('h264/reset on logout', async () => {
         const h = await page();
@@ -1633,7 +1670,10 @@ async function checkAll(source) {
     try { browserProblems = await checkBrowser(source); } catch (e) { browserProblems = ['browser harness threw: ' + (e && e.message)]; }
     let h264Problems;
     try { h264Problems = await checkH264Browser(source); } catch (e) { h264Problems = ['h264 harness threw: ' + (e && e.message)]; }
-    return problems.concat(browserProblems, h264Problems);
+    await flush();
+    await flush();
+    const rejected = unhandled.splice(0).map((m) => 'unhandled promise rejection: ' + m);
+    return problems.concat(browserProblems, h264Problems, rejected);
 }
 
 // ---------- ミュータント(app.js の追加分を 1 か所ずつ変える) ----------
@@ -1698,7 +1738,7 @@ function mutantList() {
         M('J51', 'connect: onclose does not show the hint', '            if (VideoTarget.needsTrustHint(target, opened)) showTrustHint(target);\n            // Exponential', '            // Exponential'),
         M('J52', 'connect: onerror does not show the hint', '            if (VideoTarget.needsTrustHint(target, opened)) showTrustHint(target);\n        };', '        };'),
         M('J53', 'connect: opened starts true', 'let opened = false;', 'let opened = true;'),
-        M('J54', 'connect: always connects to the legacy URL', 'const target = videoTarget || VideoTarget.resolve(location, undefined);', 'const target = VideoTarget.resolve(location, undefined);'),
+        M('J54', 'connect: always connects to the legacy URL', 'VideoTarget.withAccept(videoTarget || VideoTarget.resolve(location, undefined), acceptH264)', 'VideoTarget.withAccept(VideoTarget.resolve(location, undefined), acceptH264)'),
         M('J55', 'status: video_port of the status response ignored', 'videoTarget = VideoTarget.resolve(location, data.video_port);', 'videoTarget = VideoTarget.resolve(location, undefined);'),
         M('J56', 'status: video_port read from the wrong key', 'VideoTarget.resolve(location, data.video_port)', 'VideoTarget.resolve(location, data.port)'),
         M('J57', 'disconnect: hint not hidden on the login view', "        hideTrustHint();\n        resetVideoStatus();\n        elVideoStatus.textContent = '切断されました';", "        resetVideoStatus();\n        elVideoStatus.textContent = '切断されました';"),
@@ -1762,7 +1802,7 @@ function mutantList() {
         M('V48', 'setVideoOverlay: text goes through innerHTML', 'elVideoOverlay.textContent = text;', 'elVideoOverlay.innerHTML = text;'),
         M('V49', 'resetVideoStatus: timer not cleared', "        if (resolutionNoticeTimer !== null) {\n            clearTimeout(resolutionNoticeTimer);\n            resolutionNoticeTimer = null;\n        }\n        videoStatus = null;",
             '        videoStatus = null;'),
-        M('V50', 'resetVideoStatus: last status not forgotten', '        videoStatus = null;\n        setVideoOverlay(null);\n    }', '        setVideoOverlay(null);\n    }'),
+        M('V50', 'resetVideoStatus: last status not forgotten', '        videoStatus = null;\n        setVideoOverlay(null);\n        resetH264();', '        setVideoOverlay(null);\n        resetH264();'),
         M('V51', 'resetVideoStatus: overlay not hidden', '        videoStatus = null;\n        setVideoOverlay(null);', '        videoStatus = null;'),
         M('V52', 'applyVideoStatus: last status not remembered', '        videoStatus = st;\n', ''),
         M('V53', 'applyVideoStatus: running notice not cancelled by the next status',
@@ -1786,6 +1826,235 @@ function mutantList() {
         M('V68', 'connect: reset at the start of a connection removed (onclose and disconnect already reset)', '        if (ws) return;\n        resetVideoStatus();\n', '        if (ws) return;\n',
             '接続の前には、必ず onclose か disconnectWebSocket が先に走って状態を消している(最初の接続では、もともと空)ので、二重の防御'),
         M('V69', 'connect: binaryType changed', 'ws.binaryType = "blob";', 'ws.binaryType = "arraybuffer";'),
+        // ---- H.264(WebCodecs): withAccept、H264 の純関数、デコーダの制御、フォールバック、表示 ----
+        M('D01', 'withAccept: accept compared loosely (anything but false adds the query)', "if (accept !== true) return target;", "if (accept === false) return target;"),
+        M('D02', 'withAccept: the query is always added', "            if (accept !== true) return target;\n", ''),
+        M('D03', 'withAccept: other codec name', "'?accept=h264'", "'?accept=h265'"),
+        M('D04', 'withAccept: query joined with &', "'?accept=h264'", "'&accept=h264'"),
+        M('D05', 'withAccept: changes the target it was given', "Object.assign({}, target, { url: target.url + '?accept=h264' })", "Object.assign(target, { url: target.url + '?accept=h264' })"),
+        M('D06', 'withAccept: the other fields of the target are lost', "Object.assign({}, target, { url: target.url + '?accept=h264' })", "{ url: target.url + '?accept=h264' }"),
+        M('D07', 'classify: null guard removed', "if (b === null || b === undefined || typeof b.length !== 'number') return null;", "if (b === undefined || typeof b.length !== 'number') return null;"),
+        M('D08', 'classify: undefined guard removed', "if (b === null || b === undefined || typeof b.length !== 'number') return null;", "if (b === null || typeof b.length !== 'number') return null;"),
+        M('D09', 'classify: the length type check removed', "if (b === null || b === undefined || typeof b.length !== 'number') return null;", "if (b === null || b === undefined) return null;"),
+        M('D10', 'classify: JPEG needs 3 bytes', 'if (b.length >= 2 && b[0] === 0xFF', 'if (b.length >= 3 && b[0] === 0xFF'),
+        M('D11', 'classify: JPEG length check 2 -> 1 (b[1] of a 1-byte input is undefined, so it is not FF D8 anyway)', 'if (b.length >= 2 && b[0] === 0xFF', 'if (b.length >= 1 && b[0] === 0xFF',
+            '長さ 1 の入力では b[1] が undefined で、0xD8 と一致しないので、長さの検査は(範囲外の読み出しが undefined を返すことで)二重の防御'),
+        M('D12', 'classify: JPEG first byte', 'b[0] === 0xFF && b[1] === 0xD8', 'b[0] === 0xFE && b[1] === 0xD8'),
+        M('D13', 'classify: JPEG second byte', 'b[0] === 0xFF && b[1] === 0xD8', 'b[0] === 0xFF && b[1] === 0xD9'),
+        M('D14', 'classify: JPEG first byte not checked', 'b[0] === 0xFF && b[1] === 0xD8', 'b[1] === 0xD8'),
+        M('D15', 'classify: JPEG second byte not checked', 'b[0] === 0xFF && b[1] === 0xD8', 'b[0] === 0xFF'),
+        M('D16', 'classify: H.264 needs 5 bytes', 'if (b.length >= 4 && b[0] === 0', 'if (b.length >= 5 && b[0] === 0'),
+        M('D17', 'classify: H.264 length check 4 -> 3 (b[3] of a 3-byte input is undefined, so it is not 1 anyway)', 'if (b.length >= 4 && b[0] === 0', 'if (b.length >= 3 && b[0] === 0',
+            '長さ 3 の入力では b[3] が undefined で、1 と一致しないので、長さの検査は二重の防御'),
+        M('D18', 'classify: H.264 b[0] not checked', 'b[0] === 0 && b[1] === 0 && b[2] === 0 && b[3] === 1', 'b[1] === 0 && b[2] === 0 && b[3] === 1'),
+        M('D19', 'classify: H.264 b[1] not checked', 'b[0] === 0 && b[1] === 0 && b[2] === 0 && b[3] === 1', 'b[0] === 0 && b[2] === 0 && b[3] === 1'),
+        M('D20', 'classify: H.264 b[2] not checked', 'b[0] === 0 && b[1] === 0 && b[2] === 0 && b[3] === 1', 'b[0] === 0 && b[1] === 0 && b[3] === 1'),
+        M('D21', 'classify: H.264 last byte 1 -> 2', 'b[2] === 0 && b[3] === 1', 'b[2] === 0 && b[3] === 2'),
+        M('D22', 'classify: H.264 last byte not checked', 'b[2] === 0 && b[3] === 1', 'b[2] === 0'),
+        M('D23', 'classify: labels swapped', "return 'jpeg';", "return 'h264';"),
+        M('D24', 'parseAnnexB: null guard removed', "if (b === null || b === undefined || typeof b.length !== 'number') return out;", "if (b === undefined || typeof b.length !== 'number') return out;"),
+        M('D25', 'parseAnnexB: the length type check removed', "if (b === null || b === undefined || typeof b.length !== 'number') return out;", "if (b === null || b === undefined) return out;"),
+        M('D26', 'parseAnnexB: scan stops one byte early', 'while (pos + 3 <= n) {', 'while (pos + 3 < n) {'),
+        M('D27', 'parseAnnexB: skips 4 after a start code', "                    starts.push(pos + 3);\n                    pos += 3;", "                    starts.push(pos + 3);\n                    pos += 4;"),
+        M('D28', 'parseAnnexB: advances 1 after a start code (the next start code cannot begin inside the last bytes of this one)', "                    starts.push(pos + 3);\n                    pos += 3;", "                    starts.push(pos + 3);\n                    pos += 1;",
+            '開始コードは 00 00 01 で、最後のバイトが 01 なので、次の開始コードは、その後ろの 2 バイトの内側では始まれない。1 つ進めても結果は同じ'),
+        M('D29', 'parseAnnexB: the NAL starts at the start code', 'starts.push(pos + 3);', 'starts.push(pos + 2);'),
+        M('D30', 'parseAnnexB: the NAL starts one byte late', 'starts.push(pos + 3);', 'starts.push(pos + 4);'),
+        M('D31', 'parseAnnexB: the NAL ends 4 before the next start code', 'starts[k + 1] - 3 : n;', 'starts[k + 1] - 4 : n;'),
+        M('D32', 'parseAnnexB: the NAL ends 2 before the next start code (the zero byte is cut off again below)', 'starts[k + 1] - 3 : n;', 'starts[k + 1] - 2 : n;',
+            '開始コードの先頭の 00 を含めても、直後の「後ろのゼロを削る」処理が取り除くので結果は同じ'),
+        M('D33', 'parseAnnexB: the last NAL ends one byte early', 'starts[k + 1] - 3 : n;', 'starts[k + 1] - 3 : n - 1;'),
+        M('D34', 'parseAnnexB: the next start code is looked up past the end', 'let end = k + 1 < starts.length ?', 'let end = k + 1 <= starts.length ?'),
+        M('D35', 'parseAnnexB: trailing zero bytes are kept', '                while (end > s && b[end - 1] === 0) end--;\n', ''),
+        M('D36', 'parseAnnexB: trailing zero trimming may reach the start of the NAL (b[s - 1] is the 01 of the start code, so it cannot)', 'while (end > s && b[end - 1] === 0) end--;', 'while (end >= s && b[end - 1] === 0) end--;',
+            'b[s - 1] は開始コードの最後のバイト(01)で 0 でないので、ゼロの削りは s で必ず止まる。end > s の検査は二重の防御'),
+        M('D37', 'parseAnnexB: an empty NAL is kept', 'if (end <= s) continue;', 'if (end < s) continue;'),
+        M('D38', 'parseAnnexB: forbidden_zero_bit not checked', '                if ((b[s] & 0x80) !== 0) continue;\n', ''),
+        M('D39', 'parseAnnexB: type mask 0x1F -> 0x3F', 'type: b[s] & 0x1F', 'type: b[s] & 0x3F'),
+        M('D40', 'parseAnnexB: type mask 0x1F -> 0x0F', 'type: b[s] & 0x1F', 'type: b[s] & 0x0F'),
+        M('D41', 'parseAnnexB: the data starts after the NAL header', 'data: b.subarray(s, end)', 'data: b.subarray(s + 1, end)'),
+        M('D42', 'parseAnnexB: the data includes the next byte', 'data: b.subarray(s, end)', 'data: b.subarray(s, end + 1)'),
+        M('D43', 'analyze: SPS is not type 7', 'if (nals[i].type === 7) {', 'if (nals[i].type === 8) {'),
+        M('D44', 'analyze: the last SPS wins', 'if (sps === null) sps = nals[i].data;', 'sps = nals[i].data;'),
+        M('D45', 'analyze: an SPS is not a key access unit', "                    key = true;\n                    if (sps === null)", "                    if (sps === null)"),
+        M('D46', 'analyze: IDR slice is type 1 (a P slice counts as key)', '} else if (nals[i].type === 5) {', '} else if (nals[i].type === 1) {'),
+        M('D47', 'analyze: an IDR slice is not a key access unit', "                } else if (nals[i].type === 5) {\n                    key = true;\n                }", "                } else if (nals[i].type === 5) {\n                }"),
+        M('D48', 'analyze: NAL count not reported', 'count: nals.length', 'count: 1'),
+        M('D49', 'isKeyAccessUnit: SPS decides', 'return this.analyze(b).key;', 'return this.analyze(b).sps !== null;'),
+        M('D50', 'avcCodecStringFromSps: null guard removed', "if (nal === null || nal === undefined || typeof nal.length !== 'number' || nal.length < 4) return null;", "if (nal === undefined || typeof nal.length !== 'number' || nal.length < 4) return null;"),
+        M('D51', 'avcCodecStringFromSps: the length type check removed', "|| typeof nal.length !== 'number' || nal.length < 4) return null;", "|| nal.length < 4) return null;"),
+        M('D52', 'avcCodecStringFromSps: 3 bytes are enough', 'nal.length < 4) return null;', 'nal.length < 3) return null;'),
+        M('D53', 'avcCodecStringFromSps: 5 bytes are needed', 'nal.length < 4) return null;', 'nal.length < 5) return null;'),
+        M('D54', 'avcCodecStringFromSps: forbidden_zero_bit not checked', "if ((nal[0] & 0x80) !== 0 || (nal[0] & 0x1F) !== 7) return null;", "if ((nal[0] & 0x1F) !== 7) return null;"),
+        M('D55', 'avcCodecStringFromSps: NAL type not checked', "if ((nal[0] & 0x80) !== 0 || (nal[0] & 0x1F) !== 7) return null;", "if ((nal[0] & 0x80) !== 0) return null;"),
+        M('D56', 'avcCodecStringFromSps: another NAL type', "(nal[0] & 0x1F) !== 7) return null;", "(nal[0] & 0x1F) !== 8) return null;"),
+        M('D57', 'avcCodecStringFromSps: nal_ref_idc must be 3', "(nal[0] & 0x1F) !== 7) return null;", "(nal[0] & 0x7F) !== 0x67) return null;"),
+        M('D58', 'avcCodecStringFromSps: no zero padding', "(v < 16 ? '0' : '')", "''"),
+        M('D59', 'avcCodecStringFromSps: padding up to 14 only', "(v < 16 ? '0' : '')", "(v < 15 ? '0' : '')"),
+        M('D60', 'avcCodecStringFromSps: padding up to 16', "(v < 16 ? '0' : '')", "(v < 17 ? '0' : '')"),
+        M('D61', 'avcCodecStringFromSps: upper case hex', 'v.toString(16)', 'v.toString(16).toUpperCase()'),
+        M('D62', 'avcCodecStringFromSps: prefix', "'avc1.' + hex(nal[1])", "'avc3.' + hex(nal[1])"),
+        M('D63', 'avcCodecStringFromSps: bytes in another order', "hex(nal[1]) + hex(nal[2]) + hex(nal[3])", "hex(nal[1]) + hex(nal[3]) + hex(nal[2])"),
+        M('D64', 'avcCodecStringFromSps: level taken from the next byte', "+ hex(nal[3]);", "+ hex(nal[4]);"),
+        M('D65', 'sameBytes: null a not handled', 'if (a === null || b === null || a.length !== b.length) return false;', 'if (b === null || a.length !== b.length) return false;'),
+        M('D66', 'sameBytes: null b not handled', 'if (a === null || b === null || a.length !== b.length) return false;', 'if (a === null || a.length !== b.length) return false;'),
+        M('D67', 'sameBytes: lengths not compared', 'if (a === null || b === null || a.length !== b.length) return false;', 'if (a === null || b === null) return false;'),
+        M('D68', 'sameBytes: the last byte is not compared', 'for (let i = 0; i < a.length; i++) {\n                if (a[i] !== b[i])', 'for (let i = 0; i < a.length - 1; i++) {\n                if (a[i] !== b[i])'),
+        M('D69', 'sameBytes: result inverted', 'if (a[i] !== b[i]) return false;', 'if (a[i] === b[i]) return false;'),
+        M('D70', 'toBytes: ArrayBuffer not recognised', "=== '[object ArrayBuffer]'", "=== '[object Blob]'"),
+        M('D71', 'toBytes: views not accepted', '        if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);\n', ''),
+        M('D72', 'toBytes: the offset of a view is ignored', 'new Uint8Array(data.buffer, data.byteOffset, data.byteLength)', 'new Uint8Array(data.buffer, 0, data.byteLength)'),
+        M('D73', 'toBytes: the length of the whole buffer is used for a view', 'new Uint8Array(data.buffer, data.byteOffset, data.byteLength)', 'new Uint8Array(data.buffer, data.byteOffset, data.buffer.byteLength)'),
+        M('D74', 'h264Available: EncodedVideoChunk not required', "typeof VideoDecoder === 'function' && typeof EncodedVideoChunk === 'function' &&\n            typeof VideoDecoder.isConfigSupported === 'function'", "typeof VideoDecoder === 'function' &&\n            typeof VideoDecoder.isConfigSupported === 'function'"),
+        M('D75', 'h264Available: isConfigSupported not required (the call is inside try/catch)', "typeof VideoDecoder === 'function' && typeof EncodedVideoChunk === 'function' &&\n            typeof VideoDecoder.isConfigSupported === 'function'", "typeof VideoDecoder === 'function' && typeof EncodedVideoChunk === 'function'",
+            'isConfigSupported が無い VideoDecoder では、呼び出しが TypeError になり、probeH264 の try/catch が「対応しない」にする。結果は同じ(二重の防御)'),
+        M('D76', 'h264Available: availability not checked (the probe runs without EncodedVideoChunk)', "        if (!h264Available()) return Promise.resolve();\n", ''),
+        M('D77', 'probe: other codec', "const H264_PROBE_CODEC = 'avc1.42c01f';", "const H264_PROBE_CODEC = 'avc1.640028';"),
+        M('D78', 'probe: optimizeForLatency off', "VideoDecoder.isConfigSupported({ codec: H264_PROBE_CODEC, optimizeForLatency: true })", "VideoDecoder.isConfigSupported({ codec: H264_PROBE_CODEC, optimizeForLatency: false })"),
+        M('D79', 'probe: an exception of isConfigSupported is not handled', "        } catch (err) {\n            return Promise.resolve();\n        }\n        return Promise.resolve(p)", "        } catch (err) {\n            throw err;\n        }\n        return Promise.resolve(p)"),
+        M('D80', 'probe: support assumed', 'h264Supported = !!res && res.supported === true;', 'h264Supported = true;'),
+        M('D81', 'probe: anything but false counts as supported', 'h264Supported = !!res && res.supported === true;', 'h264Supported = !!res && res.supported !== false;'),
+        M('D82', 'probe: a truthy value counts as supported', 'h264Supported = !!res && res.supported === true;', 'h264Supported = !!res && !!res.supported;'),
+        M('D83', 'probe: a missing answer is not handled', 'h264Supported = !!res && res.supported === true;', 'h264Supported = res.supported === true;'),
+        M('D84', 'probe: a rejected probe is not handled', "            h264Supported = !!res && res.supported === true;\n        }, () => {});", "            h264Supported = !!res && res.supported === true;\n        });"),
+        M('D85', 'probe: not started', '    h264Probe = probeH264();\n', ''),
+        M('D86', 'waitForProbe: probe not awaited by fetchStatus', '                    await waitForProbe();', '                    void waitForProbe();'),
+        M('D87', 'waitForProbe: no time limit', '            const t = setTimeout(resolve, H264_PROBE_WAIT_MS);', '            const t = 0;'),
+        M('D88', 'waitForProbe: the limit is not cancelled when the probe settles', '                clearTimeout(t);\n                resolve();', '                resolve();'),
+        M('D89', 'waitForProbe: a settled probe does not release the connection', '                clearTimeout(t);\n                resolve();', '                clearTimeout(t);'),
+        M('D90', 'waitForProbe: other limit', 'const H264_PROBE_WAIT_MS = 1500;', 'const H264_PROBE_WAIT_MS = 1000;'),
+        M('D91', 'setH264Shown: label text', "const H264_LABEL = ' / H.264（低帯域）';", "const H264_LABEL = ' / H.264';"),
+        M('D92', 'setH264Shown: the shown flag is not kept', '        h264Shown = on;\n        elVideoStatus.textContent', '        elVideoStatus.textContent'),
+        M('D93', 'setH264Shown: a change is not skipped (only a speed guard: the same text is written again)', '        if (h264Shown === on) return;\n', '',
+            '同じ状態への呼び出しを飛ばすのは、書き換えを減らすためだけ。飛ばさなくても、同じ文字列が書かれるので結果は同じ'),
+        M('D94', 'setH264Shown: the resolution is not kept in the line', "(videoStatus === null ? STATUS_PLAIN : VideoStatus.statusLine(videoStatus))", 'STATUS_PLAIN'),
+        M('D95', 'setH264Shown: label for the other state', "(on ? H264_LABEL : '')", "(on ? '' : H264_LABEL)"),
+        M('D96', 'setH264Shown: the label is never removed', "(on ? H264_LABEL : '')", 'H264_LABEL'),
+        M('D97', 'setH264Shown: line before the first status', "(videoStatus === null ? STATUS_PLAIN : VideoStatus.statusLine(videoStatus))", "(videoStatus !== null ? STATUS_PLAIN : VideoStatus.statusLine(videoStatus))"),
+        M('D98', 'setH264Shown: plain line text', "const STATUS_PLAIN = '接続完了 / 受信中';", "const STATUS_PLAIN = '接続完了';"),
+        M('D99', 'resetH264: generation not bumped (a late isConfigSupported answer still creates a decoder)', '    function resetH264() {\n        h264Gen++;\n', '    function resetH264() {\n'),
+        M('D100', 'resetH264: pending not cleared', '        h264Gen++;\n        h264Pending = 0;\n', '        h264Gen++;\n'),
+        M('D101', 'resetH264: need-key not set (a decoder is made only by startH264Decoder, which decodes a key chunk and clears it)', '        h264Pending = 0;\n        h264NeedKey = true;\n        h264Shown = false;', '        h264Pending = 0;\n        h264Shown = false;',
+            'リセットの後にデコーダができるのは startH264Decoder だけで、その最初の chunk は key で、そこで h264NeedKey が偽になる。リセットで真にしておくかどうかは、結果に影響しない(初期値と noteMjpeg / 溜まりでの真は別に持つ)'),
+        M('D102', 'resetH264: shown flag not cleared', '        h264NeedKey = true;\n        h264Shown = false;\n        if (h264Dec !== null) {', '        h264NeedKey = true;\n        if (h264Dec !== null) {'),
+        M('D103', 'resetH264: the decoder is not forgotten', '            h264Dec = null; // first: an error of the closing decoder is then ignored\n', ''),
+        M('D104', 'resetH264: the decoder is not closed', '            try {\n                d.close();\n            } catch (err) {\n                // already closed\n            }\n        }\n    }', '        }\n    }'),
+        M('D105', 'resetH264: an exception of close() is not handled', "            try {\n                d.close();\n            } catch (err) {\n                // already closed\n            }\n        }\n    }", "            d.close();\n        }\n    }"),
+        M('D106', 'h264Fallback: not remembered', '        if (h264Failed) return;\n        h264Failed = true;\n', '        if (h264Failed) return;\n'),
+        M('D107', 'h264Fallback: repeat guard removed (the callers cannot reach it twice)', '        if (h264Failed) return;\n        h264Failed = true;\n', '        h264Failed = true;\n',
+            '2 回目の呼び出しは、世代の検査(待ちの結果)と、デコーダを忘れた後のエラーの無視で、そもそも来ない。あっても ws.close() が重なるだけ(二重の防御)'),
+        M('D108', 'h264Fallback: decoder not closed', '        h264Failed = true;\n        resetH264();\n', '        h264Failed = true;\n'),
+        M('D109', 'h264Fallback: connection not closed', '        if (ws) ws.close();\n    }\n\n    function drawH264Frame', '    }\n\n    function drawH264Frame'),
+        M('D110', 'h264Fallback: connection guard removed (never called without one)', '        if (ws) ws.close();\n    }\n\n    function drawH264Frame', '        ws.close();\n    }\n\n    function drawH264Frame',
+            '切断するとデコーダも閉じる(世代と「忘れたデコーダ」の検査で古い通知を捨てる)ので、ws が無いときにフォールバックには来ない。ws の検査は二重の防御'),
+        M('D111', 'drawH264Frame: frames of an old decoder are drawn', "            if (h264Dec === null || h264Dec.decoder !== dec) return; // frame of a decoder that is gone\n", ''),
+        M('D112', 'drawH264Frame: only a missing decoder is checked', "if (h264Dec === null || h264Dec.decoder !== dec) return;", "if (h264Dec === null) return;"),
+        M('D113', 'drawH264Frame: a missing decoder is not checked (the property read then throws inside the try and the frame is dropped)', "if (h264Dec === null || h264Dec.decoder !== dec) return;", "if (h264Dec.decoder !== dec) return;",
+            'h264Dec が null なら h264Dec.decoder が TypeError になり、すぐ下の catch が捨てて finally で close する。結果は同じ(二重の防御)'),
+        M('D114', 'drawH264Frame: the coded size is used', 'const w = frame.displayWidth || frame.codedWidth;', 'const w = frame.codedWidth;'),
+        M('D115', 'drawH264Frame: the coded height is used', 'const h = frame.displayHeight || frame.codedHeight;', 'const h = frame.codedHeight;'),
+        M('D116', 'drawH264Frame: no fallback to the coded size', 'const w = frame.displayWidth || frame.codedWidth;', 'const w = frame.displayWidth;'),
+        M('D117', 'drawH264Frame: no fallback to the coded height', 'const h = frame.displayHeight || frame.codedHeight;', 'const h = frame.displayHeight;'),
+        M('D118', 'drawH264Frame: the width is set for every frame', 'if (elVideo.width !== w) elVideo.width = w;', 'elVideo.width = w;'),
+        M('D119', 'drawH264Frame: the height is set for every frame', 'if (elVideo.height !== h) elVideo.height = h;', 'elVideo.height = h;'),
+        M('D120', 'drawH264Frame: the width never changes', 'if (elVideo.width !== w) elVideo.width = w;', 'if (elVideo.width === w) elVideo.width = w;'),
+        M('D121', 'drawH264Frame: the height never changes', 'if (elVideo.height !== h) elVideo.height = h;', 'if (elVideo.height === h) elVideo.height = h;'),
+        M('D122', 'drawH264Frame: drawn at another position', 'ctx.drawImage(frame, 0, 0);\n            setH264Shown(true);', 'ctx.drawImage(frame, 1, 0);\n            setH264Shown(true);'),
+        M('D123', 'drawH264Frame: the label is not shown', '            ctx.drawImage(frame, 0, 0);\n            setH264Shown(true);', '            ctx.drawImage(frame, 0, 0);'),
+        M('D124', 'drawH264Frame: the frame is not closed', '        } finally {\n            frame.close();\n        }', '        } finally {\n        }'),
+        M('D125', 'drawH264Frame: the frame is closed only when drawn', '            setH264Shown(true);\n        } catch (err) {\n            // a frame that cannot be drawn is dropped\n        } finally {\n            frame.close();\n        }', '            setH264Shown(true);\n            frame.close();\n        } catch (err) {\n            // a frame that cannot be drawn is dropped\n        }'),
+        M('D126', 'drawH264Frame: a drawing error is thrown to the decoder', '        } catch (err) {\n            // a frame that cannot be drawn is dropped\n        } finally {', '        } catch (err) {\n            throw err;\n        } finally {'),
+        M('D127', 'decodeH264: chunk types swapped', "type: key ? 'key' : 'delta'", "type: key ? 'delta' : 'key'"),
+        M('D128', 'decodeH264: every chunk is a key chunk', "type: key ? 'key' : 'delta'", "type: 'key'"),
+        M('D129', 'decodeH264: no time stamp', 'timestamp: h264Timestamp, data: bytes', 'timestamp: 0, data: bytes'),
+        M('D130', 'decodeH264: the time stamp does not advance', '            h264Timestamp += H264_TIMESTAMP_STEP;\n', ''),
+        M('D131', 'decodeH264: time stamp step 0', 'const H264_TIMESTAMP_STEP = 33333;', 'const H264_TIMESTAMP_STEP = 0;'),
+        M('D132', 'decodeH264: another step (any increasing value works)', 'const H264_TIMESTAMP_STEP = 33333;', 'const H264_TIMESTAMP_STEP = 16667;',
+            'ストリームに時刻が無く、B フレームもないので、増える値なら何でもよい'),
+        M('D133', 'decodeH264: another buffer is sent', 'timestamp: h264Timestamp, data: bytes', 'timestamp: h264Timestamp, data: bytes.subarray(4)'),
+        M('D134', 'decodeH264: a key chunk does not clear need-key', '            if (key) h264NeedKey = false;', '            if (!key) h264NeedKey = false;'),
+        M('D135', 'decodeH264: need-key never cleared', '            if (key) h264NeedKey = false;\n', ''),
+        M('D136', 'decodeH264: every chunk clears need-key (a delta chunk is sent only when it is already clear)', '            if (key) h264NeedKey = false;', '            h264NeedKey = false;',
+            'delta chunk を送るのは h264NeedKey が既に偽のときだけなので、delta でも偽にして結果は同じ'),
+        M('D137', 'decodeH264: a decode error is not a failure', '        } catch (err) {\n            h264Fallback();\n        }\n    }\n\n    // First IDR', '        } catch (err) {\n        }\n    }\n\n    // First IDR'),
+        M('D138', 'startH264Decoder: the old decoder is not closed', '    function startH264Decoder(codec, sps, bytes) {\n        resetH264();\n', '    function startH264Decoder(codec, sps, bytes) {\n'),
+        M('D139', 'startH264Decoder: not marked pending', '        h264Pending = gen;\n', ''),
+        M('D140', 'startH264Decoder: a throwing isConfigSupported is not a failure', '        } catch (err) {\n            h264Fallback();\n            return;\n        }\n        Promise.resolve(p)', '        } catch (err) {\n            return;\n        }\n        Promise.resolve(p)'),
+        M('D141', 'startH264Decoder: a throwing isConfigSupported is not caught', "        let p;\n        try {\n            p = VideoDecoder.isConfigSupported(config);\n        } catch (err) {\n            h264Fallback();\n            return;\n        }", "        const p = VideoDecoder.isConfigSupported(config);"),
+        M('D142', 'startH264Decoder: a late answer is not ignored', '            if (gen !== h264Gen) return; // reset meanwhile\n', ''),
+        M('D143', 'startH264Decoder: pending not cleared by the answer', '            h264Pending = 0;\n            if (!res', '            if (!res'),
+        M('D144', 'startH264Decoder: an unsupported codec is not a failure', "            if (!res || res.supported !== true) {\n                h264Fallback();\n                return;\n            }", "            if (!res || res.supported !== true) {\n                return;\n            }"),
+        M('D145', 'startH264Decoder: only an explicit "false" is a failure', 'if (!res || res.supported !== true) {', 'if (!res || res.supported === false) {'),
+        M('D146', 'startH264Decoder: a missing answer is not handled', 'if (!res || res.supported !== true) {', 'if (res.supported !== true) {'),
+        M('D147', 'startH264Decoder: the decoder gets another frame owner', 'output: (frame) => drawH264Frame(dec, frame),', 'output: (frame) => drawH264Frame(null, frame),'),
+        M('D148', 'startH264Decoder: errors of any decoder are a failure', 'if (h264Dec !== null && h264Dec.decoder === dec) h264Fallback();', 'if (h264Dec !== null) h264Fallback();'),
+        M('D149', 'startH264Decoder: an error after the reset throws', 'if (h264Dec !== null && h264Dec.decoder === dec) h264Fallback();', 'if (h264Dec.decoder === dec) h264Fallback();'),
+        M('D150', 'startH264Decoder: errors of the decoder are not a failure', 'if (h264Dec !== null && h264Dec.decoder === dec) h264Fallback();', 'if (h264Dec !== null && h264Dec.decoder === dec) return;'),
+        M('D151', 'startH264Decoder: not configured', '                dec.configure(config);\n', ''),
+        M('D152', 'startH264Decoder: optimizeForLatency off', "const config = { codec: codec, optimizeForLatency: true };", "const config = { codec: codec, optimizeForLatency: false };"),
+        M('D153', 'startH264Decoder: a fixed codec string', "const config = { codec: codec, optimizeForLatency: true };", "const config = { codec: 'avc1.42c01f', optimizeForLatency: true };"),
+        M('D154', 'startH264Decoder: a decoder that cannot be configured is left open', "                if (dec !== null) {\n                    try {\n                        dec.close(); // made but not usable\n                    } catch (err2) {\n                        // already closed\n                    }\n                }\n", ''),
+        M('D155', 'startH264Decoder: close() of the unusable decoder without the null check (the TypeError is caught by the try next to it)', "                if (dec !== null) {\n                    try {\n                        dec.close(); // made but not usable", "                {\n                    try {\n                        dec.close(); // made but not usable",
+            'dec が null(コンストラクタの例外)なら dec.close() は TypeError だが、すぐ隣の try/catch が捨てる。null の検査は二重の防御'),
+        M('D156', 'startH264Decoder: a configure error is not a failure', "                }\n                h264Fallback();\n                return;\n            }\n            h264Dec =", "                }\n                return;\n            }\n            h264Dec ="),
+        M('D157', 'startH264Decoder: the codec of the decoder is not kept', 'h264Dec = { decoder: dec, codec: codec, sps: sps.slice() };', 'h264Dec = { decoder: dec, codec: null, sps: sps.slice() };'),
+        M('D158', 'startH264Decoder: the SPS of the decoder is not kept', 'h264Dec = { decoder: dec, codec: codec, sps: sps.slice() };', 'h264Dec = { decoder: dec, codec: codec, sps: new Uint8Array(0) };'),
+        M('D159', 'startH264Decoder: the SPS is kept as a view (not a copy)', 'sps: sps.slice() };', 'sps: sps };',
+            'SPS をコピーせず、メッセージのバッファの view のまま持っても、比較の結果は変わらない(コピーは、バッファを保持し続けないため)'),
+        M('D160', 'startH264Decoder: the first IDR is not decoded', '            h264Dec = { decoder: dec, codec: codec, sps: sps.slice() }; // a copy: the message buffer is not kept alive\n            decodeH264(bytes, true);', '            h264Dec = { decoder: dec, codec: codec, sps: sps.slice() }; // a copy: the message buffer is not kept alive'),
+        M('D161', 'startH264Decoder: the first IDR is sent as a delta chunk', '            decodeH264(bytes, true);\n        }, () => {', '            decodeH264(bytes, false);\n        }, () => {'),
+        M('D162', 'startH264Decoder: a rejected check is not a failure', '        }, () => {\n            if (gen === h264Gen) h264Fallback();\n        });', '        }, () => {\n        });'),
+        M('D163', 'startH264Decoder: a late rejection is a failure', 'if (gen === h264Gen) h264Fallback();', 'h264Fallback();'),
+        M('D164', 'feedH264: the failed flag is not checked', '        if (h264Failed || h264Pending !== 0) return;', '        if (h264Pending !== 0) return;'),
+        M('D165', 'feedH264: a pending configure does not hold the stream', '        if (h264Failed || h264Pending !== 0) return;', '        if (h264Failed) return;'),
+        M('D166', 'feedH264: an access unit without a NAL is not dropped', '        if (au.count === 0) return; // no NAL at all: garbage\n', ''),
+        M('D167', 'feedH264: P frames are decoded before the first IDR (the decoder check removed; need-key is always set while there is no decoder)', '            if (h264Dec === null || h264NeedKey) return; // no IDR yet', '            if (h264NeedKey) return; // no IDR yet',
+            'デコーダが無いとき h264NeedKey は必ず真(初期値と resetH264 が真にする)なので、デコーダの検査は二重の防御。D101(resetH264 の NeedKey)とは、どちらか一方だけなら同値(両方外すと、デコーダなしの P で落ちる)'),
+        M('D168', 'feedH264: P frames are decoded while waiting for an IDR', '            if (h264Dec === null || h264NeedKey) return; // no IDR yet', '            if (h264Dec === null) return; // no IDR yet'),
+        M('D169', 'feedH264: queue limit is >', 'decodeQueueSize >= H264_MAX_QUEUE', 'decodeQueueSize > H264_MAX_QUEUE'),
+        M('D170', 'feedH264: queue limit 3 -> 4', 'const H264_MAX_QUEUE = 3;', 'const H264_MAX_QUEUE = 4;'),
+        M('D171', 'feedH264: queue limit 3 -> 2', 'const H264_MAX_QUEUE = 3;', 'const H264_MAX_QUEUE = 2;'),
+        M('D172', 'feedH264: a long queue does not set need-key', '                h264NeedKey = true; // falling behind: wait for the next IDR instead of piling up delay\n', ''),
+        M('D173', 'feedH264: a long queue does not drop the frame', "                h264NeedKey = true; // falling behind: wait for the next IDR instead of piling up delay\n                return;\n            }", "                h264NeedKey = true; // falling behind: wait for the next IDR instead of piling up delay\n            }"),
+        M('D174', 'feedH264: a decoded P frame goes on as a key frame', "            decodeH264(bytes, false);\n            return;\n        }", "            decodeH264(bytes, false);\n        }"),
+        M('D175', 'feedH264: a P frame is sent as a key chunk', 'decodeH264(bytes, false);', 'decodeH264(bytes, true);'),
+        M('D176', 'feedH264: an IDR slice without an SPS is decoded without a decoder', "            if (h264Dec !== null) decodeH264(bytes, true); // an IDR slice without an SPS: the decoder is configured\n            return;", "            decodeH264(bytes, true);\n            return;"),
+        M('D177', 'feedH264: an IDR slice without an SPS is dropped', "            if (h264Dec !== null) decodeH264(bytes, true); // an IDR slice without an SPS: the decoder is configured\n", ''),
+        M('D178', 'feedH264: an IDR slice without an SPS goes on to the SPS handling (a missing SPS gives no codec string)', "            if (h264Dec !== null) decodeH264(bytes, true); // an IDR slice without an SPS: the decoder is configured\n            return;\n        }", "            if (h264Dec !== null) decodeH264(bytes, true); // an IDR slice without an SPS: the decoder is configured\n        }",
+            'SPS が無い(null)と、次の avcCodecStringFromSps(null) が null を返し、その次の行で捨てられる。ここの return は二重の防御'),
+        M('D179', 'feedH264: a broken SPS starts a decoder', '        if (codec === null) return;\n', ''),
+        M('D180', 'feedH264: the decoder is reused without a decoder', 'if (h264Dec !== null && h264Dec.codec === codec && H264.sameBytes(h264Dec.sps, au.sps)) {', 'if (h264Dec.codec === codec && H264.sameBytes(h264Dec.sps, au.sps)) {'),
+        M('D181', 'feedH264: the codec string is not compared (the same SPS bytes always give the same codec string)', 'if (h264Dec !== null && h264Dec.codec === codec && H264.sameBytes(h264Dec.sps, au.sps)) {', 'if (h264Dec !== null && H264.sameBytes(h264Dec.sps, au.sps)) {',
+            '同じ SPS のバイト列からは、同じ codec 文字列ができるので、codec 文字列の比較は、SPS の比較に含まれる(二重の防御)'),
+        M('D182', 'feedH264: the SPS is not compared (only the codec string)', 'if (h264Dec !== null && h264Dec.codec === codec && H264.sameBytes(h264Dec.sps, au.sps)) {', 'if (h264Dec !== null && h264Dec.codec === codec) {'),
+        M('D183', 'feedH264: the codec string is not compared in the other direction', 'if (h264Dec !== null && h264Dec.codec === codec && H264.sameBytes(h264Dec.sps, au.sps)) {', 'if (h264Dec !== null && h264Dec.codec !== codec && H264.sameBytes(h264Dec.sps, au.sps)) {'),
+        M('D184', 'feedH264: a decoder is rebuilt for every IDR', "            decodeH264(bytes, true);\n            return;\n        }\n        startH264Decoder", "            decodeH264(bytes, true);\n        }\n        startH264Decoder"),
+        M('D185', 'feedH264: the IDR with the same SPS is sent as a delta chunk', "            decodeH264(bytes, true);\n            return;\n        }\n        startH264Decoder", "            decodeH264(bytes, false);\n            return;\n        }\n        startH264Decoder"),
+        M('D186', 'feedH264: a new decoder gets the wrong buffer', 'startH264Decoder(codec, au.sps, bytes);', 'startH264Decoder(codec, au.sps, bytes.subarray(1));'),
+        M('D187', 'noteMjpeg: need-key not set', '    function noteMjpeg() {\n        h264NeedKey = true;\n', '    function noteMjpeg() {\n'),
+        M('D188', 'noteMjpeg: the label stays', '        setH264Shown(false);\n    }', '    }'),
+        M('D189', 'connect: accept even when not supported', 'const acceptH264 = h264Supported && !h264Failed;', 'const acceptH264 = !h264Failed;'),
+        M('D190', 'connect: accept even after a failure', 'const acceptH264 = h264Supported && !h264Failed;', 'const acceptH264 = h264Supported;'),
+        M('D191', 'connect: accept is never sent', 'VideoTarget.resolve(location, undefined), acceptH264);', 'VideoTarget.resolve(location, undefined), false);'),
+        M('D192', 'connect: accept is always sent', 'VideoTarget.resolve(location, undefined), acceptH264);', 'VideoTarget.resolve(location, undefined), true);'),
+        M('D193', 'connect: binaryType stays blob when H.264 is accepted', '        if (acceptH264) ws.binaryType = "arraybuffer";', '        if (false) ws.binaryType = "arraybuffer";'),
+        M('D194', 'connect: binaryType is arraybuffer when H.264 is not accepted', '        if (acceptH264) ws.binaryType = "arraybuffer";', '        if (!acceptH264) ws.binaryType = "arraybuffer";'),
+        M('D195', 'onmessage: the kind of the message is not looked at', '            if (acceptH264) {\n                // JPEG', '            if (false) {\n                // JPEG'),
+        M('D196', 'onmessage: a binary that is not a JPEG is decoded as one', "                if (kind !== 'jpeg') return;\n", ''),
+        M('D197', 'onmessage: an H.264 message goes on to the JPEG path (it is dropped by the next line)', '                    feedH264(bytes);\n                    return;\n                }', '                    feedH264(bytes);\n                }',
+            'H.264 のメッセージは、次の kind !== \'jpeg\' の検査で捨てられる。ここの return は二重の防御'),
+        M('D198', 'onmessage: H.264 is not fed to the decoder', '                    feedH264(bytes);\n', ''),
+        M('D199', 'onmessage: a JPEG does not reset the H.264 state', '                noteMjpeg();\n', ''),
+        M('D200', 'onmessage: the JPEG is not wrapped in a Blob', "frameData = new Blob([bytes], { type: 'image/jpeg' });", 'frameData = e.data;'),
+        M('D201', 'onmessage: the Blob has no type', "new Blob([bytes], { type: 'image/jpeg' })", 'new Blob([bytes])'),
+        M('D202', 'onmessage: the Blob has another type', "{ type: 'image/jpeg' }", "{ type: 'image/png' }"),
+        M('D203', 'onmessage: a message that is not binary is classified (classify handles null)', "const kind = bytes === null ? null : H264.classify(bytes);", "const kind = H264.classify(bytes);",
+            'classify が null を受けて null を返す(D07)ので、bytes の null の検査は二重の防御'),
+        M('D205', 'onmessage: createImageBitmap gets the message, not the Blob', 'const bmp = await createImageBitmap(frameData);', 'const bmp = await createImageBitmap(e.data);'),
+        M('D206', 'reset: the status reset does not reset H.264', '        resetH264(); // the decoder and the "H.264" label go with the connection\n', ''),
+        M('D207', 'status: the label is dropped by the next status', '        if (h264Shown) elVideoStatus.textContent += H264_LABEL;\n', ''),
+        M('D208', 'status: the label replaces the resolution', '        if (h264Shown) elVideoStatus.textContent += H264_LABEL;', '        if (h264Shown) elVideoStatus.textContent = STATUS_PLAIN + H264_LABEL;'),
+        M('D209', 'status: the label is shown for a connection without H.264', '        if (h264Shown) elVideoStatus.textContent += H264_LABEL;', '        elVideoStatus.textContent += H264_LABEL;'),
     ];
 }
 
@@ -1798,7 +2067,8 @@ function mutantList() {
     else console.log('video viewer ok (' + RESOLVE_CASES.length + ' resolve cases, ' + HINT_CASES.length + ' hint cases, ' + TRUST_URL_CASES.length + ' trust-url cases, ' + PARSE_CASES.length + ' status-parse cases, ' + CHANGE_CASES.length + ' resolution-change cases, ' + CLASSIFY_CASES.length + ' classify cases, ' + PARSE_H264_CASES.length + ' annex-b cases, ' + ANALYZE_CASES.length + ' key-unit cases, ' + CODEC_CASES.length + ' codec-string cases, browser scenarios)');
 
     if (process.argv.includes('--mutations')) {
-        const list = mutantList();
+        const only = process.argv.filter((a) => /^[A-Z][0-9]+$/.test(a)); // 例: --mutations D114 D155(指定したものだけ)
+        const list = mutantList().filter((m) => only.length === 0 || only.includes(m.id));
         let killed = 0, equivalent = 0, survived = 0, nomatch = 0;
         for (const m of list) {
             const count = source.split(m.from).length - 1;

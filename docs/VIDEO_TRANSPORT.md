@@ -136,6 +136,13 @@ H.264 では、P フレームは直前のフレームに依存する。**`frame_
 ### 9.8 ビューア（`app.js`）
 - `accept=h264` を付けて接続し、バイナリメッセージの先頭で JPEG / H.264 を判別する（9.3）。H.264 は、`VideoDecoder`（`optimizeForLatency: true`）に、`EncodedVideoChunk`（IDR は `key`、P は `delta`）で渡し、出てきた `VideoFrame` を canvas に描いて、`close()` する。**最初の IDR まで、P は捨てる**。デコーダがエラーになったら、`accept` を付けずに再接続する（= MJPEG に落とす。**以後、そのタブでは `accept` を付けない**）。
 - 解像度が変わったとき（SPS が変わる）は、デコーダを作り直す。表示に「H.264（低帯域）」と出す。
+- **実装（`app.js`。検査は `docs/VIDEO_VIEWER_TESTS.md` 7 章）で決めたこと**:
+  - `accept=h264` を付ける条件は、(a) `VideoDecoder`・`EncodedVideoChunk`・`VideoDecoder.isConfigSupported` がある、(b) 起動時の確認（`isConfigSupported({codec: "avc1.42c01f", optimizeForLatency: true})`）が `supported === true`、(c) このタブで H.264 が一度も失敗していない。最初の接続は、確認が終わるのを待つ（確認が終わらないときは 1500 ms で、`accept` なしで接続する。`TODO(hw-verify)`）。
+  - **`accept` を付けた接続だけ** `binaryType = "arraybuffer"`（先頭バイトの判別と、H.264 の到着順を保つため）。JPEG は `new Blob([bytes], {type: "image/jpeg"})` にして従来の `createImageBitmap` に渡す。**`accept` を付けない接続は、従来のまま**（`blob`、先頭バイトは見ない）。
+  - IDR は、SPS（type 7）または IDR スライス（type 5）を含むアクセスユニット。デコーダの作り直しは、SPS のバイト列が変わったとき（codec 文字列が同じでも、解像度が変われば作り直す）。IDR で SPS が来たら、**その codec 文字列を `isConfigSupported` で確認してから** `configure` する（確認の間のアクセスユニットは捨てる。確認が偽、`configure` / `decode` の例外、`error` コールバックはフォールバック）。
+  - フォールバックは、`WebSocket` を `close()` して、既存の再接続（`fetchStatus` を、既定 1000 ms の後に）に任せる。**そのタブでは 1 回だけ**。
+  - `decodeQueueSize >= 3`（`TODO(hw-verify)`）のとき、次の IDR まで P を捨てる。**ビューアからサーバーへ送れるデータはない**（送ると切断される。`docs/WEB_API.md` §5）ので、IDR の要求はできず、次の IDR（`CSI_H264_GOP`）まで待つ。
+  - 表示は、映像のステータス行に ` / H.264（低帯域）` を足す（最初の `VideoFrame` を描いたときから。JPEG が来たら消える）。C-6b の状態表示（`VideoStatus`）は、コーデックに関係なく、そのまま動く。
 
 ### 9.9 担当と順序
 1. この契約（Claude）。**オーナーの確認が要る**: 9.5 の方針（同時接続のコーデック）。選択肢と比較は 9.10。
