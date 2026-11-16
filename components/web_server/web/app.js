@@ -21,6 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const elVideoTrustHint = document.getElementById('video-trust-hint');
     const elVideoTrustLink = document.getElementById('video-trust-link');
+    const elVideoOverlay = document.getElementById('video-overlay');
 
     let ws = null;
     let videoTarget = null; // result of VideoTarget.resolve, set from the status response
@@ -378,8 +379,107 @@ document.addEventListener('DOMContentLoaded', () => {
         elVideoTrustLink.textContent = '';
     }
 
+    // The video state the server sends as a text frame on /video (docs/WEB_API.md 5, docs/VIDEO_TRANSPORT.md 8):
+    // {"t":"video","state":"locked","w":1280,"h":720}. Pure functions, checked on the host by
+    // tools/test/check_video_viewer.js. Anything that does not fit the contract is dropped (parse returns null).
+    const VideoStatus = {
+        // w and h: a JSON integer in 0..65535 (no strings, fractions, null, negative numbers).
+        validDimension(v) {
+            return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 65535;
+        },
+        // text frame -> { state, w, h } or null. Unknown keys are ignored. Only "locked" carries a resolution (>= 1);
+        // the other states are reported with w = h = 0.
+        parse(text) {
+            if (typeof text !== 'string' || text.length === 0 || text.length > 1024) return null;
+            let obj;
+            try {
+                obj = JSON.parse(text);
+            } catch (err) {
+                return null;
+            }
+            if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return null;
+            if (obj.t !== 'video') return null;
+            const state = obj.state;
+            if (state !== 'unknown' && state !== 'no_signal' && state !== 'locked') return null;
+            if (!this.validDimension(obj.w) || !this.validDimension(obj.h)) return null;
+            if (state === 'locked') {
+                if (obj.w < 1 || obj.h < 1) return null;
+                return { state: state, w: obj.w, h: obj.h };
+            }
+            return { state: state, w: 0, h: 0 };
+        },
+        // "1280x720" (both are integers already; Math.trunc keeps the text an integer whatever the caller passes).
+        resolutionLabel(st) {
+            return String(Math.trunc(st.w)) + 'x' + String(Math.trunc(st.h));
+        },
+        // The line under the video: the resolution is shown only while the signal is locked.
+        statusLine(st) {
+            if (st.state === 'locked') return '接続完了 / 受信中 (' + this.resolutionLabel(st) + ')';
+            return '接続完了 / 受信中';
+        },
+        // The text over the video for the states that have one (locked has none: null).
+        overlayMessage(state) {
+            if (state === 'no_signal') return '信号なし';
+            if (state === 'unknown') return '映像の状態を確認中…';
+            return null;
+        },
+        // locked -> locked with another resolution (prev is the last accepted status, or null).
+        isResolutionChange(prev, cur) {
+            return prev !== null && prev.state === 'locked' && cur.state === 'locked' && (prev.w !== cur.w || prev.h !== cur.h);
+        },
+        changeNotice(st) {
+            return '解像度が変わりました（' + this.resolutionLabel(st) + '）';
+        }
+    };
+
+    const RESOLUTION_NOTICE_MS = 2000;
+    let videoStatus = null; // last accepted status of this connection (null before the first one)
+    let resolutionNoticeTimer = null;
+
+    function setVideoOverlay(text) {
+        if (text === null) {
+            elVideoOverlay.classList.add('video-overlay-hidden');
+            elVideoOverlay.textContent = '';
+        } else {
+            elVideoOverlay.textContent = text;
+            elVideoOverlay.classList.remove('video-overlay-hidden');
+        }
+    }
+
+    // One place for the reset: a new connection, a disconnect and a logout all end here.
+    function resetVideoStatus() {
+        if (resolutionNoticeTimer !== null) {
+            clearTimeout(resolutionNoticeTimer);
+            resolutionNoticeTimer = null;
+        }
+        videoStatus = null;
+        setVideoOverlay(null);
+    }
+
+    function applyVideoStatus(st) {
+        const changed = VideoStatus.isResolutionChange(videoStatus, st);
+        videoStatus = st;
+        // The next status removes the "resolution changed" notice at once.
+        if (resolutionNoticeTimer !== null) {
+            clearTimeout(resolutionNoticeTimer);
+            resolutionNoticeTimer = null;
+        }
+        elVideoStatus.textContent = VideoStatus.statusLine(st);
+        if (changed) {
+            setVideoOverlay(VideoStatus.changeNotice(st));
+            resolutionNoticeTimer = setTimeout(() => {
+                resolutionNoticeTimer = null;
+                setVideoOverlay(null);
+            }, RESOLUTION_NOTICE_MS);
+        } else {
+            // The last frame stays on the canvas (it is never cleared here).
+            setVideoOverlay(VideoStatus.overlayMessage(st.state));
+        }
+    }
+
     function connectWebSocket() {
         if (ws) return;
+        resetVideoStatus();
         const target = videoTarget || VideoTarget.resolve(location, undefined);
         let opened = false;
         ws = new WebSocket(target.url);
@@ -393,6 +493,13 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         ws.onmessage = async (e) => {
+            // A text frame is the video state (JSON); a binary frame is a JPEG. A text frame that does not fit
+            // the contract is dropped, and it never touches the decoding of the frames.
+            if (typeof e.data === 'string') {
+                const st = VideoStatus.parse(e.data);
+                if (st !== null) applyVideoStatus(st);
+                return;
+            }
             if (isDecoding) return;
             isDecoding = true;
             try {
@@ -410,6 +517,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         ws.onclose = () => {
             ws = null;
+            resetVideoStatus();
             elVideoStatus.textContent = '切断されました。再接続します...';
             if (VideoTarget.needsTrustHint(target, opened)) showTrustHint(target);
             // Exponential backoff
@@ -492,6 +600,7 @@ document.addEventListener('DOMContentLoaded', () => {
             ws = null;
         }
         hideTrustHint();
+        resetVideoStatus();
         elVideoStatus.textContent = '切断されました';
 
         if (wsInputReconnectTimer) {
