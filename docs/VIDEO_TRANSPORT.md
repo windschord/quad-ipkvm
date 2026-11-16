@@ -91,7 +91,7 @@ Issue #86。`video_status`（`docs/INTERFACES.md` §1.3）の状態を、ビュ�
 ### 9.2 ストリームの形式
 - **H.264 Baseline、B フレームなし、Annex B**。`WS /video` の 1 バイナリメッセージ = **1 アクセスユニット（1 フレーム分の NAL をまとめたもの）**。IDR のアクセスユニットは、先頭に SPS と PPS を含む（`esp_h264` の HW エンコーダが自動で付ける）。P のアクセスユニットは、スライスだけ。
 - 1080p は、高さを 16 の倍数（1088）に揃えてエンコードし、SPS のクロッピングで 1080 に戻す（評価 2.2）。**ビューアは、クロッピングを解釈するデコーダ（WebCodecs）に任せる**。
-- フレームの大きさは `FRAME_HUB_MAX_FRAME_KB`（既定 768）に収まること。実測の 1080p IDR は最大 507 KB。**超えたフレームは捨て、次のフレームを IDR にする**（9.5）。
+- フレームの大きさは `FRAME_HUB_MAX_FRAME_KB`（既定 768）に収まること。実測の 1080p IDR は最大 507 KB。**超えたフレームは捨て、次のフレームを IDR にする**（9.6）。
 
 ### 9.3 コーデックの識別: ペイロードで自己識別する（ヘッダーは足さない）
 - JPEG は `FF D8` で始まり、H.264 は `00 00 00 01`（スタートコード）で始まる。**ビューアは、バイナリメッセージの先頭バイトで判別する**。既存の MJPEG の経路と、古いビューアは、**変更なしで動く**（追加のバイトも、新しいテキストフレームもない）。
@@ -124,7 +124,7 @@ H.264 では、P フレームは直前のフレームに依存する。**`frame_
 - `need_key` が真のクライアントは、**H.264 の P フレームを配らない**（`hub_release` して、次の tick を待つ）。IDR（`VIDEO_FRAME_FLAG_KEY`）が来たら配り、`need_key` を偽にする。**JPEG のフレームは、`need_key` に関係なく配る**。
 - `need_key` を真にしたら、**`request_keyframe` を要求する**（`video_source_t.request_keyframe()`、9.7）。要求は、**クライアントをまたいで、1 つにまとめる**（`VIDEO_CODEC_IDR_MIN_INTERVAL_MS`、既定 1000。`TODO(hw-verify)`: IDR は 495 KB に達するので、要求のたびに送ると、遅いクライアントを、さらに遅くする）。
 - **エンコードに成功して、公開（`frame_hub_begin_publish`）に失敗したとき**、またはサイズ超過で捨てたときは、**映像ソース自身が、次のフレームを IDR にする**（`seq` が連続して見えるので、受信側では検出できない。評価 4.2）。
-- 保険として、**映像ソースは、一定間隔で IDR を出す**（`CSI_H264_GOP`、既定 = fps × 2。`TODO(hw-verify)`）。要求の取りこぼしがあっても、最長でこの間隔の後に復帰する。
+- 保険として、**映像ソースは、一定間隔で IDR を出す**（`CSI_H264_GOP`、既定 = fps × 2。`TODO(hw-verify)`。**`esp_h264` の `gop` は `uint8_t`（1〜255）なので、Kconfig の範囲は `1 255`**）。要求の取りこぼしがあっても、最長でこの間隔の後に復帰する。
 - `need_key` が長く続く（IDR が来ない）クライアントは、`send_timeout` とは別に、**`VIDEO_CODEC_KEY_WAIT_MS`（既定 5000）で閉じる**（再接続させる）。
 
 ### 9.7 契約の変更（`docs/INTERFACES.md` §1.4 に反映）
@@ -132,6 +132,8 @@ H.264 では、P フレームは直前のフレームに依存する。**`frame_
 - `frame_hub_commit` は**変えない**（`codec = MJPEG`、`flags = KEY`。JPEG は、どのフレームも自己完結）。**`frame_hub_commit_ex(hub, frame, const frame_hub_commit_info_t *info)`** を足す（`info` に `size`、`width`、`height`、`timestamp_ms`、`codec`、`flags`）。
 - `video_source_t` に、**構造体の末尾（`ctx` の後）に**足す（位置指定の初期化が、そのまま通る）: `uint32_t supported_codecs`（ビットマスク。0 = MJPEG だけ）、`int (*set_codec)(const video_source_t *, video_codec_t)`（0 = 受理。**非同期、ブロックしない、複数回呼んでよい**）、`void (*request_keyframe)(const video_source_t *)`（**ブロックしない、複数のタスクから呼んでよい、取りこぼしても保険の IDR がある**）。どちらも `NULL` でよい（MJPEG だけのソース）。
 - Kconfig の接頭辞: **`CSI_H264_*`** = HDMI 担当（エンコーダ、GOP、ビットレート、`CSI_H264_ENABLE` 既定 `n`）。**`VIDEO_CODEC_*`** = Claude（方針、上の 9.5・9.6 の値）。`INTERFACES.md` §2 の表に足す。
+
+**H.264 のメモリ**（Antigravity のレビュー、2026-11-16）: 1080p の HW H.264 は、内部 RAM 約 151 KiB + PSRAM 約 3.0 MiB を追加で使う（評価 3.2）。実機の `/video` ×2 + `/ws` ×2 のとき、内部 RAM の最小は 391,215 B だった。**H.264 を有効にしたときの内部 RAM の余裕**と、**切替のたびに確保する案と、起動時に 1 回確保する案の、PSRAM の断片化**は、`csi_h264` の実装時に device-check で確認する（`TODO(hw-verify)`）。
 
 ### 9.8 ビューア（`app.js`）
 - `accept=h264` を付けて接続し、バイナリメッセージの先頭で JPEG / H.264 を判別する（9.3）。H.264 は、`VideoDecoder`（`optimizeForLatency: true`）に、`EncodedVideoChunk`（IDR は `key`、P は `delta`）で渡し、出てきた `VideoFrame` を canvas に描いて、`close()` する。**最初の IDR まで、P は捨てる**。デコーダがエラーになったら、`accept` を付けずに再接続する（= MJPEG に落とす。**以後、そのタブでは `accept` を付けない**）。
