@@ -151,6 +151,7 @@
       1. 高周波エッジの多い **1080p IDE / ターミナル画面** は標準画質 `q=70` でも **599,710 B（585.7 KiB）**、`q=50` に落としても **441,657 B（431.3 KiB）** となり、現行 `FRAME_HUB_MAX_FRAME_KB=256` では全フレームが `oversize_drop` / エンコード失敗する。精細風景写真（`photo_sonoma_horizon_crop`）も `q=70` で **317,819 B（310.4 KiB）** となり 256 KiB を超える。
       2. PSRAM は 1080p 実用時でも約 19.8 MiB の空きが残っているため、`FRAME_HUB_MAX_FRAME_KB` を **`768`（3 スロット = 2.25 MiB）** に引き上げることを提案する（`q=80` の IDE 画面 730.7 KiB まで余裕を持って格納可能）。
       3. あわせて `csi_video_source` 側では、単発で `max_frame_bytes` を超えた場合のフォールバックとして品質ステップダウン（`q → q-10 → ...`、下限 30）の実装可否を次段で検討・適用する。
+      4. **未確認（`TODO(hw-verify)`）**: `csi_jpeg.c` の DMA2D 出力あふれ番兵（`CSI_JPEG_OVERFLOW_GUARD_BYTES` = 4096 B + 末尾キャッシュライン検査）について、強制的に出力バッファを溢れさせた際に `ESP_ERR_INVALID_STATE` 経由で安全側検出が働くかは実機未確認。
 
 ## F. ネットワーク（Ethernet）— P3-0
 
