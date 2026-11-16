@@ -264,6 +264,52 @@ void test_format_geometry_rgb888_and_uyvy(void) {
     TEST_ASSERT_EQUAL_UINT32(6220800u, (uint32_t)out);
 }
 
+void test_jpeg_validate_bitstream_and_overflow_sentinel(void) {
+    uint8_t ok_buf[6] = {0xFF, 0xD8, 0x00, 0x11, 0xFF, 0xD9};
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_MARKERS,
+                          csi_jpeg_validate_bitstream(NULL, 6, 6));
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_MARKERS,
+                          csi_jpeg_validate_bitstream(ok_buf, 0, 6));
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_MARKERS,
+                          csi_jpeg_validate_bitstream(ok_buf, 6, 3));
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_OK,
+                          csi_jpeg_validate_bitstream(ok_buf, 6, 6));
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_OVERSIZE,
+                          csi_jpeg_validate_bitstream(ok_buf, 5, 6));
+
+    uint8_t bad_soi0[6] = {0xFE, 0xD8, 0x00, 0x11, 0xFF, 0xD9};
+    uint8_t bad_soi1[6] = {0xFF, 0xD9, 0x00, 0x11, 0xFF, 0xD9};
+    uint8_t bad_eoi0[6] = {0xFF, 0xD8, 0x00, 0x11, 0xFE, 0xD9};
+    uint8_t bad_eoi1[6] = {0xFF, 0xD8, 0x00, 0x11, 0xFF, 0xD8};
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_MARKERS,
+                          csi_jpeg_validate_bitstream(bad_soi0, 6, 6));
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_MARKERS,
+                          csi_jpeg_validate_bitstream(bad_soi1, 6, 6));
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_MARKERS,
+                          csi_jpeg_validate_bitstream(bad_eoi0, 6, 6));
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_MARKERS,
+                          csi_jpeg_validate_bitstream(bad_eoi1, 6, 6));
+
+    // Sentinel NULL / zero-length guards
+    csi_jpeg_arm_overflow_sentinel(NULL, 16);
+    TEST_ASSERT_FALSE(csi_jpeg_overflow_sentinel_tripped(NULL, 16));
+    uint8_t tail[64];
+    TEST_ASSERT_FALSE(csi_jpeg_overflow_sentinel_tripped(tail, 0));
+
+    csi_jpeg_arm_overflow_sentinel(tail, sizeof(tail));
+    TEST_ASSERT_FALSE(csi_jpeg_overflow_sentinel_tripped(tail, sizeof(tail)));
+
+    // Modifying first, middle odd, or last byte trips the sentinel
+    tail[0] = 0x00;
+    TEST_ASSERT_TRUE(csi_jpeg_overflow_sentinel_tripped(tail, sizeof(tail)));
+    csi_jpeg_arm_overflow_sentinel(tail, sizeof(tail));
+    tail[31] = 0xFF;
+    TEST_ASSERT_TRUE(csi_jpeg_overflow_sentinel_tripped(tail, sizeof(tail)));
+    csi_jpeg_arm_overflow_sentinel(tail, sizeof(tail));
+    tail[sizeof(tail) - 1u] = 0xA4;
+    TEST_ASSERT_TRUE(csi_jpeg_overflow_sentinel_tripped(tail, sizeof(tail)));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_geometry_720p_rgb888_ok);
@@ -285,5 +331,6 @@ int main(void) {
     RUN_TEST(test_pp_acquire_while_held_returns_none_even_if_latest_present);
     RUN_TEST(test_pp_overwritten_conservation_invariant_never_double_counts);
     RUN_TEST(test_format_geometry_rgb888_and_uyvy);
+    RUN_TEST(test_jpeg_validate_bitstream_and_overflow_sentinel);
     return UNITY_END();
 }
