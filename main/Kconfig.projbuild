@@ -412,6 +412,17 @@ menu "Quad IP-KVM Configuration"
             as a fallback if High-Speed enumeration fails due to cable integrity
             or BIOS USB stack quirks.
 
+    config USB_DEVICE_START_DISCONNECTED
+        bool "Keep USB soft-disconnected (DCTL.sftdiscon=1) at boot for H5 measurement"
+        default n
+        depends on USB_DEVICE_ENABLE
+        help
+            Do not call tud_connect() at the end of usb_hid_init(), keeping the OTG_HS
+            port in soft-disconnect state (DCTL.sftdiscon=1, D+ pull-up disabled).
+            Intended for H5 hardware verification (docs/HW_VERIFY.md H.0): comparing
+            D+ voltage against the connected build while the target PC is powered off.
+            Can be switched later at runtime via usb_hid_set_connected(true).
+
     config KVM_TICK_MS
         int "KVM/ATX control tick interval (ms)"
         default 20
