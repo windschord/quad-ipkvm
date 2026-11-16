@@ -1,0 +1,7 @@
+# sdkconfig.defaults explicitly sets CONFIG_TINYUSB_HID_COUNT=3 so USB-enabled builds
+# do not depend on Kconfig evaluation order relative to managed_components/espressif__esp_tinyusb/Kconfig.
+# Keep the conditional default below as an extra fallback when building without project sdkconfig.defaults.
+config TINYUSB_HID_COUNT
+    int
+    default 3 if USB_DEVICE_ENABLE
+    default 0
