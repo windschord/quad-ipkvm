@@ -337,6 +337,57 @@ menu "Quad IP-KVM Configuration"
             (ws_video_post_handshake_cb) so a stalled slice fails quickly instead of blocking other
             video clients in httpd. TODO(hw-verify): verify under slowclient and normal LAN load.
 
+    config VIDEO_CODEC_H264_ALLOWED
+        bool "Allow H.264 (low bandwidth mode) on /video"
+        default n
+        help
+            When n (default), H.264 is never selected: the video codec is always MJPEG, set_codec() of the video
+            source is never called and request_keyframe is not wired, i.e. the behaviour is exactly the same as
+            before P7 (docs/VIDEO_TRANSPORT.md 9.5).
+            When y, the codec policy (video_codec_policy) may select H.264 if ALL of these hold: the video source can
+            produce H.264 (video_source_t.supported_codecs), at least one /video client is connected and every
+            client sent "?accept=h264", the video state is LOCKED at 1920x1080 or less, and these conditions have
+            held for VIDEO_CODEC_UPGRADE_DWELL_MS. Otherwise (or when a client without accept=h264 connects) it
+            falls back to MJPEG at once. Without an H.264 capable source (csi_h264, CSI_H264_ENABLE) this has no effect.
+            H.264 is a low bandwidth sub mode: the measured frame rate is lower than MJPEG (docs/VIDEO_TRANSPORT.md 9.1).
+            See docs/VIDEO_TRANSPORT.md 9.4 to 9.6 and docs/WEB_API.md 5.
+            TODO(hw-verify): behaviour with a real H.264 source is not verified on hardware.
+
+    config VIDEO_CODEC_UPGRADE_DWELL_MS
+        int "Time the H.264 conditions must hold before MJPEG is upgraded to H.264 (ms)"
+        default 5000
+        range 0 60000
+        depends on VIDEO_CODEC_H264_ALLOWED
+        help
+            Debounce against connections coming and going (docs/VIDEO_TRANSPORT.md 9.5). 0 upgrades on the first tick
+            in which all conditions hold. Downgrading to MJPEG is always immediate.
+            TODO(hw-verify): 5000 is a guess; decide from the observed churn and the size of an IDR (up to about 495 KB).
+
+    config VIDEO_CODEC_IDR_MIN_INTERVAL_MS
+        int "Minimum interval between keyframe (IDR) requests (ms)"
+        default 1000
+        range 0 60000
+        depends on VIDEO_CODEC_H264_ALLOWED
+        help
+            Requests of several clients are merged into one and issued at most once per this interval
+            (ws_video_core idr_min_interval_ms, docs/VIDEO_TRANSPORT.md 9.6). 0 does not merge across ticks
+            (at most one request per ws_video tick). An IDR can reach about 495 KB, so requesting one for every
+            lost frame would slow a slow client down further.
+            TODO(hw-verify): 1000 is a guess.
+
+    config VIDEO_CODEC_KEY_WAIT_MS
+        int "Time a client may wait for a keyframe before it is disconnected (ms)"
+        default 5000
+        range 0 60000
+        depends on VIDEO_CODEC_H264_ALLOWED
+        help
+            A client that must wait for an IDR (it joined, or frames were skipped) gets no H.264 P frames. If this takes
+            longer than this value, counted from the first H.264 frame withheld (not from the connection), the
+            client is closed so that it reconnects (ws_video_core key_wait_timeout_ms, docs/VIDEO_TRANSPORT.md 9.6).
+            0 never closes (the video source GOP, CSI_H264_GOP, is then the only way back). Keep it above the time between two IDRs
+            of the source (the GOP in seconds) so that a normal wait is not turned into a reconnect.
+            TODO(hw-verify): 5000 is a guess.
+
     config WEB_SERVER_INPUT_MAX_CONNECTIONS
         int "Max simultaneous WS input clients (/ws)"
         default 2

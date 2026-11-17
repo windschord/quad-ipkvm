@@ -346,3 +346,188 @@ P7 の追加分だけ見ると、81 個(ID `K` が 58 個、`F` が 23 個)の�
 - 既定値(`TODO(hw-verify)`、`core` は値を持たず、渡す側が決める): `idr_min_interval_ms`(契約の `VIDEO_CODEC_IDR_MIN_INTERVAL_MS` = 1000。IDR は 495 KB に達する)、`key_wait_timeout_ms`(契約の `VIDEO_CODEC_KEY_WAIT_MS` = 5000)、`CSI_H264_GOP`(HDMI 担当)。
 - 実機での、IDR の要求から、IDR が届くまでの時間、遅いクライアントでの待ちの長さ、再接続の頻度。
 - `video_codec_policy`(コーデックの方針)、ビューアの H.264 の経路は、このタスクの範囲外。
+
+## 6. P7: `accept=h264` のクエリの解析(`http_guard_video_accept`)と `web_server.c` の結線
+
+作成: 2026-11-17(P7。契約は `docs/VIDEO_TRANSPORT.md` 9.4・9.5・9.6・9.7)。純 C の部分(`http_guard_video_accept`)は、ホストでテスト・ファズ・ミューテーションまで行った。`web_server.c` と `main.c` の結線は、この環境に ESP-IDF がなく、**ビルドしていない**(6.4)。
+
+### 6.1 変更の要点
+
+- `http_guard_video_accept(query, query_len)`(`components/http_guard`、純 C): `/video` の URI のクエリ部(`?` の後ろ)から、受け取れる JPEG 以外のコーデックのビットマスク(`HTTP_GUARD_VIDEO_ACCEPT_H264 = 1u`)を返す。規則(`http_guard.h` に書いた。判断した点を含む):
+  - `&` で区切った `key=value` のうち、key が `accept` と**完全に一致**するものだけを見る(`xaccept`、`accept2`、`Accept`、`?accept` は別のキー)。value は `,` 区切りで、各要素が `h264` と**完全に一致**するときだけ真(大文字小文字を区別する。`H264`、前後の空白は未知)。未知の値と空の要素は無視する。
+  - **`accept` キーが複数あるときは、どれかに `h264` があれば真(OR。順序に依存しない)**。
+  - パーセントエンコードと `+` は解釈しない(`%68264` は未知の値)。
+  - `query == NULL`、長さ 0、**長さが `HTTP_GUARD_VIDEO_QUERY_MAX`(512)を超える**、**範囲の中に NUL がある**ときは 0(MJPEG だけ。安全側)。`query_len` を超えては 1 バイトも読まない。
+- `main/Kconfig.projbuild`: `VIDEO_CODEC_H264_ALLOWED`(既定 `n`)、`VIDEO_CODEC_UPGRADE_DWELL_MS`(5000)、`VIDEO_CODEC_IDR_MIN_INTERVAL_MS`(1000)、`VIDEO_CODEC_KEY_WAIT_MS`(5000)。後ろの 3 つは `H264_ALLOWED` が `y` のときだけ現れる(範囲は 0〜60000。0 は、それぞれ `video_codec_policy` の「待たない」、`ws_video_core` の「まとめない」「閉じない」)。
+- `web_server.c`: `web_server_set_video_source()`、`ws_video_post_handshake_cb` で `ws_video_core_on_connect()` の直後に、ロックの下で `ws_video_core_set_accepts_h264()`(申告は `ws_video_core` の `accepts_h264[]` に一本化した。7 章)、`ws_video_task` の各 tick で(`H264_ALLOWED = y` のときだけ)`video_codec_policy_update()` を、ロックの下で呼ぶ。コーデックが変わったら、**ロックの外で** `source->set_codec()`。`request_keyframe` は `source->request_keyframe` に包む(tick から、ロックの下で呼ばれる)。`H264_ALLOWED = n` では、方針も `video_status_get()` も `set_codec()` も呼ばず、`ws_video_core_config_t` の新しい 3 項目は 0 / `NULL`(**従来と同じ設定**)。
+- `main.c`: 映像ソースを選んで `start` を呼ぶ箇所の後ろ(テストパターンは `web_server_start` の前、CSI は後)で `web_server_set_video_source()` を呼ぶ。
+
+### 6.2 テスト
+
+| ファイル | 内容 | 件数 |
+|---|---|---|
+| `test/host/http_guard/test_video_accept.c`(新規) | 基本形、`accept` なし・空・未知の値、大文字小文字、キーの完全一致(前後の 1 文字、`Accept`、`?accept` など)、複数のキーと組(OR)、パーセントエンコードを解釈しないこと、非 ASCII のバイト、NULL・長さ 0、長さの外を読まないこと(**入力は長さちょうどのヒープ領域に置く**。ASan が 1 バイトの範囲外の読みも検出する)、範囲の中の NUL、長さの上限の境界(512 と 513、`(size_t)-1`)、上限の中の長い値 | 15 |
+| `test/host/http_guard/test_video_accept_fuzz.c`(新規) | 固定シードの疑似乱数(accept の綴り、`h264`、`= & , %`、NUL などの部品の列 20 万件、NUL を混ぜた 10 万件、全 256 値のランダムなバイト列 6 万件)を、**別の書き方のオラクル**(NUL 終端のコピーにして `strchr` / `strcmp` で分ける)と比べる。有効なクエリの、すべての長さの接頭辞も確認。ASan / UBSan | 4 |
+
+`ctest`: **68 件 -> 70 件**(新しい実行ファイル 2 つ)、すべて成功(`-Wall -Wextra -Werror`、ASan / UBSan)。`node tools/test/check_video_viewer.js` も成功。
+
+### 6.3 ミューテーションテスト
+
+```
+python3 tools/test/mutate_video_core.py <repo> <スクラッチ> tools/test/video_core_mutants.py <結果.json> H57 H58 ... H99
+run: 43 killed: 38 survived: 5 build_error: 0      (ベースラインは 3 つのグループとも全テスト成功)
+```
+
+`http_guard.c` の `http_guard_video_accept` と `hg_accept_value` に、43 個(`H57`〜`H99`)。1 回の実行で、生き残りはすべて同値だった(テストを足して殺したものはない)。既存の 195 個(`V` / `H01`〜`H56` / `K` / `F`)は、コードを変えていないので、再実行していない(ベースラインの 3 グループは全テスト成功)。`H84` と `H98`(次の区間・要素の開始位置が進まない)は、無限ループになり、テストのタイムアウト(120 秒)で殺した。
+
+| グループ | 実行した数 | 殺した数 | 生き残った数(すべて同値と判断) | ビルドエラー |
+|---|---|---|---|---|
+| http_guard.c(P7: `http_guard_video_accept`) | 43 | 38 | 5 | 0 |
+
+#### 6.3.1 同値のミュータント(5 個)
+
+| ID | 変更箇所 | 同値の理由 |
+|---|---|---|
+| H58 | accept: query_len == 0 check removed (equivalent) | `query_len == 0` の検査を外しても、長さ 0 では NUL の走査も区間の走査も 1 回も回らず、`mask` は 0 のまま返る。`!query` の検査(H57)が、NULL を守る。冗長な二重の検査。 |
+| H66 | accept: segment loop <= (equivalent) | 区間のループが `start <= query_len` になっても、`start == query_len` のときは空の区間 (`end == start`、`=` なし) で、何も起きず `start` が進んで終わる。 |
+| H71 | accept: '=' search runs past the segment (equivalent) | `=` の探索が区間の外 (`query_len` まで) に伸びても、見つかった位置は `end` 以上になり、直後の `eq < end` の検査で捨てられる。結果は同じ (走査が長くなるだけ)。 |
+| H96 | value: mask assigned instead of or-ed (equivalent) | `hg_accept_value` の `mask` は、0 から始まり、このビットしか立てない。or-assign でも assign でも同じ値。 |
+| H97 | value: token loop <= (equivalent) | 値のループが `start <= n` になっても、`start == n` では空の要素 (長さ 0 は `h264` の長さ 4 と一致しない) で、何も起きず `start` が進んで終わる。 |
+
+#### 6.3.2 殺したミュータントの一覧(38 個)
+
+「殺したテスト」は、失敗したテストのうち先頭の 2 つ。`:crash/rc=1` は、Unity の失敗行を解析できずに、終了コード 1 だった実行ファイル(アサーションの失敗、または ASan / UBSan)。`:timeout` は、120 秒で終わらなかったもの。
+
+| ID | 変更箇所 | 殺したテスト |
+|---|---|---|
+| H57 | accept: NULL query not checked | `test_video_accept:crash/rc=1` |
+| H59 | accept: length limit removed | `test_video_accept:crash/rc=1` |
+| H60 | accept: length limit > becomes >= | `test_video_accept:crash/rc=1` |
+| H61 | accept: length limit allows one more | `test_video_accept:crash/rc=1` |
+| H62 | accept: embedded NUL not rejected | `test_video_accept_fuzz:crash/rc=1` |
+| H63 | accept: NUL scan reads one past the end | `test_basic_h264`, `test_case_sensitive` |
+| H64 | accept: NUL scan skips the last byte | `test_video_accept_fuzz:crash/rc=1` |
+| H65 | accept: NUL stops the scan but parsing goes on | `test_video_accept_fuzz:crash/rc=1` |
+| H67 | accept: segment separator ';' instead of '&' | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H68 | accept: segment end not bounded by query_len | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H69 | accept: segment end bound <= query_len (reads one past the end) | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H70 | accept: key/value separator ':' instead of '=' | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H72 | accept: 'has =' check removed | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H73 | accept: key length check removed | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H74 | accept: key length == becomes >= (prefix key accepted) | `test_key_must_match_exactly`, `test_video_accept_fuzz:crash/rc=1` |
+| H75 | accept: key length == becomes <= (shorter key compared) | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H76 | accept: key compared case-insensitively | `test_case_sensitive`, `test_video_accept_fuzz:crash/rc=1` |
+| H77 | accept: key spelled differently ('accepx') | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H78 | accept: key compared over 5 bytes only (accept? matches) | `test_case_sensitive` |
+| H79 | accept: value of a later accept key replaces the earlier one | `test_multiple_keys_and_pairs`, `test_video_accept_fuzz:crash/rc=1` |
+| H80 | accept: only the first segment is used | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H81 | accept: value length one too long (includes the separator) | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H82 | accept: value starts at '=' (not after it) | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H83 | accept: value ignored (result always 0) | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H84 | accept: next segment starts at the '&' (hangs) | `test_video_accept:timeout`, `test_video_accept_fuzz:timeout` |
+| H85 | accept: next segment skips one character | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H86 | value: token separator ';' instead of ',' | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H87 | value: token end not bounded by n | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H88 | value: token end bound <= n (reads one past the end) | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H89 | value: token length check removed | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H90 | value: token length == becomes >= (prefix match) | `test_unknown_values_ignored`, `test_multiple_keys_and_pairs` |
+| H91 | value: token length == becomes <=  | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H92 | value: compared case-insensitively | `test_case_sensitive`, `test_video_accept_fuzz:crash/rc=1` |
+| H93 | value: token spelled differently ('h265') | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H94 | value: compared over 3 bytes only (h26x matches) | `test_unknown_values_ignored`, `test_multiple_keys_and_pairs` |
+| H95 | value: wrong bit | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H98 | value: next token starts at the ',' (hangs) | `test_video_accept:timeout`, `test_video_accept_fuzz:timeout` |
+| H99 | value: next token skips one character | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+
+### 6.4 確認したこと / 未確認
+
+**確認したこと(ホスト)**
+- 上のテストとミューテーション。
+- **`web_server.c` の新しいコード(`ws_video_request_keyframe`、`ws_video_codec_update_locked`、`ws_video_codec_apply`、`ws_video_tick_once`、`ws_video_get_accept`、`web_server_set_video_source`)を、そのまま(ファイルから切り出して)、スタブの FreeRTOS / esp API と実物の純 C コンポーネント(`ws_video_core`、`video_codec_policy`、`video_status`、`http_guard`)に対して、`-Wall -Wextra -Werror`、ASan / UBSan でコンパイルして実行した**(スクラッチの確認用で、コミットしていない)。確認した項目: 5 秒の待ちの後の昇格、`accept` のないクライアントが来たときの即時の降格、閉じる要求中のクライアントを数えないこと、`set_codec` の呼び出しがロックの外、`request_keyframe` がロックの下、`set_codec` の失敗(昇格の失敗は H.264 を止める、降格の失敗は毎 tick 再試行)、ソースが `NULL` / MJPEG だけ / `set_codec` が `NULL`、ソースを後から登録、解像度が上限を超えるとき、スロットの再利用で前の `accept` が残らないこと、`H264_ALLOWED = n` で `set_codec` も `video_status_get` も `request_keyframe` も呼ばれないこと。
+- `http_guard` の Origin・Host・Cookie の検査は、URI を使っていない(ヘッダーの `Host`、`Origin`、`Cookie` と、`http_guard_decide` の列挙型の引数だけ)。クエリ付きの `/video?accept=h264` でも、検査の入力は変わらない。`web_headers_allow_for_uri` と `web_assets_find` は、`?` より前だけを見る。
+
+**未確認**
+- **IDF のビルド**(`web_server.c`、`main.c`、`Kconfig.projbuild`)。使った API は `httpd_req_get_url_query_str`、`ws_video_core` / `video_codec_policy` / `video_source_t` の既存の関数・フィールドで、`httpd_req_get_url_query_str` は、この環境にヘッダーがなく、IDF の公開 API の知識だけで書いた(`TODO(hw-verify)`)。
+- `TODO(hw-verify)`: `/video?accept=h264` が、`/video` の URI ハンドラーに一致すること(esp_http_server が、URI の照合でクエリを除くこと)。`ws_post_handshake_cb` の中で、`req->uri` が有効なこと。
+- `TODO(hw-verify)`: `csi_h264` の `set_codec()` が一時的に失敗しうるか(失敗した昇格は、再起動まで H.264 を止める)。
+- 既定値(`VIDEO_CODEC_UPGRADE_DWELL_MS` = 5000、`VIDEO_CODEC_IDR_MIN_INTERVAL_MS` = 1000、`VIDEO_CODEC_KEY_WAIT_MS` = 5000)は、実測に基づかない(`TODO(hw-verify)`)。
+
+## 7. P7: H.264 を申告していないクライアントには、H.264 のフレームを配らない(`ws_video_core` の `accepts_h264`)
+
+作成: 2026-11-17(PR #124 のレビュー指摘への対応)。**問題**: H.264 の配信中に、`accept=h264` のない接続(古いビューア)が来ると、`ws_video_task` は `ws_video_core_tick` を先に呼ぶので、その接続にも、`frame_hub` の最新の H.264 のフレーム(IDR を含む)が配られた。降格の `set_codec` は非同期で、コーデックが切り替わるまでの間も、`frame_hub` に H.264 のフレームが残る。方針の判定を tick の前に移すだけでは直らない(`ws_video_core` は、クライアントが H.264 を受け取れるかを知らない)。
+
+### 7.1 変更の要点
+
+- `ws_video_core_t` にクライアントごとの `accepts_h264[]`(**接続したときは false**。`on_connect` のシグネチャは変えない)。`void ws_video_core_set_accepts_h264(core, fd, accepts)` を足した(`web_server.c` は `on_connect` の直後に、同じロックの下で呼ぶ。未知の fd・NULL・同じ値は何もしない)。`on_close` と `on_connect` で false に戻す(再利用されるスロットに、前のクライアントの値を残さない)。
+- `ws_video_core_tick`: `frame->codec == H264` で、そのクライアントが `accepts_h264 == false` のとき、**そのフレームを配らず**(`hub_release`、`ws_clients_end_send`、`continue`。キーフレーム待ちの P の破棄と同じ作法)、`need_key`・`last_seqs`・`last_codec`・要求・待ちの起点に触れない。MJPEG(H.264 以外の値を含む)は、従来どおり配る。
+- 申告なしのクライアントには、`need_key` も、`request_keyframe` の要求も、`key_wait_timeout_ms` の切断も働かない: `mark_need_key` は、申告なしでは何もしない。
+- **申告なし -> あり**: 接続時の規則 (a)(`need_key` を真にして、要求を溜める)を、そのとき適用する(接続時の `mark_need_key` の呼び出しは、ここに移したので `on_connect` から消した。ミュータント K20 は、対象のコードがなくなったので、定義から外した)。**あり -> なし**: そのクライアントの `need_key` と待ちの起点を捨てる(溜まった要求は、誰も待たなくなれば、tick の最後に捨てられる)。
+- `web_server.c`: `s_ws_video_accept[]` はやめて、`ws_video_core` の `accepts_h264[]` に一本化した(二重の状態を持たない)。`video_codec_policy` に渡す `h264_client_count` は、コアの `accepts_h264[]` から数える(ACTIVE かつ `close_requested` でないもの)。`ws_video_close_fn` での 0 戻しは不要(コアが `on_close` で戻す)。
+- **既存のテスト**: `test_ws_video_core_keyframe.c` の接続の補助関数 `connect_fd` に、1 行 `ws_video_core_set_accepts_h264(&core, fd, true)` を足した(このファイルのテストは、H.264 を受け取れるクライアントを扱う。接続したときは申告なしになったため)。ほかの既存のテストは、書き換えていない(配るフレームがすべて MJPEG なので、従来と同じ)。
+
+### 7.2 テスト
+
+| ファイル | 内容 | 件数 |
+|---|---|---|
+| `test/host/ws_video_core/test_ws_video_core_accepts.c`(新規) | (a) 申告なしには、H.264 の IDR も P も配られず、MJPEG は配られる(接続の既定が申告なし、未知のコーデックの値、同じフレームの release は 1 回)、(b) 申告あり・混在(同じフレームを、申告ありには配り、なしには配らない)、(c) 申告なしでは、`request_keyframe` が呼ばれない・20 秒の H.264 のフレームと seq の飛びでも `key_wait_timeout_ms` で閉じられない、MJPEG の seq の飛びでも要求しない、要求は待っている申告ありのクライアントからだけ、(d) 途中で `set_accepts_h264(true)`(接続時の規則を適用、IDR から配る)、`false` に戻す(待ちと溜めた要求を捨てる、5 秒を超えても閉じない)、同じ値は何もしない、(e) スロットの再利用(`on_close`、送信中の `on_close`、`on_close` なしの再接続)で前の値を引き継がない、(f) NULL・未知の fd・閉じた後の fd・ほかのクライアントに触れない、(g) 不変条件ファズ | 20 |
+
+ファズ(`test_fuzz_accepts_invariants`): 固定シード 300 個 x 1500 ステップ。クライアントの数、`idr_min_interval_ms`、`key_wait_timeout_ms`、`request_keyframe` の有無をシードごとに変え、接続(申告の有無)、申告の切替、切断、フレームの公開(MJPEG / P / IDR、seq の飛び)、tick(時刻を大きく進めることもある)、送信の完了をランダムに行う。各ステップで検査する不変条件(モデルとは別に、配られた中身を見る): **申告なしのクライアントに、H.264 のフレームが配られない**、H.264 の P は、直前に配ったフレームが H.264 の seq - 1 のときだけ、一度も申告していないクライアントが閉じられない、**要求が出た時点で、待っている申告ありのクライアントがいる**、申告の状態がモデルと一致、申告なしは `need_key` でない、ハブの保持・release の整合。実行結果の例: H.264 の配信 7012、申告なしへの MJPEG の配信 18477、要求 6014、申告の切替 7238、申告ありの待ちの期限切れ 135。
+
+`ctest`: **70 件 -> 71 件**(新しい実行ファイル 1 つ)、すべて成功(`-Wall -Wextra -Werror`、ASan / UBSan)。
+
+### 7.3 ミューテーションテスト
+
+`ws_video_core.c` のグループ(`V`、`K`)を、最初から全部実行し直した(`ws_video_core.c` のミュータントには、`test/host/ws_video_core/` の実行ファイルを全部実行する)。`K63`〜`K85`(23 個)を足し、`K20` を外した。
+
+```
+python3 tools/test/mutate_video_core.py <repo> <スクラッチ> tools/test/video_core_mutants.py <結果.json> <ws_video_core のミュータントの ID>
+ws_video_core.c のグループ: 137 個を実行、118 個を殺した、19 個が生き残った、ビルドエラー 0      (ベースラインは 3 つのグループとも全テスト成功)
+```
+
+(実行は 2 回に分けた。最初の実行が、ミュータント K65 の置換元の文字列が古く `BAD EDIT` で止まったため、K65 の定義を直して、K65〜K85 だけを実行し直した。前半は V01〜K64 の結果。)
+
+| グループ | 実行した数 | 殺した数 | 生き残った数(すべて同値と判断) | ビルドエラー |
+|---|---|---|---|---|
+| ws_video_core.c 全体 | 137 | 118 | 19(既存 14 + 新規 5) | 0 |
+| うち新しい K63〜K85 | 23 | 18 | 5 | 0 |
+
+既存の 14 個(V11、V16、V17、V18、V19、V28、V29、V31、V35、V43、V57、K19、K21、K24)は、前と同じで、同値の理由も同じ(3.1、5.3.1)。K21 と K24 は、接続時の `need_key` を、申告時(`set_accepts_h264(true)`)に移したが、理由は変わらない(最初に配るフレームの (c) の判定は、すでに真の `need_key` に対する何もしない操作)。K21・K24 の置換元の文字列は、接続時のコードの変更に合わせて直した。`http_guard.c`(`H`)と `frame_hub.c`(`F`)は、コードを変えていないので、再実行していない。
+
+#### 7.3.1 同値のミュータント(新規 5 個)
+
+| ID | 変更箇所 | 同値の理由 |
+|---|---|---|
+| K63 | accepts: mark_need_key also marks non-accepting clients | `mark_need_key` の「申告なしは何もしない」の検査は、いまの tick の構造では観測できない、二重の防御。申告なしのクライアントで `mark_need_key` が呼ばれるのは (b) の seq の飛びだけ (H.264 は、その前の検査で配らずに `continue` する。接続時の呼び出しは、7.1 で消した)。その直後に、MJPEG のフレームを必ず配って `need_key` を偽に戻す (配れなければ閉じる)。`flush_keyframe_request` は tick の最後に「待っているクライアントがいなければ、要求を捨てる」ので、要求は出ない。検査は、要求を溜める唯一の場所で『申告なしは要求しない』を明示するために残した。 |
+| K67 | accepts: set(NULL) not handled | `ws_clients_find(&core->clients, fd)` の `clients` は `ws_video_core_t` の先頭のメンバーなので、`core == NULL` のとき `ws_clients_find` の引数が NULL になり、NULL を検査して -1 を返す。`core == NULL` の検査は、構造体の並びに依存しないための、二重の防御。 |
+| K74 | accepts: true | `need_key_since_ms` は `key_waiting` が真のときだけ参照する (待ちが始まるときに設定し直す)。`key_waiting` を偽にした後の値は、誰も読まない。 |
+| K84 | accepts: filter updates last_seqs (the later MJPEG frame looks continuou | 申告なしのクライアントの `last_seqs` は、(b) の判定 (`seq != last_seqs + 1`) にだけ使われ、(b) は申告なしでは何も起こさない (`mark_need_key` は何もしない)。申告ありになるときは、`set_accepts_h264` が `need_key` を真にし、最初に配ったフレームが `last_seqs` を更新する。 |
+| K85 | accepts: filter sets last_codec to H.264 | 申告なしのクライアントの `last_codec` は、(c) の判定 (MJPEG から H.264 への切替) にだけ使われ、(c) は申告なしでは何も起こさない。申告ありになるときは、`set_accepts_h264` が `need_key` を真にし (既に真なら、(c) は何もしない)、最初に配ったフレームが `last_codec` を更新する。 |
+
+#### 7.3.2 殺したミュータントの一覧(新規 18 個)
+
+| ID | 変更箇所 | 殺したテスト |
+|---|---|---|
+| K64 | accepts: mark_need_key condition inverted (only non-accepting are marked | `test_accepting_client_is_unchanged`, `test_requests_come_only_from_accepting_clients` |
+| K65 | accepts: connect does not reset the flag | `test_slot_reuse_without_close_notification_resets_on_connect` |
+| K66 | accepts: on_close does not reset the flag | `test_slot_reuse_after_close_does_not_inherit_accept`, `test_close_while_sending_resets_accept_and_new_client_waits_for_the_slot` |
+| K68 | accepts: set(unknown fd) writes slot -1 | `test_unknown_fd_and_null_do_nothing` |
+| K69 | accepts: set with the same value is not a no-op | `test_set_same_value_is_a_noop` |
+| K70 | accepts: set does not store the flag | `test_accepting_client_is_unchanged`, `test_mixed_clients_same_frames` |
+| K71 | accepts: false | `true does not apply the connect rule  -> test_accept_set_later_applies_connect_rule`, `test_set_does_not_touch_other_clients` |
+| K72 | accepts: true | `false keeps need_key  -> test_accept_revoked_drops_the_wait_and_the_pending_request`, `test_accept_revoked_drops_a_pending_request` |
+| K73 | accepts: true | `false keeps key_waiting (the key-wait close stays armed  -> test_accept_revoked_drops_the_wait_and_the_pending_request` |
+| K75 | accepts: set branch inverted | `test_accept_set_later_applies_connect_rule`, `test_accept_revoked_drops_the_wait_and_the_pending_request` |
+| K76 | accepts: filter inverted (H.264 only to non-accepting) | `test_no_accept_never_gets_h264_idr_or_p_but_gets_mjpeg`, `test_no_accept_h264_frame_with_same_seq_as_last_is_still_released_once` |
+| K77 | accepts: filter also withholds MJPEG from non-accepting clients | `test_defer_unregister_during_send`, `test_send_failure_releases_and_closes` |
+| K78 | accepts: filter withholds H.264 from everybody | `test_accepting_client_is_unchanged`, `test_mixed_clients_same_frames` |
+| K79 | accepts: filter lets the IDR through | `test_no_accept_never_gets_h264_idr_or_p_but_gets_mjpeg`, `test_mixed_clients_same_frames` |
+| K80 | accepts: filter only withholds the IDR (P frames pass) | `test_no_accept_never_gets_h264_idr_or_p_but_gets_mjpeg`, `test_no_accept_h264_frame_with_same_seq_as_last_is_still_released_once` |
+| K81 | accepts: filter does not release the frame | `test_no_accept_never_gets_h264_idr_or_p_but_gets_mjpeg`, `test_no_accept_h264_frame_with_same_seq_as_last_is_still_released_once` |
+| K82 | accepts: filter does not end the send (client stays in 'sending') | `test_no_accept_never_gets_h264_idr_or_p_but_gets_mjpeg`, `test_mixed_clients_same_frames` |
+| K83 | accepts: filter does not skip the rest (the frame is delivered anyway) | `test_no_accept_never_gets_h264_idr_or_p_but_gets_mjpeg`, `test_mixed_clients_same_frames` |
+
+### 7.4 確認したこと / 未確認
+
+- 上のテストとミューテーション。`web_server.c` の新しい部分(`s_ws_video_accept[]` をやめて、コアの `accepts_h264[]` を使う)も、前回の切り出しハーネス(スクラッチ。コミットしていない)で、`H264_ALLOWED` が 1 と 0 の両方で、再確認した(昇格・降格・失敗・スロットの再利用など、6.4 と同じ項目)。
+- **未確認**: IDF のビルド(6.4 と同じ)。新しく使った IDF の API はない。
+- 降格の後、`set_codec` が効くまで、申告なしのクライアントは、MJPEG のフレームが来るまで何も受け取らない(`frame_hub` の H.264 のフレームは捨てられる)。待ちの長さは、ソースが切り替える速さによる(`TODO(hw-verify)`: `csi_h264` の `set_codec` が効くまでの時間と、その間の申告なしのクライアントの画面の凍結)。

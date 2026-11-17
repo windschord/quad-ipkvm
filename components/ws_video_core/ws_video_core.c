@@ -26,6 +26,7 @@ static void reset_send_times(ws_video_core_t* core, int slot) {
 /* need_key を真にする (docs/VIDEO_TRANSPORT.md 9.6)。すでに真なら何もしない (待ちの起点も、要求も、やり直さない)。
  * 偽 -> 真のときだけ、キーフレームの要求を溜める (request_keyframe がなければ溜めない)。 */
 static void mark_need_key(ws_video_core_t* core, int slot) {
+    if (!core->accepts_h264[slot]) return; // H.264 を受け取れないクライアントは、待たない (要求も出さない)
     if (core->need_key[slot]) return;
     core->need_key[slot] = true;
     core->key_waiting[slot] = false;
@@ -188,12 +189,13 @@ int ws_video_core_on_connect(ws_video_core_t* core, ws_video_conn_t conn, int fd
     core->status_last_ms[slot] = 0;
     core->sending_text[slot] = false;
     core->text_len[slot] = 0;
-    // キーフレーム待ち: 接続したときは、必ず need_key (docs/VIDEO_TRANSPORT.md 9.6 (a))
+    // H.264 の申告: 接続したときは false (ws_video_core_set_accepts_h264 で設定する)。申告なしは、need_key にならない
+    core->accepts_h264[slot] = false;
     core->need_key[slot] = false;
     core->key_waiting[slot] = false;
     core->need_key_since_ms[slot] = 0;
     core->last_codec[slot] = (uint8_t)VIDEO_CODEC_MJPEG;
-    mark_need_key(core, slot);
+    // 接続時の規則 (a) (need_key を真にして、要求を溜める) は、H.264 を申告したとき (ws_video_core_set_accepts_h264) に適用する。
 
     return slot;
 }
@@ -202,6 +204,7 @@ void ws_video_core_on_close(ws_video_core_t* core, int fd) {
     if (!core) return;
     int slot = ws_clients_find(&core->clients, fd);
     if (slot < 0) return;
+    core->accepts_h264[slot] = false; // 再利用されるスロットに、前のクライアントの申告を残さない
 
     bool was_sending = core->clients.clients[slot].is_sending;
     int hub_client_id = core->clients.clients[slot].hub_client_id;
@@ -274,6 +277,21 @@ void ws_video_core_on_client_data(ws_video_core_t* core, int fd) {
     int slot = ws_clients_find(&core->clients, fd);
     if (slot >= 0) {
         do_request_close(core, slot);
+    }
+}
+
+void ws_video_core_set_accepts_h264(ws_video_core_t* core, int fd, bool accepts) {
+    if (!core) return;
+    int slot = ws_clients_find(&core->clients, fd);
+    if (slot < 0) return;
+    if (core->accepts_h264[slot] == accepts) return;
+    core->accepts_h264[slot] = accepts;
+    if (accepts) {
+        mark_need_key(core, slot); // 接続時の規則 (a)。accepts_h264 を先に真にしてから呼ぶ
+    } else {
+        core->need_key[slot] = false;
+        core->key_waiting[slot] = false;
+        core->need_key_since_ms[slot] = 0;
     }
 }
 
@@ -388,6 +406,14 @@ void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms) {
             // キーフレーム待ち (docs/VIDEO_TRANSPORT.md 9.6)。H.264 以外のコーデックは、MJPEG と同じ扱い (配る)。
             const bool is_h264 = (frame->codec == (uint8_t)VIDEO_CODEC_H264);
             const bool is_key = (frame->flags & VIDEO_FRAME_FLAG_KEY) != 0;
+            if (is_h264 && !core->accepts_h264[i]) {
+                // H.264 を申告していないクライアントには、H.264 のフレーム (IDR も P も) を配らない。MJPEG のフレームを待つ。
+                // need_key・要求・待ちの起点・last_seqs・last_codec には触れない (降格の set_codec は非同期で、
+                // 切り替わるまでの間も、hub に H.264 のフレームが残る)。
+                core->config.hub_release(core->config.user_data, hub_client_id, frame);
+                ws_clients_end_send(&core->clients, i);
+                continue;
+            }
             if (frame->seq != core->last_seqs[i] + 1) {
                 mark_need_key(core, i); // (b) 飛ばした (遅いクライアント、リングの上書き、配らなかったフレーム)
             }

@@ -17,6 +17,8 @@
 #include "freertos/task.h"
 
 #include "ws_video_core.h"
+#include "video_codec_policy.h"
+#include "video_source.h"
 #include "video_status.h"
 #include "ws_input_core.h"
 #include "esp_timer.h"
@@ -93,6 +95,37 @@ typedef struct {
 } ws_video_ctrl_t;
 static ws_video_ctrl_t s_ws_video_ctrl[CONFIG_WEB_SERVER_WS_MAX_CLIENTS];
 
+// --- P7: H.264 low bandwidth mode (docs/VIDEO_TRANSPORT.md 9.4 to 9.7) ---
+// With VIDEO_CODEC_H264_ALLOWED = n (default) none of this is active: the policy is never consulted, set_codec() is never called
+// and ws_video_core gets the same config as before P7. The Kconfig symbols below only exist when H264_ALLOWED = y, so give
+// them values for the (then dead) code to compile.
+#ifndef CONFIG_VIDEO_CODEC_H264_ALLOWED
+#define CONFIG_VIDEO_CODEC_H264_ALLOWED 0
+#endif
+#ifndef CONFIG_VIDEO_CODEC_UPGRADE_DWELL_MS
+#define CONFIG_VIDEO_CODEC_UPGRADE_DWELL_MS 5000
+#endif
+#ifndef CONFIG_VIDEO_CODEC_IDR_MIN_INTERVAL_MS
+#define CONFIG_VIDEO_CODEC_IDR_MIN_INTERVAL_MS 1000
+#endif
+#ifndef CONFIG_VIDEO_CODEC_KEY_WAIT_MS
+#define CONFIG_VIDEO_CODEC_KEY_WAIT_MS 5000
+#endif
+
+// The policy's codec enum and the source's codec enum are separate types (the policy is pure C and does not depend on frame_hub).
+_Static_assert((int)VIDEO_CODEC_POLICY_MJPEG == (int)VIDEO_CODEC_MJPEG, "policy and frame_hub MJPEG values differ");
+_Static_assert((int)VIDEO_CODEC_POLICY_H264 == (int)VIDEO_CODEC_H264, "policy and frame_hub H264 values differ");
+_Static_assert(VIDEO_CODEC_POLICY_CAP_H264 == (1u << VIDEO_CODEC_H264), "policy and frame_hub H264 capability bits differ");
+
+// Everything below is protected by `s_ws_mutex`. The per client "accepts H.264" flag lives in ws_video_core (accepts_h264[slot]; set by
+// ws_video_post_handshake_cb right after ws_video_core_on_connect(), reset by the core on close / reconnect). The core also uses it to
+// never hand an H.264 frame to a client that did not ask for it (docs/VIDEO_TRANSPORT.md 9.6), so there is one copy of that state.
+static const video_source_t *s_video_source;           // web_server_set_video_source(); NULL = MJPEG only
+static video_codec_policy_t s_codec_policy;            // only ws_video_task updates it (under the lock); set_h264_allowed(false) on a failed upgrade
+static video_codec_policy_codec_t s_codec_applied = VIDEO_CODEC_POLICY_MJPEG; // the codec the source last accepted via set_codec()
+static bool s_codec_fail_logged;                       // a set_codec() failure has been logged (rate limit)
+static uint64_t s_codec_fail_log_ms;
+
 static SemaphoreHandle_t s_ws_input_mutex;
 static TaskHandle_t s_ws_input_task;
 // The sink given by web_server_set_hid_sink(). It may be set before web_server_start() (the mutex does not exist yet)
@@ -107,12 +140,115 @@ _Static_assert((CONFIG_WEB_SERVER_INPUT_MAX_CONNECTIONS + 5 + 3) +
 // NEVER take `s_ws_input_mutex` while holding `s_auth_mutex`. `s_ws_mutex` (video) and `s_ws_input_mutex` are never nested.
 // `hid_sink_t` is called with `s_ws_input_mutex` held, and MUST NOT re-enter web_server or hid_logic.
 
+// ws_video_core request_keyframe callback: called from ws_video_core_tick() with `s_ws_mutex` held, must not block.
+// video_source_t.request_keyframe is non-blocking by contract (docs/INTERFACES.md 1.4). The source is read here (not captured at start)
+// because the CSI source is registered after web_server_start().
+static void ws_video_request_keyframe(void *user_data) {
+    (void)user_data;
+    const video_source_t *src = s_video_source;
+    if (src && src->request_keyframe) {
+        src->request_keyframe(src);
+    }
+}
+
+// Called by ws_video_task with `s_ws_mutex` held (docs/VIDEO_TRANSPORT.md 9.5): feeds video_codec_policy and decides whether the
+// source has to be told about a new codec. Returns true with the source and the codec; the caller then calls set_codec() AFTER
+// releasing the lock (ws_video_codec_apply). Only reached when VIDEO_CODEC_H264_ALLOWED = y.
+static bool ws_video_codec_update_locked(uint64_t now_ms, const video_source_t **src_out, video_codec_policy_codec_t *want_out) {
+    const video_source_t *src = s_video_source;
+
+    video_codec_policy_input_t in;
+    memset(&in, 0, sizeof(in));
+    in.now_ms = now_ms;
+    // A source that cannot switch codec counts as MJPEG only, whatever supported_codecs says.
+    in.source_supported_codecs = (src && src->set_codec) ? src->supported_codecs : 0;
+    for (int i = 0; i < s_ws_core.config.max_clients; i++) {
+        // Same notion of "connected" as the keyframe logic in ws_video_core: ACTIVE and not being closed.
+        if (s_ws_core.clients.clients[i].state == WS_CLIENT_ACTIVE && !s_ws_core.close_requested[i]) {
+            in.client_count++;
+            if (s_ws_core.accepts_h264[i]) {
+                in.h264_client_count++;
+            }
+        }
+    }
+    video_status_t st;
+    memset(&st, 0, sizeof(st));
+    video_status_get(&st); // non-blocking, any task (video_status.h)
+    in.locked = (st.state == KVM_VIDEO_SYNC_LOCKED);
+    in.width = st.width;
+    in.height = st.height;
+
+    video_codec_policy_codec_t want = video_codec_policy_update(&s_codec_policy, &in);
+    if (want == s_codec_applied) {
+        return false;
+    }
+    if (!src || !src->set_codec) {
+        // Nobody to tell (the source went away). Only a downgrade can get here (an upgrade needs a source that can set the codec).
+        s_codec_applied = want;
+        return false;
+    }
+    *src_out = src;
+    *want_out = want;
+    return true;
+}
+
+// Tells the source to switch (outside the lock: set_codec() is non-blocking by contract, but it is another component's code).
+// set_codec() is asynchronous: 0 only means accepted. A failure keeps s_codec_applied, so a downgrade is retried on the next tick
+// (clients without accept=h264 must not stay on H.264). A failed upgrade turns H.264 off for this boot, which makes the policy's
+// own state (MJPEG) match the source. TODO(hw-verify): whether csi_h264 set_codec() can fail transiently (then this is too strict).
+static void ws_video_codec_apply(const video_source_t *src, video_codec_policy_codec_t want, uint64_t now_ms) {
+    int rc = src->set_codec(src, (video_codec_t)want);
+
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    if (rc == 0) {
+        s_codec_applied = want;
+        s_codec_fail_logged = false;
+        xSemaphoreGive(s_ws_mutex);
+        ESP_LOGI(TAG, "Video codec -> %s", want == VIDEO_CODEC_POLICY_H264 ? "H.264" : "MJPEG");
+        return;
+    }
+    if (want == VIDEO_CODEC_POLICY_H264) {
+        video_codec_policy_set_h264_allowed(&s_codec_policy, false);
+    }
+    bool log_it = !s_codec_fail_logged || (now_ms - s_codec_fail_log_ms) >= 5000;
+    if (log_it) {
+        s_codec_fail_logged = true;
+        s_codec_fail_log_ms = now_ms;
+    }
+    xSemaphoreGive(s_ws_mutex);
+    if (log_it) {
+        if (want == VIDEO_CODEC_POLICY_H264) {
+            ESP_LOGE(TAG, "set_codec(H.264) failed (%d) on video source '%s': H.264 is turned off until reboot",
+                     rc, src->name ? src->name : "?");
+        } else {
+            ESP_LOGE(TAG, "set_codec(MJPEG) failed (%d) on video source '%s': retrying every tick",
+                     rc, src->name ? src->name : "?");
+        }
+    }
+}
+
+// One tick of the video task: ws_video_core_tick(), then (H.264 allowed only) the codec policy.
+static void ws_video_tick_once(void) {
+    const video_source_t *switch_src = NULL;
+    video_codec_policy_codec_t switch_want = VIDEO_CODEC_POLICY_MJPEG;
+    bool do_switch = false;
+    uint64_t switch_now_ms = 0;
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    ws_video_core_tick(&s_ws_core, esp_timer_get_time() / 1000);
+    if (CONFIG_VIDEO_CODEC_H264_ALLOWED) {
+        switch_now_ms = esp_timer_get_time() / 1000;
+        do_switch = ws_video_codec_update_locked(switch_now_ms, &switch_src, &switch_want);
+    }
+    xSemaphoreGive(s_ws_mutex);
+    if (do_switch) {
+        ws_video_codec_apply(switch_src, switch_want, switch_now_ms);
+    }
+}
+
 static void ws_video_task(void *pvParameters) {
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(CONFIG_WEB_SERVER_WS_TICK_MS));
-        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
-        ws_video_core_tick(&s_ws_core, esp_timer_get_time() / 1000);
-        xSemaphoreGive(s_ws_mutex);
+        ws_video_tick_once();
     }
 }
 
@@ -1327,6 +1463,17 @@ static esp_err_t ws_configure_sock_opts(int fd, const char *label) {
     return ESP_OK;
 }
 
+// The codecs the client accepts besides JPEG (docs/VIDEO_TRANSPORT.md 9.4): `GET /video?accept=h264`. Only the query part of the
+// URI is looked at (http_guard_video_accept), so the Host / Origin / Cookie checks, which use headers, are not affected by it.
+// No query, a query that does not fit the buffer, or anything unknown = 0 = MJPEG only (the old viewers).
+static uint32_t ws_video_get_accept(httpd_req_t *req) {
+    char query[128];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        return 0;
+    }
+    return http_guard_video_accept(query, strlen(query));
+}
+
 static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
     uint8_t token[32];
     if (!get_session_token(req, token)) {
@@ -1338,10 +1485,14 @@ static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
+    uint32_t accept_mask = ws_video_get_accept(req);
+
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     int ret = ws_video_core_on_connect(&s_ws_core, (ws_video_conn_t)(intptr_t)fd, fd, token, esp_timer_get_time() / 1000);
     if (ret >= 0) {
         ws_video_ctrl_clear_slot_locked(ws_clients_find(&s_ws_core.clients, fd));
+        // Always set (also false): the core resets the flag on connect and on close, so a reused slot never keeps the previous client's value.
+        ws_video_core_set_accepts_h264(&s_ws_core, fd, (accept_mask & HTTP_GUARD_VIDEO_ACCEPT_H264) != 0);
     }
     xSemaphoreGive(s_ws_mutex);
 
@@ -1351,7 +1502,7 @@ static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "WS video registered fd=%d (SO_SNDTIMEO=%d ms)", fd, CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS);
+    ESP_LOGI(TAG, "WS video registered fd=%d accept=0x%x (SO_SNDTIMEO=%d ms)", fd, (unsigned)accept_mask, CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS);
     return ESP_OK;
 }
 
@@ -1721,10 +1872,23 @@ esp_err_t web_server_start(frame_hub_t *hub) {
         .io_validate_session = ws_video_io_validate_session,
         .user_data = &s_ws_ctx
     };
+    // P7 keyframe gating (docs/VIDEO_TRANSPORT.md 9.6). With H264_ALLOWED = n the three fields keep their zero values:
+    // exactly the config before P7 (request_keyframe NULL, no merging, no key-wait close).
+    if (CONFIG_VIDEO_CODEC_H264_ALLOWED) {
+        ws_config.request_keyframe = ws_video_request_keyframe;
+        ws_config.idr_min_interval_ms = CONFIG_VIDEO_CODEC_IDR_MIN_INTERVAL_MS;
+        ws_config.key_wait_timeout_ms = CONFIG_VIDEO_CODEC_KEY_WAIT_MS;
+    }
     if (ws_video_core_init(&s_ws_core, &ws_config) != 0) {
         ESP_LOGE(TAG, "Failed to initialize ws_video_core");
         return ESP_FAIL;
     }
+
+    video_codec_policy_config_t codec_cfg = video_codec_policy_config_default();
+    codec_cfg.h264_allowed = (CONFIG_VIDEO_CODEC_H264_ALLOWED != 0);
+    codec_cfg.upgrade_dwell_ms = CONFIG_VIDEO_CODEC_UPGRADE_DWELL_MS;
+    video_codec_policy_init(&s_codec_policy, &codec_cfg);
+    s_codec_applied = VIDEO_CODEC_POLICY_MJPEG;
 
     s_ws_input_mutex = xSemaphoreCreateMutex();
     hid_logic_config_t hid_cfg = {
@@ -2017,6 +2181,16 @@ void web_server_set_hid_sink(const hid_sink_t *sink) {
     s_hid_sink_cfg = value;
     s_hid_logic.sink = value;
     xSemaphoreGive(s_ws_input_mutex);
+}
+
+void web_server_set_video_source(const video_source_t *source) {
+    if (!s_ws_mutex) {
+        s_video_source = source; // before web_server_start(): nothing else is running yet
+        return;
+    }
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    s_video_source = source;
+    xSemaphoreGive(s_ws_mutex);
 }
 
 void web_server_notify_usb_mounted(void) {

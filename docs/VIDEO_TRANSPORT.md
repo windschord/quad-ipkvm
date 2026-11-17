@@ -120,12 +120,13 @@ Issue #86。`video_status`（`docs/INTERFACES.md` §1.3）の状態を、ビュ�
 
 ### 9.6 キーフレームの規則（`ws_video_core`）
 H.264 では、P フレームは直前のフレームに依存する。**`frame_hub` は「遅いクライアントには最新へ飛ばす」設計のまま**（変えない）ので、飛ばしたら、次の IDR まで待つ。
-- クライアントごとに `need_key` を持つ。**次のときに真にする**: (a) 接続したとき（アクティブなコーデックが H.264 のとき）、(b) 次に配る `frame->seq` が、そのクライアントの最後に配った `seq` + 1 でないとき（飛ばした、または、リングに上書きされた）、(c) コーデックが MJPEG から H.264 に切り替わったとき。
+- クライアントごとに `need_key` を持つ。**次のときに真にする**: (a) 接続したとき（コーデックに関係なく。`ws_video_core` は接続時のコーデックを知らない。MJPEG のモードでは、映像ソースの `request_keyframe` は何もしない〔契約 §9.7〕）、(b) 次に配る `frame->seq` が、そのクライアントの最後に配った `seq` + 1 でないとき（飛ばした、または、リングに上書きされた）、(c) コーデックが MJPEG から H.264 に切り替わったとき。
 - `need_key` が真のクライアントは、**H.264 の P フレームを配らない**（`hub_release` して、次の tick を待つ）。IDR（`VIDEO_FRAME_FLAG_KEY`）が来たら配り、`need_key` を偽にする。**JPEG のフレームは、`need_key` に関係なく配る**。
-- `need_key` を真にしたら、**`request_keyframe` を要求する**（`video_source_t.request_keyframe()`、9.7）。要求は、**クライアントをまたいで、1 つにまとめる**（`VIDEO_CODEC_IDR_MIN_INTERVAL_MS`、既定 1000。`TODO(hw-verify)`: IDR は 495 KB に達するので、要求のたびに送ると、遅いクライアントを、さらに遅くする）。
+- `need_key` を真にしたら、**`request_keyframe` を要求する**（`video_source_t.request_keyframe()`、9.7）。**要求は、tick の最後に出る（接続の直後ではない）**。要求は、**クライアントをまたいで、1 つにまとめる**（`VIDEO_CODEC_IDR_MIN_INTERVAL_MS`、既定 1000。`TODO(hw-verify)`: IDR は 495 KB に達するので、要求のたびに送ると、遅いクライアントを、さらに遅くする）。
+- **H.264 を申告していないクライアント（`accept=h264` なし）には、H.264 のフレーム（IDR も P も）を配らない**。MJPEG のフレームが来るまで待つ（降格の `set_codec` は非同期で、切り替わるまでの間も、`frame_hub` に H.264 のフレームが残るため）。そのクライアントには、`need_key` も、`request_keyframe` の要求も、`VIDEO_CODEC_KEY_WAIT_MS` の切断も働かない（`ws_video_core_set_accepts_h264()`。接続したときは申告なしで、`web_server` が `on_connect` の直後に、同じロックの下で設定する。申告なし -> あり は、接続時の規則 (a) をそのとき適用する）。
 - **エンコードに成功して、公開（`frame_hub_begin_publish`）に失敗したとき**、またはサイズ超過で捨てたときは、**映像ソース自身が、次のフレームを IDR にする**（`seq` が連続して見えるので、受信側では検出できない。評価 4.2）。
 - 保険として、**映像ソースは、一定間隔で IDR を出す**（`CSI_H264_GOP`、既定 = fps × 2。`TODO(hw-verify)`。**`esp_h264` の `gop` は `uint8_t`（1〜255）なので、Kconfig の範囲は `1 255`**）。要求の取りこぼしがあっても、最長でこの間隔の後に復帰する。
-- `need_key` が長く続く（IDR が来ない）クライアントは、`send_timeout` とは別に、**`VIDEO_CODEC_KEY_WAIT_MS`（既定 5000）で閉じる**（再接続させる）。
+- `need_key` が長く続く（IDR が来ない）クライアントは、`send_timeout` とは別に、**`VIDEO_CODEC_KEY_WAIT_MS`（既定 5000）で閉じる**（再接続させる）。**起点は、「H.264 の P フレームを、最初に配らなかった時刻」**（接続した時刻ではない。信号なしなどでフレームが来ない間に、MJPEG のクライアントまで閉じないため）。
 
 ### 9.7 契約の変更（`docs/INTERFACES.md` §1.4 に反映）
 - `video_frame_t` に `uint8_t codec`（`VIDEO_CODEC_MJPEG = 0`、`VIDEO_CODEC_H264 = 1`）と `uint8_t flags`（`VIDEO_FRAME_FLAG_KEY = 1`）を**足す**。**0 が MJPEG・キーフレームでない**ので、足す前のコード（`memset` したフレーム）は、MJPEG として動く。
