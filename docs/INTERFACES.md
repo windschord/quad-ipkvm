@@ -74,12 +74,32 @@ void video_status_get(video_status_t *out);                          // 既定�
 - 提供元がなければ（登録前、CSI の初期化に失敗、など）`UNKNOWN`。`kvm_logic` は、`UNKNOWN` では切替の映像待ちをタイムアウト（`switch_video_sync_timeout_ms`）まで続けてから完了し、idle の ATX は映像に関係なく受理される（`docs/VIDEO_STATUS_TESTS.md` 2 章）。
 - クライアント（ブラウザ）への通知の方法は、このインターフェースの範囲外（C-6b）。
 
+### 1.4 P7（H.264 低帯域モード）による映像の契約の拡張（`docs/VIDEO_TRANSPORT.md` §9）
+**既定は変わらない**（`VIDEO_CODEC_H264_ALLOWED = n`、`CSI_H264_ENABLE = n`）。MJPEG だけのソース（`test_pattern_source`、いまの `csi_video_source`）は、**変更なしで動く**。
+
+```c
+typedef enum { VIDEO_CODEC_MJPEG = 0, VIDEO_CODEC_H264 = 1 } video_codec_t;   // 0 = MJPEG（足す前のコードが、そのまま動く）
+#define VIDEO_FRAME_FLAG_KEY 0x01u                                            // キーフレーム（H.264 の IDR）。JPEG は、どのフレームも自己完結なので、commit が KEY を付ける
+typedef struct { ...既存...; uint8_t codec; uint8_t flags; } video_frame_t;   // 末尾に足す
+typedef struct { size_t size; uint32_t width, height; uint64_t timestamp_ms; video_codec_t codec; uint8_t flags; } frame_hub_commit_info_t;
+void frame_hub_commit_ex(frame_hub_t *hub, video_frame_t *frame, const frame_hub_commit_info_t *info);   // 既存の frame_hub_commit は、codec = MJPEG、flags = KEY で、これに写す
+struct video_source_t { ...既存（name, start, stop, ctx）...;
+    uint32_t supported_codecs;                                         // ビットマスク（1u << VIDEO_CODEC_*）。0 = MJPEG だけ
+    int  (*set_codec)(const video_source_t *, video_codec_t codec);    // 0 = 受理。非同期（次に publish するフレームから効く）、ブロックしない、複数回呼んでよい。NULL = MJPEG だけ
+    void (*request_keyframe)(const video_source_t *);                  // 次のフレームを IDR にする。ブロックしない、複数のタスクから呼んでよい。NULL = MJPEG だけ
+};
+```
+
+- 足すのは**末尾だけ**（位置指定の初期化 `{name, start, stop, ctx}` が、そのまま通る。足した分は 0 / `NULL`）。
+- **HDMI 担当が作るもの**（P7 の後半）: `csi_h264`（PPA の `RGB888 → YUV420` + `esp_h264` の HW エンコーダ）、`csi_video_source` の `set_codec` / `request_keyframe`、IDR の周期（`CSI_H264_GOP`）、**公開の失敗・サイズ超過のときに、自分で次を IDR にする**こと。フレームは `frame_hub_commit_ex` で出す（H.264 は `codec = VIDEO_CODEC_H264`、IDR に `VIDEO_FRAME_FLAG_KEY`）。
+- **配信側（Claude）が作るもの**: `video_codec_policy`（コーデックを決める）、`ws_video_core` のキーフレーム待ち、`web_server` の `?accept=h264`、ビューアの WebCodecs。映像ソースに、コーデックの切替と IDR を**頼むだけ**で、エンコーダの中身は知らない。
+
 ## 2. Kconfig の名前空間
 
 | 接頭辞 | 担当 | 例 |
 |---|---|---|
-| `TC358743_*`、`MIPI_PHY_*`、`CSI_*`、`VIDEO_SOURCE_*`、`JPEG_*` | **HDMI 担当** | `TC358743_RESET_GPIO`、`MIPI_PHY_POWER_ENABLE`、`CSI_*` |
-| `WEB_SERVER_*`、`NET_ETH_*`、`OLED_*`、`KVM_*`、`ATX_*`、`HID_*`、`FRAME_HUB_*` | **Claude** | `WEB_SERVER_WS_MAX_CLIENTS`、`NET_ETH_INIT` |
+| `TC358743_*`、`MIPI_PHY_*`、`CSI_*`（`CSI_H264_*` を含む）、`VIDEO_SOURCE_*`、`JPEG_*` | **HDMI 担当** | `TC358743_RESET_GPIO`、`MIPI_PHY_POWER_ENABLE`、`CSI_*` |
+| `WEB_SERVER_*`、`NET_ETH_*`、`OLED_*`、`KVM_*`、`ATX_*`、`HID_*`、`FRAME_HUB_*`、`VIDEO_CODEC_*` | **Claude** | `WEB_SERVER_WS_MAX_CLIENTS`、`NET_ETH_INIT`、`VIDEO_CODEC_H264_ALLOWED` |
 
 - 他の担当の接頭辞の項目は、**変更しない**（必要なときは、その担当に依頼する）。**例外**: Issue に「この Issue に限り変更してよい」と、範囲を明記したものだけ（例: #69 は、実機を共有しているため、Antigravity が `ws_video_core`、`web_server.c` の WS 送信まわり、`WEB_SERVER_*` の Kconfig を変更してよい。PR は Claude がレビューする）。
 - `FRAME_HUB_*` は Claude 担当だが、映像の大きさに依存するので、HDMI 担当が値の変更を提案してよい（上の 1.2）。

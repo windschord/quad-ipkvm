@@ -80,3 +80,79 @@ Issue #86。`video_status`（`docs/INTERFACES.md` §1.3）の状態を、ビュ�
 
 **検証**: ホスト（純 C のテスト + ミューテーション、ビューアの node のテスト）。実機（device-check）: 映像の入力を抜き差しして、ビューアの表示が変わること、`slowclient.py` で通常のクライアントの fps が変わらないこと。
 
+
+## 9. P7: H.264 低帯域モード（契約。オーナー指示: 2026-11-16 に P7 を進める）
+評価は `docs/P7_H264_EVAL.md`（Antigravity、PR #109。実測とソースの確認）。**この章は、評価を踏まえた契約**。数値は、評価の実測（`[確認]`）と、ここでの決め（`TODO(hw-verify)`）を分ける。
+
+### 9.1 位置づけ
+- **MJPEG が既定のまま**。H.264 は**低帯域の副モード**（WAN / VPN / SSH トンネルなど）。実測では、PPA の `RGB888 → YUV420`（rev v1.3 で必須）が律速で、**fps は MJPEG より下がる**（720p で最大 約 20.5 fps、1080p で 約 9.1 fps。MJPEG は 720p 30 fps、1080p 15 fps）。一方、静止画の P フレームは 93〜592 B（MJPEG の約 1/200〜1/4000）。**帯域を優先するモード**であり、操作の滑らかさを優先するなら MJPEG を使う。
+- 同時に 2 つのコーデックは作らない（1080p で JPEG と H.264 を両方作ると約 147 ms/フレーム = 7 fps 未満で、メモリも二重になる）。**映像ソースが作るコーデックは、常に 1 つ**。
+
+### 9.2 ストリームの形式
+- **H.264 Baseline、B フレームなし、Annex B**。`WS /video` の 1 バイナリメッセージ = **1 アクセスユニット（1 フレーム分の NAL をまとめたもの）**。IDR のアクセスユニットは、先頭に SPS と PPS を含む（`esp_h264` の HW エンコーダが自動で付ける）。P のアクセスユニットは、スライスだけ。
+- 1080p は、高さを 16 の倍数（1088）に揃えてエンコードし、SPS のクロッピングで 1080 に戻す（評価 2.2）。**ビューアは、クロッピングを解釈するデコーダ（WebCodecs）に任せる**。
+- フレームの大きさは `FRAME_HUB_MAX_FRAME_KB`（既定 768）に収まること。実測の 1080p IDR は最大 507 KB。**超えたフレームは捨て、次のフレームを IDR にする**（9.6）。
+
+### 9.3 コーデックの識別: ペイロードで自己識別する（ヘッダーは足さない）
+- JPEG は `FF D8` で始まり、H.264 は `00 00 00 01`（スタートコード）で始まる。**ビューアは、バイナリメッセージの先頭バイトで判別する**。既存の MJPEG の経路と、古いビューアは、**変更なしで動く**（追加のバイトも、新しいテキストフレームもない）。
+- キーフレームかどうかは、**ビューアが NAL の種類で判断**する（IDR のアクセスユニットは、先頭の NAL が SPS（type 7）。P は slice（type 1））。**サーバー側は `video_frame_t.flags`（`VIDEO_FRAME_FLAG_KEY`）で持つ**（ペイロードを読まない）。
+- WebCodecs の codec 文字列は、**IDR の SPS の先頭 3 バイト**（`profile_idc`、制約フラグ、`level_idc`）から、ビューアが作る（例: `42 c0 1f` → `avc1.42c01f`）。サーバーは、codec 文字列を送らない。
+
+### 9.4 クライアントの申告: `GET /video?accept=h264`
+- クエリ `accept` は、カンマ区切りで、**そのクライアントが受け取れる、JPEG 以外のコーデック**。いまは `h264` だけ。**JPEG（MJPEG）は、常に受け取れる前提**（`accept` に書かない）。`accept` がない・空・未知の値だけ = **MJPEG だけ**（古いビューアと同じ）。未知の値は、無視する（エラーにしない）。
+- ビューアは、`VideoDecoder` があり、`VideoDecoder.isConfigSupported()` が（SPS が分かる前は、`avc1.42c01f` で仮に）真のときだけ `accept=h264` を付ける。**自己署名の HTTPS は、WebCodecs の Secure Context の条件を満たす**（評価 4.1）。
+
+### 9.5 サーバーの方針: `video_codec_policy`（純 C）
+**全クライアントに配るコーデックは 1 つ**。次の条件を**すべて**満たすときだけ H.264。それ以外は MJPEG。
+
+| 条件 | 内容 |
+|---|---|
+| 許可 | 設定 `VIDEO_CODEC_H264_ALLOWED`（Kconfig。既定 `n`。`n` のとき H.264 は決して選ばれない = 現在の動作と同じ） |
+| 能力 | 映像ソースが H.264 を作れる（`video_source_t.supported_codecs` に H.264 が入っている） |
+| 申告 | 接続中のクライアントが 1 つ以上で、**全員が `accept=h264`** |
+| 入力 | 映像の状態が `LOCKED` で、解像度が 1920x1080 以下 |
+| 安定 | MJPEG から H.264 に上げるときは、上の条件が `VIDEO_CODEC_UPGRADE_DWELL_MS`（既定 5000。`TODO(hw-verify)`）続いたとき |
+
+- **H.264 から MJPEG へ下げるのは、即時**（`accept=h264` のないクライアントが接続したとき、または条件のどれかが外れたとき）。JPEG は自己完結のフレームなので、下げるときの待ちはない。
+- 接続が 0 個になったら、**コーデックは変えない**（次の接続で、条件を評価し直す）。
+- 方針は、**状態を持つ純 C**（`now_ms` と、クライアントの申告の集合を入力にして、`desired_codec` を返す）。ホストで、ミューテーションまで検証する。
+- **コーデックの切替を、映像ソースに伝える**: `video_source_t.set_codec()`（9.7）。切替は**非同期**で、効くのは次に publish するフレームから。切替の後の最初の H.264 フレームは、必ず IDR。
+
+### 9.6 キーフレームの規則（`ws_video_core`）
+H.264 では、P フレームは直前のフレームに依存する。**`frame_hub` は「遅いクライアントには最新へ飛ばす」設計のまま**（変えない）ので、飛ばしたら、次の IDR まで待つ。
+- クライアントごとに `need_key` を持つ。**次のときに真にする**: (a) 接続したとき（アクティブなコーデックが H.264 のとき）、(b) 次に配る `frame->seq` が、そのクライアントの最後に配った `seq` + 1 でないとき（飛ばした、または、リングに上書きされた）、(c) コーデックが MJPEG から H.264 に切り替わったとき。
+- `need_key` が真のクライアントは、**H.264 の P フレームを配らない**（`hub_release` して、次の tick を待つ）。IDR（`VIDEO_FRAME_FLAG_KEY`）が来たら配り、`need_key` を偽にする。**JPEG のフレームは、`need_key` に関係なく配る**。
+- `need_key` を真にしたら、**`request_keyframe` を要求する**（`video_source_t.request_keyframe()`、9.7）。要求は、**クライアントをまたいで、1 つにまとめる**（`VIDEO_CODEC_IDR_MIN_INTERVAL_MS`、既定 1000。`TODO(hw-verify)`: IDR は 495 KB に達するので、要求のたびに送ると、遅いクライアントを、さらに遅くする）。
+- **エンコードに成功して、公開（`frame_hub_begin_publish`）に失敗したとき**、またはサイズ超過で捨てたときは、**映像ソース自身が、次のフレームを IDR にする**（`seq` が連続して見えるので、受信側では検出できない。評価 4.2）。
+- 保険として、**映像ソースは、一定間隔で IDR を出す**（`CSI_H264_GOP`、既定 = fps × 2。`TODO(hw-verify)`。**`esp_h264` の `gop` は `uint8_t`（1〜255）なので、Kconfig の範囲は `1 255`**）。要求の取りこぼしがあっても、最長でこの間隔の後に復帰する。
+- `need_key` が長く続く（IDR が来ない）クライアントは、`send_timeout` とは別に、**`VIDEO_CODEC_KEY_WAIT_MS`（既定 5000）で閉じる**（再接続させる）。
+
+### 9.7 契約の変更（`docs/INTERFACES.md` §1.4 に反映）
+- `video_frame_t` に `uint8_t codec`（`VIDEO_CODEC_MJPEG = 0`、`VIDEO_CODEC_H264 = 1`）と `uint8_t flags`（`VIDEO_FRAME_FLAG_KEY = 1`）を**足す**。**0 が MJPEG・キーフレームでない**ので、足す前のコード（`memset` したフレーム）は、MJPEG として動く。
+- `frame_hub_commit` は**変えない**（`codec = MJPEG`、`flags = KEY`。JPEG は、どのフレームも自己完結）。**`frame_hub_commit_ex(hub, frame, const frame_hub_commit_info_t *info)`** を足す（`info` に `size`、`width`、`height`、`timestamp_ms`、`codec`、`flags`）。
+- `video_source_t` に、**構造体の末尾（`ctx` の後）に**足す（位置指定の初期化が、そのまま通る）: `uint32_t supported_codecs`（ビットマスク。0 = MJPEG だけ）、`int (*set_codec)(const video_source_t *, video_codec_t)`（0 = 受理。**非同期、ブロックしない、複数回呼んでよい**）、`void (*request_keyframe)(const video_source_t *)`（**ブロックしない、複数のタスクから呼んでよい、取りこぼしても保険の IDR がある**）。どちらも `NULL` でよい（MJPEG だけのソース）。
+- Kconfig の接頭辞: **`CSI_H264_*`** = HDMI 担当（エンコーダ、GOP、ビットレート、`CSI_H264_ENABLE` 既定 `n`）。**`VIDEO_CODEC_*`** = Claude（方針、上の 9.5・9.6 の値）。`INTERFACES.md` §2 の表に足す。
+
+**H.264 のメモリ**（Antigravity のレビュー、2026-11-16）: 1080p の HW H.264 は、内部 RAM 約 151 KiB + PSRAM 約 3.0 MiB を追加で使う（評価 3.2）。実機の `/video` ×2 + `/ws` ×2 のとき、内部 RAM の最小は 391,215 B だった。**H.264 を有効にしたときの内部 RAM の余裕**と、**切替のたびに確保する案と、起動時に 1 回確保する案の、PSRAM の断片化**は、`csi_h264` の実装時に device-check で確認する（`TODO(hw-verify)`）。
+
+### 9.8 ビューア（`app.js`）
+- `accept=h264` を付けて接続し、バイナリメッセージの先頭で JPEG / H.264 を判別する（9.3）。H.264 は、`VideoDecoder`（`optimizeForLatency: true`）に、`EncodedVideoChunk`（IDR は `key`、P は `delta`）で渡し、出てきた `VideoFrame` を canvas に描いて、`close()` する。**最初の IDR まで、P は捨てる**。デコーダがエラーになったら、`accept` を付けずに再接続する（= MJPEG に落とす。**以後、そのタブでは `accept` を付けない**）。
+- 解像度が変わったとき（SPS が変わる）は、デコーダを作り直す。表示に「H.264（低帯域）」と出す。
+
+### 9.9 担当と順序
+1. この契約（Claude）。**オーナーの確認が要る**: 9.5 の方針（同時接続のコーデック）。選択肢と比較は 9.10。
+2. 純 C とビューア（Claude のサブエージェント。ホストでテストできる）: (a) `frame_hub` の `codec` / `flags` / `commit_ex`、(b) `video_codec_policy` と、`ws_video_core` の `need_key`（キーフレーム待ち）と `request_keyframe` の要求のまとめ、(c) ビューアの H.264 の経路（フェイクの `VideoDecoder` でテスト）。
+3. `web_server.c` の結線: `accept` の解析、コーデック方針の呼び出し、`request_keyframe` の配線。（Claude のサブエージェントが書き、Antigravity が device-check する。IDF のビルドは、この環境にない。）
+4. `csi_h264`（PPA の `RGB888 → YUV420` + `esp_h264`）、`video_source_t` の `set_codec` / `request_keyframe`、IDR の周期と、公開の失敗時の自己要求（Antigravity）。
+5. device-check（Antigravity）と、ブラウザでの確認（オーナー: Chrome / Safari / Firefox。長時間の再生、チャンネルの切替からの復帰、低帯域での体感）。
+
+### 9.10 同時接続のコーデック方針の選択肢（オーナーが変更してよい。おすすめ順）
+2 台まで同時に見られ（`WEB_SERVER_WS_MAX_CLIENTS`）、エンコーダは 1 つ。
+| # | 方針 | 長所 | 短所 |
+|---|---|---|---|
+| 1（**この契約**） | **全員が受け取れるときだけ H.264、そうでなければ MJPEG に自動で下げる**（9.5） | 拒否がない。古いビューアも、ブラウザの非対応も、自動で MJPEG に落ちる。既定 `n` なら、現在と同じ | 接続の出入りで、コーデックが変わる（待ちの 5 秒で、揺れを抑える）。切替のたびに IDR（大きい） |
+| 2 | **設定だけで決める**（`H264_ALLOWED` が `y` なら、常に H.264） | 最も単純。切替の揺れがない | 非対応のブラウザは映らない（ビューアが MJPEG の再接続を求めても、サーバーが応じない） |
+| 3 | **先に接続したクライアントに合わせ、合わないクライアントは拒否**（WebSocket の Close 1008） | エンコーダの切替がない | 2 台目が拒否される。操作が分かりにくい |
+| 4 | **H.264 は、接続が 1 つのときだけ**（2 つ目が来たら MJPEG） | 帯域を使うのは 1 人のとき、が分かりやすい | 2 つ目の接続のたびに、1 人目の映像が切り替わる |
+| 5 | **API で、管理者が、モードを切り替える**（`POST /api/v1/video/mode`） | 意図した切替だけが起きる | UI と API が増える。忘れると MJPEG のまま |
+| 6 | **クライアントごとに、別のコーデックを作る**（二重にエンコード） | 全員が最適 | 1080p で 7 fps 未満・メモリが二重。**不採用** |
