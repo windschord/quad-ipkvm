@@ -1008,8 +1008,13 @@ typedef struct {
     uint64_t stalled_until_ms;
 } ws_send_work_t;
 
-static size_t build_ws_binary_header(uint8_t hdr[10], size_t payload_len) {
-    hdr[0] = 0x82; // FIN=1, binary frame
+#define WS_FRAME_FIN_TEXT   0x81u
+#define WS_FRAME_FIN_BINARY 0x82u
+// TODO(hw-verify): 200 ms min interval prioritizes status jitter suppression over immediacy.
+#define WS_VIDEO_STATUS_MIN_INTERVAL_MS 200u
+
+static size_t build_ws_frame_header(uint8_t hdr[10], uint8_t first_byte, size_t payload_len) {
+    hdr[0] = first_byte;
     if (payload_len <= 125u) {
         hdr[1] = (uint8_t)payload_len;
         return 2;
@@ -1288,7 +1293,8 @@ static void ws_send_slice_work_cb(void *arg) {
     }
 }
 
-static int ws_video_io_begin_send(void* user_data, ws_video_conn_t conn, const uint8_t* data, size_t len) {
+static int ws_video_io_begin_send_frame(void *user_data, ws_video_conn_t conn,
+                                        const uint8_t *data, size_t len, uint8_t first_byte) {
     httpd_handle_t video_server = user_data ? ((ws_ctx_t *)user_data)->video_server : NULL;
     if (!video_server) return -1;
 
@@ -1299,7 +1305,7 @@ static int ws_video_io_begin_send(void* user_data, ws_video_conn_t conn, const u
     work->fd = (int)(intptr_t)conn;
     work->data = data;
     work->len = len;
-    work->hdr_len = build_ws_binary_header(work->hdr, len);
+    work->hdr_len = build_ws_frame_header(work->hdr, first_byte, len);
     work->deadline_ms = ws_video_frame_deadline_ms(
         len, (uint32_t)CONFIG_WEB_SERVER_WS_FRAME_DEADLINE_BASE_MS, ws_video_min_rate_bps());
 
@@ -1308,6 +1314,19 @@ static int ws_video_io_begin_send(void* user_data, ws_video_conn_t conn, const u
         return -1;
     }
     return 0;
+}
+
+static int ws_video_io_begin_send(void* user_data, ws_video_conn_t conn, const uint8_t* data, size_t len) {
+    return ws_video_io_begin_send_frame(user_data, conn, data, len, WS_FRAME_FIN_BINARY);
+}
+
+static int ws_video_io_begin_send_text(void* user_data, ws_video_conn_t conn, const uint8_t* data, size_t len) {
+    return ws_video_io_begin_send_frame(user_data, conn, data, len, WS_FRAME_FIN_TEXT);
+}
+
+static void ws_video_status_get_adapter(void* user_data, video_status_t* out) {
+    (void)user_data;
+    video_status_get(out);
 }
 
 static void ws_video_io_request_close(void* user_data, ws_video_conn_t conn) {
@@ -1841,6 +1860,9 @@ esp_err_t web_server_start(frame_hub_t *hub) {
         .queue_timeout_ms = CONFIG_WEB_SERVER_WS_QUEUE_TIMEOUT_MS,
         .frame_deadline_base_ms = CONFIG_WEB_SERVER_WS_FRAME_DEADLINE_BASE_MS,
         .frame_min_rate_bytes_per_s = ws_video_min_rate_bps(),
+        .status_get = ws_video_status_get_adapter,
+        .io_begin_send_text = ws_video_io_begin_send_text,
+        .status_min_interval_ms = WS_VIDEO_STATUS_MIN_INTERVAL_MS,
         .hub_register = ws_video_hub_register,
         .hub_unregister = ws_video_hub_unregister,
         .hub_get_latest = ws_video_hub_get_latest,

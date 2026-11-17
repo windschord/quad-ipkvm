@@ -78,14 +78,20 @@ static const char *s_string_desc[] = {
     "Quad-IPKVM Relative Mouse",
 };
 
+#ifndef CONFIG_USB_DEVICE_START_DISCONNECTED
+#define CONFIG_USB_DEVICE_START_DISCONNECTED 0
+#endif
+
 static void log_dwc_hs_regs(const char *stage) {
+    usb_dwc_dctl_reg_t dctl = USB_DWC_HS.dctl_reg;
     ESP_LOGI(TAG,
              "OTG_HS regs (%s): gotgctl=0x%08" PRIx32 " dcfg=0x%08" PRIx32
-             " dctl=0x%08" PRIx32 " dsts=0x%08" PRIx32,
+             " dctl=0x%08" PRIx32 " (sftdiscon=%u) dsts=0x%08" PRIx32,
              stage,
              USB_DWC_HS.gotgctl_reg.val,
              USB_DWC_HS.dcfg_reg.val,
-             USB_DWC_HS.dctl_reg.val,
+             dctl.val,
+             (unsigned)dctl.sftdiscon,
              USB_DWC_HS.dsts_reg.val);
 }
 
@@ -296,8 +302,13 @@ esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
     log_dwc_hs_regs("force-fs");
 #endif
 
+#if CONFIG_USB_DEVICE_START_DISCONNECTED
+    log_dwc_hs_regs("start-disconnected");
+    ESP_LOGI(TAG, "USB soft-disconnected at boot (USB_DEVICE_START_DISCONNECTED=y)");
+#else
     tud_connect();
     log_dwc_hs_regs("post-config-connect");
+#endif
 
     s_initialized = true;
     ESP_LOGI(TAG,
