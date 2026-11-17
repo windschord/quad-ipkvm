@@ -1014,7 +1014,7 @@ static void test_spec_removal_bound_when_disconnect_succeeds(void) {
         usb_vbus_ctrl_applied(&c, CONNECT, true);
         uint64_t ta = 500 + P, now = ta;
         usb_vbus_ctrl_action_t a = abse(&c, now);
-        while (a == NONE) {
+        while (a == NONE && now - ta < 3u * USB_VBUS_CTRL_SPEC_REMOVE_LIMIT_MS) { /* 上限を付ける（止まらないミュータントのため） */
             now += P;
             a = abse(&c, now);
         }
