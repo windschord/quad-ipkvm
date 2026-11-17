@@ -176,6 +176,10 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE video_status kvm_ctrl kvm_board_mock)
     endif()
 
+    if (test_source MATCHES "/video_codec_policy/")
+        target_link_libraries(${test_name} PRIVATE video_codec_policy)
+    endif()
+
     if (test_source MATCHES "/kvm_api/")
         target_link_libraries(${test_name} PRIVATE kvm_api kvm_ctrl kvm_board_mock http_guard auth_logic)
     endif()
@@ -231,6 +235,9 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_ctrl ${CMAKE_BINARY_DI
 
 # video_status (provider of the video sync state: video sources register, KVM reads; pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/video_status ${CMAKE_BINARY_DIR}/video_status)
+
+# video_codec_policy (stateful codec decision MJPEG / H.264, docs/VIDEO_TRANSPORT.md 9.5; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/video_codec_policy ${CMAKE_BINARY_DIR}/video_codec_policy)
 
 # kvm_api (HTTP API of KVM/ATX: strict body parser, JSON, result -> HTTP mapping, pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_api ${CMAKE_BINARY_DIR}/kvm_api)
