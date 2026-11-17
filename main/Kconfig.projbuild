@@ -478,6 +478,35 @@ menu "Quad IP-KVM Configuration"
             Intended for H5 hardware verification (docs/HW_VERIFY.md H.0): comparing
             D+ voltage against the connected build while the target PC is powered off.
             Can be switched later at runtime via usb_hid_set_connected(true).
+            Note: when USB_DEVICE_VBUS_SENSE_GPIO >= 0, startup is always soft-disconnected
+            and connection is governed by VBUS sensing regardless of this option.
+
+    config USB_DEVICE_VBUS_SENSE_GPIO
+        int "Target PC VBUS sense GPIO (-1 = disabled)"
+        default -1
+        range -1 54
+        depends on USB_DEVICE_ENABLE
+        help
+            GPIO connected to the target PC VBUS voltage divider (recommended: GPIO18 on
+            P1 pin 4 with external R1=120 kOhm / R2=150 kOhm <= 1%, docs/USB_VBUS_DESIGN.md 3.1).
+            Internal pull-up and pull-down resistors are disabled so external R2 pulls low
+            when unplugged.
+            When set to -1 (default), VBUS sensing is disabled and the D+ pull-up stays active
+            even while the target PC is powered off, which does NOT satisfy USB 2.0 7.2.1.
+            When >= 0, usb_hid_init() keeps USB soft-disconnected (ignores non-VBUS startup
+            connect; effectively USB_DEVICE_START_DISCONNECTED=y) until VBUS is continuously
+            detected for 500 ms, and disconnects on VBUS loss (1000 ms debounce + FORCE_OFF
+            fallback within USB 2.0 7.2.1's 10 s limit).
+
+    config USB_DEVICE_VBUS_POLL_MS
+        int "Target PC VBUS polling period (ms)"
+        default 100
+        range 10 1000
+        depends on USB_DEVICE_ENABLE
+        help
+            Polling interval in milliseconds for reading USB_DEVICE_VBUS_SENSE_GPIO and
+            stepping usb_vbus_ctrl_update(). Bounded to 10..1000 ms to satisfy the
+            USB 2.0 7.2.1 10-second pull-up removal budget (docs/USB_VBUS_DESIGN.md 3.2).
 
     config KVM_TICK_MS
         int "KVM/ATX control tick interval (ms)"
