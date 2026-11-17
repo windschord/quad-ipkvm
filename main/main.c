@@ -295,6 +295,9 @@ void app_main(void)
                 // Once, before any task that reads video_status is started (video_status.h).
                 video_status_set_provider(test_pattern_source_get_status, NULL);
                 vs->start(vs, hub);
+#if CONFIG_WEB_SERVER_ENABLE
+                web_server_set_video_source(vs); // before web_server_start(): picked up when the web server starts
+#endif
             }
         } else {
             ESP_LOGE(TAG, "Failed to create frame hub");
@@ -410,6 +413,9 @@ void app_main(void)
                 if (vs->start(vs, hub) != 0) {
                     ESP_LOGE(TAG, "Failed to start video source '%s'", vs->name);
                 }
+#if CONFIG_WEB_SERVER_ENABLE
+                web_server_set_video_source(vs); // the web server is already running here (P7: codec policy, keyframe requests)
+#endif
             }
 
             // tc358743_poll_interrupts(tc_dev);
