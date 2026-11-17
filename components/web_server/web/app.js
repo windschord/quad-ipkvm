@@ -19,7 +19,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const elInputStatus = document.getElementById('input-status');
     const elUsbStatus = document.getElementById('usb-status');
 
+    const elVideoTrustHint = document.getElementById('video-trust-hint');
+    const elVideoTrustLink = document.getElementById('video-trust-link');
+    const elVideoOverlay = document.getElementById('video-overlay');
+
     let ws = null;
+    let videoTarget = null; // result of VideoTarget.resolve, set from the status response
     let wsReconnectTimer = null;
     let wsReconnectDelay = 1000;
 
@@ -323,22 +328,472 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Where the video WebSocket connects (docs/VIDEO_TRANSPORT.md 5). Pure functions, checked on the host by
+    // tools/test/check_video_viewer.js. loc = { host, hostname, port } (same field names as window.location).
+    const VideoTarget = {
+        // The server's video_port is used only when it is a JSON integer in 1..65535 (no strings, fractions, null).
+        validPort(v) {
+            return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 65535;
+        },
+        // A DNS name / IPv4 address, or a bracketed IPv6 literal as location.hostname spells it.
+        validHostname(h) {
+            if (typeof h !== 'string' || h.length === 0 || h.length > 255) return false;
+            return /^[A-Za-z0-9._-]+$/.test(h) || /^\[[0-9A-Fa-f:.]+\]$/.test(h);
+        },
+        // The port of the page itself: location.port is '' for the default HTTPS port.
+        pagePort(loc) {
+            if (typeof loc.port === 'string' && /^[0-9]{1,5}$/.test(loc.port)) return Number(loc.port);
+            return 443;
+        },
+        // No usable video_port (or the same port as the page): the old URL on the main port. Otherwise the video
+        // server's port on the page's host name. separate = the video server is on another port.
+        resolve(loc, videoPort) {
+            const legacy = { url: 'wss://' + loc.host + '/video', separate: false, port: 0, hostname: '' };
+            if (!this.validPort(videoPort)) return legacy;
+            if (!this.validHostname(loc.hostname)) return legacy;
+            if (videoPort === this.pagePort(loc)) return legacy;
+            return { url: 'wss://' + loc.hostname + ':' + videoPort + '/video', separate: true, port: videoPort, hostname: loc.hostname };
+        },
+        // The connection URL of the target. accept = true adds "?accept=h264" (docs/VIDEO_TRANSPORT.md 9.4: this
+        // viewer can take H.264); false leaves the URL as it is (MJPEG only). Every other field is kept.
+        withAccept(target, accept) {
+            if (accept !== true) return target;
+            return Object.assign({}, target, { url: target.url + '?accept=h264' });
+        },
+        // The "accept the certificate" hint is for a connection that failed before it opened, on another port.
+        needsTrustHint(target, wasOpen) {
+            return !!target && target.separate === true && wasOpen === false;
+        },
+        // The page the viewer links to so the person can accept the certificate (null when there is no hint).
+        trustUrl(target) {
+            if (!target || target.separate !== true) return null;
+            return 'https:' + '//' + target.hostname + ':' + target.port + '/';
+        }
+    };
+
+    function showTrustHint(target) {
+        const url = VideoTarget.trustUrl(target);
+        if (url === null) return;
+        elVideoTrustLink.setAttribute('href', url);
+        elVideoTrustLink.textContent = url;
+        elVideoTrustHint.classList.remove('trust-hint-hidden');
+    }
+
+    function hideTrustHint() {
+        elVideoTrustHint.classList.add('trust-hint-hidden');
+        elVideoTrustLink.removeAttribute('href');
+        elVideoTrustLink.textContent = '';
+    }
+
+    // The video state the server sends as a text frame on /video (docs/WEB_API.md 5, docs/VIDEO_TRANSPORT.md 8):
+    // {"t":"video","state":"locked","w":1280,"h":720}. Pure functions, checked on the host by
+    // tools/test/check_video_viewer.js. Anything that does not fit the contract is dropped (parse returns null).
+    const VideoStatus = {
+        // w and h: a JSON integer in 0..65535 (no strings, fractions, null, negative numbers).
+        validDimension(v) {
+            return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 65535;
+        },
+        // text frame -> { state, w, h } or null. Unknown keys are ignored. Only "locked" carries a resolution (>= 1);
+        // the other states are reported with w = h = 0.
+        parse(text) {
+            if (typeof text !== 'string' || text.length === 0 || text.length > 1024) return null;
+            let obj;
+            try {
+                obj = JSON.parse(text);
+            } catch (err) {
+                return null;
+            }
+            if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return null;
+            if (obj.t !== 'video') return null;
+            const state = obj.state;
+            if (state !== 'unknown' && state !== 'no_signal' && state !== 'locked') return null;
+            if (!this.validDimension(obj.w) || !this.validDimension(obj.h)) return null;
+            if (state === 'locked') {
+                if (obj.w < 1 || obj.h < 1) return null;
+                return { state: state, w: obj.w, h: obj.h };
+            }
+            return { state: state, w: 0, h: 0 };
+        },
+        // "1280x720" (both are integers already; Math.trunc keeps the text an integer whatever the caller passes).
+        resolutionLabel(st) {
+            return String(Math.trunc(st.w)) + 'x' + String(Math.trunc(st.h));
+        },
+        // The line under the video: the resolution is shown only while the signal is locked.
+        statusLine(st) {
+            if (st.state === 'locked') return '接続完了 / 受信中 (' + this.resolutionLabel(st) + ')';
+            return '接続完了 / 受信中';
+        },
+        // The text over the video for the states that have one (locked has none: null).
+        overlayMessage(state) {
+            if (state === 'no_signal') return '信号なし';
+            if (state === 'unknown') return '映像の状態を確認中…';
+            return null;
+        },
+        // locked -> locked with another resolution (prev is the last accepted status, or null).
+        isResolutionChange(prev, cur) {
+            return prev !== null && prev.state === 'locked' && cur.state === 'locked' && (prev.w !== cur.w || prev.h !== cur.h);
+        },
+        changeNotice(st) {
+            return '解像度が変わりました（' + this.resolutionLabel(st) + '）';
+        }
+    };
+
+    // H.264 over /video (docs/VIDEO_TRANSPORT.md 9.2, 9.3): one binary message = one Annex B access unit. Pure
+    // functions on a Uint8Array, checked on the host by tools/test/check_video_viewer.js.
+    const H264 = {
+        // 'jpeg' (starts with FF D8), 'h264' (starts with the 4-byte start code 00 00 00 01) or null (anything else).
+        classify(b) {
+            if (b === null || b === undefined || typeof b.length !== 'number') return null;
+            if (b.length >= 2 && b[0] === 0xFF && b[1] === 0xD8) return 'jpeg';
+            if (b.length >= 4 && b[0] === 0 && b[1] === 0 && b[2] === 0 && b[3] === 1) return 'h264';
+            return null;
+        },
+        // Annex B -> [{ type, data }]. data starts at the NAL header byte (the start code and the zero bytes before
+        // the next start code are not part of it). Empty NALs and NALs whose forbidden_zero_bit is set are dropped.
+        parseAnnexB(b) {
+            const out = [];
+            if (b === null || b === undefined || typeof b.length !== 'number') return out;
+            const n = b.length;
+            const starts = [];
+            let pos = 0;
+            while (pos + 3 <= n) {
+                if (b[pos] === 0 && b[pos + 1] === 0 && b[pos + 2] === 1) {
+                    starts.push(pos + 3);
+                    pos += 3;
+                } else {
+                    pos++;
+                }
+            }
+            for (let k = 0; k < starts.length; k++) {
+                const s = starts[k];
+                let end = k + 1 < starts.length ? starts[k + 1] - 3 : n;
+                while (end > s && b[end - 1] === 0) end--;
+                if (end <= s) continue;
+                if ((b[s] & 0x80) !== 0) continue;
+                out.push({ type: b[s] & 0x1F, data: b.subarray(s, end) });
+            }
+            return out;
+        },
+        // key: the access unit holds an SPS (type 7) or an IDR slice (type 5). sps: the first SPS NAL (or null). count: NALs.
+        analyze(b) {
+            const nals = this.parseAnnexB(b);
+            let key = false;
+            let sps = null;
+            for (let i = 0; i < nals.length; i++) {
+                if (nals[i].type === 7) {
+                    key = true;
+                    if (sps === null) sps = nals[i].data;
+                } else if (nals[i].type === 5) {
+                    key = true;
+                }
+            }
+            return { key: key, sps: sps, count: nals.length };
+        },
+        isKeyAccessUnit(b) {
+            return this.analyze(b).key;
+        },
+        // An SPS NAL (starting at its header byte, 67 42 c0 1f ...) -> "avc1.42c01f": profile_idc, the constraint
+        // flags and level_idc. null when it is not an SPS or too short.
+        avcCodecStringFromSps(nal) {
+            if (nal === null || nal === undefined || typeof nal.length !== 'number' || nal.length < 4) return null;
+            if ((nal[0] & 0x80) !== 0 || (nal[0] & 0x1F) !== 7) return null;
+            const hex = (v) => (v < 16 ? '0' : '') + v.toString(16);
+            return 'avc1.' + hex(nal[1]) + hex(nal[2]) + hex(nal[3]);
+        },
+        sameBytes(a, b) {
+            if (a === null || b === null || a.length !== b.length) return false;
+            for (let i = 0; i < a.length; i++) {
+                if (a[i] !== b[i]) return false;
+            }
+            return true;
+        }
+    };
+
+    const RESOLUTION_NOTICE_MS = 2000;
+    let videoStatus = null; // last accepted status of this connection (null before the first one)
+    let resolutionNoticeTimer = null;
+
+    function setVideoOverlay(text) {
+        if (text === null) {
+            elVideoOverlay.classList.add('video-overlay-hidden');
+            elVideoOverlay.textContent = '';
+        } else {
+            elVideoOverlay.textContent = text;
+            elVideoOverlay.classList.remove('video-overlay-hidden');
+        }
+    }
+
+    // One place for the reset: a new connection, a disconnect and a logout all end here.
+    function resetVideoStatus() {
+        if (resolutionNoticeTimer !== null) {
+            clearTimeout(resolutionNoticeTimer);
+            resolutionNoticeTimer = null;
+        }
+        videoStatus = null;
+        setVideoOverlay(null);
+        resetH264(); // the decoder and the "H.264" label go with the connection
+    }
+
+    function applyVideoStatus(st) {
+        const changed = VideoStatus.isResolutionChange(videoStatus, st);
+        videoStatus = st;
+        // The next status removes the "resolution changed" notice at once.
+        if (resolutionNoticeTimer !== null) {
+            clearTimeout(resolutionNoticeTimer);
+            resolutionNoticeTimer = null;
+        }
+        elVideoStatus.textContent = VideoStatus.statusLine(st);
+        if (h264Shown) elVideoStatus.textContent += H264_LABEL;
+        if (changed) {
+            setVideoOverlay(VideoStatus.changeNotice(st));
+            resolutionNoticeTimer = setTimeout(() => {
+                resolutionNoticeTimer = null;
+                setVideoOverlay(null);
+            }, RESOLUTION_NOTICE_MS);
+        } else {
+            // The last frame stays on the canvas (it is never cleared here).
+            setVideoOverlay(VideoStatus.overlayMessage(st.state));
+        }
+    }
+
+    // ---- H.264 (docs/VIDEO_TRANSPORT.md 9.8) ----
+    // The decoder is WebCodecs' VideoDecoder, fed Annex B access units (no `description`). Any failure falls back
+    // to MJPEG once: this tab stops sending `accept` and the connection is made again.
+    const H264_PROBE_CODEC = 'avc1.42c01f'; // 9.4: used until the SPS of the stream is known
+    const H264_PROBE_WAIT_MS = 1500; // TODO(hw-verify): how long to wait for isConfigSupported before connecting without accept
+    const H264_MAX_QUEUE = 3; // TODO(hw-verify): decodeQueueSize at which P frames are dropped until the next IDR
+    const H264_TIMESTAMP_STEP = 33333; // microseconds; the stream carries no time stamps (no B frames, so any increasing value)
+    const H264_LABEL = ' / H.264（低帯域）';
+    const STATUS_PLAIN = '接続完了 / 受信中';
+    let h264Failed = false; // a failure happened in this tab: no `accept` from now on
+    let h264Supported = false; // the start-up probe said the browser can decode H.264
+    let h264Probe = Promise.resolve(); // settles when the probe is done
+    let h264Dec = null; // { decoder, codec, sps } once configured
+    let h264Gen = 0; // bumped by every reset / configure start, so a late isConfigSupported result is ignored
+    let h264Pending = 0; // generation of a configure waiting for isConfigSupported (0 = none)
+    let h264NeedKey = true; // P frames are dropped until an IDR has been decoded
+    let h264Timestamp = 0;
+    let h264Shown = false; // the status line says H.264
+
+    // ArrayBuffer (or a view of one) -> Uint8Array; null for anything else. toString, not instanceof: it also works
+    // for a buffer made in another realm.
+    function toBytes(data) {
+        if (Object.prototype.toString.call(data) === '[object ArrayBuffer]') return new Uint8Array(data);
+        if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        return null;
+    }
+
+    function h264Available() {
+        return typeof VideoDecoder === 'function' && typeof EncodedVideoChunk === 'function' &&
+            typeof VideoDecoder.isConfigSupported === 'function';
+    }
+
+    function probeH264() {
+        if (!h264Available()) return Promise.resolve();
+        let p;
+        try {
+            p = VideoDecoder.isConfigSupported({ codec: H264_PROBE_CODEC, optimizeForLatency: true });
+        } catch (err) {
+            return Promise.resolve();
+        }
+        return Promise.resolve(p).then((res) => {
+            h264Supported = !!res && res.supported === true;
+        }, () => {});
+    }
+    h264Probe = probeH264();
+
+    // The first connection waits for the probe so that it already knows whether to send accept=h264. A probe that
+    // never settles must not keep the video away: after H264_PROBE_WAIT_MS the connection is made without accept.
+    function waitForProbe() {
+        return new Promise((resolve) => {
+            const t = setTimeout(resolve, H264_PROBE_WAIT_MS);
+            h264Probe.then(() => {
+                clearTimeout(t);
+                resolve();
+            });
+        });
+    }
+
+    function setH264Shown(on) {
+        if (h264Shown === on) return;
+        h264Shown = on;
+        elVideoStatus.textContent = (videoStatus === null ? STATUS_PLAIN : VideoStatus.statusLine(videoStatus)) + (on ? H264_LABEL : '');
+    }
+
+    // Closes the decoder and forgets everything about the stream (a new connection, a disconnect, a resolution change).
+    function resetH264() {
+        h264Gen++;
+        h264Pending = 0;
+        h264NeedKey = true;
+        h264Shown = false;
+        if (h264Dec !== null) {
+            const d = h264Dec.decoder;
+            h264Dec = null; // first: an error of the closing decoder is then ignored
+            try {
+                d.close();
+            } catch (err) {
+                // already closed
+            }
+        }
+    }
+
+    // One fallback per tab: no more `accept`, and the connection is made again through the usual reconnect.
+    function h264Fallback() {
+        if (h264Failed) return;
+        h264Failed = true;
+        resetH264();
+        if (ws) ws.close();
+    }
+
+    function drawH264Frame(dec, frame) {
+        try {
+            if (h264Dec === null || h264Dec.decoder !== dec) return; // frame of a decoder that is gone
+            const w = frame.displayWidth || frame.codedWidth;
+            const h = frame.displayHeight || frame.codedHeight;
+            if (elVideo.width !== w) elVideo.width = w;
+            if (elVideo.height !== h) elVideo.height = h;
+            ctx.drawImage(frame, 0, 0);
+            setH264Shown(true);
+        } catch (err) {
+            // a frame that cannot be drawn is dropped
+        } finally {
+            frame.close();
+        }
+    }
+
+    function decodeH264(bytes, key) {
+        try {
+            const chunk = new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: h264Timestamp, data: bytes });
+            h264Timestamp += H264_TIMESTAMP_STEP;
+            h264Dec.decoder.decode(chunk);
+            if (key) h264NeedKey = false;
+        } catch (err) {
+            h264Fallback();
+        }
+    }
+
+    // First IDR of the stream, or an SPS that is not the one the decoder was configured with (resolution change).
+    function startH264Decoder(codec, sps, bytes) {
+        resetH264();
+        const gen = h264Gen;
+        h264Pending = gen;
+        const config = { codec: codec, optimizeForLatency: true };
+        let p;
+        try {
+            p = VideoDecoder.isConfigSupported(config);
+        } catch (err) {
+            h264Fallback();
+            return;
+        }
+        Promise.resolve(p).then((res) => {
+            if (gen !== h264Gen) return; // reset meanwhile
+            h264Pending = 0;
+            if (!res || res.supported !== true) {
+                h264Fallback();
+                return;
+            }
+            let dec = null;
+            try {
+                dec = new VideoDecoder({
+                    output: (frame) => drawH264Frame(dec, frame),
+                    error: () => {
+                        if (h264Dec !== null && h264Dec.decoder === dec) h264Fallback();
+                    }
+                });
+                dec.configure(config);
+            } catch (err) {
+                if (dec !== null) {
+                    try {
+                        dec.close(); // made but not usable
+                    } catch (err2) {
+                        // already closed
+                    }
+                }
+                h264Fallback();
+                return;
+            }
+            h264Dec = { decoder: dec, codec: codec, sps: sps.slice() }; // a copy: the message buffer is not kept alive
+            decodeH264(bytes, true);
+        }, () => {
+            if (gen === h264Gen) h264Fallback();
+        });
+    }
+
+    // One binary message that starts with the start code.
+    function feedH264(bytes) {
+        if (h264Failed || h264Pending !== 0) return;
+        const au = H264.analyze(bytes);
+        if (au.count === 0) return; // no NAL at all: garbage
+        if (!au.key) {
+            if (h264Dec === null || h264NeedKey) return; // no IDR yet
+            if (h264Dec.decoder.decodeQueueSize >= H264_MAX_QUEUE) {
+                h264NeedKey = true; // falling behind: wait for the next IDR instead of piling up delay
+                return;
+            }
+            decodeH264(bytes, false);
+            return;
+        }
+        if (au.sps === null) {
+            if (h264Dec !== null) decodeH264(bytes, true); // an IDR slice without an SPS: the decoder is configured
+            return;
+        }
+        const codec = H264.avcCodecStringFromSps(au.sps);
+        if (codec === null) return;
+        if (h264Dec !== null && h264Dec.codec === codec && H264.sameBytes(h264Dec.sps, au.sps)) {
+            decodeH264(bytes, true);
+            return;
+        }
+        startH264Decoder(codec, au.sps, bytes);
+    }
+
+    // A JPEG on a connection that asked for H.264 (the server fell back to MJPEG).
+    function noteMjpeg() {
+        h264NeedKey = true;
+        setH264Shown(false);
+    }
+
     function connectWebSocket() {
         if (ws) return;
-        const url = 'wss://' + location.host + '/video';
-        ws = new WebSocket(url);
+        resetVideoStatus();
+        const acceptH264 = h264Supported && !h264Failed;
+        const target = VideoTarget.withAccept(videoTarget || VideoTarget.resolve(location, undefined), acceptH264);
+        let opened = false;
+        ws = new WebSocket(target.url);
         ws.binaryType = "blob";
+        if (acceptH264) ws.binaryType = "arraybuffer"; // the first bytes tell JPEG from H.264, and the order must hold
 
         ws.onopen = () => {
+            opened = true;
+            hideTrustHint();
             elVideoStatus.textContent = '接続完了 / 受信中';
             wsReconnectDelay = 1000; // reset
         };
 
         ws.onmessage = async (e) => {
+            // A text frame is the video state (JSON); a binary frame is a JPEG. A text frame that does not fit
+            // the contract is dropped, and it never touches the decoding of the frames.
+            if (typeof e.data === 'string') {
+                const st = VideoStatus.parse(e.data);
+                if (st !== null) applyVideoStatus(st);
+                return;
+            }
+            let frameData = e.data;
+            if (acceptH264) {
+                // JPEG (FF D8) or H.264 (00 00 00 01); anything else is dropped.
+                const bytes = toBytes(e.data);
+                const kind = bytes === null ? null : H264.classify(bytes);
+                if (kind === 'h264') {
+                    feedH264(bytes);
+                    return;
+                }
+                if (kind !== 'jpeg') return;
+                noteMjpeg();
+                frameData = new Blob([bytes], { type: 'image/jpeg' });
+            }
             if (isDecoding) return;
             isDecoding = true;
             try {
-                const bmp = await createImageBitmap(e.data);
+                const bmp = await createImageBitmap(frameData);
                 elVideo.width = bmp.width;
                 elVideo.height = bmp.height;
                 ctx.drawImage(bmp, 0, 0);
@@ -352,7 +807,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         ws.onclose = () => {
             ws = null;
+            resetVideoStatus();
             elVideoStatus.textContent = '切断されました。再接続します...';
+            if (VideoTarget.needsTrustHint(target, opened)) showTrustHint(target);
             // Exponential backoff
             // Re-check the session first: after a logout or an expired session the page must go back to the login view.
             wsReconnectTimer = setTimeout(fetchStatus, wsReconnectDelay);
@@ -360,7 +817,8 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         ws.onerror = (e) => {
-            // WS Error handled
+            // A failure before the connection opened (typically an untrusted certificate on the video port).
+            if (VideoTarget.needsTrustHint(target, opened)) showTrustHint(target);
         };
     }
 
@@ -431,6 +889,8 @@ document.addEventListener('DOMContentLoaded', () => {
             ws.close();
             ws = null;
         }
+        hideTrustHint();
+        resetVideoStatus();
         elVideoStatus.textContent = '切断されました';
 
         if (wsInputReconnectTimer) {
@@ -582,6 +1042,8 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (data.state === 'ready') {
                 if (data.authenticated) {
                     showView(viewDashboard);
+                    videoTarget = VideoTarget.resolve(location, data.video_port);
+                    await waitForProbe(); // so the first connection already knows whether to send accept=h264
                     connectWebSocket();
                     connectInputWebSocket();
                 } else {

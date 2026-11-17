@@ -56,12 +56,50 @@ typedef struct {
 void csi_video_source_get_status(csi_video_status_t *out);
 ```
 
+#### 提供元（`video_status`、C-6a）
+
+KVM 側が、映像ソースの種類（CSI、テストパターン、将来の別ソース）を知らなくて済むように、映像の状態は**映像ソースに依存しない「提供元」**に集める（`components/video_status`、純 C、IDF 非依存。テストと結果は `docs/VIDEO_STATUS_TESTS.md`）。
+
+```c
+typedef struct { kvm_video_sync_state_t state; uint32_t width, height; } video_status_t;  // csi_video_status_t と同じ並び
+typedef void (*video_status_get_fn)(void *ctx, video_status_t *out);
+void video_status_set_provider(video_status_get_fn fn, void *ctx);  // NULL で既定（提供元なし）に戻す
+void video_status_get(video_status_t *out);                          // 既定は UNKNOWN / 0 / 0。out が NULL でも落ちない
+```
+
+- **映像ソースは、自分の状態を `video_status_set_provider()` で登録する**（`csi_video_source_get_status` と同じ意味の関数を渡す。CSI は `main.c` の小さなアダプターで `csi_video_status_t` を `video_status_t` に写す。`test_pattern_source` は、切り替えられる偽の状態 `test_pattern_source_get_status` / `test_pattern_source_set_status` を持つ。既定は `LOCKED`、640x480）。
+- **KVM 側（`kvm_service` -> `kvm_ctrl` -> `kvm_logic`）は、`video_status_get()` だけを読む**。
+- **登録は、読み手のタスクを起動する前に、1 回だけ**。読み手（`kvm_service` のタスクなど）はロックしない。提供元は ctx と fn を 1 つの構造体にして持ち、書き込みは起動前の 1 回の代入だけ（起動後の取り替えは禁止）。**`kvm_service_start` は、映像ソースの登録の後に呼ぶこと**（A-9）。
+- `video_status_get()` は、提供元の値を検査して直す: 範囲外の `state` は `UNKNOWN`、`LOCKED` で `width` / `height` のどちらかが 0 なら `UNKNOWN`、`LOCKED` 以外は `width = height = 0`、提供元が `out` を書かなければ `UNKNOWN`。不整合な値を KVM に渡さない。
+- 提供元がなければ（登録前、CSI の初期化に失敗、など）`UNKNOWN`。`kvm_logic` は、`UNKNOWN` では切替の映像待ちをタイムアウト（`switch_video_sync_timeout_ms`）まで続けてから完了し、idle の ATX は映像に関係なく受理される（`docs/VIDEO_STATUS_TESTS.md` 2 章）。
+- クライアント（ブラウザ）への通知の方法は、このインターフェースの範囲外（C-6b）。
+
+### 1.4 P7（H.264 低帯域モード）による映像の契約の拡張（`docs/VIDEO_TRANSPORT.md` §9）
+**既定は変わらない**（`VIDEO_CODEC_H264_ALLOWED = n`、`CSI_H264_ENABLE = n`）。MJPEG だけのソース（`test_pattern_source`、いまの `csi_video_source`）は、**変更なしで動く**。
+
+```c
+typedef enum { VIDEO_CODEC_MJPEG = 0, VIDEO_CODEC_H264 = 1 } video_codec_t;   // 0 = MJPEG（足す前のコードが、そのまま動く）
+#define VIDEO_FRAME_FLAG_KEY 0x01u                                            // キーフレーム（H.264 の IDR）。JPEG は、どのフレームも自己完結なので、commit が KEY を付ける
+typedef struct { ...既存...; uint8_t codec; uint8_t flags; } video_frame_t;   // 末尾に足す
+typedef struct { size_t size; uint32_t width, height; uint64_t timestamp_ms; video_codec_t codec; uint8_t flags; } frame_hub_commit_info_t;
+void frame_hub_commit_ex(frame_hub_t *hub, video_frame_t *frame, const frame_hub_commit_info_t *info);   // 既存の frame_hub_commit は、codec = MJPEG、flags = KEY で、これに写す
+struct video_source_t { ...既存（name, start, stop, ctx）...;
+    uint32_t supported_codecs;                                         // ビットマスク（1u << VIDEO_CODEC_*）。0 = MJPEG だけ
+    int  (*set_codec)(const video_source_t *, video_codec_t codec);    // 0 = 受理。非同期（次に publish するフレームから効く）、ブロックしない、複数回呼んでよい。NULL = MJPEG だけ
+    void (*request_keyframe)(const video_source_t *);                  // 次のフレームを IDR にする。ブロックしない、複数のタスクから呼んでよい。NULL = MJPEG だけ
+};
+```
+
+- 足すのは**末尾だけ**（位置指定の初期化 `{name, start, stop, ctx}` が、そのまま通る。足した分は 0 / `NULL`）。
+- **HDMI 担当が作るもの**（P7 の後半）: `csi_h264`（PPA の `RGB888 → YUV420` + `esp_h264` の HW エンコーダ）、`csi_video_source` の `set_codec` / `request_keyframe`、IDR の周期（`CSI_H264_GOP`）、**公開の失敗・サイズ超過のときに、自分で次を IDR にする**こと。フレームは `frame_hub_commit_ex` で出す（H.264 は `codec = VIDEO_CODEC_H264`、IDR に `VIDEO_FRAME_FLAG_KEY`）。
+- **配信側（Claude）が作るもの**: `video_codec_policy`（コーデックを決める）、`ws_video_core` のキーフレーム待ち、`web_server` の `?accept=h264`、ビューアの WebCodecs。映像ソースに、コーデックの切替と IDR を**頼むだけ**で、エンコーダの中身は知らない。
+
 ## 2. Kconfig の名前空間
 
 | 接頭辞 | 担当 | 例 |
 |---|---|---|
-| `TC358743_*`、`MIPI_PHY_*`、`CSI_*`、`VIDEO_SOURCE_*`、`JPEG_*` | **HDMI 担当** | `TC358743_RESET_GPIO`、`MIPI_PHY_POWER_ENABLE`、`CSI_*` |
-| `WEB_SERVER_*`、`NET_ETH_*`、`OLED_*`、`KVM_*`、`ATX_*`、`HID_*`、`FRAME_HUB_*` | **Claude** | `WEB_SERVER_WS_MAX_CLIENTS`、`NET_ETH_INIT` |
+| `TC358743_*`、`MIPI_PHY_*`、`CSI_*`（`CSI_H264_*` を含む）、`VIDEO_SOURCE_*`、`JPEG_*` | **HDMI 担当** | `TC358743_RESET_GPIO`、`MIPI_PHY_POWER_ENABLE`、`CSI_*` |
+| `WEB_SERVER_*`、`NET_ETH_*`、`OLED_*`、`KVM_*`、`ATX_*`、`HID_*`、`FRAME_HUB_*`、`VIDEO_CODEC_*` | **Claude** | `WEB_SERVER_WS_MAX_CLIENTS`、`NET_ETH_INIT`、`VIDEO_CODEC_H264_ALLOWED` |
 
 - 他の担当の接頭辞の項目は、**変更しない**（必要なときは、その担当に依頼する）。**例外**: Issue に「この Issue に限り変更してよい」と、範囲を明記したものだけ（例: #69 は、実機を共有しているため、Antigravity が `ws_video_core`、`web_server.c` の WS 送信まわり、`WEB_SERVER_*` の Kconfig を変更してよい。PR は Claude がレビューする）。
 - `FRAME_HUB_*` は Claude 担当だが、映像の大きさに依存するので、HDMI 担当が値の変更を提案してよい（上の 1.2）。
@@ -192,7 +230,9 @@ typedef struct {
     int (*release_all)(void *ctx);
     /* KVM の LED の論理値（ビット 0..3 = ch1..4 が点灯）。フォトカプラの極性はボード側で吸収。失敗は < 0 */
     int (*read_led_mask)(void *ctx, uint8_t *mask);
-    /* 映像の同期状態（映像側の状態 1.3 を結線する。HAL を実装しない環境では UNKNOWN を返してよい） */
+    /* 映像の同期状態。kvm_ctrl_init は NULL を拒否する（ホストのモックは値を持つ）。
+     * 実機では kvm_service が、この関数を video_status（1.3 の提供元）を読む関数に置き換えるので、
+     * ボード側は実装しなくてよい（NULL でも UNKNOWN を返す関数でもよい） */
     kvm_video_sync_state_t (*video_sync)(void *ctx);
 } kvm_board_hal_t;
 ```
@@ -220,4 +260,6 @@ typedef struct {
 
 ### 6.4 Antigravity への依頼（A-9）
 - 実機の `kvm_board_hal_t` 実装（GPIO、フォトカプラの極性、ハードウェアタイマーの自動解除）。**このインターフェースに合意できるか**を、Issue #85 のコメントで回答してほしい。変えたい点（例: 自動解除を `gptimer` ではなく別の手段にする）があれば、`contract` ラベルの Issue で。
+- **`kvm_service_start(const kvm_board_hal_t *hal)`（`components/kvm_service/include/kvm_service.h`）の呼び出し元は A-9**（実機の HAL ができたら `main/main.c` から呼ぶ）。C-5b の時点では呼ばれないので、`web_server` の KVM / ATX の API は 503 `not_ready` を返す。HAL の `ctx` は起動後もずっと有効であること。パルス長・間隔・余裕・tick 周期は Kconfig（`ATX_*`、`KVM_*`）で、値はすべて `TODO(hw-verify)`。
+- **`video_sync` は実装不要**（C-6a）。`kvm_service_start` は、渡された HAL を内部にコピーして、`video_sync` だけを `video_status_get()` の `state` を返す関数（`video_status_hal_sync`）に置き換えてから `kvm_ctrl_init` に渡す。映像の状態は、映像ソースが `video_status_set_provider()` で登録する（1.3）。**`kvm_service_start` は、映像ソースの登録（`main.c` の映像ソースのブロック）より後に呼ぶ**（登録は読み手のタスクの起動前に 1 回だけ、という規則のため）。
 - それまで、ホストでは**モック HAL**（`test/host/kvm_board/`）で検証する。モックは、上の「ボード側の義務」の 2 と 4 も再現し、`kvm_ctrl` が不変条件に反した順序で呼ばないことをテストで固定する。

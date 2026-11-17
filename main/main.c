@@ -56,15 +56,29 @@
 #include "driver/i2c_master.h"
 #include "frame_hub.h"
 #include "test_pattern_source.h"
+#include "video_status.h"
 #include <stdlib.h>
 #if CONFIG_WEB_SERVER_ENABLE
 #include "web_server.h"
+#endif
+#if CONFIG_USB_DEVICE_ENABLE
+#include "usb_hid.h"
 #endif
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
 static const char *TAG = "app_main";
+
+// video_status (docs/INTERFACES.md 1.3): adapts csi_video_source_get_status() to a video_status provider.
+static void csi_status_provider(void *ctx, video_status_t *out) {
+    (void)ctx;
+    csi_video_status_t st;
+    csi_video_source_get_status(&st);
+    out->state = st.state;
+    out->width = st.width;
+    out->height = st.height;
+}
 
 static void* app_alloc(size_t size, void* ctx) {
     (void)ctx;
@@ -278,7 +292,12 @@ void app_main(void)
             if (!CONFIG_VIDEO_SOURCE_CSI) {
                 const video_source_t* vs = test_pattern_source_get();
                 ESP_LOGI(TAG, "Starting video source '%s'...", vs->name);
+                // Once, before any task that reads video_status is started (video_status.h).
+                video_status_set_provider(test_pattern_source_get_status, NULL);
                 vs->start(vs, hub);
+#if CONFIG_WEB_SERVER_ENABLE
+                web_server_set_video_source(vs); // before web_server_start(): picked up when the web server starts
+#endif
             }
         } else {
             ESP_LOGE(TAG, "Failed to create frame hub");
@@ -291,6 +310,23 @@ void app_main(void)
                 } else {
                     ESP_LOGE(TAG, "Web server failed to start");
                 }
+            }
+        }
+#endif
+#if CONFIG_USB_DEVICE_ENABLE
+        {
+#if CONFIG_WEB_SERVER_ENABLE
+            usb_hid_mounted_cb_t on_mounted = web_server_notify_usb_mounted;
+#else
+            usb_hid_mounted_cb_t on_mounted = NULL;
+#endif
+            esp_err_t usb_err = usb_hid_init(on_mounted);
+            if (usb_err != ESP_OK) {
+                ESP_LOGE(TAG, "usb_hid_init failed: %s", esp_err_to_name(usb_err));
+            } else {
+#if CONFIG_WEB_SERVER_ENABLE
+                web_server_set_hid_sink(usb_hid_get_sink());
+#endif
             }
         }
 #endif
@@ -372,9 +408,14 @@ void app_main(void)
                 csi_video_source_configure(tc_dev, &vs_cfg);
                 const video_source_t *vs = csi_video_source_get();
                 ESP_LOGI(TAG, "Starting video source '%s'...", vs->name);
+                // Once, before any task that reads video_status is started (video_status.h).
+                video_status_set_provider(csi_status_provider, NULL);
                 if (vs->start(vs, hub) != 0) {
                     ESP_LOGE(TAG, "Failed to start video source '%s'", vs->name);
                 }
+#if CONFIG_WEB_SERVER_ENABLE
+                web_server_set_video_source(vs); // the web server is already running here (P7: codec policy, keyframe requests)
+#endif
             }
 
             // tc358743_poll_interrupts(tc_dev);

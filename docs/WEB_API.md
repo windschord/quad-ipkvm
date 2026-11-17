@@ -21,7 +21,8 @@
 - **メソッド**: `GET`
 - **パス**: `/status`
 - **認証**: 不要 (Host ヘッダの検証は行われます)
-- **応答例**: `{"state":"needs_setup", "authenticated":false}`
+- **応答例**: `{"state":"needs_setup", "authenticated":false}`、映像専用のサーバーがあるとき `{"state":"ready","authenticated":true,"video_port":8444}`
+- **`video_port`**（整数、1〜65535。任意）: 映像専用の HTTPS サーバー（`docs/VIDEO_TRANSPORT.md` 5 章）のポート。ビューアは、これがあれば `wss://<location.hostname>:<video_port>/video` に接続する。**キーがない（サーバー側の値が 0）ときは、映像専用のサーバーなし = メインのポートの `/video`**（従来どおり）。ビューアは、整数で 1〜65535 以外（文字列、小数、`null`、範囲外）を無視して従来の接続先にする。
 - **ステータス**:
   - `200 OK` (成功時)
   - `403 Forbidden` (不正な Host ヘッダ)
@@ -94,12 +95,20 @@
 
 
 ### 5. WebSocket 映像ストリーム
+> **ビューアの接続先と証明書の案内**: ビューアは、状態の取得（§1）の `video_port` から接続先を決める。映像の接続が**開く前に失敗**し、かつ `video_port` が別のポートのときは、`https://<ホスト名>:<video_port>/` へのリンクと「証明書を受け入れてから再読み込み」の案内を出す（自己署名の証明書の例外が、ポートごとのため。接続に成功すると消える）。映像サーバーの `GET /` は、動的な値を含まない静的な信頼ページ（`web/video_trust.html`、認証なし）を返す。ビューアの検査は `docs/VIDEO_VIEWER_TESTS.md`。
+> **変更予定（`docs/VIDEO_TRANSPORT.md`、Issue #82 ③ / オーナー決定 B-3）**: 映像は、**映像専用の HTTPS サーバー**（別のポート `video_port`、既定 8444）の `/video` に移る。認証・Origin の規則は下のとおりで、**Origin は「ページの Origin（メインのポート）」と一致すること**（ホスト名は Host と一致、ポートはメインのポート）。実装が入るまで、下の記述（メインのポートの `/video`）が現在の挙動。
 - **メソッド**: `GET`
-- **パス**: `/video`
+- **パス**: `/video`（任意のクエリ: `?accept=h264`。H.264 を受け取れるクライアントが付ける。付けない = MJPEG だけ。`docs/VIDEO_TRANSPORT.md` §9.4）
 - **認証**: 要 (Cookie でセッショントークンを送信)
 - **Origin**: 必須 (Host と一致すること)
 - **アップグレード**: `WebSocket`
-- **データ形式**: バイナリフレーム (1 メッセージ = JPEG 1 フレーム)
+- **データ形式**: **バイナリフレーム** (1 メッセージ = JPEG 1 フレーム。**P7 の H.264 が有効なときだけ、H.264 の Annex B の 1 アクセスユニット**。先頭が `FF D8` なら JPEG、`00 00 00 01` なら H.264。ヘッダーはない。`docs/VIDEO_TRANSPORT.md` §9.3。既定は MJPEG のままで、**`VIDEO_CODEC_H264_ALLOWED` が `n` の間は、H.264 は送られない**)。これに加えて、サーバーは**映像の状態**を、**テキストフレーム（JSON）**で送る（`docs/VIDEO_TRANSPORT.md` §8）。クライアントは、フレームの種類（バイナリ / テキスト）で区別する。
+  - 形式: `{"t":"video","state":"locked","w":1280,"h":720}`（`state` は `unknown` / `no_signal` / `locked`。`w`・`h` は `locked` のときだけ 1 以上の整数で、それ以外は `0`）。最大 128 バイト。
+  - 送る時: **接続の直後に 1 回**（最初のメッセージ。バイナリのフレームより前）、以後は**状態か解像度が変わったとき**だけ（定期的には送らない）。同じ内容は、繰り返さない。
+  - 映像のフレームが送信中のときは、その送信が終わってから送る（途中に割り込まない）。「信号なし」のときはフレームが来ないので、送信中の待ちはない。
+  - **変化は、集約して送る**: 状態の揺れで通知が頻発しないよう、同じクライアントへの通知の間隔は**最短 200 ms**（`status_min_interval_ms`）。間隔の間の変化は、間隔が経った後に、**そのときの最新の状態を 1 回だけ**送る（**途中の状態は送らない**。間隔の間に、元の状態に戻れば、何も送らない）。したがって、状態の変化の通知は、**最大 200 ms 遅れうる**。接続直後の最初の 1 回には、間隔を適用しない。
+  - クライアントは、**未知のキーを無視**し、`t` が `"video"` でないテキストフレームは捨てる（将来の拡張のため）。
+- **H.264 の設定**: Kconfig `VIDEO_CODEC_H264_ALLOWED`（既定 `n`）、`VIDEO_CODEC_UPGRADE_DWELL_MS`、`VIDEO_CODEC_IDR_MIN_INTERVAL_MS`、`VIDEO_CODEC_KEY_WAIT_MS`（`main/Kconfig.projbuild`、`docs/VIDEO_TRANSPORT.md` §9.5・§9.6）。`?accept=` の解析は `http_guard_video_accept`（未知の値は無視、複数の `accept` はどれかに `h264` があれば真、パーセントエンコードは解釈しない）。
 - **同時接続**: 上限 2 (Kconfig `WEB_SERVER_WS_MAX_CLIENTS` に依存)
 - **切断条件**:
   - セッション切れ
@@ -142,7 +151,7 @@
 `hid_logic` は、不正なメッセージ（無効な型・長さ・範囲）を **数えて捨てる**。接続を閉じるのは、プロトコル違反（テキスト、長さ超過、断片化）と、レート超過が続いたときだけ。**メッセージの内容は、ログに出さない**（キー入力に、パスワードが含まれうる）。
 
 ### 7. KVM 切替と ATX 電源（`/api/v1/kvm/*`、`/api/v1/power/*`）
-4 台の切替（前段の 4ch HDMI KVM）と、選択中の PC への電源操作（ATX）。Issue #85（C-5）。**認証が必須**。`POST` は **Origin 必須**（Host と一致）で、`Content-Type: application/json` のみ受け付ける（それ以外は 415）。ボディは 64 バイト以下（超過は 413、`Content-Length` なしは 411）。
+4 台の切替（前段の 4ch HDMI KVM）と、選択中の PC への電源操作（ATX）。Issue #85（C-5）。**認証が必須**。`POST` は **Origin 必須**（Host と一致。無ければ 403）で、`Content-Type: application/json` のみ受け付ける（それ以外は 415）。`GET /api/v1/kvm/status` は Origin 不要（同一オリジンの GET に、ブラウザは Origin を付けない）。メソッドが違えば 405。ボディは 64 バイト以下（超過は 413、`Content-Length` なしは 411。認証・Origin・Content-Type の検査の**後**に判定する）。実装は `components/kvm_api`（純 C）、`http_guard_decide` の KVM 用パス、`kvm_service`（タスク + ミューテックス）、`web_server`。
 
 **基本方針**
 - **KVM の LED が「状態の真実」**。切替要求は、KVM 本体のボタンを押して LED の変化を待つ。成功は、LED が確定したことで決まる（要求の受理 ≠ 切替の完了）。
@@ -151,6 +160,8 @@
 - 受理した操作は**非同期**に実行する（`202`）。各操作には**操作 ID**（`op_id`、起動からの通し番号、u32）が付き、`202` の応答で返る。結果は `GET /api/v1/kvm/status` の `last_op` で見る（下記）。**結果を保持するのは直近の 1 操作だけ**: 後続の操作を受理すると、前の操作の結果は消える（`op_id` が違えば、クライアントは「結果は不明」として扱う）。操作は一度に 1 つしか実行しないので（`busy`）、自分の操作の完了を待ってから次を出せば、結果を取りこぼさない。
 
 #### 7.1 状態取得 `GET /api/v1/kvm/status`
+サービス未起動（実機のボードの HAL が起動していない、またはミューテックスを短い上限内に取れない）のときは `503 {"error":"not_ready"}`。ログには出さない（ポーリングされるため）。`fault` がラッチされていても、状態そのものは `200`（`"fault":true`）。
+
 `200`:
 ```json
 {"state":"idle","active_channel":2,"video_sync":"locked","atx_locked":false,"atx_anomaly":false,"fault":false,"cooldown_ms":0,"last_op":{"op_id":7,"kind":"power_press","channel":2,"result":"completed"}}
@@ -163,7 +174,7 @@
 | `atx_locked` | ATX が拒否される状態（`unknown`、切替中、切替直後の安定待ち） |
 | `atx_anomaly` | ATX のパルス（またはその準備）中に LED が変化・不正になった（パルスは中断済み）。**LED がほかの有効なチャンネルを示していれば `tracking`、無点灯・複数点灯なら `unknown`** に移る（`kvm_logic` の現在の挙動）。**次の ATX パルスの開始で消える** |
 | `fault` | ボードの HAL が失敗した（ラッチ。**全 Ē を High にして停止し、以後 tick は出力を一切有効にしない**。`release_all` の再試行だけ続ける。再起動まで解除しない） |
-| `cooldown_ms` | 次の ATX 操作を、**クールダウンのために**受け付けない残り時間（ms）。**0 は「クールダウンによる拒否がない」だけの意味**: `state` が `unknown` / `switching` / `tracking` / `atx`、`atx_locked`、`fault` のときは、0 でも ATX は拒否される |
+| `cooldown_ms` | 次の ATX 操作を、**クールダウンのために**受け付けない残り時間（ms）。クールダウンは **ATX 操作が終わった時点**（完了でも中断でも）から数える。**実行中は `busy` で拒否されるので 0**。**0 は「クールダウンによる拒否がない」だけの意味**: `state` が `unknown` / `switching` / `tracking` / `atx`、`atx_locked`、`fault` のときは、0 でも ATX は拒否される |
 | `last_op` | 直近に**受理した**操作（まだ無ければ `null`）。`op_id`、`kind`（`select` / `power_press` / `power_reset` / `power_force`）、`channel`、`result`: `pending`（実行中）、`completed`（切替: LED と映像の確認まで済んだ。ATX: パルスを異常なく出し終えた）、`aborted`（切替: タイムアウトか、手動切替に追い越された。ATX: パルス中に LED が変わって中断した、または `fault`）。`kvm_ctrl` が `kvm_logic` の状態の遷移から判定する |
 
 #### 7.2 切替 `POST /api/v1/kvm/select`
@@ -172,7 +183,7 @@
 |---|---|
 | 受理 | `202 {"result":"accepted","channel":3,"op_id":8}` |
 | すでにそのチャンネルで `idle` | `200 {"result":"already_selected","channel":3}`（何も押さない） |
-| ボディ不正、`channel` が欠落・範囲外・整数でない | `400 {"error":"invalid_request"}` |
+| ボディ不正、`channel` が欠落・範囲外・整数でない | `400 {"error":"invalid_request"}`（受け付けるのは `{"channel":N}` だけ。N は `1`〜`4` の 1 桁の整数。`"3"`、`3.0`、`3e0`、`03`、`-3`、`10`、重複キー、ほかのキー、キーのエスケープ、`}` の後の空白以外の文字、NUL、空は不正。記号の前後の JSON の空白は許す） |
 | 切替中、ATX パルス中、追従中 | `409 {"error":"busy"}` |
 | `state` が `unknown` | `409 {"error":"unknown_state"}`（現在の実装の `kvm_logic` は、`unknown` では切替を受け付けない。LED が確定すれば受け付ける） |
 | ボードが `fault` | `503 {"error":"hw_fault"}` |
@@ -194,13 +205,17 @@
 | 切替中・ATX パルス中 | `409 {"error":"busy"}` |
 | ATX ロック中 | `409 {"error":"atx_locked"}` |
 | `state` が `unknown` | `409 {"error":"unknown_state"}` |
-| 前回の ATX 操作から `ATX_MIN_INTERVAL_MS`（`TODO(hw-verify)`）が経っていない | `429 {"error":"cooldown"}` + `Retry-After: <秒>` |
+| 前回の ATX 操作が**終わってから** `ATX_MIN_INTERVAL_MS`（`TODO(hw-verify)`）が経っていない | `429 {"error":"cooldown"}` + `Retry-After: <秒>`（残り時間を**切り上げた秒**、最小 1） |
 | ボードが `fault` | `503 {"error":"hw_fault"}` |
 | サービス未起動 | `503 {"error":"not_ready"}` |
 
+`channel_mismatch` の `active_channel` は 1〜4（`unknown` のときは `unknown_state` が先に返るので、`null` にはならない）。想定外の内部結果（バグ）は `500 {"error":"internal_error"}` で、何も実行したことにしない。
+
 **判定の順序**（複数当てはまるときの優先。テストで固定する）: 認証 → Origin → 形式 → `channel` の範囲 → サービス未起動/`fault`（503）→ `unknown_state` → `busy` → `channel_mismatch` → `atx_locked` → `cooldown` → 受理。`channel_mismatch` を `cooldown` より先にするのは、「別の PC への操作」を、時間の問題として隠さないため。
 
-**ログ**: 受理した操作と拒否の理由（`channel_mismatch` など）を、チャンネルと種類だけ記録する（セッション情報は出さない）。
+**ログ**: 受理した操作と拒否の理由（`channel_mismatch` など）を、チャンネルと種類と理由だけ記録する（`ESP_LOGI`。セッション情報とボディの生データは出さない。ボディが不正でチャンネルが分からないときは `channel=0`）。`status` の成功は記録しない。
+
+**サービスの起動**: `kvm_service_start()` を呼ぶのは、実機のボードの HAL を実装する A-9（Antigravity）。呼ばれるまで、`status` と `select` と `power/*` は、認証と形式の検査を通ったうえで `503 not_ready` を返す。
 
 ## セキュリティ上の前提
 - **ネットワーク環境**: 本システムは VPN などの安全な LAN 内で使用されることを前提としています。

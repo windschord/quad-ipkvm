@@ -9,6 +9,21 @@
 #define CONFIG_TEST_PATTERN_FPS 10
 #endif
 
+// Fake video status (default: LOCKED at the test pattern's resolution). Statically initialized so that
+// it is valid even if it is read before anything else runs.
+static video_status_fake_t s_status = {
+    .status = { KVM_VIDEO_SYNC_LOCKED, TEST_PATTERN_WIDTH, TEST_PATTERN_HEIGHT }
+};
+
+void test_pattern_source_get_status(void* ctx, video_status_t* out) {
+    (void)ctx;
+    video_status_fake_provider(&s_status, out);
+}
+
+void test_pattern_source_set_status(kvm_video_sync_state_t state, uint32_t w, uint32_t h) {
+    video_status_fake_set(&s_status, state, w, h);
+}
+
 static TaskHandle_t s_task_handle = NULL;
 static volatile int s_stop_requested = 0;
 

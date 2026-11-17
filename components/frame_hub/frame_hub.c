@@ -138,6 +138,9 @@ video_frame_t* frame_hub_begin_publish(frame_hub_t* hub, size_t required_size) {
 
     selected_slot->active = 1;
     selected_slot->is_writing = 1;
+    // Do not inherit codec / flags from the frame that used this slot before.
+    selected_slot->frame.codec = (uint8_t)VIDEO_CODEC_MJPEG;
+    selected_slot->frame.flags = 0;
     // Don't update sequence here, update on commit.
 
     if (hub->config.unlock_cb) hub->config.unlock_cb(hub->config.lock_ctx);
@@ -145,7 +148,24 @@ video_frame_t* frame_hub_begin_publish(frame_hub_t* hub, size_t required_size) {
 }
 
 void frame_hub_commit(frame_hub_t* hub, video_frame_t* frame, size_t size, uint32_t width, uint32_t height, uint64_t timestamp_ms) {
+    // JPEG frames are always self-contained, so they are key frames.
+    frame_hub_commit_info_t info = {
+        .size = size,
+        .width = width,
+        .height = height,
+        .timestamp_ms = timestamp_ms,
+        .codec = VIDEO_CODEC_MJPEG,
+        .flags = VIDEO_FRAME_FLAG_KEY,
+    };
+    frame_hub_commit_ex(hub, frame, &info);
+}
+
+void frame_hub_commit_ex(frame_hub_t* hub, video_frame_t* frame, const frame_hub_commit_info_t* info) {
     if (!hub || !frame) return;
+    if (!info) {
+        frame_hub_abort_publish(hub, frame);
+        return;
+    }
 
     if (hub->config.lock_cb) hub->config.lock_cb(hub->config.lock_ctx);
 
@@ -165,15 +185,17 @@ void frame_hub_commit(frame_hub_t* hub, video_frame_t* frame, size_t size, uint3
 
     slot->is_writing = 0;
 
-    if (size > hub->config.max_frame_size || size == 0) {
+    if (info->size > hub->config.max_frame_size || info->size == 0) {
         // Discard
         slot->active = 0;
         hub->stats.dropped_frames++;
     } else {
-        frame->size = size;
-        frame->width = width;
-        frame->height = height;
-        frame->timestamp_ms = timestamp_ms;
+        frame->size = info->size;
+        frame->width = info->width;
+        frame->height = info->height;
+        frame->timestamp_ms = info->timestamp_ms;
+        frame->codec = (uint8_t)info->codec;
+        frame->flags = info->flags;
         hub->latest_seq++;
         frame->seq = hub->latest_seq;
         slot->seq = hub->latest_seq;

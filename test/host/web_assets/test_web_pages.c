@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include "web_assets.h"
 
 #ifndef WEB_ASSET_DIR
 #define WEB_ASSET_DIR "../../components/web_server/web"
@@ -295,6 +296,233 @@ void test_index_html_explains_the_password_rules(void) {
     free(html);
 }
 
+
+static char *read_file_for_hint(void) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/index.html", WEB_ASSET_DIR);
+    return read_file(path);
+}
+
+// ---- 映像サーバー(GET /)の信頼ページ: video_trust.html (docs/VIDEO_TRANSPORT.md 5 章) ----
+// 認証なしで返してよい代わりに、動的な値を一切含まない・外部を読み込まない・自己完結であること。
+
+static char *read_trust_page(size_t *len_out) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/video_trust.html", WEB_ASSET_DIR);
+    FILE *f = fopen(path, "rb");
+    TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)n + 1);
+    TEST_ASSERT_NOT_NULL(buf);
+    TEST_ASSERT_EQUAL_INT((int)n, (int)fread(buf, 1, (size_t)n, f));
+    buf[n] = '\0';
+    fclose(f);
+    if (len_out) *len_out = (size_t)n;
+    return buf;
+}
+
+void test_video_trust_html_passes_the_common_rules(void) {
+    char *html = read_trust_page(NULL);
+    const char *err = check_forbidden_patterns(html, 0);
+    free(html);
+    if (err) TEST_FAIL_MESSAGE(err);
+}
+
+void test_video_trust_html_is_static_and_self_contained(void) {
+    size_t len = 0;
+    char *html = read_trust_page(&len);
+    // 小さい(上限は余裕を持たせた値。大きくなったら理由を確認する)
+    TEST_ASSERT_TRUE_MESSAGE(len > 0 && len <= 1500, "video_trust.html size out of range");
+    // 文書の形
+    TEST_ASSERT_EQUAL_INT(0, strncmp(html, "<!DOCTYPE html>", 15));
+    TEST_ASSERT_NOT_NULL(strstr(html, "<meta charset=\"UTF-8\">"));
+    TEST_ASSERT_NOT_NULL(strstr(html, "</html>"));
+    // NUL・制御文字(タブ・改行以外)を含まない
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)html[i];
+        TEST_ASSERT_TRUE_MESSAGE(c >= 0x20 || c == '\n' || c == '\t' || c == '\r', "control character");
+    }
+    // 外部の読み込み、実行、入力、リンクを持たない(自己完結。CSP default-src 'none' でも壊れない)
+    static const char *const forbidden[] = {
+        "<script", "<link", "<img", "<iframe", "<frame", "<object", "<embed", "<form", "<input", "<button",
+        "<a ", "<a>", "<base", "<svg", "<video", "<audio", "<source", "<meta http-equiv", "href", "src=",
+        "url(", "@import", "srcset", "ping=", "action=", "data:", "blob:", "//",
+    };
+    for (size_t i = 0; i < sizeof(forbidden) / sizeof(forbidden[0]); i++) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "video_trust.html must not contain \"%s\"", forbidden[i]);
+        TEST_ASSERT_NULL_MESSAGE(my_strcasestr(html, forbidden[i]), msg);
+    }
+    // 動的な値を埋め込む印(テンプレート、printf の書式、サーバーが差し込む記号)を持たない
+    static const char *const dynamic[] = {
+        "%s", "%d", "%u", "%x", "%lu", "%%", "{{", "}}", "${", "<%", "$(", "@@", "{0}", "__",
+        "cookie", "session", "token", "csrf", "nonce", "password", "set-cookie", "authenticated",
+    };
+    for (size_t i = 0; i < sizeof(dynamic) / sizeof(dynamic[0]); i++) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "video_trust.html must not contain \"%s\"", dynamic[i]);
+        TEST_ASSERT_NULL_MESSAGE(my_strcasestr(html, dynamic[i]), msg);
+    }
+    free(html);
+}
+
+void test_video_trust_html_text(void) {
+    char *html = read_trust_page(NULL);
+    TEST_ASSERT_NOT_NULL(strstr(html, "<title>"));
+    TEST_ASSERT_NOT_NULL(strstr(html, "この接続を信頼しました"));
+    TEST_ASSERT_NOT_NULL(strstr(html, "元のページ"));
+    TEST_ASSERT_NOT_NULL(strstr(html, "再読み込み"));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(html, "元のアドレス"), "must tell the person to open the original address by hand");
+    free(html);
+}
+
+void test_video_trust_html_served_as_the_root_of_the_video_server(void) {
+    // 映像サーバーの表は "/" だけ。web_server.c の表(IDF 側)と同じ web_asset_t で引く。
+    size_t len = 0;
+    char *html = read_trust_page(&len);
+    const web_asset_t table[] = {
+        {"/", "text/html", (const unsigned char *)html, len},
+    };
+    const web_asset_t *a = web_assets_find(table, 1, "/");
+    TEST_ASSERT_NOT_NULL(a);
+    TEST_ASSERT_EQUAL_STRING("text/html", a->content_type);
+    TEST_ASSERT_EQUAL_size_t(len, a->len);
+    TEST_ASSERT_EQUAL_INT(0, memcmp(a->data, html, len));
+    // 相対パス、ファイル名、クエリ付きの探索: ファイル名では引けない。クエリは無視して "/" に当たる(既存の規則)。
+    TEST_ASSERT_NULL(web_assets_find(table, 1, "/video_trust.html"));
+    TEST_ASSERT_NULL(web_assets_find(table, 1, "/app.js"));
+    TEST_ASSERT_NULL(web_assets_find(table, 1, "/video"));
+    TEST_ASSERT_NULL(web_assets_find(table, 1, "//"));
+    TEST_ASSERT_NOT_NULL(web_assets_find(table, 1, "/?x=1"));
+    // CSP は HTML 用(自己完結なので、script/style/img などの許可は使わないが、既存の規則に従う)
+    TEST_ASSERT_EQUAL_STRING(web_assets_csp("text/html"), web_assets_csp(a->content_type));
+    TEST_ASSERT_NOT_NULL(strstr(web_assets_csp(a->content_type), "frame-ancestors 'none'"));
+    TEST_ASSERT_NOT_NULL(strstr(web_assets_csp(a->content_type), "default-src 'none'"));
+    free(html);
+}
+
+void test_index_html_has_the_hidden_certificate_hint(void) {
+    char *html = read_file_for_hint();
+    TEST_ASSERT_NOT_NULL(html);
+    const char *hint = strstr(html, "id=\"video-trust-hint\"");
+    TEST_ASSERT_NOT_NULL_MESSAGE(hint, "index.html lacks #video-trust-hint");
+    const char *tag_end = strchr(hint, '>');
+    TEST_ASSERT_NOT_NULL(tag_end);
+    char tag[256];
+    size_t n = (size_t)(tag_end - hint);
+    TEST_ASSERT_TRUE(n < sizeof(tag));
+    memcpy(tag, hint, n);
+    tag[n] = '\0';
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(tag, "trust-hint-hidden"), "the hint must start hidden");
+    TEST_ASSERT_NOT_NULL(strstr(html, "映像用の接続の証明書を、まだ受け入れていない可能性があります。"));
+    TEST_ASSERT_NOT_NULL(strstr(html, "証明書を受け入れてから、このページを再読み込みしてください"));
+    free(html);
+
+    char path[256];
+    snprintf(path, sizeof(path), "%s/app.css", WEB_ASSET_DIR);
+    char *css = read_file(path);
+    TEST_ASSERT_NOT_NULL(css);
+    const char *rule = strstr(css, ".trust-hint-hidden");
+    TEST_ASSERT_NOT_NULL_MESSAGE(rule, "app.css lacks .trust-hint-hidden");
+    const char *rule_end = strchr(rule, '}');
+    const char *none = strstr(rule, "display: none");
+    TEST_ASSERT_TRUE_MESSAGE(rule_end != NULL && none != NULL && none < rule_end, ".trust-hint-hidden needs display: none");
+    free(css);
+}
+
+void test_app_js_builds_the_video_url_only_through_the_pure_functions(void) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/app.js", WEB_ASSET_DIR);
+    char *js = read_file(path);
+    TEST_ASSERT_NOT_NULL(js);
+    TEST_ASSERT_NOT_NULL(strstr(js, "const VideoTarget = {"));
+    TEST_ASSERT_NOT_NULL(strstr(js, "VideoTarget.resolve(location, data.video_port)"));
+    TEST_ASSERT_NOT_NULL(strstr(js, "new WebSocket(target.url)"));
+    // 映像の WebSocket の URL(".../video'" の文字列)は、VideoTarget の中にだけある
+    const char *vt = strstr(js, "const VideoTarget = {");
+    const char *end = strstr(js, "function showTrustHint");
+    TEST_ASSERT_NOT_NULL(vt);
+    TEST_ASSERT_NOT_NULL(end);
+    int count = 0;
+    for (const char *p = js; (p = strstr(p, "/video'")) != NULL; p++) {
+        TEST_ASSERT_TRUE_MESSAGE(p > vt && p < end, "the /video URL must come from VideoTarget.resolve only");
+        count++;
+    }
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, count, "expected the legacy and the separate-port /video URLs");
+    free(js);
+}
+
+// ---- 映像の状態の表示(C-6b。docs/WEB_API.md 5、docs/VIDEO_TRANSPORT.md 8 章) ----
+
+void test_index_html_has_the_hidden_video_status_overlay(void) {
+    char *html = read_file_for_hint();
+    TEST_ASSERT_NOT_NULL(html);
+    const char *ov = strstr(html, "id=\"video-overlay\"");
+    TEST_ASSERT_NOT_NULL_MESSAGE(ov, "index.html lacks #video-overlay");
+    const char *tag_end = strchr(ov, '>');
+    TEST_ASSERT_NOT_NULL(tag_end);
+    char tag[256];
+    size_t n = (size_t)(tag_end - ov);
+    TEST_ASSERT_TRUE(n < sizeof(tag));
+    memcpy(tag, ov, n);
+    tag[n] = '\0';
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(tag, "role=\"status\""), "the overlay needs role=\"status\"");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(tag, "aria-live=\"polite\""), "the overlay needs aria-live=\"polite\"");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(tag, "video-overlay-hidden"), "the overlay must start hidden");
+    // キャンバスと同じ枠(.video-wrap)の中で、キャンバスより後ろ(上に重なる)にある。中身は空(文は app.js が textContent で入れる)
+    const char *wrap = strstr(html, "class=\"video-wrap\"");
+    const char *canvas = strstr(html, "<canvas id=\"video\"");
+    TEST_ASSERT_NOT_NULL_MESSAGE(wrap, "index.html lacks .video-wrap");
+    TEST_ASSERT_NOT_NULL(canvas);
+    TEST_ASSERT_TRUE_MESSAGE(wrap < canvas && canvas < ov, "the overlay must follow the canvas inside .video-wrap");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, strncmp(tag_end, "></div>", 7), "the overlay must start empty");
+    // その直後が .video-wrap の閉じタグ(= 枠の中の最後の要素。枠の外に出ていない)
+    const char *after = tag_end + 7;
+    while (*after == ' ' || *after == '\n' || *after == '\r' || *after == '\t') after++;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, strncmp(after, "</div>", 6), "the overlay must be the last element inside .video-wrap");
+    free(html);
+
+    char path[256];
+    snprintf(path, sizeof(path), "%s/app.css", WEB_ASSET_DIR);
+    char *css = read_file(path);
+    TEST_ASSERT_NOT_NULL(css);
+    const char *rule = strstr(css, ".video-overlay-hidden");
+    TEST_ASSERT_NOT_NULL_MESSAGE(rule, "app.css lacks .video-overlay-hidden");
+    const char *rule_end = strchr(rule, '}');
+    const char *none = strstr(rule, "display: none");
+    TEST_ASSERT_TRUE_MESSAGE(rule_end != NULL && none != NULL && none < rule_end, ".video-overlay-hidden needs display: none");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(css, ".video-wrap {\n    position: relative;"), ".video-wrap must be the positioning context");
+    const char *o = strstr(css, ".video-overlay {");
+    TEST_ASSERT_NOT_NULL_MESSAGE(o, "app.css lacks .video-overlay");
+    const char *o_end = strchr(o, '}');
+    const char *abs = strstr(o, "position: absolute");
+    const char *pe = strstr(o, "pointer-events: none");
+    TEST_ASSERT_TRUE_MESSAGE(o_end != NULL && abs != NULL && abs < o_end, ".video-overlay must be positioned over the canvas");
+    TEST_ASSERT_TRUE_MESSAGE(pe != NULL && pe < o_end, ".video-overlay must not take the clicks of the canvas");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(css, "@media (prefers-color-scheme: dark)"), "the overlay needs a dark mode rule");
+    free(css);
+}
+
+void test_app_js_shows_the_video_status_through_textContent_only(void) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/app.js", WEB_ASSET_DIR);
+    char *js = read_file(path);
+    TEST_ASSERT_NOT_NULL(js);
+    TEST_ASSERT_NULL_MESSAGE(my_strcasestr(js, "innerHTML"), "innerHTML found");
+    TEST_ASSERT_NULL_MESSAGE(my_strcasestr(js, "outerHTML"), "outerHTML found");
+    TEST_ASSERT_NULL_MESSAGE(my_strcasestr(js, "insertAdjacentHTML"), "insertAdjacentHTML found");
+    TEST_ASSERT_NOT_NULL(strstr(js, "const elVideoOverlay = document.getElementById('video-overlay');"));
+    TEST_ASSERT_NOT_NULL(strstr(js, "elVideoOverlay.textContent = text;"));
+    TEST_ASSERT_NOT_NULL(strstr(js, "const VideoStatus = {"));
+    // テキストフレームは typeof で分け、解析してから使う。binaryType は変えない。
+    TEST_ASSERT_NOT_NULL(strstr(js, "typeof e.data === 'string'"));
+    TEST_ASSERT_NOT_NULL(strstr(js, "VideoStatus.parse(e.data)"));
+    TEST_ASSERT_NOT_NULL(strstr(js, "ws.binaryType = \"blob\";"));
+    free(js);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_index_html);
@@ -305,5 +533,13 @@ int main(void) {
     RUN_TEST(test_app_js_pairs_each_code_with_its_own_message);
     RUN_TEST(test_app_js_checks_the_password_length_in_bytes_before_sending);
     RUN_TEST(test_index_html_explains_the_password_rules);
+    RUN_TEST(test_video_trust_html_passes_the_common_rules);
+    RUN_TEST(test_video_trust_html_is_static_and_self_contained);
+    RUN_TEST(test_video_trust_html_text);
+    RUN_TEST(test_video_trust_html_served_as_the_root_of_the_video_server);
+    RUN_TEST(test_index_html_has_the_hidden_certificate_hint);
+    RUN_TEST(test_app_js_builds_the_video_url_only_through_the_pure_functions);
+    RUN_TEST(test_index_html_has_the_hidden_video_status_overlay);
+    RUN_TEST(test_app_js_shows_the_video_status_through_textContent_only);
     return UNITY_END();
 }

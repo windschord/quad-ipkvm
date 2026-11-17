@@ -81,3 +81,45 @@ button:hover {
     border-radius: 4px;
     background-color: #e0e0e0;
 }
+
+.trust-hint-hidden {
+    display: none;
+}
+.trust-hint {
+    margin: 10px 0;
+    padding: 10px;
+    color: #664d03;
+    background-color: #fff3cd;
+    border: 1px solid #ffecb5;
+    border-radius: 4px;
+    overflow-wrap: anywhere;
+}
+
+/* The video state (no signal, checking, resolution changed) over the canvas. The last frame stays visible behind it. */
+.video-wrap {
+    position: relative;
+}
+.video-overlay-hidden {
+    display: none;
+}
+.video-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    max-width: 90%;
+    padding: 10px 20px;
+    font-size: 1.2em;
+    text-align: center;
+    color: #fff;
+    background-color: rgba(0, 0, 0, 0.7);
+    border-radius: 6px;
+    pointer-events: none;
+}
+@media (prefers-color-scheme: dark) {
+    .video-overlay {
+        color: #f5f5f5;
+        background-color: rgba(30, 30, 30, 0.85);
+        border: 1px solid #666;
+    }
+}

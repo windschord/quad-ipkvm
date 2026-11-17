@@ -183,6 +183,57 @@ void test_pp_stop_keeps_latest_and_restart_does_not_count(void) {
     TEST_ASSERT_EQUAL_INT(0, csi_pp_acquire(&pp));
 }
 
+void test_pp_acquire_while_held_returns_none_even_if_latest_present(void) {
+    csi_pp_t pp;
+    csi_pp_init(&pp, 0);
+    // Construct state where consumer holds buffer 0 and buffer 1 is marked latest:
+    // re-acquiring MUST return CSI_PP_NONE without clobbering held or consuming latest.
+    pp.held = 0;
+    pp.latest = 1;
+    TEST_ASSERT_EQUAL_INT(CSI_PP_NONE, csi_pp_acquire(&pp));
+    TEST_ASSERT_EQUAL_INT(0, pp.held);
+    TEST_ASSERT_EQUAL_INT(1, pp.latest);
+}
+
+void test_pp_overwritten_conservation_invariant_never_double_counts(void) {
+    csi_pp_t pp;
+    csi_pp_init(&pp, 1);
+    uint32_t acquired = 0u;
+
+    for (uint32_t step = 0u; step < 200u; step++) {
+        (void)csi_pp_next_dma(&pp);
+        uint32_t in_latest = (pp.latest != CSI_PP_NONE) ? 1u : 0u;
+        TEST_ASSERT_EQUAL_UINT32(pp.published, acquired + pp.overwritten + in_latest);
+
+        if ((step % 5u) == 2u) {
+            int got = csi_pp_acquire(&pp);
+            if (got != CSI_PP_NONE) {
+                acquired++;
+            }
+            in_latest = (pp.latest != CSI_PP_NONE) ? 1u : 0u;
+            TEST_ASSERT_EQUAL_UINT32(pp.published, acquired + pp.overwritten + in_latest);
+        }
+        if ((step % 7u) == 6u && pp.held != CSI_PP_NONE) {
+            TEST_ASSERT_TRUE(csi_pp_release(&pp, pp.held));
+            in_latest = (pp.latest != CSI_PP_NONE) ? 1u : 0u;
+            TEST_ASSERT_EQUAL_UINT32(pp.published, acquired + pp.overwritten + in_latest);
+        }
+        if ((step % 23u) == 22u) {
+            csi_pp_stop(&pp);
+            in_latest = (pp.latest != CSI_PP_NONE) ? 1u : 0u;
+            TEST_ASSERT_EQUAL_UINT32(pp.published, acquired + pp.overwritten + in_latest);
+        }
+    }
+
+    // Defensive check: even if latest == writing on entry, overwritten must not double-count.
+    csi_pp_init(&pp, 0);
+    pp.held = 0;
+    pp.latest = 1;
+    pp.writing = 1;
+    TEST_ASSERT_EQUAL_INT(1, csi_pp_next_dma(&pp));
+    TEST_ASSERT_EQUAL_UINT32(1u, pp.overwritten);
+}
+
 void test_format_geometry_rgb888_and_uyvy(void) {
     TEST_ASSERT_EQUAL_UINT32(24u, csi_pixel_format_bpp(CSI_PIXEL_FORMAT_RGB888));
     TEST_ASSERT_EQUAL_UINT32(16u, csi_pixel_format_bpp(CSI_PIXEL_FORMAT_UYVY));
@@ -213,6 +264,52 @@ void test_format_geometry_rgb888_and_uyvy(void) {
     TEST_ASSERT_EQUAL_UINT32(6220800u, (uint32_t)out);
 }
 
+void test_jpeg_validate_bitstream_and_overflow_sentinel(void) {
+    uint8_t ok_buf[6] = {0xFF, 0xD8, 0x00, 0x11, 0xFF, 0xD9};
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_MARKERS,
+                          csi_jpeg_validate_bitstream(NULL, 6, 6));
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_MARKERS,
+                          csi_jpeg_validate_bitstream(ok_buf, 0, 6));
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_MARKERS,
+                          csi_jpeg_validate_bitstream(ok_buf, 6, 3));
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_OK,
+                          csi_jpeg_validate_bitstream(ok_buf, 6, 6));
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_OVERSIZE,
+                          csi_jpeg_validate_bitstream(ok_buf, 5, 6));
+
+    uint8_t bad_soi0[6] = {0xFE, 0xD8, 0x00, 0x11, 0xFF, 0xD9};
+    uint8_t bad_soi1[6] = {0xFF, 0xD9, 0x00, 0x11, 0xFF, 0xD9};
+    uint8_t bad_eoi0[6] = {0xFF, 0xD8, 0x00, 0x11, 0xFE, 0xD9};
+    uint8_t bad_eoi1[6] = {0xFF, 0xD8, 0x00, 0x11, 0xFF, 0xD8};
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_MARKERS,
+                          csi_jpeg_validate_bitstream(bad_soi0, 6, 6));
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_MARKERS,
+                          csi_jpeg_validate_bitstream(bad_soi1, 6, 6));
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_MARKERS,
+                          csi_jpeg_validate_bitstream(bad_eoi0, 6, 6));
+    TEST_ASSERT_EQUAL_INT(CSI_JPEG_BITSTREAM_ERR_MARKERS,
+                          csi_jpeg_validate_bitstream(bad_eoi1, 6, 6));
+
+    // Sentinel NULL / zero-length guards
+    csi_jpeg_arm_overflow_sentinel(NULL, 16);
+    TEST_ASSERT_FALSE(csi_jpeg_overflow_sentinel_tripped(NULL, 16));
+    uint8_t tail[64];
+    TEST_ASSERT_FALSE(csi_jpeg_overflow_sentinel_tripped(tail, 0));
+
+    csi_jpeg_arm_overflow_sentinel(tail, sizeof(tail));
+    TEST_ASSERT_FALSE(csi_jpeg_overflow_sentinel_tripped(tail, sizeof(tail)));
+
+    // Modifying first, middle odd, or last byte trips the sentinel
+    tail[0] = 0x00;
+    TEST_ASSERT_TRUE(csi_jpeg_overflow_sentinel_tripped(tail, sizeof(tail)));
+    csi_jpeg_arm_overflow_sentinel(tail, sizeof(tail));
+    tail[31] = 0xFF;
+    TEST_ASSERT_TRUE(csi_jpeg_overflow_sentinel_tripped(tail, sizeof(tail)));
+    csi_jpeg_arm_overflow_sentinel(tail, sizeof(tail));
+    tail[sizeof(tail) - 1u] = 0xA4;
+    TEST_ASSERT_TRUE(csi_jpeg_overflow_sentinel_tripped(tail, sizeof(tail)));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_geometry_720p_rgb888_ok);
@@ -231,6 +328,9 @@ int main(void) {
     RUN_TEST(test_pp_skip_initial_frames);
     RUN_TEST(test_pp_release_rejects_wrong_index);
     RUN_TEST(test_pp_stop_keeps_latest_and_restart_does_not_count);
+    RUN_TEST(test_pp_acquire_while_held_returns_none_even_if_latest_present);
+    RUN_TEST(test_pp_overwritten_conservation_invariant_never_double_counts);
     RUN_TEST(test_format_geometry_rgb888_and_uyvy);
+    RUN_TEST(test_jpeg_validate_bitstream_and_overflow_sentinel);
     return UNITY_END();
 }

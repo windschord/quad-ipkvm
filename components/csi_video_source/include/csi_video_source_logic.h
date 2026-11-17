@@ -103,6 +103,7 @@ void csi_video_pub_stats_on_error(csi_video_pub_stats_t *st);
 #define CSI_MODE_STABLE_COUNT         2u
 #define CSI_MODE_STALL_TIMEOUT_MS     2000u
 #define CSI_MODE_RECOVERY_COOLDOWN_MS 8000u
+#define CSI_MODE_MAX_CONSEC_SAMPLE_ERRORS 25u
 #define CSI_HPD_NUDGE_STEPS           3u
 #define CSI_HPD_NUDGE_DELAY_0_MS      10000u
 #define CSI_HPD_NUDGE_DELAY_1_MS      20000u
@@ -147,12 +148,20 @@ typedef struct {
     uint32_t mode_switches;
     uint32_t hpd_nudges;
     uint32_t stall_recoveries;
+    uint32_t sample_errors;             // cumulative I2C/signal read failures skipped by poll
+    uint32_t consecutive_sample_errors; // consecutive poll failures; reset on valid sample
 } csi_mode_tracker_t;
 
 void csi_mode_tracker_init(csi_mode_tracker_t *m);
 csi_mode_action_t csi_mode_tracker_step(csi_mode_tracker_t *m, const csi_mode_sample_t *s);
 void csi_mode_tracker_on_frame(csi_mode_tracker_t *m, uint64_t now_ms);
 csi_mode_action_t csi_mode_tracker_check_stall(csi_mode_tracker_t *m, uint64_t now_ms);
+// Poll-cycle entry point: when sample_ok is false (e.g. transient I2C NACK/timeout on shared bus),
+// records sample_errors and skips BOTH csi_mode_tracker_step() and csi_mode_tracker_check_stall(),
+// returning KEEP_STREAMING if currently streaming or WAIT if unlocked. When sample_ok is true,
+// runs csi_mode_tracker_step() and, if KEEP_STREAMING, csi_mode_tracker_check_stall().
+csi_mode_action_t csi_mode_tracker_poll(csi_mode_tracker_t *m, bool sample_ok,
+                                        const csi_mode_sample_t *s);
 // If CSI start/reconfigure fails after CSI_MODE_ACT_START_MODE, revert streaming state so the
 // next 200 ms poll retries cleanly instead of thinking DMA is running.
 void csi_mode_tracker_abort_start(csi_mode_tracker_t *m);

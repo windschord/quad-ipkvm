@@ -160,12 +160,32 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE mcp23017_logic)
     endif()
 
+    if (test_source MATCHES "/usb_hid/")
+        target_link_libraries(${test_name} PRIVATE usb_hid_logic)
+    endif()
+
     if (test_source MATCHES "/kvm_board/")
         target_link_libraries(${test_name} PRIVATE kvm_board_mock)
     endif()
 
     if (test_source MATCHES "/kvm_ctrl/")
         target_link_libraries(${test_name} PRIVATE kvm_ctrl kvm_board_mock)
+    endif()
+
+    if (test_source MATCHES "/video_status/")
+        target_link_libraries(${test_name} PRIVATE video_status kvm_ctrl kvm_board_mock)
+    endif()
+
+    if (test_source MATCHES "/video_codec_policy/")
+        target_link_libraries(${test_name} PRIVATE video_codec_policy)
+    endif()
+
+    if (test_source MATCHES "/usb_vbus_ctrl/")
+        target_link_libraries(${test_name} PRIVATE usb_vbus_ctrl)
+    endif()
+
+    if (test_source MATCHES "/kvm_api/")
+        target_link_libraries(${test_name} PRIVATE kvm_api kvm_ctrl kvm_board_mock http_guard auth_logic)
     endif()
 
 
@@ -210,9 +230,24 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/auth_worker_slot ${CMAKE_B
 # Setup net_eth_util component (pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/net_eth ${CMAKE_BINARY_DIR}/net_eth)
 
+# Setup usb_hid_logic component (pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/usb_hid ${CMAKE_BINARY_DIR}/usb_hid)
+
 # Setup kvm_board (HAL header) and kvm_ctrl (kvm_logic <-> HAL glue, pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_board ${CMAKE_BINARY_DIR}/kvm_board)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_ctrl ${CMAKE_BINARY_DIR}/kvm_ctrl)
+
+# video_status (provider of the video sync state: video sources register, KVM reads; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/video_status ${CMAKE_BINARY_DIR}/video_status)
+
+# video_codec_policy (stateful codec decision MJPEG / H.264, docs/VIDEO_TRANSPORT.md 9.5; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/video_codec_policy ${CMAKE_BINARY_DIR}/video_codec_policy)
+
+# usb_vbus_ctrl (VBUS sensing -> D+ pull-up connect/disconnect decision, docs/USB_VBUS_DESIGN.md; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/usb_vbus_ctrl ${CMAKE_BINARY_DIR}/usb_vbus_ctrl)
+
+# kvm_api (HTTP API of KVM/ATX: strict body parser, JSON, result -> HTTP mapping, pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_api ${CMAKE_BINARY_DIR}/kvm_api)
 
 # Mock kvm_board_hal_t (reproduces the board-side obligations of docs/INTERFACES.md 6.2)
 add_library(kvm_board_mock STATIC ${CMAKE_SOURCE_DIR}/kvm_board/kvm_board_mock.c)
@@ -220,3 +255,11 @@ target_include_directories(kvm_board_mock PUBLIC ${CMAKE_SOURCE_DIR}/kvm_board)
 target_link_libraries(kvm_board_mock PUBLIC kvm_board)
 target_compile_options(kvm_board_mock PRIVATE ${TEST_COMPILE_OPTIONS})
 target_link_options(kvm_board_mock PRIVATE ${TEST_LINK_OPTIONS})
+
+# Browser-side code (components/web_server/web/app.js) checked with node (no dependencies). Skipped when node is absent.
+find_program(NODE_EXECUTABLE node)
+if(NODE_EXECUTABLE)
+    add_test(NAME check_video_viewer COMMAND ${NODE_EXECUTABLE} ${CMAKE_SOURCE_DIR}/../../tools/test/check_video_viewer.js)
+else()
+    message(STATUS "node not found: check_video_viewer is not registered")
+endif()

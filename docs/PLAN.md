@@ -173,7 +173,7 @@ HANDOFF の範囲に、**状態表示用の OLED** と、パネル用の **I/O �
 | P4 | 未着手 [未] | HID（`hid_logic` + TinyUSB + `WS /ws`）。 |
 | P5 | 準備のみ [ホスト] | `csi_video_source_get_status` / `get_sync_state` / `get_mode`（契約は `INTERFACES.md` 1.3、実装済み）。`kvm_logic` への配線と KVM 経由の確認は未着手。 |
 | P6 | 一部 [ホスト] | `kvm_logic`（状態機械）はホストテスト済み。`kvm_board` の HAL と API、ATX の回路は未着手・未確認。 |
-| P7 | 未着手 [未] | H.264。実映像（P2b）で JPEG の大きさと帯域を測れるようになったので、着手前に再評価する。 |
+| P7 | 純 C・ビューア・結線（ホスト）まで。`csi_h264`（Antigravity）と実機が残り [ホスト] | H.264 低帯域モード。評価は `docs/P7_H264_EVAL.md`（PR #109）、契約は `docs/VIDEO_TRANSPORT.md` §9 と `INTERFACES.md` §1.4。**既定は MJPEG のまま**（`VIDEO_CODEC_H264_ALLOWED = n`）。純 C（`video_codec_policy`、`ws_video_core` のキーフレーム待ち、`http_guard_video_accept`）、ビューア、`web_server.c` / `main.c` の結線（IDF のビルドは未確認。device-check が要る）= Claude。`csi_h264` と実機の確認 = Antigravity。 |
 | OLED（#44） | 一部 [ホスト] | `oled_ui`、`oled_render`、`mcp23017_logic`（純 C）まで。OLED-3b/4 は未着手。I2C バスは TC358743 と共用。 |
 
 **未確認・残っていること**

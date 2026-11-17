@@ -58,14 +58,31 @@ menu "Quad IP-KVM Configuration"
             bool "UYVY 4:2:2 (16 bpp, PPA 4B swap -> HW JPEG YUV422)"
     endchoice
 
-    config TC358743_CSI_LANE_RATE_MBPS
-        int "TC358743 & ESP32-P4 CSI lane bit rate (Mbps)"
-        default 972
-        range 445 972
+    choice TC358743_CSI_LANE_RATE_SELECT
+        prompt "TC358743 & ESP32-P4 CSI lane bit rate"
+        default TC358743_CSI_LANE_RATE_972
         depends on TC358743_START_CSI
         help
-            CSI-2 per-lane bit rate in Mbps (must be 972, 594, or 445 for the 445.5 Mbps P2b-8 mode).
+            CSI-2 per-lane bit rate in Mbps (972, 594, or 445 for the 445.5 Mbps P2b-8 mode).
             Both TC358743 PLL/timings and ESP32-P4 CSI D-PHY use this value.
+
+        config TC358743_CSI_LANE_RATE_972
+            bool "972 Mbps/lane (default)"
+
+        config TC358743_CSI_LANE_RATE_594
+            bool "594 Mbps/lane"
+
+        config TC358743_CSI_LANE_RATE_445
+            bool "445.5 Mbps/lane (445)"
+    endchoice
+
+    config TC358743_CSI_LANE_RATE_MBPS
+        int
+        default 972 if TC358743_CSI_LANE_RATE_972
+        default 594 if TC358743_CSI_LANE_RATE_594
+        default 445 if TC358743_CSI_LANE_RATE_445
+        default 972
+        depends on TC358743_START_CSI
     config TC358743_INIT
         bool "Initialize TC358743 on startup"
         default n
@@ -172,11 +189,16 @@ menu "Quad IP-KVM Configuration"
 
     config FRAME_HUB_MAX_FRAME_KB
         int "Frame Hub max frame size in KB"
-        default 256 if FRAME_HUB_PREFER_SPIRAM
+        default 768 if FRAME_HUB_PREFER_SPIRAM
         default 64
         range 1 4096
         help
-            PSRAM が有効な既定では 256KB（1080p の MJPEG 1 枚の目安）。PSRAM が無いときは内蔵 RAM に収まる 64KB
+            PSRAM が有効な既定では 768KB（3 スロットで 2.25 MiB）。1080p の IDE / ターミナル画面は q=70 で
+            約 586 KiB になる（docs/HW_VERIFY.md、docs/VIDEO_TRANSPORT.md 2）。256KB では全フレームが
+            oversize_drop になる。PSRAM が無いときは内蔵 RAM に収まる 64KB。
+            既存の sdkconfig は以前の値（256）を保持する。sdkconfig の該当行を消して再生成するか、
+            menuconfig で 768 に直すこと。
+            TODO(hw-verify): 実際の 1080p で oversize_drop = 0 か。
 
     config FRAME_HUB_PREFER_SPIRAM
         bool "Prefer SPIRAM for Frame Hub buffers"
@@ -258,14 +280,113 @@ menu "Quad IP-KVM Configuration"
             Maximum duration in milliseconds an async WS /video frame send may remain in flight
             before ws_video_core_tick requests disconnecting the stalled client. Set 0 to disable.
 
-    config WEB_SERVER_WS_SOCK_SNDTIMEO_MS
-        int "WS Video socket SO_SNDTIMEO (ms)"
-        default 250
+    config WEB_SERVER_VIDEO_PORT
+        int "Dedicated Video HTTPS Server Port"
+        default 8444
+        range 1 65535
+        help
+            TCP port for the dedicated video HTTPS server serving WS /video and GET /.
+
+    config WEB_SERVER_VIDEO_STACK_SIZE
+        int "Video HTTPS Server Task Stack Size"
+        default 8192
+        range 4096 65536
+        help
+            Stack size in bytes of the dedicated video httpd task.
+            TODO(hw-verify): confirm the stack high water mark on the device.
+
+    config WEB_SERVER_WS_SLICE_BYTES
+        int "WS Video max payload slice bytes per work item"
+        default 16384
+        range 1024 16384
+        help
+            Maximum WS /video payload bytes sent per httpd_queue_work callback before re-queueing.
+            TODO(hw-verify): tune slice size with real video and slowclient.
+
+    config WEB_SERVER_WS_FRAME_DEADLINE_BASE_MS
+        int "WS Video frame deadline base (ms)"
+        default 800
         range 50 10000
         help
+            Base per-frame deadline in milliseconds added to size * 1000 / min_rate.
+            TODO(hw-verify): verify base deadline against real network jitter.
+
+    config WEB_SERVER_WS_FRAME_MIN_RATE_KBPS
+        int "WS Video frame min rate (kB/s, 1000 B/s)"
+        default 500
+        range 0 100000
+        help
+            Minimum sustained throughput in kB/s (1000 bytes/s; default 500 = 500,000 B/s = 4 Mbps)
+            used to compute the per-frame transmission deadline. Set 0 to disable.
+            TODO(hw-verify): verify slow client threshold on real hardware.
+
+    config WEB_SERVER_WS_QUEUE_TIMEOUT_MS
+        int "WS Video work queue wait timeout (ms)"
+        default 10000
+        range 0 60000
+        help
+            Maximum milliseconds a queued video send may wait before starting on httpd. Set 0 for legacy mode.
+            TODO(hw-verify): verify queue timeout under load.
+
+    config WEB_SERVER_WS_SOCK_SNDTIMEO_MS
+        int "WS Video socket SO_SNDTIMEO (ms)"
+        default 20
+        range 5 10000
+        help
             Per-socket SO_SNDTIMEO in milliseconds set on /video WebSocket fds after handshake
-            (ws_video_post_handshake_cb) so a stalled send fails quickly instead of blocking the
-            single httpd task for WEB_SERVER_SEND_WAIT_TIMEOUT seconds.
+            (ws_video_post_handshake_cb) so a stalled slice fails quickly instead of blocking other
+            video clients in httpd. TODO(hw-verify): verify under slowclient and normal LAN load.
+
+    config VIDEO_CODEC_H264_ALLOWED
+        bool "Allow H.264 (low bandwidth mode) on /video"
+        default n
+        help
+            When n (default), H.264 is never selected: the video codec is always MJPEG, set_codec() of the video
+            source is never called and request_keyframe is not wired, i.e. the behaviour is exactly the same as
+            before P7 (docs/VIDEO_TRANSPORT.md 9.5).
+            When y, the codec policy (video_codec_policy) may select H.264 if ALL of these hold: the video source can
+            produce H.264 (video_source_t.supported_codecs), at least one /video client is connected and every
+            client sent "?accept=h264", the video state is LOCKED at 1920x1080 or less, and these conditions have
+            held for VIDEO_CODEC_UPGRADE_DWELL_MS. Otherwise (or when a client without accept=h264 connects) it
+            falls back to MJPEG at once. Without an H.264 capable source (csi_h264, CSI_H264_ENABLE) this has no effect.
+            H.264 is a low bandwidth sub mode: the measured frame rate is lower than MJPEG (docs/VIDEO_TRANSPORT.md 9.1).
+            See docs/VIDEO_TRANSPORT.md 9.4 to 9.6 and docs/WEB_API.md 5.
+            TODO(hw-verify): behaviour with a real H.264 source is not verified on hardware.
+
+    config VIDEO_CODEC_UPGRADE_DWELL_MS
+        int "Time the H.264 conditions must hold before MJPEG is upgraded to H.264 (ms)"
+        default 5000
+        range 0 60000
+        depends on VIDEO_CODEC_H264_ALLOWED
+        help
+            Debounce against connections coming and going (docs/VIDEO_TRANSPORT.md 9.5). 0 upgrades on the first tick
+            in which all conditions hold. Downgrading to MJPEG is always immediate.
+            TODO(hw-verify): 5000 is a guess; decide from the observed churn and the size of an IDR (up to about 495 KB).
+
+    config VIDEO_CODEC_IDR_MIN_INTERVAL_MS
+        int "Minimum interval between keyframe (IDR) requests (ms)"
+        default 1000
+        range 0 60000
+        depends on VIDEO_CODEC_H264_ALLOWED
+        help
+            Requests of several clients are merged into one and issued at most once per this interval
+            (ws_video_core idr_min_interval_ms, docs/VIDEO_TRANSPORT.md 9.6). 0 does not merge across ticks
+            (at most one request per ws_video tick). An IDR can reach about 495 KB, so requesting one for every
+            lost frame would slow a slow client down further.
+            TODO(hw-verify): 1000 is a guess.
+
+    config VIDEO_CODEC_KEY_WAIT_MS
+        int "Time a client may wait for a keyframe before it is disconnected (ms)"
+        default 5000
+        range 0 60000
+        depends on VIDEO_CODEC_H264_ALLOWED
+        help
+            A client that must wait for an IDR (it joined, or frames were skipped) gets no H.264 P frames. If this takes
+            longer than this value, counted from the first H.264 frame withheld (not from the connection), the
+            client is closed so that it reconnects (ws_video_core key_wait_timeout_ms, docs/VIDEO_TRANSPORT.md 9.6).
+            0 never closes (the video source GOP, CSI_H264_GOP, is then the only way back). Keep it above the time between two IDRs
+            of the source (the GOP in seconds) so that a normal wait is not turned into a reconnect.
+            TODO(hw-verify): 5000 is a guess.
 
     config WEB_SERVER_INPUT_MAX_CONNECTIONS
         int "Max simultaneous WS input clients (/ws)"
@@ -296,4 +417,133 @@ menu "Quad IP-KVM Configuration"
         int "HID token bucket burst size"
         default 100
         range 10 1000
+
+    config USB_DEVICE_ENABLE
+        bool "Enable composite USB HID device on OTG_HS (J3)"
+        default n
+        help
+            Enable composite TinyUSB HID device (Boot Keyboard + Absolute Pointer +
+            Relative Boot Mouse) on ESP32-P4 OTG_HS (J3 connector).
+
+    config USB_DEVICE_VID
+        hex "USB Device Vendor ID (idVendor)"
+        default 0x303A
+        depends on USB_DEVICE_ENABLE
+
+    config USB_DEVICE_PID
+        hex "USB Device Product ID (idProduct)"
+        default 0x4004
+        depends on USB_DEVICE_ENABLE
+
+    config USB_DEVICE_MANUFACTURER
+        string "USB Device Manufacturer String"
+        default "Quad-IPKVM"
+        depends on USB_DEVICE_ENABLE
+
+    config USB_DEVICE_PRODUCT
+        string "USB Device Product String"
+        default "Quad-IPKVM Composite HID"
+        depends on USB_DEVICE_ENABLE
+
+    config USB_DEVICE_BVALID_OVERRIDE
+        bool "Assert DWC2 BVALID override for 3-wire J3 cable without 5V VBUS"
+        default y
+        depends on USB_DEVICE_ENABLE
+        help
+            Enable GOTGCTL BVALID/VBVALID software override on OTG_HS after
+            tinyusb_driver_install(), because J3 pin 1 (5V) is left unconnected
+            in the 3-wire (GND, D-, D+) cable to avoid power backfeed.
+
+            TODO(hw-verify): with BVALID forced, the D+ pull-up is enabled even
+            while the target PC is powered off. Whether voltage leaks onto D+
+            of an unpowered PC is NOT measured yet (docs/HW_VERIFY.md H5).
+            Do not connect J3 to a real target PC until H5 is measured.
+
+    config USB_DEVICE_FORCE_FULL_SPEED
+        bool "Force Full-Speed (12 Mbps) on OTG_HS UTMI PHY"
+        default n
+        depends on USB_DEVICE_ENABLE
+        help
+            Set DWC2 DCFG.devspd=1 (Full-Speed on HS UTMI PHY) after driver install
+            as a fallback if High-Speed enumeration fails due to cable integrity
+            or BIOS USB stack quirks.
+
+    config USB_DEVICE_START_DISCONNECTED
+        bool "Keep USB soft-disconnected (DCTL.sftdiscon=1) at boot for H5 measurement"
+        default n
+        depends on USB_DEVICE_ENABLE
+        help
+            Do not call tud_connect() at the end of usb_hid_init(), keeping the OTG_HS
+            port in soft-disconnect state (DCTL.sftdiscon=1, D+ pull-up disabled).
+            Intended for H5 hardware verification (docs/HW_VERIFY.md H.0): comparing
+            D+ voltage against the connected build while the target PC is powered off.
+            Can be switched later at runtime via usb_hid_set_connected(true).
+
+    config KVM_TICK_MS
+        int "KVM/ATX control tick interval (ms)"
+        default 20
+        range 5 100
+        help
+            Period of the kvm_service task that runs kvm_ctrl_tick() (LED read, kvm_logic step, output apply).
+            Must be well below the kvm_logic timings (setup time, LED stability).
+            The ATX cooldown and the pulse end are judged on this granularity.
+            TODO(hw-verify): confirm that the board HAL (A-9) can be read/driven at this rate.
+
+    config KVM_TASK_STACK_SIZE
+        int "KVM service task stack size (bytes)"
+        default 4096
+        range 2048 16384
+        help
+            Stack size of the kvm_service task.
+            TODO(hw-verify): confirm the stack high water mark on the device (the HAL is not implemented yet).
+
+    config KVM_LOCK_TIMEOUT_MS
+        int "KVM service lock wait limit for HTTP handlers (ms)"
+        default 50
+        range 1 1000
+        help
+            How long an HTTP handler waits for the kvm_ctrl mutex before answering 503 not_ready.
+            Keep it short: the handler runs on the single httpd task.
+
+    config KVM_ASSERT_MARGIN_MS
+        int "Margin added to the pulse length for the board-side auto release (ms)"
+        default 100
+        range 1 1000
+        help
+            assert_line max_ms = pulse length + this margin. Must be larger than the tick period and its jitter,
+            so that the board's hardware timer never cuts a normal pulse before the software releases it.
+            TODO(hw-verify)
+
+    config ATX_PRESS_MS
+        int "ATX power button short press pulse (ms)"
+        default 200
+        range 1 500
+        help
+            Server-side length of POWER press (the client cannot choose it). The hard limit (500 ms) is KVM_ATX_HARD_MAX_POWER_MS.
+            TODO(hw-verify): confirm the value and the limit with the target PCs.
+
+    config ATX_RESET_MS
+        int "ATX reset button pulse (ms)"
+        default 100
+        range 1 200
+        help
+            Server-side length of RESET. The hard limit (200 ms) is KVM_ATX_HARD_MAX_RESET_MS.
+            TODO(hw-verify)
+
+    config ATX_FORCE_MS
+        int "ATX power button long press (force off) pulse (ms)"
+        default 4500
+        range 1 5000
+        help
+            Server-side length of POWER force (hold). The hard limit (5000 ms) is KVM_ATX_HARD_MAX_FORCE_MS.
+            TODO(hw-verify): confirm the hold time the target PCs need for a forced power off.
+
+    config ATX_MIN_INTERVAL_MS
+        int "ATX minimum interval between operations (ms)"
+        default 2000
+        range 0 600000
+        help
+            Software cooldown. After an ATX operation ends (completed or aborted), the next ATX request is
+            refused with 429 for this long. 0 disables the cooldown.
+            TODO(hw-verify)
 endmenu
