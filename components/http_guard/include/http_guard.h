@@ -39,6 +39,30 @@ bool http_guard_origin_ok(const char *origin, size_t origin_len, const char *hos
  */
 bool http_guard_origin_ok_for_port(const char *origin, size_t origin_len, const char *host, size_t host_len, uint16_t page_port);
 
+// --- /video のクエリ: accept (docs/VIDEO_TRANSPORT.md 9.4。P7) ---
+
+#define HTTP_GUARD_VIDEO_ACCEPT_H264 1u  /* accept に h264 がある。JPEG (MJPEG) は常に受け取れる前提なので、ビットを持たない */
+
+/** 解析するクエリの長さの上限 (バイト)。これを超えるクエリは解析せず 0 (MJPEG だけ) にする。esp_http_server の既定の URI の上限 (512) に合わせる。 */
+#define HTTP_GUARD_VIDEO_QUERY_MAX 512u
+
+/**
+ * /video の URI のクエリ部 (`?` の後ろ。`accept=h264` や `foo=1&accept=h264,x`。末尾に NUL は要らない。query_len バイトだけを読む) から、
+ * そのクライアントが受け取れる JPEG 以外のコーデックのビットマスク (HTTP_GUARD_VIDEO_ACCEPT_*) を返す。
+ *
+ * 規則 (契約 9.4。判断した点を含む):
+ *  - `&` で区切った `key=value` のうち、key が "accept" と**完全に一致**するものだけを見る (`xaccept`、`accept2`、`Accept`、`?accept` は別のキー)。
+ *  - value は `,` 区切り。各要素が "h264" と**完全に一致**するときだけビットを立てる (大文字小文字を区別する。`H264` は未知。前後の空白も未知)。
+ *    未知の要素は無視する (エラーにしない)。空の要素も無視する。
+ *  - `accept` キーが複数あるときは、**どれかに h264 があれば真** (OR。順序に依存しない)。
+ *    申告は「受け取れる」という自己申告で、受け取れない形式を送られて困るのはそのクライアント自身だけ (ほかのクライアントは、方針の「全員が申告」で守られる)。
+ *  - パーセントエンコードと `+` は解釈しない (契約にない)。`%68264` は未知の値として無視する。
+ *  - query == NULL、query_len == 0、query_len > HTTP_GUARD_VIDEO_QUERY_MAX、範囲の中に NUL バイトがあるとき: 0 (MJPEG だけ。安全側)。
+ *    query_len を超えては、1 バイトも読まない。
+ *  - `accept` がない・空・未知の値だけ: 0。
+ */
+uint32_t http_guard_video_accept(const char *query, size_t query_len);
+
 // --- JSON Parsing ---
 
 typedef struct {

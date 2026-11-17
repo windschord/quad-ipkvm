@@ -736,3 +736,42 @@ int http_guard_format_status(auth_state_e state, bool authenticated, uint16_t vi
     if (ret < 0 || (size_t)ret >= out_len) return -1;
     return 0;
 }
+
+// --- /video のクエリ: accept (docs/VIDEO_TRANSPORT.md 9.4) ---
+
+// value ("h264,foo" のような、`,` 区切りの値) に "h264" の要素があれば HTTP_GUARD_VIDEO_ACCEPT_H264。
+static uint32_t hg_accept_value(const char *v, size_t n) {
+    uint32_t mask = 0;
+    size_t start = 0;
+    while (start < n) {
+        size_t end = start;
+        while (end < n && v[end] != ',') end++;
+        if (end - start == 4 && memcmp(v + start, "h264", 4) == 0) {
+            mask |= HTTP_GUARD_VIDEO_ACCEPT_H264;
+        }
+        start = end + 1;
+    }
+    return mask;
+}
+
+uint32_t http_guard_video_accept(const char *query, size_t query_len) {
+    if (!query || query_len == 0 || query_len > HTTP_GUARD_VIDEO_QUERY_MAX) return 0;
+    for (size_t i = 0; i < query_len; i++) {
+        if (query[i] == '\0') return 0; // 安全側: NUL を含むクエリは信用しない
+    }
+
+    uint32_t mask = 0;
+    size_t start = 0;
+    while (start < query_len) {
+        size_t end = start;
+        while (end < query_len && query[end] != '&') end++;
+        // 区間 [start, end) が 1 つの key=value
+        size_t eq = start;
+        while (eq < end && query[eq] != '=') eq++;
+        if (eq < end && eq - start == 6 && memcmp(query + start, "accept", 6) == 0) {
+            mask |= hg_accept_value(query + eq + 1, end - eq - 1);
+        }
+        start = end + 1;
+    }
+    return mask;
+}
