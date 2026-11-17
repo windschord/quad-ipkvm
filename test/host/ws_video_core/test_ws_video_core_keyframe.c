@@ -214,6 +214,8 @@ static int connect_fd(int fd, uint64_t now) {
     kind[fd] = K_NONE;
     int slot = ws_video_core_on_connect(&core, (ws_video_conn_t)(uintptr_t)fd, fd, tok, now);
     TEST_ASSERT_TRUE(slot >= 0);
+    // これらのテストは、H.264 を受け取れるクライアントを扱う (接続したときは、申告なし = H.264 を配らない。申告なしの扱いは test_ws_video_core_accepts.c)。
+    ws_video_core_set_accepts_h264(&core, fd, true);
     return slot;
 }
 

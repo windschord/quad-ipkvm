@@ -64,7 +64,7 @@ typedef struct {
                                      // 接続直後の最初の 1 回には適用しない。TODO(hw-verify): 既定 200 は実機で確認する
 
     /* H.264 のキーフレーム待ち (docs/VIDEO_TRANSPORT.md 9.6)。
-     * クライアントごとに need_key を持つ。真にするのは (a) 接続したとき、(b) 配ろうとするフレームの seq が、そのクライアントの
+     * クライアントごとに need_key を持つ (H.264 を申告したクライアントだけ。ws_video_core_set_accepts_h264)。真にするのは (a) H.264 を申告したとき (接続時の規則)、(b) 配ろうとするフレームの seq が、そのクライアントの
      * 最後に配った seq + 1 でないとき、(c) 直前に配ったフレームが MJPEG (または初めて) で、配ろうとするフレームが H.264 のとき。
      * need_key が真のクライアントには、H.264 で KEY の立っていないフレームを配らない。MJPEG のフレームは配って、need_key を偽にする。
      * H.264 の KEY のフレームも配って、偽にする。MJPEG だけのときは、従来と同じ挙動 (need_key は一瞬で偽になる)。 */
@@ -107,6 +107,11 @@ typedef struct {
     size_t text_len[WS_CLIENTS_MAX];               // sending_text[i] のときの、テキストの長さ (期限の size)
     uint8_t text_buf[WS_CLIENTS_MAX][VIDEO_STATUS_JSON_MAX]; // テキストの本体。on_send_done まで有効
 
+    /* H.264 の申告 (クライアントごと。docs/VIDEO_TRANSPORT.md 9.4、9.6)。接続したときは false。
+     * ws_video_core_set_accepts_h264() で設定する。false のクライアントには、H.264 のフレームを配らない (不変条件)。
+     * need_key も、request_keyframe も、key_wait_timeout_ms も、false のクライアントには働かない (H.264 を受け取れないので、待つものがない)。 */
+    bool accepts_h264[WS_CLIENTS_MAX];
+
     /* キーフレーム待ち (クライアントごと。docs/VIDEO_TRANSPORT.md 9.6) */
     bool need_key[WS_CLIENTS_MAX];               // 真の間、H.264 の KEY でないフレームを配らない
     uint64_t need_key_since_ms[WS_CLIENTS_MAX];  // key_waiting[i] のときだけ有効: 最初に H.264 のフレームを配らなかった時刻
@@ -137,6 +142,16 @@ void ws_video_core_on_close(ws_video_core_t* core, int fd);
 void ws_video_core_on_send_begin(ws_video_core_t* core, int fd, uint64_t now_ms);
 void ws_video_core_on_send_done(ws_video_core_t* core, int fd, bool ok);
 void ws_video_core_on_client_data(ws_video_core_t* core, int fd);
+/**
+ * クライアント (fd) が H.264 を受け取れる (`/video?accept=h264`) かどうかを設定する。on_connect の直後に、同じロックの下で呼ぶ。
+ * **接続したときは false で、false のクライアントには、H.264 のフレームを配らない** (そのフレームは hub_release して、次の tick を待つ。
+ * need_key の判定にも、request_keyframe の要求にも、key_wait_timeout_ms にも影響させない。MJPEG のフレームは、従来どおり配る)。
+ * これは、降格 (H.264 -> MJPEG) の set_codec が非同期で、コーデックが切り替わるまでの間も、hub に H.264 のフレームが残るため。
+ * false -> true: 接続時の規則 (docs/VIDEO_TRANSPORT.md 9.6 (a)) をここで適用する (need_key を真にして、要求を溜める)。
+ * true -> false: そのクライアントの need_key と待ちの起点を捨てる (溜まった要求は、誰も待たなくなれば、tick の最後に捨てられる)。
+ * 未知の fd と core == NULL は、何もしない。同じ値の再設定は、何もしない。
+ */
+void ws_video_core_set_accepts_h264(ws_video_core_t* core, int fd, bool accepts);
 void ws_video_core_tick(ws_video_core_t* core, uint64_t now_ms);
 
 /**

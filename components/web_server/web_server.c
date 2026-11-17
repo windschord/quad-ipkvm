@@ -117,10 +117,10 @@ _Static_assert((int)VIDEO_CODEC_POLICY_MJPEG == (int)VIDEO_CODEC_MJPEG, "policy 
 _Static_assert((int)VIDEO_CODEC_POLICY_H264 == (int)VIDEO_CODEC_H264, "policy and frame_hub H264 values differ");
 _Static_assert(VIDEO_CODEC_POLICY_CAP_H264 == (1u << VIDEO_CODEC_H264), "policy and frame_hub H264 capability bits differ");
 
-// Everything below is protected by `s_ws_mutex`. `s_ws_video_accept[slot]` is per ws_clients slot (set by ws_video_post_handshake_cb
-// right after ws_video_core_on_connect(), cleared by ws_video_close_fn()); it is only looked at for ACTIVE slots.
+// Everything below is protected by `s_ws_mutex`. The per client "accepts H.264" flag lives in ws_video_core (accepts_h264[slot]; set by
+// ws_video_post_handshake_cb right after ws_video_core_on_connect(), reset by the core on close / reconnect). The core also uses it to
+// never hand an H.264 frame to a client that did not ask for it (docs/VIDEO_TRANSPORT.md 9.6), so there is one copy of that state.
 static const video_source_t *s_video_source;           // web_server_set_video_source(); NULL = MJPEG only
-static uint32_t s_ws_video_accept[CONFIG_WEB_SERVER_WS_MAX_CLIENTS]; // HTTP_GUARD_VIDEO_ACCEPT_* of the client in that slot
 static video_codec_policy_t s_codec_policy;            // only ws_video_task updates it (under the lock); set_h264_allowed(false) on a failed upgrade
 static video_codec_policy_codec_t s_codec_applied = VIDEO_CODEC_POLICY_MJPEG; // the codec the source last accepted via set_codec()
 static bool s_codec_fail_logged;                       // a set_codec() failure has been logged (rate limit)
@@ -166,7 +166,7 @@ static bool ws_video_codec_update_locked(uint64_t now_ms, const video_source_t *
         // Same notion of "connected" as the keyframe logic in ws_video_core: ACTIVE and not being closed.
         if (s_ws_core.clients.clients[i].state == WS_CLIENT_ACTIVE && !s_ws_core.close_requested[i]) {
             in.client_count++;
-            if (s_ws_video_accept[i] & HTTP_GUARD_VIDEO_ACCEPT_H264) {
+            if (s_ws_core.accepts_h264[i]) {
                 in.h264_client_count++;
             }
         }
@@ -1471,11 +1471,9 @@ static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     int ret = ws_video_core_on_connect(&s_ws_core, (ws_video_conn_t)(intptr_t)fd, fd, token, esp_timer_get_time() / 1000);
     if (ret >= 0) {
-        int slot = ws_clients_find(&s_ws_core.clients, fd);
-        ws_video_ctrl_clear_slot_locked(slot);
-        if (slot >= 0 && slot < CONFIG_WEB_SERVER_WS_MAX_CLIENTS) {
-            s_ws_video_accept[slot] = accept_mask; // always overwritten: a reused slot never keeps the previous client's value
-        }
+        ws_video_ctrl_clear_slot_locked(ws_clients_find(&s_ws_core.clients, fd));
+        // Always set (also false): the core resets the flag on connect and on close, so a reused slot never keeps the previous client's value.
+        ws_video_core_set_accepts_h264(&s_ws_core, fd, (accept_mask & HTTP_GUARD_VIDEO_ACCEPT_H264) != 0);
     }
     xSemaphoreGive(s_ws_mutex);
 
@@ -1661,9 +1659,6 @@ static void ws_video_close_fn(httpd_handle_t handle, int sockfd) {
     bool tracked = (slot >= 0);
     if (tracked) {
         ws_video_ctrl_clear_slot_locked(slot);
-        if (slot < CONFIG_WEB_SERVER_WS_MAX_CLIENTS) {
-            s_ws_video_accept[slot] = 0;
-        }
     }
     ws_video_core_on_close(&s_ws_core, sockfd);
     xSemaphoreGive(s_ws_mutex);
