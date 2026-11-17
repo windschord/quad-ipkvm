@@ -2,14 +2,17 @@
 
 #include <string.h>
 
-/* 切り詰めの上限は、仕様の上限の半分以下（サンプル周期と呼び出しの遅れの余裕）。 */
-typedef char usb_vbus_ctrl_max_is_within_spec[(USB_VBUS_CTRL_DISCONNECT_DEBOUNCE_MAX_MS * 2u <= USB_VBUS_CTRL_SPEC_REMOVE_LIMIT_MS) ? 1 : -1];
+/* 10 秒の保証（ヘッダーの不変条件 3）: 3P + D + F の最大に、完了の余裕を足しても、仕様の上限に収まる。 */
+typedef char usb_vbus_ctrl_max_is_within_spec[(3u * USB_VBUS_CTRL_POLL_PERIOD_MAX_MS + USB_VBUS_CTRL_DISCONNECT_DEBOUNCE_MAX_MS +
+                                               USB_VBUS_CTRL_FORCE_OFF_MAX_MS + USB_VBUS_CTRL_COMPLETION_MARGIN_MS <=
+                                               USB_VBUS_CTRL_SPEC_REMOVE_LIMIT_MS) ? 1 : -1];
 
 usb_vbus_ctrl_config_t usb_vbus_ctrl_config_default(void) {
     usb_vbus_ctrl_config_t c;
     c.enabled = false;
     c.connect_debounce_ms = USB_VBUS_CTRL_DEFAULT_CONNECT_DEBOUNCE_MS;
     c.disconnect_debounce_ms = USB_VBUS_CTRL_DEFAULT_DISCONNECT_DEBOUNCE_MS;
+    c.force_off_after_ms = USB_VBUS_CTRL_DEFAULT_FORCE_OFF_AFTER_MS;
     return c;
 }
 
@@ -19,6 +22,12 @@ void usb_vbus_ctrl_init(usb_vbus_ctrl_t *c, const usb_vbus_ctrl_config_t *config
     c->config = config ? *config : usb_vbus_ctrl_config_default();
     if (c->config.disconnect_debounce_ms > USB_VBUS_CTRL_DISCONNECT_DEBOUNCE_MAX_MS) {
         c->config.disconnect_debounce_ms = USB_VBUS_CTRL_DISCONNECT_DEBOUNCE_MAX_MS;
+    }
+    if (c->config.force_off_after_ms > USB_VBUS_CTRL_FORCE_OFF_MAX_MS) {
+        c->config.force_off_after_ms = USB_VBUS_CTRL_FORCE_OFF_MAX_MS;
+    }
+    if (c->config.force_off_after_ms == 0) {
+        c->config.force_off_after_ms = 1; /* 0 は「待たない」= 最短の 1 ms（10 秒の保証側に倒す） */
     }
     /* connected = false（切断）、数えなし、統計 0 は memset */
 }
@@ -43,6 +52,7 @@ usb_vbus_ctrl_action_t usb_vbus_ctrl_update(usb_vbus_ctrl_t *c, const usb_vbus_c
     /* 時計の逆行: 数えているデバウンスを、この now_ms から数え直す（数えていないなら、次の開始で上書きされる） */
     if (in->now_ms < c->last_now_ms) {
         c->run_start_ms = in->now_ms;
+        c->disc_active = false; /* 数え直し。強制遮断の待ちも最初から */
     }
     c->last_now_ms = in->now_ms;
 
@@ -51,6 +61,7 @@ usb_vbus_ctrl_action_t usb_vbus_ctrl_update(usb_vbus_ctrl_t *c, const usb_vbus_c
     bool opposite = c->connected ? !detected : detected;
     if (!opposite) {
         c->run_active = false;
+        c->disc_active = false;
         return USB_VBUS_CTRL_ACTION_NONE;
     }
     if (!c->run_active) {
@@ -60,7 +71,17 @@ usb_vbus_ctrl_action_t usb_vbus_ctrl_update(usb_vbus_ctrl_t *c, const usb_vbus_c
 
     uint64_t elapsed = in->now_ms - c->run_start_ms;
     if (c->connected) {
-        if (elapsed >= c->config.disconnect_debounce_ms) return USB_VBUS_CTRL_ACTION_DISCONNECT;
+        if (elapsed >= c->config.disconnect_debounce_ms) {
+            /* 強制遮断: 最初の DISCONNECT を返してから force_off_after_ms 経っても、まだ接続の状態（= 成功していない） */
+            if (c->disc_active && in->now_ms - c->disc_first_ms >= c->config.force_off_after_ms) {
+                return USB_VBUS_CTRL_ACTION_FORCE_OFF;
+            }
+            if (!c->disc_active) {
+                c->disc_active = true;
+                c->disc_first_ms = in->now_ms;
+            }
+            return USB_VBUS_CTRL_ACTION_DISCONNECT;
+        }
     } else {
         if (elapsed >= c->config.connect_debounce_ms) return USB_VBUS_CTRL_ACTION_CONNECT;
     }
@@ -69,18 +90,26 @@ usb_vbus_ctrl_action_t usb_vbus_ctrl_update(usb_vbus_ctrl_t *c, const usb_vbus_c
 
 void usb_vbus_ctrl_applied(usb_vbus_ctrl_t *c, usb_vbus_ctrl_action_t action, bool ok) {
     if (!c) return;
-    if (action != USB_VBUS_CTRL_ACTION_CONNECT && action != USB_VBUS_CTRL_ACTION_DISCONNECT) return;
+    if (action != USB_VBUS_CTRL_ACTION_CONNECT && action != USB_VBUS_CTRL_ACTION_DISCONNECT &&
+        action != USB_VBUS_CTRL_ACTION_FORCE_OFF) {
+        return;
+    }
     if (!ok) {
-        /* 状態も数えも変えない: 条件が続いている限り、次の update でも同じ action が返る（デバウンスはやり直さない） */
+        /* 状態も数えも変えない: 条件が続いている限り、次の update でも同じ（または FORCE_OFF の）action が返る
+         * （デバウンスはやり直さない） */
         c->stats.failures++;
+        if (action == USB_VBUS_CTRL_ACTION_DISCONNECT) c->stats.disconnect_failure_count++;
         return;
     }
     c->connected = (action == USB_VBUS_CTRL_ACTION_CONNECT);
     c->run_active = false; /* 状態が変わった。新しい状態の「逆の向き」を、次の tick から最初から数える */
-    if (c->connected) {
+    c->disc_active = false;
+    if (action == USB_VBUS_CTRL_ACTION_CONNECT) {
         c->stats.connects++;
-    } else {
+    } else if (action == USB_VBUS_CTRL_ACTION_DISCONNECT) {
         c->stats.disconnects++;
+    } else {
+        c->stats.force_off_count++;
     }
 }
 

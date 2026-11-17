@@ -11,6 +11,7 @@
 #define NONE USB_VBUS_CTRL_ACTION_NONE
 #define CONNECT USB_VBUS_CTRL_ACTION_CONNECT
 #define DISCONNECT USB_VBUS_CTRL_ACTION_DISCONNECT
+#define FORCE_OFF USB_VBUS_CTRL_ACTION_FORCE_OFF
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -55,8 +56,12 @@ static void test_default_config(void) {
     TEST_ASSERT_FALSE(d.enabled);
     TEST_ASSERT_EQUAL_UINT32(500, d.connect_debounce_ms);
     TEST_ASSERT_EQUAL_UINT32(1000, d.disconnect_debounce_ms);
+    TEST_ASSERT_EQUAL_UINT32(1000, d.force_off_after_ms);
     TEST_ASSERT_EQUAL_UINT32(10000, USB_VBUS_CTRL_SPEC_REMOVE_LIMIT_MS);
-    TEST_ASSERT_EQUAL_UINT32(5000, USB_VBUS_CTRL_DISCONNECT_DEBOUNCE_MAX_MS);
+    TEST_ASSERT_EQUAL_UINT32(3000, USB_VBUS_CTRL_DISCONNECT_DEBOUNCE_MAX_MS);
+    TEST_ASSERT_EQUAL_UINT32(2000, USB_VBUS_CTRL_FORCE_OFF_MAX_MS);
+    TEST_ASSERT_EQUAL_UINT32(1000, USB_VBUS_CTRL_POLL_PERIOD_MAX_MS);
+    TEST_ASSERT_EQUAL_UINT32(2000, USB_VBUS_CTRL_COMPLETION_MARGIN_MS);
 }
 
 static void test_init_starts_disconnected_with_zero_stats_and_keeps_config(void) {
@@ -88,7 +93,7 @@ static void test_init_null_config_is_default(void) {
 }
 
 static void test_init_clamps_disconnect_debounce_to_max(void) {
-    const uint32_t cases[][2] = {{0, 0}, {1, 1}, {4999, 4999}, {5000, 5000}, {5001, 5000}, {10000, 5000}, {UINT32_MAX, 5000}};
+    const uint32_t cases[][2] = {{0, 0}, {1, 1}, {2999, 2999}, {3000, 3000}, {3001, 3000}, {5000, 3000}, {10000, 3000}, {UINT32_MAX, 3000}};
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         usb_vbus_ctrl_t c;
         init_cd_dd(&c, 777, cases[i][0]);
@@ -100,13 +105,26 @@ static void test_init_clamps_disconnect_debounce_to_max(void) {
     TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, c.config.connect_debounce_ms);
 }
 
+static void test_init_clamps_force_off_after_to_1_to_max(void) {
+    const uint32_t cases[][2] = {{0, 1}, {1, 1}, {2, 2}, {1999, 1999}, {2000, 2000}, {2001, 2000}, {3000, 2000}, {UINT32_MAX, 2000}};
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        usb_vbus_ctrl_t c;
+        usb_vbus_ctrl_config_t k = cfg(777, 888);
+        k.force_off_after_ms = cases[i][0];
+        usb_vbus_ctrl_init(&c, &k);
+        TEST_ASSERT_EQUAL_UINT32(cases[i][1], c.config.force_off_after_ms);
+        TEST_ASSERT_EQUAL_UINT32(888, c.config.disconnect_debounce_ms); /* 他の値は変わらない */
+        TEST_ASSERT_EQUAL_UINT32(777, c.config.connect_debounce_ms);
+    }
+}
+
 static void test_clamped_disconnect_debounce_is_what_the_state_machine_uses(void) {
-    /* dd = 100000 を渡しても、5000 ms で切断される（仕様の 10 秒を超えない） */
+    /* dd = 100000 を渡しても、3000 ms で切断される（仕様の 10 秒を超えない） */
     usb_vbus_ctrl_t c;
     uint64_t t = make_connected(&c, 500, 100000);
     TEST_ASSERT_EQUAL_INT(NONE, abse(&c, t + 100));
-    TEST_ASSERT_EQUAL_INT(NONE, abse(&c, t + 100 + 4999));
-    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 100 + 5000));
+    TEST_ASSERT_EQUAL_INT(NONE, abse(&c, t + 100 + 2999));
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 100 + 3000));
 }
 
 /* ---- 起動時は切断 ---- */
@@ -229,7 +247,7 @@ static void test_connect_retry_stops_when_vbus_is_lost_and_debounce_restarts(voi
 
 /* ---- 切断側のデバウンスの境界 ---- */
 static void test_disconnect_boundary_minus1_exact_plus1(void) {
-    const uint32_t dds[] = {1, 2, 1000, 4999, 5000};
+    const uint32_t dds[] = {1, 2, 1000, 2999, 3000};
     for (size_t i = 0; i < sizeof(dds) / sizeof(dds[0]); i++) {
         uint32_t dd = dds[i];
         usb_vbus_ctrl_t c;
@@ -305,11 +323,14 @@ static void test_disconnect_failure_retries_every_tick_without_redebounce(void) 
         TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 1001 + k)); /* 毎回 */
         usb_vbus_ctrl_applied(&c, DISCONNECT, false);
     }
-    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 60000));
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 1001 + 999)); /* 最初の DISCONNECT から 999 < force_off_after_ms（既定 1000） */
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
     TEST_ASSERT_TRUE(usb_vbus_ctrl_is_connected(&c));
     usb_vbus_ctrl_stats_t s;
     usb_vbus_ctrl_get_stats(&c, &s);
-    TEST_ASSERT_EQUAL_UINT32(6, s.failures);
+    TEST_ASSERT_EQUAL_UINT32(7, s.failures);
+    TEST_ASSERT_EQUAL_UINT32(7, s.disconnect_failure_count);
+    TEST_ASSERT_EQUAL_UINT32(0, s.force_off_count);
     TEST_ASSERT_EQUAL_UINT32(0, s.disconnects);
     usb_vbus_ctrl_applied(&c, DISCONNECT, true);
     TEST_ASSERT_FALSE(usb_vbus_ctrl_is_connected(&c));
@@ -669,34 +690,340 @@ static void test_stats_count_connects_disconnects_failures(void) {
     TEST_ASSERT_EQUAL_UINT32(9, s.failures);
 }
 
+/* ---- 強制遮断（FORCE_OFF）: 切断が成功しないとき ---- */
+/* 接続の状態にして、t = 1000 から VBUS なし（連続の始まり）。デバウンス dd（>= 1）、強制遮断 fo。戻り値は 1000。 */
+static uint64_t connected_absent_from_1000(usb_vbus_ctrl_t *c, uint32_t dd, uint32_t fo) {
+    usb_vbus_ctrl_config_t k = cfg(500, dd);
+    k.force_off_after_ms = fo;
+    usb_vbus_ctrl_init(c, &k);
+    TEST_ASSERT_EQUAL_INT(NONE, pres(c, 0));
+    TEST_ASSERT_EQUAL_INT(CONNECT, pres(c, 500));
+    usb_vbus_ctrl_applied(c, CONNECT, true);
+    TEST_ASSERT_EQUAL_INT(NONE, pres(c, 900));
+    TEST_ASSERT_EQUAL_INT(NONE, abse(c, 1000));
+    return 1000;
+}
+
+static void test_force_off_boundary_minus1_exact_plus1(void) {
+    const uint32_t fos[] = {1, 2, 1000, 1999, 2000};
+    for (size_t i = 0; i < sizeof(fos) / sizeof(fos[0]); i++) {
+        uint32_t fo = fos[i];
+        usb_vbus_ctrl_t c;
+        uint64_t t = connected_absent_from_1000(&c, 1000, fo);
+        TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 1000)); /* due */
+        usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+        if (fo > 1) {
+            TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 1000 + fo - 1)); /* -1 */
+            usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+        }
+        TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, t + 1000 + fo)); /* ちょうど */
+        usb_vbus_ctrl_applied(&c, FORCE_OFF, false);
+        TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, t + 1000 + fo + 1)); /* 以後、毎回 */
+
+        /* +1: 境界の 1 ms 後が、最初の FORCE_OFF の tick */
+        t = connected_absent_from_1000(&c, 1000, fo);
+        TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 1000));
+        usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+        TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, t + 1000 + fo + 1));
+    }
+}
+
+static void test_force_off_wait_starts_at_the_first_disconnect(void) {
+    /* サンプルが疎で、最初の DISCONNECT が due より遅れたとき、待ちの起点は、最初の DISCONNECT を返した時刻 */
+    usb_vbus_ctrl_t c;
+    uint64_t t = connected_absent_from_1000(&c, 1000, 2000);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 1500)); /* due は t + 1000。最初の DISCONNECT は 500 ms 遅れ */
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 1500 + 1999)); /* 最初の DISCONNECT から 1999 */
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, t + 1500 + 2000)); /* ちょうど 2000 */
+}
+
+static void test_force_off_needs_a_disconnect_first_even_with_sparse_samples(void) {
+    usb_vbus_ctrl_t c;
+    uint64_t t = connected_absent_from_1000(&c, 1000, 2000);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 20000)); /* 最初の tick が、すでに dd + fo を大きく超えている。それでも DISCONNECT */
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 20001)); /* 最初の DISCONNECT から 1 ms: まだ待ち */
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, t + 22000));
+}
+
+static void test_force_off_ok_disconnects_and_counts_separately(void) {
+    usb_vbus_ctrl_t c;
+    uint64_t t = connected_absent_from_1000(&c, 1000, 2000);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 1000));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, t + 3000));
+    usb_vbus_ctrl_applied(&c, FORCE_OFF, true);
+    TEST_ASSERT_FALSE(usb_vbus_ctrl_is_connected(&c));
+    usb_vbus_ctrl_stats_t s;
+    usb_vbus_ctrl_get_stats(&c, &s);
+    TEST_ASSERT_EQUAL_UINT32(1, s.connects);
+    TEST_ASSERT_EQUAL_UINT32(0, s.disconnects);
+    TEST_ASSERT_EQUAL_UINT32(1, s.force_off_count);
+    TEST_ASSERT_EQUAL_UINT32(1, s.disconnect_failure_count);
+    TEST_ASSERT_EQUAL_UINT32(1, s.failures);
+    for (uint64_t k = 0; k < 20; k++) TEST_ASSERT_EQUAL_INT(NONE, abse(&c, t + 3001 + k * 1000)); /* 切断の状態: 何も起きない */
+    /* 切断のあとの再接続: 新しい VBUS ありの連続 */
+    TEST_ASSERT_EQUAL_INT(NONE, pres(&c, t + 30000));
+    TEST_ASSERT_EQUAL_INT(CONNECT, pres(&c, t + 30500));
+}
+
+static void test_force_off_failure_retries_every_tick_and_is_counted_as_a_failure(void) {
+    usb_vbus_ctrl_t c;
+    uint64_t t = connected_absent_from_1000(&c, 1000, 2000);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 1000));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    for (uint64_t k = 0; k < 5; k++) {
+        TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, t + 3000 + k)); /* DISCONNECT に戻らない */
+        usb_vbus_ctrl_applied(&c, FORCE_OFF, false);
+        TEST_ASSERT_TRUE(usb_vbus_ctrl_is_connected(&c));
+    }
+    TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, t + 100000));
+    usb_vbus_ctrl_stats_t s;
+    usb_vbus_ctrl_get_stats(&c, &s);
+    TEST_ASSERT_EQUAL_UINT32(6, s.failures);                  /* DISCONNECT 1 + FORCE_OFF 5 */
+    TEST_ASSERT_EQUAL_UINT32(1, s.disconnect_failure_count);  /* FORCE_OFF の失敗は数えない */
+    TEST_ASSERT_EQUAL_UINT32(0, s.force_off_count);
+    usb_vbus_ctrl_applied(&c, FORCE_OFF, true);
+    TEST_ASSERT_FALSE(usb_vbus_ctrl_is_connected(&c));
+    usb_vbus_ctrl_get_stats(&c, &s);
+    TEST_ASSERT_EQUAL_UINT32(1, s.force_off_count);
+}
+
+static void test_disconnect_success_ends_the_force_off_wait(void) {
+    usb_vbus_ctrl_t c;
+    uint64_t t = connected_absent_from_1000(&c, 1000, 2000);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 1000));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 2000));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, true); /* 成功 */
+    TEST_ASSERT_FALSE(usb_vbus_ctrl_is_connected(&c));
+    TEST_ASSERT_EQUAL_INT(NONE, abse(&c, t + 3000)); /* FORCE_OFF は来ない */
+    TEST_ASSERT_EQUAL_INT(NONE, abse(&c, t + 60000));
+    usb_vbus_ctrl_stats_t s;
+    usb_vbus_ctrl_get_stats(&c, &s);
+    TEST_ASSERT_EQUAL_UINT32(0, s.force_off_count);
+    TEST_ASSERT_EQUAL_UINT32(1, s.disconnects);
+    /* もう一度、接続して、外れる: 待ちは最初から（前回の記録を持ち越さない） */
+    TEST_ASSERT_EQUAL_INT(NONE, pres(&c, t + 61000));
+    TEST_ASSERT_EQUAL_INT(CONNECT, pres(&c, t + 61500));
+    usb_vbus_ctrl_applied(&c, CONNECT, true);
+    TEST_ASSERT_EQUAL_INT(NONE, abse(&c, t + 62000));
+    TEST_ASSERT_EQUAL_INT(NONE, abse(&c, t + 62999));
+    /* 最初は DISCONNECT（前回の「試した」と起点を持ち越さない。持ち越すと、ここで FORCE_OFF になる） */
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 65000));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 66999));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, t + 67000));
+}
+
+static void test_vbus_return_restarts_the_force_off_wait(void) {
+    usb_vbus_ctrl_t c;
+    uint64_t t = connected_absent_from_1000(&c, 1000, 2000);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 1000));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 2900));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(NONE, pres(&c, t + 2950)); /* VBUS が戻った */
+    TEST_ASSERT_EQUAL_INT(NONE, abse(&c, t + 3000)); /* また外れた: 連続の始まり */
+    TEST_ASSERT_EQUAL_INT(NONE, abse(&c, t + 3999));
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 4000)); /* デバウンスのあとの DISCONNECT（FORCE_OFF ではない） */
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 5999));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, t + 6000));
+}
+
+static void test_vbus_return_during_force_off_retry_cancels_it(void) {
+    usb_vbus_ctrl_t c;
+    uint64_t t = connected_absent_from_1000(&c, 1000, 2000);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 1000));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, t + 3000));
+    usb_vbus_ctrl_applied(&c, FORCE_OFF, false);
+    TEST_ASSERT_EQUAL_INT(NONE, pres(&c, t + 3100)); /* VBUS が戻った: 強制遮断しない */
+    TEST_ASSERT_TRUE(usb_vbus_ctrl_is_connected(&c));
+    TEST_ASSERT_EQUAL_INT(NONE, smp(&c, t + 3200, true, false)); /* 読み出しの失敗は VBUS なし: 連続の始まり */
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, smp(&c, t + 4200, true, false)); /* DISCONNECT から（FORCE_OFF ではない） */
+}
+
+static void test_invalid_samples_count_as_absent_for_force_off(void) {
+    usb_vbus_ctrl_t c;
+    uint64_t t = connected_absent_from_1000(&c, 1000, 2000);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, smp(&c, t + 1000, true, false));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(FORCE_OFF, smp(&c, t + 3000, true, false));
+}
+
+static void test_clock_backward_restarts_the_force_off_wait(void) {
+    usb_vbus_ctrl_t c;
+    uint64_t t = connected_absent_from_1000(&c, 1000, 2000);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 1200)); /* 試した */
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(NONE, abse(&c, t + 500)); /* 逆行: 数え直し（経過 0） */
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 500 + 3000)); /* 試した記録（t + 1200）は捨てたので、まず DISCONNECT */
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 500 + 3000 + 1999));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, t + 500 + 3000 + 2000));
+}
+
+static void test_force_off_after_zero_is_one_ms(void) {
+    usb_vbus_ctrl_t c;
+    uint64_t t = connected_absent_from_1000(&c, 1000, 0); /* init が 1 に直す */
+    TEST_ASSERT_EQUAL_UINT32(1, c.config.force_off_after_ms);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, t + 1000)); /* 最初は DISCONNECT（直接 FORCE_OFF ではない） */
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, t + 1001));
+}
+
+static void test_force_off_with_zero_disconnect_debounce(void) {
+    usb_vbus_ctrl_t c;
+    usb_vbus_ctrl_config_t k = cfg(500, 0);
+    k.force_off_after_ms = 100;
+    usb_vbus_ctrl_init(&c, &k);
+    TEST_ASSERT_EQUAL_INT(NONE, pres(&c, 0));
+    TEST_ASSERT_EQUAL_INT(CONNECT, pres(&c, 500));
+    usb_vbus_ctrl_applied(&c, CONNECT, true);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, 600));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, 699));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, 700));
+}
+
+static void test_force_off_is_never_returned_when_disabled_or_disconnected(void) {
+    usb_vbus_ctrl_t c;
+    usb_vbus_ctrl_config_t k = usb_vbus_ctrl_config_default(); /* enabled = false */
+    usb_vbus_ctrl_init(&c, &k);
+    TEST_ASSERT_EQUAL_INT(CONNECT, abse(&c, 0));
+    for (uint64_t t = 1; t < 100000; t += 313) TEST_ASSERT_EQUAL_INT(NONE, abse(&c, t));
+    init_cd_dd(&c, 500, 1000);
+    for (uint64_t t = 0; t < 100000; t += 313) TEST_ASSERT_EQUAL_INT(NONE, abse(&c, t)); /* 切断の状態 */
+}
+
+static void test_applied_force_off_with_null_is_safe(void) {
+    usb_vbus_ctrl_applied(NULL, FORCE_OFF, true);
+    usb_vbus_ctrl_applied(NULL, FORCE_OFF, false);
+}
+
 /* ---- 仕様の不変条件（USB 2.0 §7.2.1: VBUS が外れたら 10 秒以内） ---- */
+/* 物理的な外れは、最後に VBUS ありを読んだ時刻 lp より後（最悪で lp の直後）。ここでは、lp から測る（最悪側）。 */
 static void test_spec_removal_bound_for_fixed_sample_periods(void) {
-    const uint32_t periods[] = {1, 7, 10, 100, 999, 1000, 4999, 5000};
-    const uint32_t dds[] = {0, 1, 999, 1000, 4999, 5000, 5001, 100000, UINT32_MAX};
+    const uint32_t periods[] = {1, 7, 10, 100, 999, 1000};
+    const uint32_t dds[] = {0, 1, 999, 1000, 2999, 3000, 3001, 100000, UINT32_MAX};
+    const uint32_t fos[] = {0, 1, 1000, 1999, 2000, 2001, UINT32_MAX};
+    const uint64_t limit = USB_VBUS_CTRL_SPEC_REMOVE_LIMIT_MS - USB_VBUS_CTRL_COMPLETION_MARGIN_MS; /* 8000 */
     for (size_t pi = 0; pi < sizeof(periods) / sizeof(periods[0]); pi++) {
         for (size_t di = 0; di < sizeof(dds) / sizeof(dds[0]); di++) {
-            for (uint32_t phase = 0; phase < 3; phase++) { /* 外れる時刻の、サンプルとの相対位置を変える */
-                uint32_t P = periods[pi];
-                usb_vbus_ctrl_t c;
-                uint64_t t = make_connected(&c, 500, dds[di]);
-                uint32_t dd_eff = c.config.disconnect_debounce_ms;
-                TEST_ASSERT_TRUE(dd_eff <= USB_VBUS_CTRL_DISCONNECT_DEBOUNCE_MAX_MS);
-                t += 3 * P + phase; /* VBUS ありのサンプルを何回か */
-                for (uint64_t u = 500; u < t; u += P) TEST_ASSERT_EQUAL_INT(NONE, pres(&c, u));
-                uint64_t ta = t; /* 最初の VBUS なしのサンプル */
-                uint64_t now = ta;
-                usb_vbus_ctrl_action_t a = abse(&c, now);
-                while (a == NONE) {
-                    now += P;
-                    a = abse(&c, now);
-                    TEST_ASSERT_TRUE(now - ta < 3u * USB_VBUS_CTRL_SPEC_REMOVE_LIMIT_MS); /* 止まらない */
+            for (size_t fi = 0; fi < sizeof(fos) / sizeof(fos[0]); fi++) {
+                for (uint32_t phase = 0; phase < 2; phase++) { /* 外れる時刻の、サンプルとの相対位置を変える */
+                    uint32_t P = periods[pi];
+                    usb_vbus_ctrl_t c;
+                    usb_vbus_ctrl_config_t k = cfg(500, dds[di]);
+                    k.force_off_after_ms = fos[fi];
+                    usb_vbus_ctrl_init(&c, &k);
+                    uint32_t dd = c.config.disconnect_debounce_ms, fo = c.config.force_off_after_ms;
+                    TEST_ASSERT_TRUE(dd <= USB_VBUS_CTRL_DISCONNECT_DEBOUNCE_MAX_MS);
+                    TEST_ASSERT_TRUE(fo >= 1 && fo <= USB_VBUS_CTRL_FORCE_OFF_MAX_MS);
+                    uint64_t t = 0;
+                    TEST_ASSERT_EQUAL_INT(NONE, pres(&c, t));
+                    t += 500;
+                    TEST_ASSERT_EQUAL_INT(CONNECT, pres(&c, t));
+                    usb_vbus_ctrl_applied(&c, CONNECT, true);
+                    for (int n = 0; n < 3; n++) {
+                        t += P;
+                        TEST_ASSERT_EQUAL_INT(NONE, pres(&c, t));
+                    }
+                    uint64_t lp = t;                 /* 最後の VBUS ありのサンプル */
+                    uint64_t ta = lp + (phase ? 1 : P); /* 最初の VBUS なしのサンプル（間隔は P 以下） */
+                    uint64_t now = ta;
+                    usb_vbus_ctrl_action_t a = abse(&c, now);
+                    uint64_t first = 0;
+                    bool got_first = false;
+                    while (a != FORCE_OFF) {
+                        if (a == DISCONNECT) {
+                            if (!got_first) {
+                                got_first = true;
+                                first = now;
+                                /* 2. 最初の action は、lp から 2P + D 以内（ta から D + P 以内） */
+                                TEST_ASSERT_TRUE(now - ta >= dd);
+                                TEST_ASSERT_TRUE(now - ta <= (uint64_t)dd + P);
+                                TEST_ASSERT_TRUE(now - lp <= 2ull * P + dd);
+                                TEST_ASSERT_TRUE(now - lp <= limit);
+                            }
+                            usb_vbus_ctrl_applied(&c, DISCONNECT, false); /* 失敗が続く */
+                        } else {
+                            TEST_ASSERT_EQUAL_INT(NONE, a);
+                            TEST_ASSERT_FALSE(got_first); /* 一度 DISCONNECT が出たら、NONE には戻らない */
+                        }
+                        now += P;
+                        a = abse(&c, now);
+                        TEST_ASSERT_TRUE(now - ta < 3u * USB_VBUS_CTRL_SPEC_REMOVE_LIMIT_MS); /* 止まらない */
+                    }
+                    TEST_ASSERT_TRUE(got_first);
+                    /* 3. FORCE_OFF は、最初の action から F 以上 F + P 以内、lp から 3P + D + F 以内 */
+                    TEST_ASSERT_TRUE(now - first >= fo);
+                    TEST_ASSERT_TRUE(now - first <= (uint64_t)fo + P);
+                    TEST_ASSERT_TRUE(now - lp <= 3ull * P + dd + fo);
+                    TEST_ASSERT_TRUE(now - lp <= limit); /* P <= 1000 のとき、8000 ms 以下（= 10 秒 - 完了の余裕 2 秒） */
                 }
-                TEST_ASSERT_EQUAL_INT(DISCONNECT, a);
-                TEST_ASSERT_TRUE(now - ta >= dd_eff);
-                TEST_ASSERT_TRUE(now - ta <= (uint64_t)dd_eff + P);
-                TEST_ASSERT_TRUE(now - ta < USB_VBUS_CTRL_SPEC_REMOVE_LIMIT_MS); /* P <= 5000 のとき、10 秒未満 */
             }
         }
+    }
+}
+
+/* 上限の境界: P = 1000、D = 3000、F = 2000。間隔が P 以下で、最悪の位置に tick が来る。
+ * lp = 0（最後の VBUS あり）、ta = 1000（最初の VBUS なし。物理的な外れは、lp の直後）。 */
+static void test_spec_removal_bound_at_the_limits(void) {
+    usb_vbus_ctrl_t c;
+    usb_vbus_ctrl_config_t k = cfg(0, 3000);
+    k.force_off_after_ms = 2000;
+    usb_vbus_ctrl_init(&c, &k);
+    TEST_ASSERT_EQUAL_UINT32(3000, c.config.disconnect_debounce_ms);
+    TEST_ASSERT_EQUAL_UINT32(2000, c.config.force_off_after_ms);
+    TEST_ASSERT_EQUAL_INT(CONNECT, pres(&c, 0));
+    usb_vbus_ctrl_applied(&c, CONNECT, true);
+    TEST_ASSERT_EQUAL_INT(NONE, abse(&c, 1000));  /* ta */
+    TEST_ASSERT_EQUAL_INT(NONE, abse(&c, 2000));
+    TEST_ASSERT_EQUAL_INT(NONE, abse(&c, 3000));
+    TEST_ASSERT_EQUAL_INT(NONE, abse(&c, 3999));  /* 経過 2999 */
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, 4999)); /* 経過 3999。lp から 4999 <= 2P + D = 5000 */
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, 5999));
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(DISCONNECT, abse(&c, 6998)); /* 最初の DISCONNECT から 1999 */
+    usb_vbus_ctrl_applied(&c, DISCONNECT, false);
+    TEST_ASSERT_EQUAL_INT(FORCE_OFF, abse(&c, 7998));  /* lp から 7998 <= 3P + D + F = 8000 */
+    TEST_ASSERT_TRUE(7998 <= USB_VBUS_CTRL_SPEC_REMOVE_LIMIT_MS - USB_VBUS_CTRL_COMPLETION_MARGIN_MS);
+    TEST_ASSERT_EQUAL_UINT32(8000, 3 * USB_VBUS_CTRL_POLL_PERIOD_MAX_MS + USB_VBUS_CTRL_DISCONNECT_DEBOUNCE_MAX_MS + USB_VBUS_CTRL_FORCE_OFF_MAX_MS);
+}
+
+/* 切断が成功する場合は、最初の action（DISCONNECT）で終わる。 */
+static void test_spec_removal_bound_when_disconnect_succeeds(void) {
+    const uint32_t periods[] = {1, 10, 500, 1000};
+    for (size_t pi = 0; pi < sizeof(periods) / sizeof(periods[0]); pi++) {
+        uint32_t P = periods[pi];
+        usb_vbus_ctrl_t c;
+        init_cd_dd(&c, 500, 100000); /* 3000 に切り詰め */
+        TEST_ASSERT_EQUAL_INT(NONE, pres(&c, 0));
+        TEST_ASSERT_EQUAL_INT(CONNECT, pres(&c, 500));
+        usb_vbus_ctrl_applied(&c, CONNECT, true);
+        uint64_t ta = 500 + P, now = ta;
+        usb_vbus_ctrl_action_t a = abse(&c, now);
+        while (a == NONE) {
+            now += P;
+            a = abse(&c, now);
+        }
+        TEST_ASSERT_EQUAL_INT(DISCONNECT, a);
+        TEST_ASSERT_TRUE(now - ta <= 3000u + P);
+        TEST_ASSERT_TRUE(now - 500 <= 2u * P + 3000u);
+        TEST_ASSERT_TRUE(now - ta < USB_VBUS_CTRL_SPEC_REMOVE_LIMIT_MS);
+        usb_vbus_ctrl_applied(&c, DISCONNECT, true);
+        TEST_ASSERT_EQUAL_INT(NONE, abse(&c, now + P));
     }
 }
 
@@ -719,79 +1046,117 @@ static uint32_t rn(rng_t *r, uint32_t n) { return (uint32_t)(rnd(r) % n); }
         TEST_FAIL_MESSAGE(_m);                         \
     } while (0)
 
-/* 独立に書いた参照モデル: 実装の内部状態（run_start など）を持たず、サンプルの履歴から「いまの連続の始まり」を後ろ向きに探す。 */
+/* 独立に書いた参照モデル: 実装の内部状態（run_start、disc_first など）を持たず、サンプルの履歴から「いまの連続の始まり」を
+ * 後ろ向きに探す。「最初の DISCONNECT を返した時刻」も、履歴の中の返した action から求める。 */
 #define MAXH 1024
 typedef struct {
     uint64_t t[MAXH];
     bool detected[MAXH];
+    usb_vbus_ctrl_action_t act[MAXH];
     size_t n;
     size_t floor_idx; /* 状態が変わった（applied ok）あとの、最初のサンプルの添字 */
     bool connected;
-    uint32_t cd, dd;
-    uint32_t connects, disconnects, failures;
+    uint32_t cd, dd, fo;
+    uint32_t connects, disconnects, failures, force_offs, disc_failures;
 } model_t;
 
-static void model_init(model_t *m, uint32_t cd, uint32_t dd) {
+static void model_init(model_t *m, uint32_t cd, uint32_t dd, uint32_t fo) {
     memset(m, 0, sizeof(*m));
     m->cd = cd;
-    m->dd = dd > 5000u ? 5000u : dd;
+    m->dd = dd > 3000u ? 3000u : dd;
+    m->fo = fo == 0 ? 1u : (fo > 2000u ? 2000u : fo);
 }
 static usb_vbus_ctrl_action_t model_step(model_t *m, uint64_t now, bool detected) {
     size_t i = m->n++;
     m->t[i] = now;
     m->detected[i] = detected;
+    m->act[i] = NONE;
     bool want = !m->connected; /* 数えるサンプルの種類（切断の状態なら「検出」、接続の状態なら「検出なし」） */
     if (detected != want) return NONE;
     size_t j = i;
     while (j > m->floor_idx && m->detected[j - 1] == want && m->t[j] >= m->t[j - 1]) j--;
     uint64_t elapsed = now - m->t[j];
-    if (m->connected) return elapsed >= m->dd ? DISCONNECT : NONE;
-    return elapsed >= m->cd ? CONNECT : NONE;
+    usb_vbus_ctrl_action_t a = NONE;
+    if (m->connected) {
+        if (elapsed >= m->dd) {
+            bool tried = false;
+            uint64_t first = 0;
+            for (size_t k = j; k < i && !tried; k++) {
+                if (m->act[k] == DISCONNECT) {
+                    tried = true;
+                    first = m->t[k];
+                }
+            }
+            a = (tried && now - first >= m->fo) ? FORCE_OFF : DISCONNECT;
+        }
+    } else if (elapsed >= m->cd) {
+        a = CONNECT;
+    }
+    m->act[i] = a;
+    return a;
 }
 static void model_applied(model_t *m, usb_vbus_ctrl_action_t a, bool ok) {
     if (a == NONE) return;
     if (!ok) {
         m->failures++;
+        if (a == DISCONNECT) m->disc_failures++;
         return;
     }
     m->connected = (a == CONNECT);
     m->floor_idx = m->n;
-    if (a == CONNECT) m->connects++; else m->disconnects++;
+    if (a == CONNECT) m->connects++;
+    else if (a == DISCONNECT) m->disconnects++;
+    else m->force_offs++;
 }
 
 static const uint32_t FZ_CD[] = {0, 1, 50, 500, 2000};
-static const uint32_t FZ_DD[] = {0, 1, 100, 1000, 4999, 5000, 7000};
-static const uint32_t FZ_P[] = {1, 10, 100, 1000, 5000};
+static const uint32_t FZ_DD[] = {0, 1, 100, 1000, 2999, 3000, 7000};
+static const uint32_t FZ_FO[] = {0, 1, 100, 1000, 2000, 4000};
+static const uint32_t FZ_P[] = {1, 10, 100, 500, 1000};
 static const uint32_t FZ_STAY[] = {50, 90, 99}; /* 同じ VBUS を保つ確率（%） */
 static const uint32_t FZ_INVALID[] = {0, 5, 30};
-static const uint32_t FZ_APPLY_FAIL[] = {0, 30, 60};
+static const uint32_t FZ_CFAIL[] = {0, 30, 60};       /* applied(CONNECT) の失敗の確率（%） */
+static const uint32_t FZ_DFAIL[] = {0, 50, 95, 100};  /* applied(DISCONNECT) */
+static const uint32_t FZ_FFAIL[] = {0, 50, 90};       /* applied(FORCE_OFF) */
 
-#define FZ_SEEDS 700
+#define FZ_SEEDS 800
 #define FZ_TICKS 400
 
+static bool fz_ok(rng_t *r, usb_vbus_ctrl_action_t a, uint32_t cf, uint32_t df, uint32_t ff) {
+    uint32_t pf = a == CONNECT ? cf : (a == DISCONNECT ? df : ff);
+    return rn(r, 100) >= pf;
+}
+
 static void test_fuzz_monotone_against_reference_model_and_invariants(void) {
-    uint64_t total_connect = 0, total_disconnect = 0, total_conn_retry = 0, total_disc_retry = 0, total_spec_checks = 0;
+    uint64_t total_connect = 0, total_disconnect = 0, total_force_off = 0, total_conn_retry = 0, total_disc_retry = 0,
+             total_fo_retry = 0, total_first_checks = 0, total_fo_checks = 0;
     for (uint32_t seed = 1; seed <= FZ_SEEDS; seed++) {
         rng_t r = {0x9E3779B97F4A7C15ull ^ ((uint64_t)seed * 0xD1B54A32D192ED03ull)};
-        uint32_t cd = FZ_CD[rn(&r, 5)], dd = FZ_DD[rn(&r, 7)], P = FZ_P[rn(&r, 5)];
-        uint32_t stay = FZ_STAY[rn(&r, 3)], inv = FZ_INVALID[rn(&r, 3)], afail = FZ_APPLY_FAIL[rn(&r, 3)];
+        uint32_t cd = FZ_CD[rn(&r, 5)], dd = FZ_DD[rn(&r, 7)], fo = FZ_FO[rn(&r, 6)], P = FZ_P[rn(&r, 5)];
+        uint32_t stay = FZ_STAY[rn(&r, 3)], inv = FZ_INVALID[rn(&r, 3)];
+        uint32_t cf = FZ_CFAIL[rn(&r, 3)], df = FZ_DFAIL[rn(&r, 4)], ff = FZ_FFAIL[rn(&r, 3)];
         bool never_present = (seed % 10) == 0; /* VBUS が一度も present にならないシード */
         usb_vbus_ctrl_t c;
-        init_cd_dd(&c, cd, dd);
+        usb_vbus_ctrl_config_t k = cfg(cd, dd);
+        k.force_off_after_ms = fo;
+        usb_vbus_ctrl_init(&c, &k);
         model_t m;
-        model_init(&m, cd, dd);
-        uint32_t dd_eff = c.config.disconnect_debounce_ms;
+        model_init(&m, cd, dd, fo);
+        uint32_t dd_eff = c.config.disconnect_debounce_ms, fo_eff = c.config.force_off_after_ms;
+        if (dd_eff != m.dd || fo_eff != m.fo) FAIL_FMT("seed %u: clamp mismatch dd %u/%u fo %u/%u", seed, dd_eff, m.dd, fo_eff, m.fo);
 
-        bool tconn = false;      /* テスト側が追う「接続」の状態（applied ok だけで変わる） */
+        bool tconn = false; /* テスト側が追う「接続」の状態（applied ok だけで変わる） */
         bool vbus = false;
         uint64_t now = 1000 + rn(&r, 100000);
         bool pres_active = false, abs_active = false;
         uint64_t pres_start = 0, abs_start = 0;
-        bool disc_seen = false;
-        bool prev_conn_fail = false, prev_disc_fail = false;
+        bool disc_seen = false, act_seen = false, fo_seen = false;
+        uint64_t act_time = 0, lp = 0;
+        bool have_lp = false;
+        usb_vbus_ctrl_action_t prev_failed = NONE;
 
-        for (uint32_t k = 0; k < FZ_TICKS; k++) {
-            if (k > 0) now += 1 + rn(&r, P); /* 間隔は 1..P ms（単調） */
+        for (uint32_t kt = 0; kt < FZ_TICKS; kt++) {
+            if (kt > 0) now += 1 + rn(&r, P); /* 間隔は 1..P ms（単調） */
             if (rn(&r, 100) >= stay) vbus = !vbus;
             bool valid = rn(&r, 100) >= inv;
             bool present = never_present ? false : vbus;
@@ -800,8 +1165,10 @@ static void test_fuzz_monotone_against_reference_model_and_invariants(void) {
             /* 連続の始まり（テスト側。実装とモデルを使わない） */
             if (detected) {
                 if (!pres_active) { pres_active = true; pres_start = now; }
+                lp = now;
+                have_lp = true;
                 abs_active = false;
-                disc_seen = false;
+                disc_seen = act_seen = fo_seen = false;
             } else {
                 if (!abs_active) { abs_active = true; abs_start = now; }
                 pres_active = false;
@@ -809,76 +1176,107 @@ static void test_fuzz_monotone_against_reference_model_and_invariants(void) {
 
             usb_vbus_ctrl_action_t a = smp(&c, now, present, valid);
             usb_vbus_ctrl_action_t want = model_step(&m, now, detected);
-            if (a != want) FAIL_FMT("seed %u tick %u: action %d != model %d", seed, k, (int)a, (int)want);
+            if (a != want) FAIL_FMT("seed %u tick %u: action %d != model %d", seed, kt, (int)a, (int)want);
 
             /* 不変条件 */
-            if (never_present && a == CONNECT) FAIL_FMT("seed %u tick %u: CONNECT without VBUS ever", seed, k);
+            if (never_present && a == CONNECT) FAIL_FMT("seed %u tick %u: CONNECT without VBUS ever", seed, kt);
             if (a == CONNECT) {
-                if (tconn) FAIL_FMT("seed %u tick %u: CONNECT while connected", seed, k);
-                if (!pres_active || now - pres_start < cd) FAIL_FMT("seed %u tick %u: CONNECT without a continuous valid VBUS run", seed, k);
+                if (tconn) FAIL_FMT("seed %u tick %u: CONNECT while connected", seed, kt);
+                if (!pres_active || now - pres_start < cd) FAIL_FMT("seed %u tick %u: CONNECT without a continuous valid VBUS run", seed, kt);
             }
-            if (!tconn && pres_active && now - pres_start >= cd && a != CONNECT) FAIL_FMT("seed %u tick %u: no CONNECT though VBUS held >= cd", seed, k);
-            if (a == DISCONNECT) {
-                if (!tconn) FAIL_FMT("seed %u tick %u: DISCONNECT while disconnected", seed, k);
-                if (!abs_active || now - abs_start < dd_eff) FAIL_FMT("seed %u tick %u: DISCONNECT before dd", seed, k);
-                if (!disc_seen) { /* 最初の DISCONNECT: 外れてから dd + P 以内、かつ 10 秒未満 */
-                    if (now - abs_start > (uint64_t)dd_eff + P) FAIL_FMT("seed %u tick %u: first DISCONNECT too late (%llu)", seed, k, (unsigned long long)(now - abs_start));
-                    if (now - abs_start >= USB_VBUS_CTRL_SPEC_REMOVE_LIMIT_MS) FAIL_FMT("seed %u tick %u: first DISCONNECT beyond the 10 s limit", seed, k);
-                    total_spec_checks++;
-                    disc_seen = true;
+            if (!tconn && pres_active && now - pres_start >= cd && a != CONNECT) FAIL_FMT("seed %u tick %u: no CONNECT though VBUS held >= cd", seed, kt);
+            if (a == DISCONNECT || a == FORCE_OFF) {
+                if (!tconn) FAIL_FMT("seed %u tick %u: %d while disconnected", seed, kt, (int)a);
+                if (!abs_active || now - abs_start < dd_eff) FAIL_FMT("seed %u tick %u: %d before dd", seed, kt, (int)a);
+                if (!act_seen) { /* 最初の action: 外れてから dd + P 以内（1） */
+                    if (now - abs_start > (uint64_t)dd_eff + P) FAIL_FMT("seed %u tick %u: first action too late (%llu)", seed, kt, (unsigned long long)(now - abs_start));
+                    if (!have_lp) FAIL_FMT("seed %u tick %u: action without ever seeing VBUS", seed, kt);
+                    /* 物理的な外れ（最悪で lp の直後）から、2P + D 以内。8000 ms（10 秒 - 完了の余裕）以下 */
+                    if (now - lp > 2ull * P + dd_eff) FAIL_FMT("seed %u tick %u: first action %llu ms after the last VBUS sample (> 2P + D)", seed, kt, (unsigned long long)(now - lp));
+                    if (now - lp > USB_VBUS_CTRL_SPEC_REMOVE_LIMIT_MS - USB_VBUS_CTRL_COMPLETION_MARGIN_MS) FAIL_FMT("seed %u tick %u: first action beyond 8000 ms", seed, kt);
+                    act_seen = true;
+                    act_time = now;
+                    total_first_checks++;
                 }
             }
-            if (tconn && abs_active && now - abs_start >= dd_eff && a != DISCONNECT) FAIL_FMT("seed %u tick %u: no DISCONNECT though VBUS absent >= dd", seed, k);
-            if (prev_conn_fail && !tconn && a == CONNECT) total_conn_retry++;
-            if (prev_disc_fail && tconn && a == DISCONNECT) total_disc_retry++;
-            prev_conn_fail = prev_disc_fail = false;
+            if (a == DISCONNECT) {
+                if (fo_seen) FAIL_FMT("seed %u tick %u: DISCONNECT after FORCE_OFF in the same absence", seed, kt);
+                disc_seen = true;
+            }
+            if (a == FORCE_OFF) {
+                if (!disc_seen) FAIL_FMT("seed %u tick %u: FORCE_OFF without a DISCONNECT before", seed, kt);
+                if (now - act_time < fo_eff) FAIL_FMT("seed %u tick %u: FORCE_OFF before fo after the first DISCONNECT", seed, kt);
+                if (!fo_seen) { /* 最初の FORCE_OFF: 最初の action から fo + P 以内、外れから 3P + D + F 以内（8000 ms 以下） */
+                    if (now - act_time > (uint64_t)fo_eff + P) FAIL_FMT("seed %u tick %u: FORCE_OFF %llu ms after the first action", seed, kt, (unsigned long long)(now - act_time));
+                    if (now - lp > 3ull * P + dd_eff + fo_eff) FAIL_FMT("seed %u tick %u: FORCE_OFF too late (%llu > 3P + D + F)", seed, kt, (unsigned long long)(now - lp));
+                    if (now - lp > USB_VBUS_CTRL_SPEC_REMOVE_LIMIT_MS - USB_VBUS_CTRL_COMPLETION_MARGIN_MS) FAIL_FMT("seed %u tick %u: FORCE_OFF beyond 8000 ms", seed, kt);
+                    fo_seen = true;
+                    total_fo_checks++;
+                }
+            }
+            if (tconn && abs_active && now - abs_start >= dd_eff && a != DISCONNECT && a != FORCE_OFF) FAIL_FMT("seed %u tick %u: no action though VBUS absent >= dd", seed, kt);
+            if (tconn && abs_active && disc_seen && a != FORCE_OFF && a != DISCONNECT) FAIL_FMT("seed %u tick %u: action stopped", seed, kt);
+            if (tconn && abs_active && disc_seen && now - act_time >= fo_eff && a != FORCE_OFF) FAIL_FMT("seed %u tick %u: no FORCE_OFF though DISCONNECT failed for >= fo", seed, kt);
+            if (a == DISCONNECT && prev_failed == DISCONNECT) total_disc_retry++;
+            if (a == CONNECT && prev_failed == CONNECT) total_conn_retry++;
+            if (a == FORCE_OFF && prev_failed == FORCE_OFF) total_fo_retry++;
+            prev_failed = NONE;
 
             if (a != NONE) {
-                bool ok = rn(&r, 100) >= afail;
+                bool ok = fz_ok(&r, a, cf, df, ff);
                 usb_vbus_ctrl_applied(&c, a, ok);
                 model_applied(&m, a, ok);
                 if (ok) {
                     tconn = (a == CONNECT);
                     abs_active = false; /* 状態が変わったら、新しい連続として数え直すのは、次のサンプルから */
                     pres_active = false;
-                    disc_seen = false;
-                    if (a == CONNECT) total_connect++; else total_disconnect++;
-                } else if (a == CONNECT) {
-                    prev_conn_fail = true;
+                    disc_seen = act_seen = fo_seen = false;
+                    if (a == CONNECT) total_connect++;
+                    else if (a == DISCONNECT) total_disconnect++;
+                    else total_force_off++;
                 } else {
-                    prev_disc_fail = true;
+                    prev_failed = a;
                 }
             }
-            if (usb_vbus_ctrl_is_connected(&c) != tconn || m.connected != tconn) FAIL_FMT("seed %u tick %u: connected state mismatch", seed, k);
+            if (usb_vbus_ctrl_is_connected(&c) != tconn || m.connected != tconn) FAIL_FMT("seed %u tick %u: connected state mismatch", seed, kt);
         }
         usb_vbus_ctrl_stats_t s;
         usb_vbus_ctrl_get_stats(&c, &s);
-        if (s.connects != m.connects || s.disconnects != m.disconnects || s.failures != m.failures)
-            FAIL_FMT("seed %u: stats %u/%u/%u != model %u/%u/%u", seed, s.connects, s.disconnects, s.failures, m.connects, m.disconnects, m.failures);
-        if (s.connects - s.disconnects != (tconn ? 1u : 0u)) FAIL_FMT("seed %u: connects - disconnects inconsistent with state", seed);
+        if (s.connects != m.connects || s.disconnects != m.disconnects || s.failures != m.failures || s.force_off_count != m.force_offs ||
+            s.disconnect_failure_count != m.disc_failures)
+            FAIL_FMT("seed %u: stats %u/%u/%u/%u/%u != model %u/%u/%u/%u/%u", seed, s.connects, s.disconnects, s.failures, s.force_off_count,
+                     s.disconnect_failure_count, m.connects, m.disconnects, m.failures, m.force_offs, m.disc_failures);
+        if (s.connects - s.disconnects - s.force_off_count != (tconn ? 1u : 0u)) FAIL_FMT("seed %u: counters inconsistent with state", seed);
+        if (s.disconnect_failure_count > s.failures) FAIL_FMT("seed %u: disconnect failures exceed failures", seed);
     }
     /* 空振りで通っていないこと */
     TEST_ASSERT_TRUE_MESSAGE(total_connect > 2000, "fuzz made too few connects");
-    TEST_ASSERT_TRUE_MESSAGE(total_disconnect > 1500, "fuzz made too few disconnects");
+    TEST_ASSERT_TRUE_MESSAGE(total_disconnect > 800, "fuzz made too few disconnects");
+    TEST_ASSERT_TRUE_MESSAGE(total_force_off > 150, "fuzz made too few force-offs");
     TEST_ASSERT_TRUE_MESSAGE(total_conn_retry > 200, "fuzz made too few connect retries");
     TEST_ASSERT_TRUE_MESSAGE(total_disc_retry > 200, "fuzz made too few disconnect retries");
-    TEST_ASSERT_TRUE_MESSAGE(total_spec_checks > 1500, "fuzz checked the removal bound too few times");
+    TEST_ASSERT_TRUE_MESSAGE(total_fo_retry > 50, "fuzz made too few force-off retries");
+    TEST_ASSERT_TRUE_MESSAGE(total_first_checks > 1500, "fuzz checked the first-action bound too few times");
+    TEST_ASSERT_TRUE_MESSAGE(total_fo_checks > 300, "fuzz checked the force-off bound too few times");
 }
 
 /* now_ms が戻る・同時刻が混じる系列。モデルとの一致だけを見る（単調でないので、仕様の時間の不変条件は対象外）。 */
 static void test_fuzz_non_monotone_clock_against_reference_model(void) {
-    uint64_t total_back = 0, total_actions = 0;
+    uint64_t total_back = 0, total_actions = 0, total_fo = 0;
     for (uint32_t seed = 1; seed <= FZ_SEEDS; seed++) {
         rng_t r = {0xC2B2AE3D27D4EB4Full ^ ((uint64_t)seed * 0x9E3779B97F4A7C15ull)};
-        uint32_t cd = FZ_CD[rn(&r, 5)], dd = FZ_DD[rn(&r, 7)], P = FZ_P[rn(&r, 5)];
-        uint32_t stay = FZ_STAY[rn(&r, 3)], inv = FZ_INVALID[rn(&r, 3)], afail = FZ_APPLY_FAIL[rn(&r, 3)];
+        uint32_t cd = FZ_CD[rn(&r, 5)], dd = FZ_DD[rn(&r, 7)], fo = FZ_FO[rn(&r, 6)], P = FZ_P[rn(&r, 5)];
+        uint32_t stay = FZ_STAY[rn(&r, 3)], inv = FZ_INVALID[rn(&r, 3)];
+        uint32_t cf = FZ_CFAIL[rn(&r, 3)], df = FZ_DFAIL[rn(&r, 4)], ff = FZ_FFAIL[rn(&r, 3)];
         usb_vbus_ctrl_t c;
-        init_cd_dd(&c, cd, dd);
+        usb_vbus_ctrl_config_t k = cfg(cd, dd);
+        k.force_off_after_ms = fo;
+        usb_vbus_ctrl_init(&c, &k);
         model_t m;
-        model_init(&m, cd, dd);
+        model_init(&m, cd, dd, fo);
         bool vbus = false;
         uint64_t now = 3000000;
-        for (uint32_t k = 0; k < FZ_TICKS; k++) {
+        for (uint32_t kt = 0; kt < FZ_TICKS; kt++) {
             uint32_t kind = rn(&r, 10);
             if (kind == 0) { /* 逆行 */
                 uint64_t back = 1 + rn(&r, 2 * P);
@@ -892,18 +1290,25 @@ static void test_fuzz_non_monotone_clock_against_reference_model(void) {
             bool valid = rn(&r, 100) >= inv;
             usb_vbus_ctrl_action_t a = smp(&c, now, vbus, valid);
             usb_vbus_ctrl_action_t want = model_step(&m, now, valid && vbus);
-            if (a != want) FAIL_FMT("seed %u tick %u: action %d != model %d (now %llu)", seed, k, (int)a, (int)want, (unsigned long long)now);
+            if (a != want) FAIL_FMT("seed %u tick %u: action %d != model %d (now %llu)", seed, kt, (int)a, (int)want, (unsigned long long)now);
             if (a != NONE) {
-                bool ok = rn(&r, 100) >= afail;
+                bool ok = fz_ok(&r, a, cf, df, ff);
                 usb_vbus_ctrl_applied(&c, a, ok);
                 model_applied(&m, a, ok);
                 total_actions++;
+                if (a == FORCE_OFF) total_fo++;
             }
-            if (usb_vbus_ctrl_is_connected(&c) != m.connected) FAIL_FMT("seed %u tick %u: connected mismatch", seed, k);
+            if (usb_vbus_ctrl_is_connected(&c) != m.connected) FAIL_FMT("seed %u tick %u: connected mismatch", seed, kt);
         }
+        usb_vbus_ctrl_stats_t s;
+        usb_vbus_ctrl_get_stats(&c, &s);
+        if (s.connects != m.connects || s.disconnects != m.disconnects || s.failures != m.failures || s.force_off_count != m.force_offs ||
+            s.disconnect_failure_count != m.disc_failures)
+            FAIL_FMT("seed %u: stats differ from the model", seed);
     }
     TEST_ASSERT_TRUE_MESSAGE(total_back > 5000, "fuzz made too few backward steps");
     TEST_ASSERT_TRUE_MESSAGE(total_actions > 3000, "fuzz made too few actions");
+    TEST_ASSERT_TRUE_MESSAGE(total_fo > 100, "fuzz made too few force-offs");
 }
 
 /* 検出なし（enabled = false）: どんな入力でも、最初の update だけ CONNECT。 */
@@ -935,6 +1340,7 @@ int main(void) {
     RUN_TEST(test_init_starts_disconnected_with_zero_stats_and_keeps_config);
     RUN_TEST(test_init_null_config_is_default);
     RUN_TEST(test_init_clamps_disconnect_debounce_to_max);
+    RUN_TEST(test_init_clamps_force_off_after_to_1_to_max);
     RUN_TEST(test_clamped_disconnect_debounce_is_what_the_state_machine_uses);
     RUN_TEST(test_startup_is_disconnected_and_never_connects_without_vbus);
     RUN_TEST(test_startup_with_vbus_present_waits_for_debounce);
@@ -979,7 +1385,23 @@ int main(void) {
     RUN_TEST(test_null_input_is_an_invalid_sample_and_does_not_connect);
     RUN_TEST(test_null_input_counts_as_absent_when_connected);
     RUN_TEST(test_stats_count_connects_disconnects_failures);
+    RUN_TEST(test_force_off_boundary_minus1_exact_plus1);
+    RUN_TEST(test_force_off_wait_starts_at_the_first_disconnect);
+    RUN_TEST(test_force_off_needs_a_disconnect_first_even_with_sparse_samples);
+    RUN_TEST(test_force_off_ok_disconnects_and_counts_separately);
+    RUN_TEST(test_force_off_failure_retries_every_tick_and_is_counted_as_a_failure);
+    RUN_TEST(test_disconnect_success_ends_the_force_off_wait);
+    RUN_TEST(test_vbus_return_restarts_the_force_off_wait);
+    RUN_TEST(test_vbus_return_during_force_off_retry_cancels_it);
+    RUN_TEST(test_invalid_samples_count_as_absent_for_force_off);
+    RUN_TEST(test_clock_backward_restarts_the_force_off_wait);
+    RUN_TEST(test_force_off_after_zero_is_one_ms);
+    RUN_TEST(test_force_off_with_zero_disconnect_debounce);
+    RUN_TEST(test_force_off_is_never_returned_when_disabled_or_disconnected);
+    RUN_TEST(test_applied_force_off_with_null_is_safe);
     RUN_TEST(test_spec_removal_bound_for_fixed_sample_periods);
+    RUN_TEST(test_spec_removal_bound_at_the_limits);
+    RUN_TEST(test_spec_removal_bound_when_disconnect_succeeds);
     RUN_TEST(test_fuzz_monotone_against_reference_model_and_invariants);
     RUN_TEST(test_fuzz_non_monotone_clock_against_reference_model);
     RUN_TEST(test_fuzz_disabled_connects_exactly_once);
