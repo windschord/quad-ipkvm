@@ -53,6 +53,9 @@ target_include_directories(csi_capture_logic PUBLIC ${CMAKE_SOURCE_DIR}/../../co
 # Pure-C part of csi_video_source (JPEG validation, output sizing, seqlock status, publish stats)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/csi_video_source ${CMAKE_BINARY_DIR}/csi_video_source)
 
+# Pure-C part of csi_h264 (H.264 geometry, Annex B frame validation, codec/IDR state machine)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/csi_h264 ${CMAKE_BINARY_DIR}/csi_h264)
+
 # Discover tests automatically
 file(GLOB_RECURSE TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*/test_*.c" "${CMAKE_CURRENT_SOURCE_DIR}/test_*.c")
 list(FILTER TEST_SOURCES EXCLUDE REGEX ".*build/.*")
@@ -100,6 +103,10 @@ foreach(test_source ${TEST_SOURCES})
 
     if (test_source MATCHES "/csi_video_source/")
         target_link_libraries(${test_name} PRIVATE csi_video_source_logic)
+    endif()
+
+    if (test_source MATCHES "/csi_h264/")
+        target_link_libraries(${test_name} PRIVATE csi_h264_logic)
     endif()
 
 

@@ -11,6 +11,6 @@ else()
         SRCS "csi_video_source.c" "csi_video_source_logic.c" "jpeg_quality_ctrl.c"
         INCLUDE_DIRS "include"
         REQUIRES frame_hub kvm_logic tc358743
-        PRIV_REQUIRES csi_capture esp_timer esp_system freertos
+        PRIV_REQUIRES csi_capture csi_h264 esp_timer esp_system freertos
     )
 endif()
