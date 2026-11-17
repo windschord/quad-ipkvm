@@ -189,11 +189,16 @@ menu "Quad IP-KVM Configuration"
 
     config FRAME_HUB_MAX_FRAME_KB
         int "Frame Hub max frame size in KB"
-        default 256 if FRAME_HUB_PREFER_SPIRAM
+        default 768 if FRAME_HUB_PREFER_SPIRAM
         default 64
         range 1 4096
         help
-            PSRAM が有効な既定では 256KB（1080p の MJPEG 1 枚の目安）。PSRAM が無いときは内蔵 RAM に収まる 64KB
+            PSRAM が有効な既定では 768KB（3 スロットで 2.25 MiB）。1080p の IDE / ターミナル画面は q=70 で
+            約 586 KiB になる（docs/HW_VERIFY.md、docs/VIDEO_TRANSPORT.md 2）。256KB では全フレームが
+            oversize_drop になる。PSRAM が無いときは内蔵 RAM に収まる 64KB。
+            既存の sdkconfig は以前の値（256）を保持する。sdkconfig の該当行を消して再生成するか、
+            menuconfig で 768 に直すこと。
+            TODO(hw-verify): 実際の 1080p で oversize_drop = 0 か。
 
     config FRAME_HUB_PREFER_SPIRAM
         bool "Prefer SPIRAM for Frame Hub buffers"
