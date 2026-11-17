@@ -200,7 +200,7 @@
    - **決定（契約へ反映済み。本レポートの上記は評価時点の記録で、正は契約）**: **選択肢 A を採用**した。`docs/VIDEO_TRANSPORT.md` §9.5（方針 `video_codec_policy`: 接続中のクライアントが 1 つ以上で全員が `accept=h264`、LOCKED かつ 1920x1080 以下、待ち時間 `VIDEO_CODEC_UPGRADE_DWELL_MS` を満たすときだけ H.264。降格は即時）、§9.10（方針の選択肢 6 案とおすすめ順。オーナーが変更してよい）、`docs/WEB_API.md` §5、`docs/INTERFACES.md` §1.4。URL は `?codec=` ではなく **`/video?accept=h264`**（クライアントの申告。付けない = MJPEG のみ）で、バイナリメッセージにヘッダーは足さず、**ペイロード先頭バイト（JPEG `FF D8` / H.264 `00 00 00 01`）でコーデックを識別する**（§9.3、§9.4）。H.264 を申告していないクライアントには、降格が済むまでの間も H.264 のフレームを配らない（§9.6）。
 5. **`FRAME_HUB_MAX_FRAME_KB` の配慮 (`docs/HW_VERIFY.md`・今回ベンチ) `[確認]`**:
    - 1080p 高情報量 IDE 画面の HW H.264 IDR が **`507,122 B`**（`495.2 KiB`）を実測しており、現行 `256 KiB` 枠では起動直後や `forceIDR` 時にドロップされる。H.264 モード有効時は `FRAME_HUB_MAX_FRAME_KB >= 512`（あるいは 768〜1024 KiB）の確保が必要（`1920x1080` パディング/バッファ確保も考慮）。
-   - **反映済み**: `FRAME_HUB_MAX_FRAME_KB` の既定（PSRAM 有効時）は **768** に引き上げた（`docs/VIDEO_TRANSPORT.md` §1。PR #116）。上限を超えたフレームは捨て、次のフレームを IDR にする（同 §9.6）。
+   - **反映済み**: `FRAME_HUB_MAX_FRAME_KB` の既定（PSRAM 有効時）は **768** に引き上げた（`docs/VIDEO_TRANSPORT.md` §2。PR #116）。上限を超えたフレームは捨て、次のフレームを IDR にする（同 §9.6）。
 
 ---
 
