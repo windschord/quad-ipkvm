@@ -30,6 +30,10 @@ typedef bool (*ws_video_io_validate_session_cb)(void* user_data, const uint8_t t
  *   (成功 = 0 で、送信の完了を on_send_done で通知する。0 以外はそのクライアントを閉じる)。
  *   **data は、on_send_done が呼ばれるまで有効** (core が、クライアントごとのバッファに持つ)。 */
 typedef void (*ws_video_status_get_cb)(void* user_data, video_status_t* out);
+
+/* キーフレームの要求 (docs/VIDEO_TRANSPORT.md 9.6)。tick から (ロックの下で) 呼ばれる。ブロックしない。
+ * 実体は video_source_t.request_keyframe を呼び出し側が包んだもの。 */
+typedef void (*ws_video_request_keyframe_cb)(void* user_data);
 typedef int (*ws_video_io_begin_send_text_cb)(void* user_data, ws_video_conn_t conn, const uint8_t* data, size_t len);
 
 typedef struct {
@@ -58,6 +62,17 @@ typedef struct {
     ws_video_io_begin_send_text_cb io_begin_send_text;
     uint64_t status_min_interval_ms; // 0 = 間隔なし。>0 = 同じクライアントへの通知の間隔の下限 (最後に送った時刻から)。
                                      // 接続直後の最初の 1 回には適用しない。TODO(hw-verify): 既定 200 は実機で確認する
+
+    /* H.264 のキーフレーム待ち (docs/VIDEO_TRANSPORT.md 9.6)。
+     * クライアントごとに need_key を持つ。真にするのは (a) 接続したとき、(b) 配ろうとするフレームの seq が、そのクライアントの
+     * 最後に配った seq + 1 でないとき、(c) 直前に配ったフレームが MJPEG (または初めて) で、配ろうとするフレームが H.264 のとき。
+     * need_key が真のクライアントには、H.264 で KEY の立っていないフレームを配らない。MJPEG のフレームは配って、need_key を偽にする。
+     * H.264 の KEY のフレームも配って、偽にする。MJPEG だけのときは、従来と同じ挙動 (need_key は一瞬で偽になる)。 */
+    ws_video_request_keyframe_cb request_keyframe; // NULL = 要求しない (待ち・切断は動く)。need_key を真にしたとき、tick の最後に 1 回呼ぶ
+    uint64_t idr_min_interval_ms;  // 0 = まとめない (tick に 1 回まで)。>0 = 最後に要求した時刻からこの間隔が経つまで呼ばず、
+                                   // 経った最初の tick で 1 回だけ呼ぶ (その間の要求は 1 つにまとまる)。TODO(hw-verify): 既定 1000 (IDR は 495 KB に達する)
+    uint64_t key_wait_timeout_ms;  // 0 = 閉じない。>0 = H.264 のフレームを配らずに待ち始めてから (最初に配らなかった時刻から)
+                                   // need_key が key_wait_timeout_ms 以上続いたクライアントを閉じる。TODO(hw-verify): 既定 5000
 
     ws_video_hub_register_cb hub_register;
     ws_video_hub_unregister_cb hub_unregister;
@@ -91,6 +106,16 @@ typedef struct {
     bool sending_text[WS_CLIENTS_MAX];             // 送信中のものが、フレームでなくテキスト (is_sending のときだけ有効)
     size_t text_len[WS_CLIENTS_MAX];               // sending_text[i] のときの、テキストの長さ (期限の size)
     uint8_t text_buf[WS_CLIENTS_MAX][VIDEO_STATUS_JSON_MAX]; // テキストの本体。on_send_done まで有効
+
+    /* キーフレーム待ち (クライアントごと。docs/VIDEO_TRANSPORT.md 9.6) */
+    bool need_key[WS_CLIENTS_MAX];               // 真の間、H.264 の KEY でないフレームを配らない
+    uint64_t need_key_since_ms[WS_CLIENTS_MAX];  // key_waiting[i] のときだけ有効: 最初に H.264 のフレームを配らなかった時刻
+    bool key_waiting[WS_CLIENTS_MAX];            // need_key の間に、H.264 のフレームを 1 回以上配らなかった (key_wait_timeout_ms の起点)
+    uint8_t last_codec[WS_CLIENTS_MAX];          // 最後に配ったフレームのコーデック (VIDEO_CODEC_H264 か MJPEG。配ったことがなければ MJPEG)
+    /* キーフレームの要求 (全体) */
+    bool idr_request_pending;                    // 要求が溜まっている (間隔が経つまで待つ、または次の tick で呼ぶ)
+    bool idr_requested;                          // 1 回でも request_keyframe を呼んだ (last_idr_request_ms が有効)
+    uint64_t last_idr_request_ms;                // 最後に request_keyframe を呼んだ時刻
 } ws_video_core_t;
 
 /**

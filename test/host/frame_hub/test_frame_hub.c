@@ -1,6 +1,7 @@
 #include "video_source.h"
 #include "unity.h"
 #include "frame_hub.h"
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -652,6 +653,300 @@ void test_frame_hub_video_source_contract(void) {
     src.stop(&src);
 }
 
+
+// ---- P7: codec / flags (docs/INTERFACES.md 1.4) ----
+
+static frame_hub_t* make_hub_p7(int pool, size_t max_size) {
+    frame_hub_config_t cfg = {
+        .pool_size = pool,
+        .max_clients = 2,
+        .max_frame_size = max_size,
+        .alloc_cb = test_alloc,
+        .free_cb = test_free,
+        .lock_cb = test_lock,
+        .unlock_cb = test_unlock,
+    };
+    return frame_hub_create(&cfg);
+}
+
+void test_frame_hub_commit_sets_mjpeg_key(void) {
+    hub = make_hub_p7(3, 100);
+    int cid = frame_hub_register_client(hub);
+    video_frame_t* f = frame_hub_begin_publish(hub, 50);
+    TEST_ASSERT_NOT_NULL(f);
+    frame_hub_commit(hub, f, 50, 640, 480, 1000);
+
+    const video_frame_t* got = frame_hub_get_latest_frame(hub, cid);
+    TEST_ASSERT_NOT_NULL(got);
+    TEST_ASSERT_EQUAL_UINT8(VIDEO_CODEC_MJPEG, got->codec);
+    TEST_ASSERT_EQUAL_UINT8(VIDEO_FRAME_FLAG_KEY, got->flags);
+    TEST_ASSERT_EQUAL(50, got->size);
+    TEST_ASSERT_EQUAL(640, got->width);
+    TEST_ASSERT_EQUAL(480, got->height);
+    TEST_ASSERT_EQUAL_UINT64(1000, got->timestamp_ms);
+    TEST_ASSERT_EQUAL_INT(0, frame_hub_release_frame(hub, cid, got));
+}
+
+void test_frame_hub_commit_ex_passes_codec_and_flags(void) {
+    hub = make_hub_p7(4, 100);
+    int cid = frame_hub_register_client(hub);
+
+    struct { video_codec_t codec; uint8_t flags; size_t size; } cases[] = {
+        {VIDEO_CODEC_H264, VIDEO_FRAME_FLAG_KEY, 80},
+        {VIDEO_CODEC_H264, 0, 7},
+        {VIDEO_CODEC_MJPEG, 0, 33},     // commit_ex does not force KEY for MJPEG
+        {VIDEO_CODEC_H264, 0xFEu, 100}, // flags are passed as they are (size == max_frame_size is accepted)
+    };
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        video_frame_t* f = frame_hub_begin_publish(hub, cases[i].size);
+        TEST_ASSERT_NOT_NULL(f);
+        frame_hub_commit_info_t info = {
+            .size = cases[i].size, .width = 1920, .height = 1080 + i, .timestamp_ms = 5000 + i,
+            .codec = cases[i].codec, .flags = cases[i].flags,
+        };
+        frame_hub_commit_ex(hub, f, &info);
+
+        const video_frame_t* got = frame_hub_get_latest_frame(hub, cid);
+        TEST_ASSERT_NOT_NULL(got);
+        TEST_ASSERT_EQUAL_UINT8((uint8_t)cases[i].codec, got->codec);
+        TEST_ASSERT_EQUAL_UINT8(cases[i].flags, got->flags);
+        TEST_ASSERT_EQUAL(cases[i].size, got->size);
+        TEST_ASSERT_EQUAL(1920, got->width);
+        TEST_ASSERT_EQUAL(1080 + i, got->height);
+        TEST_ASSERT_EQUAL_UINT64(5000 + i, got->timestamp_ms);
+        TEST_ASSERT_EQUAL_INT64((int64_t)i, got->seq);
+        TEST_ASSERT_EQUAL_INT(0, frame_hub_release_frame(hub, cid, got));
+    }
+    frame_hub_stats_t s;
+    frame_hub_get_stats(hub, &s);
+    TEST_ASSERT_EQUAL(4, s.published_frames);
+    TEST_ASSERT_EQUAL(0, s.dropped_frames);
+}
+
+// A slot that held an H.264 key frame must not leak codec / flags into the next publish.
+void test_frame_hub_begin_publish_resets_codec_and_flags(void) {
+    hub = make_hub_p7(2, 100);
+    video_frame_t* f = frame_hub_begin_publish(hub, 10);
+    TEST_ASSERT_NOT_NULL(f);
+    TEST_ASSERT_EQUAL_UINT8(VIDEO_CODEC_MJPEG, f->codec);
+    TEST_ASSERT_EQUAL_UINT8(0, f->flags);
+    frame_hub_commit_info_t info = {.size = 10, .width = 1, .height = 1, .timestamp_ms = 1,
+                                    .codec = VIDEO_CODEC_H264, .flags = VIDEO_FRAME_FLAG_KEY};
+    frame_hub_commit_ex(hub, f, &info);
+
+    // Reuse the slots of the (2-slot) pool several times: always reset on begin_publish.
+    for (int i = 0; i < 6; i++) {
+        video_frame_t* g = frame_hub_begin_publish(hub, 10);
+        TEST_ASSERT_NOT_NULL(g);
+        TEST_ASSERT_EQUAL_UINT8(VIDEO_CODEC_MJPEG, g->codec);
+        TEST_ASSERT_EQUAL_UINT8(0, g->flags);
+        // Dirty the fields as a publisher might, then abort or commit: the next begin must still reset them.
+        g->codec = VIDEO_CODEC_H264;
+        g->flags = 0xFFu;
+        if (i % 2) {
+            frame_hub_abort_publish(hub, g);
+        } else {
+            frame_hub_commit_ex(hub, g, &info);
+        }
+    }
+}
+
+// frame_hub_commit() overrides whatever the publisher wrote into the fields.
+void test_frame_hub_commit_overrides_dirty_fields(void) {
+    hub = make_hub_p7(3, 100);
+    int cid = frame_hub_register_client(hub);
+    video_frame_t* f = frame_hub_begin_publish(hub, 10);
+    TEST_ASSERT_NOT_NULL(f);
+    f->codec = VIDEO_CODEC_H264;
+    f->flags = 0;
+    frame_hub_commit(hub, f, 10, 2, 2, 2);
+    const video_frame_t* got = frame_hub_get_latest_frame(hub, cid);
+    TEST_ASSERT_NOT_NULL(got);
+    TEST_ASSERT_EQUAL_UINT8(VIDEO_CODEC_MJPEG, got->codec);
+    TEST_ASSERT_EQUAL_UINT8(VIDEO_FRAME_FLAG_KEY, got->flags);
+    frame_hub_release_frame(hub, cid, got);
+}
+
+// size 0 / size > max_frame_size: same handling as frame_hub_commit() (discard, dropped_frames++, slot freed, no seq)
+void test_frame_hub_commit_ex_size_rules_match_commit(void) {
+    hub = make_hub_p7(2, 100);
+    int cid = frame_hub_register_client(hub);
+    frame_hub_stats_t s;
+
+    video_frame_t* f = frame_hub_begin_publish(hub, 100);
+    TEST_ASSERT_NOT_NULL(f);
+    frame_hub_commit_info_t info = {.size = 101, .width = 1, .height = 1, .timestamp_ms = 1,
+                                    .codec = VIDEO_CODEC_H264, .flags = VIDEO_FRAME_FLAG_KEY};
+    frame_hub_commit_ex(hub, f, &info);
+    frame_hub_get_stats(hub, &s);
+    TEST_ASSERT_EQUAL(1, s.dropped_frames);
+    TEST_ASSERT_EQUAL(0, s.published_frames);
+    TEST_ASSERT_NULL(frame_hub_get_latest_frame(hub, cid));
+
+    f = frame_hub_begin_publish(hub, 10);
+    TEST_ASSERT_NOT_NULL(f);
+    info.size = 0;
+    frame_hub_commit_ex(hub, f, &info);
+    frame_hub_get_stats(hub, &s);
+    TEST_ASSERT_EQUAL(2, s.dropped_frames);
+    TEST_ASSERT_EQUAL(0, s.published_frames);
+    TEST_ASSERT_NULL(frame_hub_get_latest_frame(hub, cid));
+
+    // the slot was freed: publishing still works and seq starts at 0 (a discard does not consume a seq)
+    f = frame_hub_begin_publish(hub, 10);
+    TEST_ASSERT_NOT_NULL(f);
+    info.size = 100; // exactly max: accepted
+    frame_hub_commit_ex(hub, f, &info);
+    frame_hub_get_stats(hub, &s);
+    TEST_ASSERT_EQUAL(2, s.dropped_frames);
+    TEST_ASSERT_EQUAL(1, s.published_frames);
+    const video_frame_t* got = frame_hub_get_latest_frame(hub, cid);
+    TEST_ASSERT_NOT_NULL(got);
+    TEST_ASSERT_EQUAL_INT64(0, got->seq);
+    TEST_ASSERT_EQUAL(100, got->size);
+    frame_hub_release_frame(hub, cid, got);
+}
+
+// Misuse of commit_ex: double commit, unknown frame, NULL arguments (no crash, no publish)
+void test_frame_hub_commit_ex_misuse(void) {
+    hub = make_hub_p7(3, 100);
+    frame_hub_stats_t s;
+    video_frame_t* f = frame_hub_begin_publish(hub, 10);
+    TEST_ASSERT_NOT_NULL(f);
+    frame_hub_commit_info_t info = {.size = 10, .width = 1, .height = 1, .timestamp_ms = 1,
+                                    .codec = VIDEO_CODEC_H264, .flags = VIDEO_FRAME_FLAG_KEY};
+    frame_hub_commit_ex(hub, f, &info);
+    frame_hub_commit_ex(hub, f, &info); // double commit: ignored
+    frame_hub_get_stats(hub, &s);
+    TEST_ASSERT_EQUAL(1, s.published_frames);
+
+    video_frame_t stranger;
+    memset(&stranger, 0, sizeof(stranger));
+    frame_hub_commit_ex(hub, &stranger, &info); // not a pool frame: ignored
+    frame_hub_commit_ex(NULL, f, &info);
+    frame_hub_commit_ex(hub, NULL, &info);
+    frame_hub_get_stats(hub, &s);
+    TEST_ASSERT_EQUAL(1, s.published_frames);
+    TEST_ASSERT_EQUAL(0, s.dropped_frames);
+
+    // info == NULL: the publish is aborted (slot freed, nothing published or counted)
+    f = frame_hub_begin_publish(hub, 10);
+    TEST_ASSERT_NOT_NULL(f);
+    frame_hub_commit_ex(hub, f, NULL);
+    frame_hub_get_stats(hub, &s);
+    TEST_ASSERT_EQUAL(1, s.published_frames);
+    TEST_ASSERT_EQUAL(0, s.dropped_frames);
+    f = frame_hub_begin_publish(hub, 10); // not stuck in "writing"
+    TEST_ASSERT_NOT_NULL(f);
+    frame_hub_abort_publish(hub, f);
+}
+
+// The old positional initialiser {name, start, stop, ctx} still compiles and leaves the P7 fields at 0 / NULL.
+// (gcc -Wextra warns about the missing trailing fields of a positional initialiser, so the warning is silenced here
+// only. The in-tree sources use designated initialisers, which do not warn: see the next test.)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+void test_video_source_positional_init_keeps_p7_fields_zero(void) {
+    video_source_t src = {"legacy", dummy_start, dummy_stop, NULL};
+    TEST_ASSERT_EQUAL_STRING("legacy", src.name);
+    TEST_ASSERT_EQUAL_UINT32(0, src.supported_codecs);
+    TEST_ASSERT_NULL(src.set_codec);
+    TEST_ASSERT_NULL(src.request_keyframe);
+    static const video_source_t s_static = {"legacy_static", dummy_start, dummy_stop, NULL};
+    TEST_ASSERT_EQUAL_UINT32(0, s_static.supported_codecs);
+    TEST_ASSERT_NULL(s_static.set_codec);
+    TEST_ASSERT_NULL(s_static.request_keyframe);
+}
+#pragma GCC diagnostic pop
+
+// The designated 4-field form used by test_pattern_source / csi_video_source: no warning, P7 fields 0 / NULL.
+void test_video_source_designated_init_keeps_p7_fields_zero(void) {
+    static const video_source_t s_src = {
+        .name = "legacy_designated",
+        .start = dummy_start,
+        .stop = dummy_stop,
+        .ctx = NULL,
+    };
+    TEST_ASSERT_EQUAL_UINT32(0, s_src.supported_codecs);
+    TEST_ASSERT_NULL(s_src.set_codec);
+    TEST_ASSERT_NULL(s_src.request_keyframe);
+}
+
+static int ext_set_codec_last = -1;
+static int ext_keyframe_calls = 0;
+static int ext_set_codec(const video_source_t* s, video_codec_t c) { (void)s; ext_set_codec_last = (int)c; return 0; }
+static void ext_request_keyframe(const video_source_t* s) { (void)s; ext_keyframe_calls++; }
+
+void test_video_source_p7_extension_fields(void) {
+    video_source_t src = {
+        .name = "h264",
+        .start = dummy_start,
+        .stop = dummy_stop,
+        .supported_codecs = (1u << VIDEO_CODEC_MJPEG) | (1u << VIDEO_CODEC_H264),
+        .set_codec = ext_set_codec,
+        .request_keyframe = ext_request_keyframe,
+    };
+    TEST_ASSERT_TRUE(src.supported_codecs & (1u << VIDEO_CODEC_H264));
+    TEST_ASSERT_EQUAL(0, src.set_codec(&src, VIDEO_CODEC_H264));
+    TEST_ASSERT_EQUAL(VIDEO_CODEC_H264, ext_set_codec_last);
+    src.request_keyframe(&src);
+    TEST_ASSERT_EQUAL(1, ext_keyframe_calls);
+}
+
+// Fuzz: random commit / commit_ex / abort; every frame a client gets carries exactly what its publisher wrote.
+void test_frame_hub_codec_flags_fuzz(void) {
+    for (uint32_t seed = 1; seed <= 20; seed++) {
+        fuzz_state = seed * 2654435761u + 7u;
+        hub = make_hub_p7(4, 64);
+        int cid = frame_hub_register_client(hub);
+        uint8_t exp_codec[4096];
+        uint8_t exp_flags[4096];
+        int64_t next_seq = 0;
+        const video_frame_t* held = NULL;
+        for (int i = 0; i < 1500; i++) {
+            uint32_t op = xorshift32() % 5;
+            if (op <= 2) {
+                size_t size = (xorshift32() % 70); // 0 .. 69: includes 0 and > max (64)
+                video_frame_t* f = frame_hub_begin_publish(hub, size ? (size > 64 ? 64 : size) : 1);
+                if (!f) continue;
+                int kind = (int)(xorshift32() % 3);
+                uint8_t flags = (uint8_t)(xorshift32() & 0xFFu);
+                video_codec_t codec = (xorshift32() & 1u) ? VIDEO_CODEC_H264 : VIDEO_CODEC_MJPEG;
+                bool valid = (size >= 1 && size <= 64);
+                if (kind == 0) {
+                    frame_hub_commit(hub, f, size, 1, 1, 1);
+                    codec = VIDEO_CODEC_MJPEG;
+                    flags = VIDEO_FRAME_FLAG_KEY;
+                } else if (kind == 1) {
+                    frame_hub_commit_info_t info = {.size = size, .width = 1, .height = 1, .timestamp_ms = 1,
+                                                    .codec = codec, .flags = flags};
+                    frame_hub_commit_ex(hub, f, &info);
+                } else {
+                    frame_hub_abort_publish(hub, f);
+                    valid = false;
+                }
+                if (valid) {
+                    exp_codec[next_seq % 4096] = (uint8_t)codec;
+                    exp_flags[next_seq % 4096] = flags;
+                    next_seq++;
+                }
+            } else if (op == 3) {
+                if (!held) held = frame_hub_get_latest_frame(hub, cid);
+                if (held) {
+                    TEST_ASSERT_TRUE(held->seq >= 0 && held->seq < next_seq);
+                    TEST_ASSERT_EQUAL_UINT8(exp_codec[held->seq % 4096], held->codec);
+                    TEST_ASSERT_EQUAL_UINT8(exp_flags[held->seq % 4096], held->flags);
+                }
+            } else if (held) {
+                TEST_ASSERT_EQUAL_INT(0, frame_hub_release_frame(hub, cid, held));
+                held = NULL;
+            }
+        }
+        frame_hub_destroy(hub);
+        hub = NULL;
+    }
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_frame_hub_create_invalid_config);
@@ -668,5 +963,15 @@ int main(void) {
     RUN_TEST(test_frame_hub_video_source_contract);
     RUN_TEST(test_frame_hub_commit_misuse);
     RUN_TEST(test_frame_hub_fuzz);
+    RUN_TEST(test_frame_hub_commit_sets_mjpeg_key);
+    RUN_TEST(test_frame_hub_commit_ex_passes_codec_and_flags);
+    RUN_TEST(test_frame_hub_begin_publish_resets_codec_and_flags);
+    RUN_TEST(test_frame_hub_commit_overrides_dirty_fields);
+    RUN_TEST(test_frame_hub_commit_ex_size_rules_match_commit);
+    RUN_TEST(test_frame_hub_commit_ex_misuse);
+    RUN_TEST(test_video_source_positional_init_keeps_p7_fields_zero);
+    RUN_TEST(test_video_source_designated_init_keeps_p7_fields_zero);
+    RUN_TEST(test_video_source_p7_extension_fields);
+    RUN_TEST(test_frame_hub_codec_flags_fuzz);
     return UNITY_END();
 }
