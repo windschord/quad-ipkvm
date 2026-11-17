@@ -346,3 +346,108 @@ P7 の追加分だけ見ると、81 個(ID `K` が 58 個、`F` が 23 個)の�
 - 既定値(`TODO(hw-verify)`、`core` は値を持たず、渡す側が決める): `idr_min_interval_ms`(契約の `VIDEO_CODEC_IDR_MIN_INTERVAL_MS` = 1000。IDR は 495 KB に達する)、`key_wait_timeout_ms`(契約の `VIDEO_CODEC_KEY_WAIT_MS` = 5000)、`CSI_H264_GOP`(HDMI 担当)。
 - 実機での、IDR の要求から、IDR が届くまでの時間、遅いクライアントでの待ちの長さ、再接続の頻度。
 - `video_codec_policy`(コーデックの方針)、ビューアの H.264 の経路は、このタスクの範囲外。
+
+## 6. P7: `accept=h264` のクエリの解析(`http_guard_video_accept`)と `web_server.c` の結線
+
+作成: 2026-11-17(P7。契約は `docs/VIDEO_TRANSPORT.md` 9.4・9.5・9.6・9.7)。純 C の部分(`http_guard_video_accept`)は、ホストでテスト・ファズ・ミューテーションまで行った。`web_server.c` と `main.c` の結線は、この環境に ESP-IDF がなく、**ビルドしていない**(6.4)。
+
+### 6.1 変更の要点
+
+- `http_guard_video_accept(query, query_len)`(`components/http_guard`、純 C): `/video` の URI のクエリ部(`?` の後ろ)から、受け取れる JPEG 以外のコーデックのビットマスク(`HTTP_GUARD_VIDEO_ACCEPT_H264 = 1u`)を返す。規則(`http_guard.h` に書いた。判断した点を含む):
+  - `&` で区切った `key=value` のうち、key が `accept` と**完全に一致**するものだけを見る(`xaccept`、`accept2`、`Accept`、`?accept` は別のキー)。value は `,` 区切りで、各要素が `h264` と**完全に一致**するときだけ真(大文字小文字を区別する。`H264`、前後の空白は未知)。未知の値と空の要素は無視する。
+  - **`accept` キーが複数あるときは、どれかに `h264` があれば真(OR。順序に依存しない)**。
+  - パーセントエンコードと `+` は解釈しない(`%68264` は未知の値)。
+  - `query == NULL`、長さ 0、**長さが `HTTP_GUARD_VIDEO_QUERY_MAX`(512)を超える**、**範囲の中に NUL がある**ときは 0(MJPEG だけ。安全側)。`query_len` を超えては 1 バイトも読まない。
+- `main/Kconfig.projbuild`: `VIDEO_CODEC_H264_ALLOWED`(既定 `n`)、`VIDEO_CODEC_UPGRADE_DWELL_MS`(5000)、`VIDEO_CODEC_IDR_MIN_INTERVAL_MS`(1000)、`VIDEO_CODEC_KEY_WAIT_MS`(5000)。後ろの 3 つは `H264_ALLOWED` が `y` のときだけ現れる(範囲は 0〜60000。0 は、それぞれ `video_codec_policy` の「待たない」、`ws_video_core` の「まとめない」「閉じない」)。
+- `web_server.c`: `web_server_set_video_source()`、`accept` を接続のスロットごとに持つ(`s_ws_video_accept[slot]`。`ws_video_post_handshake_cb` で `ws_video_core_on_connect()` の直後に、ロックの下で設定。`ws_video_close_fn` で消す)、`ws_video_task` の各 tick で(`H264_ALLOWED = y` のときだけ)`video_codec_policy_update()` を、ロックの下で呼ぶ。コーデックが変わったら、**ロックの外で** `source->set_codec()`。`request_keyframe` は `source->request_keyframe` に包む(tick から、ロックの下で呼ばれる)。`H264_ALLOWED = n` では、方針も `video_status_get()` も `set_codec()` も呼ばず、`ws_video_core_config_t` の新しい 3 項目は 0 / `NULL`(**従来と同じ設定**)。
+- `main.c`: 映像ソースを選んで `start` を呼ぶ箇所の後ろ(テストパターンは `web_server_start` の前、CSI は後)で `web_server_set_video_source()` を呼ぶ。
+
+### 6.2 テスト
+
+| ファイル | 内容 | 件数 |
+|---|---|---|
+| `test/host/http_guard/test_video_accept.c`(新規) | 基本形、`accept` なし・空・未知の値、大文字小文字、キーの完全一致(前後の 1 文字、`Accept`、`?accept` など)、複数のキーと組(OR)、パーセントエンコードを解釈しないこと、非 ASCII のバイト、NULL・長さ 0、長さの外を読まないこと(**入力は長さちょうどのヒープ領域に置く**。ASan が 1 バイトの範囲外の読みも検出する)、範囲の中の NUL、長さの上限の境界(512 と 513、`(size_t)-1`)、上限の中の長い値 | 15 |
+| `test/host/http_guard/test_video_accept_fuzz.c`(新規) | 固定シードの疑似乱数(accept の綴り、`h264`、`= & , %`、NUL などの部品の列 20 万件、NUL を混ぜた 10 万件、全 256 値のランダムなバイト列 6 万件)を、**別の書き方のオラクル**(NUL 終端のコピーにして `strchr` / `strcmp` で分ける)と比べる。有効なクエリの、すべての長さの接頭辞も確認。ASan / UBSan | 4 |
+
+`ctest`: **68 件 -> 70 件**(新しい実行ファイル 2 つ)、すべて成功(`-Wall -Wextra -Werror`、ASan / UBSan)。`node tools/test/check_video_viewer.js` も成功。
+
+### 6.3 ミューテーションテスト
+
+```
+python3 tools/test/mutate_video_core.py <repo> <スクラッチ> tools/test/video_core_mutants.py <結果.json> H57 H58 ... H99
+run: 43 killed: 38 survived: 5 build_error: 0      (ベースラインは 3 つのグループとも全テスト成功)
+```
+
+`http_guard.c` の `http_guard_video_accept` と `hg_accept_value` に、43 個(`H57`〜`H99`)。1 回の実行で、生き残りはすべて同値だった(テストを足して殺したものはない)。既存の 195 個(`V` / `H01`〜`H56` / `K` / `F`)は、コードを変えていないので、再実行していない(ベースラインの 3 グループは全テスト成功)。`H84` と `H98`(次の区間・要素の開始位置が進まない)は、無限ループになり、テストのタイムアウト(120 秒)で殺した。
+
+| グループ | 実行した数 | 殺した数 | 生き残った数(すべて同値と判断) | ビルドエラー |
+|---|---|---|---|---|
+| http_guard.c(P7: `http_guard_video_accept`) | 43 | 38 | 5 | 0 |
+
+#### 6.3.1 同値のミュータント(5 個)
+
+| ID | 変更箇所 | 同値の理由 |
+|---|---|---|
+| H58 | accept: query_len == 0 check removed (equivalent) | `query_len == 0` の検査を外しても、長さ 0 では NUL の走査も区間の走査も 1 回も回らず、`mask` は 0 のまま返る。`!query` の検査(H57)が、NULL を守る。冗長な二重の検査。 |
+| H66 | accept: segment loop <= (equivalent) | 区間のループが `start <= query_len` になっても、`start == query_len` のときは空の区間 (`end == start`、`=` なし) で、何も起きず `start` が進んで終わる。 |
+| H71 | accept: '=' search runs past the segment (equivalent) | `=` の探索が区間の外 (`query_len` まで) に伸びても、見つかった位置は `end` 以上になり、直後の `eq < end` の検査で捨てられる。結果は同じ (走査が長くなるだけ)。 |
+| H96 | value: mask assigned instead of or-ed (equivalent) | `hg_accept_value` の `mask` は、0 から始まり、このビットしか立てない。or-assign でも assign でも同じ値。 |
+| H97 | value: token loop <= (equivalent) | 値のループが `start <= n` になっても、`start == n` では空の要素 (長さ 0 は `h264` の長さ 4 と一致しない) で、何も起きず `start` が進んで終わる。 |
+
+#### 6.3.2 殺したミュータントの一覧(38 個)
+
+「殺したテスト」は、失敗したテストのうち先頭の 2 つ。`:crash/rc=1` は、Unity の失敗行を解析できずに、終了コード 1 だった実行ファイル(アサーションの失敗、または ASan / UBSan)。`:timeout` は、120 秒で終わらなかったもの。
+
+| ID | 変更箇所 | 殺したテスト |
+|---|---|---|
+| H57 | accept: NULL query not checked | `test_video_accept:crash/rc=1` |
+| H59 | accept: length limit removed | `test_video_accept:crash/rc=1` |
+| H60 | accept: length limit > becomes >= | `test_video_accept:crash/rc=1` |
+| H61 | accept: length limit allows one more | `test_video_accept:crash/rc=1` |
+| H62 | accept: embedded NUL not rejected | `test_video_accept_fuzz:crash/rc=1` |
+| H63 | accept: NUL scan reads one past the end | `test_basic_h264`, `test_case_sensitive` |
+| H64 | accept: NUL scan skips the last byte | `test_video_accept_fuzz:crash/rc=1` |
+| H65 | accept: NUL stops the scan but parsing goes on | `test_video_accept_fuzz:crash/rc=1` |
+| H67 | accept: segment separator ';' instead of '&' | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H68 | accept: segment end not bounded by query_len | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H69 | accept: segment end bound <= query_len (reads one past the end) | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H70 | accept: key/value separator ':' instead of '=' | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H72 | accept: 'has =' check removed | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H73 | accept: key length check removed | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H74 | accept: key length == becomes >= (prefix key accepted) | `test_key_must_match_exactly`, `test_video_accept_fuzz:crash/rc=1` |
+| H75 | accept: key length == becomes <= (shorter key compared) | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H76 | accept: key compared case-insensitively | `test_case_sensitive`, `test_video_accept_fuzz:crash/rc=1` |
+| H77 | accept: key spelled differently ('accepx') | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H78 | accept: key compared over 5 bytes only (accept? matches) | `test_case_sensitive` |
+| H79 | accept: value of a later accept key replaces the earlier one | `test_multiple_keys_and_pairs`, `test_video_accept_fuzz:crash/rc=1` |
+| H80 | accept: only the first segment is used | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H81 | accept: value length one too long (includes the separator) | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H82 | accept: value starts at '=' (not after it) | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H83 | accept: value ignored (result always 0) | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H84 | accept: next segment starts at the '&' (hangs) | `test_video_accept:timeout`, `test_video_accept_fuzz:timeout` |
+| H85 | accept: next segment skips one character | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H86 | value: token separator ';' instead of ',' | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H87 | value: token end not bounded by n | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H88 | value: token end bound <= n (reads one past the end) | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H89 | value: token length check removed | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H90 | value: token length == becomes >= (prefix match) | `test_unknown_values_ignored`, `test_multiple_keys_and_pairs` |
+| H91 | value: token length == becomes <=  | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H92 | value: compared case-insensitively | `test_case_sensitive`, `test_video_accept_fuzz:crash/rc=1` |
+| H93 | value: token spelled differently ('h265') | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H94 | value: compared over 3 bytes only (h26x matches) | `test_unknown_values_ignored`, `test_multiple_keys_and_pairs` |
+| H95 | value: wrong bit | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+| H98 | value: next token starts at the ',' (hangs) | `test_video_accept:timeout`, `test_video_accept_fuzz:timeout` |
+| H99 | value: next token skips one character | `test_video_accept:crash/rc=1`, `test_video_accept_fuzz:crash/rc=1` |
+
+### 6.4 確認したこと / 未確認
+
+**確認したこと(ホスト)**
+- 上のテストとミューテーション。
+- **`web_server.c` の新しいコード(`ws_video_request_keyframe`、`ws_video_codec_update_locked`、`ws_video_codec_apply`、`ws_video_tick_once`、`ws_video_get_accept`、`web_server_set_video_source`)を、そのまま(ファイルから切り出して)、スタブの FreeRTOS / esp API と実物の純 C コンポーネント(`ws_video_core`、`video_codec_policy`、`video_status`、`http_guard`)に対して、`-Wall -Wextra -Werror`、ASan / UBSan でコンパイルして実行した**(スクラッチの確認用で、コミットしていない)。確認した項目: 5 秒の待ちの後の昇格、`accept` のないクライアントが来たときの即時の降格、閉じる要求中のクライアントを数えないこと、`set_codec` の呼び出しがロックの外、`request_keyframe` がロックの下、`set_codec` の失敗(昇格の失敗は H.264 を止める、降格の失敗は毎 tick 再試行)、ソースが `NULL` / MJPEG だけ / `set_codec` が `NULL`、ソースを後から登録、解像度が上限を超えるとき、スロットの再利用で前の `accept` が残らないこと、`H264_ALLOWED = n` で `set_codec` も `video_status_get` も `request_keyframe` も呼ばれないこと。
+- `http_guard` の Origin・Host・Cookie の検査は、URI を使っていない(ヘッダーの `Host`、`Origin`、`Cookie` と、`http_guard_decide` の列挙型の引数だけ)。クエリ付きの `/video?accept=h264` でも、検査の入力は変わらない。`web_headers_allow_for_uri` と `web_assets_find` は、`?` より前だけを見る。
+
+**未確認**
+- **IDF のビルド**(`web_server.c`、`main.c`、`Kconfig.projbuild`)。使った API は `httpd_req_get_url_query_str`、`ws_video_core` / `video_codec_policy` / `video_source_t` の既存の関数・フィールドで、`httpd_req_get_url_query_str` は、この環境にヘッダーがなく、IDF の公開 API の知識だけで書いた(`TODO(hw-verify)`)。
+- `TODO(hw-verify)`: `/video?accept=h264` が、`/video` の URI ハンドラーに一致すること(esp_http_server が、URI の照合でクエリを除くこと)。`ws_post_handshake_cb` の中で、`req->uri` が有効なこと。
+- `TODO(hw-verify)`: `csi_h264` の `set_codec()` が一時的に失敗しうるか(失敗した昇格は、再起動まで H.264 を止める)。
+- 既定値(`VIDEO_CODEC_UPGRADE_DWELL_MS` = 5000、`VIDEO_CODEC_IDR_MIN_INTERVAL_MS` = 1000、`VIDEO_CODEC_KEY_WAIT_MS` = 5000)は、実測に基づかない(`TODO(hw-verify)`)。

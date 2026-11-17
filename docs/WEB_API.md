@@ -108,6 +108,7 @@
   - 映像のフレームが送信中のときは、その送信が終わってから送る（途中に割り込まない）。「信号なし」のときはフレームが来ないので、送信中の待ちはない。
   - **変化は、集約して送る**: 状態の揺れで通知が頻発しないよう、同じクライアントへの通知の間隔は**最短 200 ms**（`status_min_interval_ms`）。間隔の間の変化は、間隔が経った後に、**そのときの最新の状態を 1 回だけ**送る（**途中の状態は送らない**。間隔の間に、元の状態に戻れば、何も送らない）。したがって、状態の変化の通知は、**最大 200 ms 遅れうる**。接続直後の最初の 1 回には、間隔を適用しない。
   - クライアントは、**未知のキーを無視**し、`t` が `"video"` でないテキストフレームは捨てる（将来の拡張のため）。
+- **H.264 の設定**: Kconfig `VIDEO_CODEC_H264_ALLOWED`（既定 `n`）、`VIDEO_CODEC_UPGRADE_DWELL_MS`、`VIDEO_CODEC_IDR_MIN_INTERVAL_MS`、`VIDEO_CODEC_KEY_WAIT_MS`（`main/Kconfig.projbuild`、`docs/VIDEO_TRANSPORT.md` §9.5・§9.6）。`?accept=` の解析は `http_guard_video_accept`（未知の値は無視、複数の `accept` はどれかに `h264` があれば真、パーセントエンコードは解釈しない）。
 - **同時接続**: 上限 2 (Kconfig `WEB_SERVER_WS_MAX_CLIENTS` に依存)
 - **切断条件**:
   - セッション切れ
