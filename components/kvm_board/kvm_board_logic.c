@@ -23,17 +23,16 @@ static uint32_t clamp_cap_ms(uint32_t value, uint32_t hard_max)
 
 KVM_BOARD_IRAM static int line_to_gpio(const kvm_board_pins_t *pins, kvm_board_line_t line)
 {
-    switch (line) {
-    case KVM_BOARD_LINE_POWER:
-    case KVM_BOARD_LINE_POWER_FORCE:
+    if (line == KVM_BOARD_LINE_POWER || line == KVM_BOARD_LINE_POWER_FORCE) {
         return pins->e_power;
-    case KVM_BOARD_LINE_RESET:
-        return pins->e_reset;
-    case KVM_BOARD_LINE_KVM:
-        return pins->e_kvm;
-    default:
-        return -1;
     }
+    if (line == KVM_BOARD_LINE_RESET) {
+        return pins->e_reset;
+    }
+    if (line == KVM_BOARD_LINE_KVM) {
+        return pins->e_kvm;
+    }
+    return -1;
 }
 
 static uint32_t line_cap_ms(const kvm_board_logic_t *b, kvm_board_line_t line)
@@ -55,22 +54,25 @@ static uint32_t line_cap_ms(const kvm_board_logic_t *b, kvm_board_line_t line)
 uint64_t kvm_board_logic_fixed_reserved_mask(void)
 {
     /*
-     * Fixed Waveshare ESP32-P4-ETH bindings (docs/HW_VERIFY.md §B1):
+     * Fixed Waveshare ESP32-P4-ETH bindings (docs/HW_VERIFY.md §B1/§B6):
      *   0, 1      : not exposed on P1 (UART/ADC)
      *   7, 8      : ESP_I2C_SDA / ESP_I2C_SCL (TC358743 / OLED / MCP23017)
      *   9..13     : ES8311 audio codec
+     *   16, 17    : TC358743 RESET / INT (docs/PLAN.md §4.4, docs/HW_VERIFY.md B6)
      *   24, 25    : USB Serial/JTAG
      *   26, 27    : USB 2.0 FS (USB1P1_N1/P1)
      *   28..31    : Ethernet RMII PHY
      *   34..38    : Boot strapping / JTAG select
      *   39..44    : microSD 4-bit SDIO
-     *   45, 53    : Other on-board circuits (not free on P1)
+     *   45        : microSD card power switch (Q1)
      *   49..52    : Ethernet RMII PHY
+     *   53        : Other on-board circuit (not free on P1)
      */
     static const int k_fixed[] = {
         0, 1,
         7, 8,
         9, 10, 11, 12, 13,
+        16, 17,
         24, 25, 26, 27,
         28, 29, 30, 31,
         34, 35, 36, 37, 38,

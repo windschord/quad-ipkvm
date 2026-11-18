@@ -33,7 +33,11 @@ esp_err_t kvm_board_init_from_kconfig(void);
  */
 const kvm_board_hal_t *kvm_board_hal(void);
 
-/* Release all active lines, stop the hardware timer, and free driver resources. */
+/*
+ * Release all active lines, stop the hardware timer, and free driver resources.
+ * Precondition: callers must stop all concurrent kvm_board_hal_t users (e.g., kvm_service)
+ * before calling kvm_board_deinit().
+ */
 void kvm_board_deinit(void);
 
 #ifdef __cplusplus

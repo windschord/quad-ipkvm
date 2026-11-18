@@ -19,7 +19,7 @@ static kvm_board_logic_config_t make_valid_config(void)
     cfg.pins.led_ch[1] = 22;
     cfg.pins.led_ch[2] = 23;
     cfg.pins.led_ch[3] = 54;
-    cfg.reserved_gpio_mask = (1ULL << 16) | (1ULL << 18); /* X630 RESET + USB VBUS */
+    cfg.reserved_gpio_mask = (1ULL << 18) | (1ULL << 46); /* USB VBUS + custom reserved */
     return cfg;
 }
 
@@ -93,24 +93,60 @@ static void test_pin_validation_rejects_bad_pins_duplicates_and_reserved(void)
         TEST_ASSERT_EQUAL_INT(-1, kvm_board_logic_init(&b, &cfg));
     }
 
-    /* Hardware-reserved ESP32-P4-ETH pins (0,1,7,8,9..13,24..31,34..45,49..53) must fail everywhere. */
+    /* Hardware-reserved ESP32-P4-ETH pins (all 36 pins) must fail everywhere even when reserved_gpio_mask=0. */
     static const int k_reserved[] = {
-        0, 1, 7, 8, 9, 13, 24, 25, 26, 27, 28, 31, 34, 38, 39, 44, 45, 49, 52, 53
+        0, 1,
+        7, 8,
+        9, 10, 11, 12, 13,
+        16, 17,
+        24, 25, 26, 27,
+        28, 29, 30, 31,
+        34, 35, 36, 37, 38,
+        39, 40, 41, 42, 43, 44,
+        45,
+        49, 50, 51, 52,
+        53
     };
+    uint64_t expected_fixed_mask = 0u;
     for (size_t i = 0; i < sizeof(k_reserved) / sizeof(k_reserved[0]); i++) {
+        expected_fixed_mask |= (1ULL << (uint32_t)k_reserved[i]);
+
         kvm_board_logic_config_t cfg_out = make_valid_config();
+        cfg_out.reserved_gpio_mask = 0u;
         cfg_out.pins.e_power = k_reserved[i];
         TEST_ASSERT_EQUAL_INT(-1, kvm_board_logic_init(&b, &cfg_out));
 
         kvm_board_logic_config_t cfg_in = make_valid_config();
+        cfg_in.reserved_gpio_mask = 0u;
         cfg_in.pins.led_ch[0] = k_reserved[i];
         TEST_ASSERT_EQUAL_INT(-1, kvm_board_logic_init(&b, &cfg_in));
     }
+    TEST_ASSERT_EQUAL_UINT64(expected_fixed_mask, kvm_board_logic_fixed_reserved_mask());
 
-    /* Custom reserved_gpio_mask (GPIO16 / GPIO18) must fail on both output and LED input. */
+    /* Verify exact bitmask equality across all 55 GPIOs (0..54). */
+    const uint64_t actual_fixed = kvm_board_logic_fixed_reserved_mask();
+    const uint64_t actual_out_forbidden = kvm_board_logic_output_forbidden_mask();
+    const uint64_t expected_out_forbidden =
+        (1ULL << 2) | (1ULL << 3) | (1ULL << 4) | (1ULL << 5) | (1ULL << 32) | (1ULL << 33);
+    TEST_ASSERT_EQUAL_UINT64(expected_out_forbidden, actual_out_forbidden);
+    for (int g = 0; g <= KVM_BOARD_GPIO_MAX; g++) {
+        uint64_t bit = 1ULL << (uint32_t)g;
+        TEST_ASSERT_EQUAL((expected_fixed_mask & bit) != 0u, (actual_fixed & bit) != 0u);
+        TEST_ASSERT_EQUAL((expected_out_forbidden & bit) != 0u, (actual_out_forbidden & bit) != 0u);
+    }
+
+    /* Upper valid GPIO bound (54) works on outputs too. */
     {
         kvm_board_logic_config_t cfg = make_valid_config();
-        cfg.pins.e_reset = 16;
+        cfg.pins.e_power = 54;
+        cfg.pins.led_ch[3] = 15;
+        TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_init(&b, &cfg));
+    }
+
+    /* Custom reserved_gpio_mask (GPIO18 USB VBUS / GPIO46) must fail on both output and LED input. */
+    {
+        kvm_board_logic_config_t cfg = make_valid_config();
+        cfg.pins.e_reset = 46;
         TEST_ASSERT_EQUAL_INT(-1, kvm_board_logic_init(&b, &cfg));
     }
     {
@@ -136,6 +172,7 @@ static void test_pin_validation_rejects_bad_pins_duplicates_and_reserved(void)
     }
     {
         kvm_board_logic_config_t cfg = make_valid_config();
+        cfg.reserved_gpio_mask = 0u;
         cfg.pins.a0 = 46;
         cfg.pins.a1 = 47;
         cfg.pins.e_kvm = 48;
@@ -158,15 +195,40 @@ static void test_caps_validation_and_hard_clamping(void)
     }
 
     kvm_board_logic_config_t over = make_valid_config();
-    over.max_power_ms = 99999u;
-    over.max_reset_ms = 99999u;
-    over.max_force_ms = 99999u;
-    over.max_kvm_ms = 99999u;
+    over.max_power_ms = KVM_ATX_HARD_MAX_POWER_MS + 1u;
+    over.max_reset_ms = KVM_ATX_HARD_MAX_RESET_MS + 1u;
+    over.max_force_ms = KVM_ATX_HARD_MAX_FORCE_MS + 1u;
+    over.max_kvm_ms = KVM_BOARD_HARD_MAX_KVM_CAP_MS + 1u;
     TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_init(&b, &over));
     TEST_ASSERT_EQUAL_UINT32(KVM_ATX_HARD_MAX_POWER_MS, b.config.max_power_ms);
     TEST_ASSERT_EQUAL_UINT32(KVM_ATX_HARD_MAX_RESET_MS, b.config.max_reset_ms);
     TEST_ASSERT_EQUAL_UINT32(KVM_ATX_HARD_MAX_FORCE_MS, b.config.max_force_ms);
     TEST_ASSERT_EQUAL_UINT32(KVM_BOARD_HARD_MAX_KVM_CAP_MS, b.config.max_kvm_ms);
+
+    /* Exact boundary tests (hard_max - 1, hard_max, hard_max + 1) in init(). */
+    {
+        kvm_board_logic_config_t minus1 = make_valid_config();
+        minus1.max_power_ms = KVM_ATX_HARD_MAX_POWER_MS - 1u;
+        minus1.max_reset_ms = KVM_ATX_HARD_MAX_RESET_MS - 1u;
+        minus1.max_force_ms = KVM_ATX_HARD_MAX_FORCE_MS - 1u;
+        minus1.max_kvm_ms = KVM_BOARD_HARD_MAX_KVM_CAP_MS - 1u;
+        TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_init(&b, &minus1));
+        TEST_ASSERT_EQUAL_UINT32(KVM_ATX_HARD_MAX_POWER_MS - 1u, b.config.max_power_ms);
+        TEST_ASSERT_EQUAL_UINT32(KVM_ATX_HARD_MAX_RESET_MS - 1u, b.config.max_reset_ms);
+        TEST_ASSERT_EQUAL_UINT32(KVM_ATX_HARD_MAX_FORCE_MS - 1u, b.config.max_force_ms);
+        TEST_ASSERT_EQUAL_UINT32(KVM_BOARD_HARD_MAX_KVM_CAP_MS - 1u, b.config.max_kvm_ms);
+
+        kvm_board_logic_config_t exact = make_valid_config();
+        exact.max_power_ms = KVM_ATX_HARD_MAX_POWER_MS;
+        exact.max_reset_ms = KVM_ATX_HARD_MAX_RESET_MS;
+        exact.max_force_ms = KVM_ATX_HARD_MAX_FORCE_MS;
+        exact.max_kvm_ms = KVM_BOARD_HARD_MAX_KVM_CAP_MS;
+        TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_init(&b, &exact));
+        TEST_ASSERT_EQUAL_UINT32(KVM_ATX_HARD_MAX_POWER_MS, b.config.max_power_ms);
+        TEST_ASSERT_EQUAL_UINT32(KVM_ATX_HARD_MAX_RESET_MS, b.config.max_reset_ms);
+        TEST_ASSERT_EQUAL_UINT32(KVM_ATX_HARD_MAX_FORCE_MS, b.config.max_force_ms);
+        TEST_ASSERT_EQUAL_UINT32(KVM_BOARD_HARD_MAX_KVM_CAP_MS, b.config.max_kvm_ms);
+    }
 
     const struct {
         kvm_board_line_t line;
@@ -183,23 +245,79 @@ static void test_caps_validation_and_hard_clamping(void)
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         uint64_t base_us = 0u, alarm_us = 0u;
         int gpio = -1;
+        bool released = false;
+        int rel_gpio = -1;
+
         /* requested_max_ms == 0 clamps to cap */
         TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_begin_assert(&b, cases[i].line, 0u, t,
                                                               &base_us, &alarm_us, &gpio));
         TEST_ASSERT_EQUAL_INT(cases[i].expected_gpio, gpio);
         TEST_ASSERT_EQUAL_UINT64((uint64_t)cases[i].expected_cap * 1000ULL, alarm_us - base_us);
-        bool released = false;
-        int rel_gpio = -1;
         TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_release_line(&b, cases[i].line, &released, &rel_gpio));
         TEST_ASSERT_TRUE(released);
         TEST_ASSERT_EQUAL_INT(cases[i].expected_gpio, rel_gpio);
         t = alarm_us + 10u;
 
-        /* requested_max_ms > cap clamps to cap */
-        TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_begin_assert(&b, cases[i].line, 88888u, t,
+        /* requested_max_ms == cap - 1 preserves cap - 1 */
+        TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_begin_assert(&b, cases[i].line,
+                                                              cases[i].expected_cap - 1u, t,
+                                                              &base_us, &alarm_us, &gpio));
+        TEST_ASSERT_EQUAL_UINT64((uint64_t)(cases[i].expected_cap - 1u) * 1000ULL, alarm_us - base_us);
+        TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_release_line(&b, cases[i].line, &released, &rel_gpio));
+        t = alarm_us + 10u;
+
+        /* requested_max_ms == cap preserves cap */
+        TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_begin_assert(&b, cases[i].line,
+                                                              cases[i].expected_cap, t,
                                                               &base_us, &alarm_us, &gpio));
         TEST_ASSERT_EQUAL_UINT64((uint64_t)cases[i].expected_cap * 1000ULL, alarm_us - base_us);
         TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_release_line(&b, cases[i].line, &released, &rel_gpio));
+        t = alarm_us + 10u;
+
+        /* requested_max_ms == cap + 1 clamps to cap */
+        TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_begin_assert(&b, cases[i].line,
+                                                              cases[i].expected_cap + 1u, t,
+                                                              &base_us, &alarm_us, &gpio));
+        TEST_ASSERT_EQUAL_UINT64((uint64_t)cases[i].expected_cap * 1000ULL, alarm_us - base_us);
+        TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_release_line(&b, cases[i].line, &released, &rel_gpio));
+        t = alarm_us + 10u;
+    }
+
+    /* Custom smaller board caps also clamp at cap - 1 / cap / cap + 1. */
+    kvm_board_logic_config_t custom = make_valid_config();
+    custom.max_power_ms = 300u;
+    custom.max_reset_ms = 120u;
+    custom.max_force_ms = 2500u;
+    custom.max_kvm_ms = 600u;
+    TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_init(&b, &custom));
+    const struct {
+        kvm_board_line_t line;
+        uint32_t cap;
+    } custom_cases[] = {
+        { KVM_BOARD_LINE_POWER,       300u },
+        { KVM_BOARD_LINE_RESET,       120u },
+        { KVM_BOARD_LINE_POWER_FORCE, 2500u },
+        { KVM_BOARD_LINE_KVM,         600u },
+    };
+    t = 1000u;
+    for (size_t i = 0; i < sizeof(custom_cases) / sizeof(custom_cases[0]); i++) {
+        uint64_t base_us = 0u, alarm_us = 0u;
+        int gpio = -1;
+        bool released = false;
+        int rel_gpio = -1;
+
+        TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_begin_assert(&b, custom_cases[i].line,
+                                                              custom_cases[i].cap - 1u, t,
+                                                              &base_us, &alarm_us, &gpio));
+        TEST_ASSERT_EQUAL_UINT64((uint64_t)(custom_cases[i].cap - 1u) * 1000ULL, alarm_us - base_us);
+        TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_release_line(&b, custom_cases[i].line, &released, &rel_gpio));
+        t = alarm_us + 10u;
+
+        TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_begin_assert(&b, custom_cases[i].line,
+                                                              custom_cases[i].cap + 1u, t,
+                                                              &base_us, &alarm_us, &gpio));
+        TEST_ASSERT_EQUAL_UINT64((uint64_t)custom_cases[i].cap * 1000ULL, alarm_us - base_us);
+        TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_release_line(&b, custom_cases[i].line, &released, &rel_gpio));
         t = alarm_us + 10u;
     }
 
@@ -340,11 +458,34 @@ static void test_monotonic_alarm_tokens_and_isr_races(void)
     TEST_ASSERT_FALSE(b.has_active_line);
     TEST_ASSERT_FALSE(kvm_board_logic_on_timer_alarm(&b, alarm2, &isr_gpio));
 
-    /* Near UINT64_MAX overflow fails cleanly without latching active state. */
+    /* Exact base_us boundary: now_us == last_alarm_us -> last_alarm_us + 1; now_us > last_alarm_us -> now_us. */
+    uint64_t prev_alarm = alarm2;
+    TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_begin_assert(&b, KVM_BOARD_LINE_KVM, 100u, prev_alarm,
+                                                          &base2, &alarm2, &gpio2));
+    TEST_ASSERT_EQUAL_UINT64(prev_alarm + 1ULL, base2);
+    TEST_ASSERT_EQUAL_UINT64(prev_alarm + 1ULL + 100000ULL, alarm2);
+    TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_release_line(&b, KVM_BOARD_LINE_KVM, &released, &gpio2));
+
+    prev_alarm = alarm2;
+    TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_begin_assert(&b, KVM_BOARD_LINE_KVM, 100u, prev_alarm + 5ULL,
+                                                          &base2, &alarm2, &gpio2));
+    TEST_ASSERT_EQUAL_UINT64(prev_alarm + 5ULL, base2);
+    TEST_ASSERT_EQUAL_UINT64(prev_alarm + 5ULL + 100000ULL, alarm2);
+    TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_release_line(&b, KVM_BOARD_LINE_KVM, &released, &gpio2));
+
+    /* Near UINT64_MAX overflow boundary: max_base + 1 fails, max_base succeeds with alarm == UINT64_MAX. */
+    const uint64_t dur_us = 50ULL * 1000ULL;
+    const uint64_t max_safe_now = UINT64_MAX - dur_us;
     TEST_ASSERT_EQUAL_INT(-1, kvm_board_logic_begin_assert(&b, KVM_BOARD_LINE_POWER, 50u,
-                                                           UINT64_MAX - 100ULL,
+                                                           max_safe_now + 1ULL,
                                                            &base2, &alarm2, &gpio2));
     TEST_ASSERT_FALSE(b.has_active_line);
+
+    TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_begin_assert(&b, KVM_BOARD_LINE_POWER, 50u,
+                                                          max_safe_now,
+                                                          &base2, &alarm2, &gpio2));
+    TEST_ASSERT_EQUAL_UINT64(UINT64_MAX, alarm2);
+    TEST_ASSERT_EQUAL_INT(0, kvm_board_logic_release_line(&b, KVM_BOARD_LINE_POWER, &released, &gpio2));
 }
 
 static void test_decode_leds_polarity_and_null(void)
