@@ -99,8 +99,9 @@ struct video_source_t { ...既存（name, start, stop, ctx）...;
 | 接頭辞 | 担当 | 例 |
 |---|---|---|
 | `TC358743_*`、`MIPI_PHY_*`、`CSI_*`（`CSI_H264_*` を含む）、`VIDEO_SOURCE_*`、`JPEG_*` | **HDMI 担当** | `TC358743_RESET_GPIO`、`MIPI_PHY_POWER_ENABLE`、`CSI_*` |
-| `WEB_SERVER_*`、`NET_ETH_*`、`OLED_*`、`KVM_*`、`ATX_*`、`HID_*`、`FRAME_HUB_*`、`VIDEO_CODEC_*` | **Claude** | `WEB_SERVER_WS_MAX_CLIENTS`、`NET_ETH_INIT`、`VIDEO_CODEC_H264_ALLOWED` |
-| `SD_*`、`USB_MSC_*`、`USB_DEVICE_*`、`KVM_BOARD_*` | **実機担当（Antigravity）** | `SD_FREQ_KHZ`、`USB_MSC_ENABLE`、`USB_DEVICE_VBUS_SENSE_GPIO` |
+| `KVM_BOARD_*` | **Antigravity（A-9）** | `KVM_BOARD_ENABLE`、`KVM_BOARD_GPIO_*`、`KVM_BOARD_HARD_MAX_*` |
+| `WEB_SERVER_*`、`NET_ETH_*`、`OLED_*`、`KVM_*`（`KVM_BOARD_*` を除く）、`ATX_*`、`HID_*`、`FRAME_HUB_*`、`VIDEO_CODEC_*` | **Claude** | `WEB_SERVER_WS_MAX_CLIENTS`、`NET_ETH_INIT`、`VIDEO_CODEC_H264_ALLOWED` |
+| `SD_*`、`USB_MSC_*`、`USB_DEVICE_*` | **実機担当（Antigravity）** | `SD_FREQ_KHZ`、`USB_MSC_ENABLE`、`USB_DEVICE_VBUS_SENSE_GPIO` |
 | `ISO_*` | **Claude**（ISO の仮想メディアの API とロジック。`docs/ISO_MOUNT_DESIGN.md`） | `ISO_ENABLE`、`ISO_UPLOAD_CHUNK_KB` |
 
 - 他の担当の接頭辞の項目は、**変更しない**（必要なときは、その担当に依頼する）。**例外**: Issue に「この Issue に限り変更してよい」と、範囲を明記したものだけ（例: #69 は、実機を共有しているため、Antigravity が `ws_video_core`、`web_server.c` の WS 送信まわり、`WEB_SERVER_*` の Kconfig を変更してよい。PR は Claude がレビューする）。

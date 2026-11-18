@@ -1,10 +1,13 @@
-if(COMMAND idf_component_register)
-    # ESP-IDF build（ヘッダーだけ。GPIO の実装は A-9）
-    idf_component_register(INCLUDE_DIRS "include"
-                           REQUIRES kvm_logic)
+if (NOT COMMAND idf_component_register)
+    # ホスト側: kvm_board.h (インターフェース定義) + 純 C 安全ロジック kvm_board_logic + ドライバ順序層 kvm_board_drv
+    add_library(kvm_board STATIC kvm_board_logic.c kvm_board_drv.c)
+    target_include_directories(kvm_board PUBLIC include)
+    target_link_libraries(kvm_board PUBLIC kvm_logic)
 else()
-    # Host build (CMake direct)
-    add_library(kvm_board INTERFACE)
-    target_include_directories(kvm_board INTERFACE include)
-    target_link_libraries(kvm_board INTERFACE kvm_logic)
+    idf_component_register(
+        SRCS "kvm_board_logic.c" "kvm_board_drv.c" "kvm_board.c"
+        INCLUDE_DIRS "include"
+        REQUIRES kvm_logic
+        PRIV_REQUIRES esp_driver_gpio esp_driver_gptimer freertos hal log soc
+    )
 endif()

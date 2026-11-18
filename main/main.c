@@ -67,6 +67,8 @@
 #if CONFIG_USB_DEVICE_ENABLE
 #include "usb_hid.h"
 #endif
+#include "kvm_board_hw.h"
+#include "kvm_service.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -434,4 +436,16 @@ void app_main(void)
             ESP_LOGE(TAG, "Failed to initialize TC358743");
         }
     }
+
+#if defined(CONFIG_KVM_BOARD_ENABLE) && CONFIG_KVM_BOARD_ENABLE
+    // Start KVM/ATX board HAL after video_status_set_provider() has settled on the active video source.
+    if (kvm_board_init_from_kconfig() == ESP_OK) {
+        esp_err_t kvm_err = kvm_service_start(kvm_board_hal());
+        if (kvm_err != ESP_OK) {
+            ESP_LOGE(TAG, "kvm_service_start failed: %s", esp_err_to_name(kvm_err));
+        }
+    } else {
+        ESP_LOGE(TAG, "KVM board HAL init failed; KVM/ATX API remains not_ready (503)");
+    }
+#endif
 }

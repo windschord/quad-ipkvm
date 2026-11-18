@@ -46,6 +46,15 @@
 | C3 | 抵抗値（フォトリレー入力、プルアップ 10kΩ、A0/A1 プルダウン 100kΩ、フォトカプラ側） | |
 | C4 | ATX 接続先のヘッダ極性・電圧（PC のフロントパネルヘッダ。Power SW / Reset SW は無電圧接点か） | |
 
+### C.1 ATX / 74HC139 ボード HAL（A-9 / `kvm_board`）実機確認項目
+
+| # | 確認項目 | 方法 | 結果 |
+|---|---|---|---|
+| C5 | 出力モード切替時の無グリッチ確認 | オシロで `kvm_board_init()` 実行瞬間に `Ē_PWR` / `Ē_RST` / `Ē_KVM` が Low に落ちないことを確認 | `TODO(hw-verify)` |
+| C6 | パルス送出中のフラッシュ書込（NVS）時の自動解放遅延計測 | `CONFIG_GPTIMER_ISR_CACHE_SAFE=y` 下でパルス中に NVS 書込を発生させ、オシロで解放時刻がハード上限内であることを計測 | `TODO(hw-verify)` |
+| C7 | パニック時の安全復帰前提 | パニック設定が `CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y` 等の自動リセット構成であり、リセットで GPIO が High-Z へ戻り外部 10 kΩ プルアップで Ē が High へ戻ることを確認（`PANIC_PRINT_HALT` 等の停止設定では自動復帰しない点に注意） | `TODO(hw-verify)` |
+| C8 | IRAM ISR 静的検証 | ESP-IDF v6.0.1 の `gpio_ll_set_level` が `always_inline` であること、および `KVM_BOARD_ENABLE=y` ビルドの逆アセンブリで `on_timer_alarm` / `kvm_board_logic_on_timer_alarm` が `.iram1` 配置かつ `.rodata` ジャンプテーブル参照なしであることを確認 | **[確認]**（2026-11-19、`KVM_BOARD_ENABLE=y`、`0xcf330` B ビルドの `riscv32-esp-elf-objdump -d`）`on_timer_alarm`（`0x4ff02186`）・`kvm_board_logic_on_timer_alarm`（`0x4ff02222`）・`line_to_gpio`（`0x4ff02200`）がいずれも `.iram0.text`（IRAM）へ配置され、`gpio_ll_set_level` が `rom_gpio_set_output_level`（`0x4fc00564`）へ直接インライン展開され、`.rodata` / `.flash`（`0x40xxxxxx`）参照およびジャンプテーブルが 0 件であることを確認。`sdkconfig` でも `GPTIMER_ISR_CACHE_SAFE=y`・`GPTIMER_CTRL_FUNC_IN_IRAM=y` 自動選択を確認。 |
+
 ## E. HDMI キャプチャ Geekworm X630 v1.5
 
 調査メモ（2026-10-15、Geekworm 公式 Wiki/製品ページには本環境から接続できず、検索結果の要約に基づく。**一次情報で要確認**）:
