@@ -138,12 +138,13 @@ button:disabled {
     margin: 6px 0 0;
 }
 /* The three display modes (the class is set by app.js; the saved mode, also while the window is full screen).
-   fit and actual: the page is exactly one window high and only the video area changes (actual scrolls inside it).
+   fit and actual: the page is at least one window high and the video area takes what the bar and the text leave
+   (actual scrolls inside it).
    width: the page scrolls. */
 #view-dashboard.mode-fit,
 #view-dashboard.mode-actual {
-    height: 100vh;
-    height: 100dvh;
+    min-height: 100vh;
+    min-height: 100dvh;
 }
 #view-dashboard.mode-width {
     min-height: 100vh;
@@ -151,7 +152,9 @@ button:disabled {
 #view-dashboard.mode-fit .video-wrap,
 #view-dashboard.mode-actual .video-wrap {
     flex: 1 1 0;
-    min-height: 0;
+    /* A window so short that the bar and the text use all of it still gets a picture (160px = 9:16 of a 284px
+       wide phone picture): the page grows past the window and scrolls instead of the video area becoming 0. */
+    min-height: 160px;
 }
 #view-dashboard.mode-fit .video-wrap {
     overflow: hidden;
@@ -161,6 +164,9 @@ button:disabled {
 }
 #view-dashboard.mode-width .video-wrap {
     flex: none;
+}
+#view-dashboard.is-fullscreen .fullscreen-exit {
+    display: block;
 }
 #view-dashboard.is-fullscreen .bar,
 #view-dashboard.is-fullscreen .video-info {
@@ -200,6 +206,23 @@ button:disabled {
 }
 #view-dashboard .video-wrap:fullscreen #video {
     border-width: 0;
+}
+/* The way out of full screen for a device without an Escape key: a small button in the corner of the window.
+   Only the button takes the mouse; the canvas box is not changed (the button is its sibling, positioned out of flow). */
+.fullscreen-exit {
+    display: none;
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 1;
+    padding: 4px 10px;
+    font-size: 0.8em;
+    color: #fff;
+    background-color: rgba(0, 0, 0, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+}
+.fullscreen-exit:hover {
+    background-color: rgba(0, 0, 0, 0.8);
 }
 .video-overlay-hidden {
     display: none;

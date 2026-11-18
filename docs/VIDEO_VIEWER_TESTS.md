@@ -214,3 +214,14 @@ C 側・アセットの道具 `python3 tools/test/mutate_video_viewer.py <repo> 
 - 保存と復元: `actual` を選んで再読み込みすると、`actual` で起動する。
 - **マウスの絶対座標**: 偽の `/ws`(`0x80` の GRANTED を返す)の送信を記録し、実際の Chrome のマウス操作で、箱の左上・右下・中央を指した。`fit` 1280x800: 左上 (0, 0)、右下 (32741, 32721)(箱の端の 1.5px 内側)、中央 (16384, 16360)。700x900 の `fit`・`width` でも、同じく 0 と 32767 の近く、中央が 16384 の近く。黒帯・伸縮によるずれはない。
 - 全画面(`#btn-fullscreen` のクリック): `document.fullscreenElement` が `#video-wrap`、ボタンが「全画面を終了」、ダッシュボードに `is-fullscreen`、バーと下の文言は 0 の高さ、箱は 1280x720(黒の上下の帯)。`document.exitFullscreen()` で戻ると、`fit` の 1262x709 に戻る。
+
+### 8.6 レビューの指摘への修正(PR #130 の CodeRabbit。6 件)
+
+1. **操作権がないのに Esc を lock する**: `syncKeyboardLock` の条件に `inputGranted` を足した(`全画面 && 入力が有効 && GRANTED`)。`inputGranted` が変わる 4 か所(GRANTED を受けた、拒否された、入力の接続が切れた、`disconnectWebSocket`)で `syncKeyboardLock()` を呼ぶ。ミュータント N01〜N06、テスト 10g。
+2. **全画面の要求が遅れて完了する**: `updateFullscreenUI` の先頭で、全画面かつダッシュボードが隠れているなら `document.exitFullscreen()`(`swallowRejection` と `try/catch`)。N07〜N12、テスト 9h。
+3. **全画面中の終了ボタン**: `.video-wrap` の中、canvas とオーバーレイの間に `#btn-fullscreen-exit`(`type="button"`、「全画面を終了」)。`.fullscreen-exit` は `display: none; position: absolute; top: 8px; right: 8px`、半透明の黒、小さい文字。`#view-dashboard.is-fullscreen .fullscreen-exit` だけ `display: block`。クリックは、全画面のときだけ `exitFullscreen`(全画面でないときは何も要求しない)。canvas の箱には触れない(兄弟要素、フローの外)。N13〜N16、I39〜I43、C40〜C44、テスト 9i。
+4. **狭い高さで映像の領域が 0 になる**: `fit` / `actual` の映像の領域に `min-height: 160px`、ダッシュボードは `height: 100vh` をやめて `min-height: 100vh`(縦に溢れたらページがスクロールする)。160px の根拠: 幅 284px の 16:9 の映像がちょうど入る高さで、これ以下だと文字が読めず、`fitSize` の最小(1px)付近の縮小になる。高さ 300px・証明書の案内あり(Playwright)で、映像の領域 160px、映像 280x158 が見えて、ページが縦にスクロールした。C27〜C29、C46、C47、静的検査。
+5. **Esc の記述**: `docs/WEB_API.md` を、(a) ページの約 1 秒(1000 ms)の長押し、(b) Chromium のキーボードロックの解除(約 2 秒、未確認)、(c) ブラウザが全画面を終了するか(未確認)、に分けた。ヒントの文言も断定をやめた(I44〜I46)。入力が有効な間はキーボードが対象に送られる(ローカルのボタンはマウス)ことも 1 行足した。
+6. **C32**: `outline: none` の直後に有効な `outline: 2px solid` が残っていた。宣言そのものを `outline: none` に置き換える形に直した。この修正で、`#video:focus-visible` の枠の検査が無いことが分かったので、検査とミュータント C45 を足した。他の C 系ミュータントは全部見直したが、同じ型(効果が打ち消される)の誤りはなかった。
+
+**結果**: `node tools/test/check_video_viewer.js` 成功。ctest 72 個成功。`app.js` のミュータント全数: **475 個 / 殺した 435 / 同値 40 / 生き残り 0 / 一致なし 0**(追加は N01〜N16)。HTML / CSS / C: **130 個 / 殺した 129 / 同値 1(H13) / 生き残り 0**(追加は I39〜I46、C40〜C47 の 16 個。C27〜C29、C32 は書き換え)。実ブラウザ(Chrome 153)で、全画面中に終了ボタンが映像の右上(1175,8)に出て、クリックで戻り、マウスの絶対座標の換算(左上、右下、中央)が、全画面の前後で変わらないことを確認した。最初の実行で生き残った N12(`exitFullscreen` が同期的に例外)は、テストを足して殺した。

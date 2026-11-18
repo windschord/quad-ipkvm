@@ -441,6 +441,7 @@ async function boot(source, loc, statusRef, extraGlobals, opts) {
         fullscreenElement: null,
         exitFullscreen() {
             fs.exits++;
+            if (fs.exitThrows) throw new Error('InvalidStateError');
             if (fs.mode === 'reject') return Promise.reject(new Error('denied'));
             return Promise.resolve();
         },
@@ -1926,6 +1927,11 @@ async function checkLayoutBrowser(source) {
         h.enterFs = () => { h.document.fullscreenElement = h.wrap(); h.docListeners.fullscreenchange(); };
         h.exitFs = () => { h.document.fullscreenElement = null; h.docListeners.fullscreenchange(); };
         h.fsLabel = () => h.elements['btn-fullscreen'].textContent;
+        // 入力の WebSocket(/ws): 操作権を得た(GRANTED、0x80)/ 拒否された(0x81、理由 1)/ 切れた
+        h.inputSocket = () => h.sockets.filter((x) => /\/ws$/.test(x.url)).pop();
+        h.grant = () => h.inputSocket().onmessage({ data: Uint8Array.from([0x80]).buffer });
+        h.deny = () => h.inputSocket().onmessage({ data: Uint8Array.from([0x81, 1]).buffer });
+        h.dropInput = () => h.inputSocket().onclose();
         // 映像のフレームを 1 枚届ける(偽の JPEG フレーム = { w, h })
         h.frame = async (w, hh) => { await h.msg({ w, h: hh }); await flush(); };
         return h;
@@ -2244,6 +2250,68 @@ async function checkLayoutBrowser(source) {
         eq('9g the login view is shown', [h.elements['view-login']._classes.has('view-hidden'), h.elements['auth-card']._classes.has('view-hidden')], [false, false]);
     });
 
+    // 9h. 全画面の要求の完了が、画面の切替より後に来る: 隠れたダッシュボードを全画面のままにしない
+    await guard('fullscreen/late fullscreenchange', async () => {
+        const h = await page();
+        h.st.value = { state: 'ready', authenticated: false };
+        h.click('btn-logout');
+        await flush();
+        await flush();
+        const before = h.fs.exits; // showView(login) did not need to exit: the page was not in full screen
+        eq('9h the login view is shown (dashboard hidden)', h.dash().has('view-hidden'), true);
+        h.enterFs(); // the request finished late
+        eq('9h a full screen that arrives after the dashboard was hidden is left again', h.fs.exits, before + 1);
+        h.exitFs();
+        eq('9h and leaving it asks for nothing more', h.fs.exits, before + 1);
+        const h2 = await page();
+        h2.enterFs();
+        eq('9h with the dashboard shown nothing is exited', h2.fs.exits, 0);
+        // exitFullscreen が拒否されても、例外にならない
+        const h3 = await page();
+        h3.st.value = { state: 'ready', authenticated: false };
+        h3.click('btn-logout');
+        await flush();
+        await flush();
+        h3.fs.mode = 'reject';
+        h3.enterFs();
+        await flush();
+        eq('9h exitFullscreen rejected: fine', h3.fs.exits >= 1, true);
+        const h4 = await page();
+        h4.st.value = { state: 'ready', authenticated: false };
+        h4.click('btn-logout');
+        await flush();
+        await flush();
+        h4.fs.exitThrows = true;
+        let threw = null;
+        try { h4.enterFs(); } catch (e) { threw = e.message; }
+        eq('9h exitFullscreen throws: the fullscreenchange handler does not', threw, null);
+    });
+    // 9i. 全画面の中の「全画面を終了」ボタン(映像の隅。Esc のない端末向け)
+    await guard('fullscreen/exit button', async () => {
+        const h = await page();
+        const b = h.elements['btn-fullscreen-exit'];
+        eq('9i exit button exists', !!b, true);
+        h.enterFs();
+        h.click('btn-fullscreen-exit');
+        eq('9i the exit button leaves full screen (exitFullscreen once)', [h.fs.requests.length, h.fs.exits], [0, 1]);
+        h.fs.mode = 'reject';
+        h.click('btn-fullscreen-exit');
+        await flush();
+        eq('9i a rejection is ignored', h.fs.exits, 2);
+        // 全画面でないときに押されても、要求を出さずに済ませる(CSS で隠れているので、通常は押せない)
+        const h2 = await page();
+        h2.click('btn-fullscreen-exit');
+        eq('9i not in full screen: neither leaves nor requests anything', [h2.fs.exits, h2.fs.requests.length], [0, 0]);
+        // canvas の箱は、ボタンで変わらない
+        const h3 = await page();
+        const size0 = h3.size();
+        h3.setWrap(FULL[0], FULL[1]);
+        h3.enterFs();
+        h3.setWrap(WRAP[0], WRAP[1]);
+        h3.exitFs();
+        eq('9i the canvas box is back as before', h3.size(), size0);
+    });
+
     // 10. Esc を奪う Chromium の navigator.keyboard.lock(任意)
     const kbEnv = (mode) => {
         const kb = { locks: [], unlocks: 0 };
@@ -2264,6 +2332,7 @@ async function checkLayoutBrowser(source) {
         h.exitFs();
         eq('10a input off: no unlock either', [kb.locks, kb.unlocks], [[], 0]);
         h.click('btn-input-toggle'); // input on
+        h.grant();
         h.enterFs();
         eq('10b input on: Escape is locked after entering full screen', [kb.locks, kb.unlocks], [[['Escape']], 0]);
         h.docListeners.fullscreenchange();
@@ -2275,6 +2344,7 @@ async function checkLayoutBrowser(source) {
         // 全画面の中で入力を切り替える
         const kb2 = kbEnv('ok');
         const h2 = await page({ globals: { navigator: { keyboard: kb2 } } });
+        h2.grant();
         h2.enterFs();
         h2.elements['video']._listeners.click(); // a click on the picture turns input on
         eq('10c input turned on inside full screen: locked', [kb2.locks, kb2.unlocks], [[['Escape']], 0]);
@@ -2283,13 +2353,48 @@ async function checkLayoutBrowser(source) {
         // 入力が有効でも、全画面でなければ lock しない
         const kb3 = kbEnv('ok');
         const h3 = await page({ globals: { navigator: { keyboard: kb3 } } });
+        h3.grant();
         h3.click('btn-input-toggle');
         eq('10d input on, not in full screen: no lock', [kb3.locks, kb3.unlocks], [[], 0]);
+        // 操作権がない(別の端末が操作中、まだ GRANTED が来ない)間は、入力が有効でも lock しない
+        const kb4 = kbEnv('ok');
+        const h4 = await page({ globals: { navigator: { keyboard: kb4 } } });
+        h4.click('btn-input-toggle');
+        h4.enterFs();
+        eq('10g input on but not granted: no lock (nothing would reach the target)', [kb4.locks, kb4.unlocks], [[], 0]);
+        h4.grant();
+        eq('10g GRANTED arrives inside full screen: locked', [kb4.locks, kb4.unlocks], [[['Escape']], 0]);
+        h4.dropInput();
+        eq('10g the input connection drops: unlocked', [kb4.locks.length, kb4.unlocks], [1, 1]);
+        h4.runTimer(1000); // the input connection is made again
+        h4.grant();
+        eq('10g granted again (reconnected): locked again', [kb4.locks.length, kb4.unlocks], [2, 1]);
+        h4.deny();
+        eq('10g denied (another terminal is the controller): unlocked', [kb4.locks.length, kb4.unlocks], [2, 2]);
+        // 別の端末が操作中: 最初から拒否される
+        const kb5 = kbEnv('ok');
+        const h5 = await page({ globals: { navigator: { keyboard: kb5 } } });
+        h5.deny();
+        h5.click('btn-input-toggle');
+        h5.enterFs();
+        eq('10g denied from the start: input on in full screen does not lock', [kb5.locks, kb5.unlocks], [[], 0]);
+        // ログアウト(切断の経路)でも unlock
+        const kb6 = kbEnv('ok');
+        const h6 = await page({ globals: { navigator: { keyboard: kb6 } } });
+        h6.grant();
+        h6.click('btn-input-toggle');
+        h6.enterFs();
+        h6.st.value = { state: 'ready', authenticated: false };
+        h6.click('btn-logout');
+        await flush();
+        await flush();
+        eq('10g logout in full screen: unlocked', [kb6.locks.length, kb6.unlocks], [1, 1]);
     });
     await guard('keyboard lock failures', async () => {
         for (const mode of ['reject', 'throw']) {
             const kb = kbEnv(mode);
             const h = await page({ globals: { navigator: { keyboard: kb } } });
+            h.grant();
             h.click('btn-input-toggle');
             h.enterFs();
             await flush();
@@ -2298,21 +2403,25 @@ async function checkLayoutBrowser(source) {
             eq('10e lock ' + mode + ': out again', [h.fsLabel(), h.dash().has('is-fullscreen')], ['全画面', false]);
         }
         const none = await page({ globals: { navigator: {} } });
+        none.grant();
         none.click('btn-input-toggle');
         none.enterFs();
         none.exitFs();
         eq('10f navigator without keyboard: fine', none.fsLabel(), '全画面');
         const noLock = await page({ globals: { navigator: { keyboard: {} } } });
+        noLock.grant();
         noLock.click('btn-input-toggle');
         noLock.enterFs();
         noLock.exitFs();
         eq('10f keyboard without lock / unlock: fine', noLock.fsLabel(), '全画面');
         const throwing = await page({ globals: { navigator: { keyboard: { lock() { throw new Error('x'); }, unlock() { throw new Error('y'); } } } } });
+        throwing.grant();
         throwing.click('btn-input-toggle');
         throwing.enterFs();
         throwing.exitFs();
         eq('10f lock and unlock that throw: fine', throwing.fsLabel(), '全画面');
         const plain = await page();
+        plain.grant();
         plain.click('btn-input-toggle');
         plain.enterFs();
         plain.exitFs();
@@ -2347,12 +2456,12 @@ function checkLayoutFiles() {
     const at = (s) => html.indexOf(s);
     // id
     for (const id of ['auth-card', 'view-dashboard', 'video-wrap', 'video', 'video-overlay', 'video-status', 'video-trust-hint', 'btn-input-toggle', 'btn-pointer-lock', 'input-status', 'usb-status',
-        'btn-view-fit', 'btn-view-width', 'btn-view-actual', 'btn-fullscreen', 'btn-logout', 'error-message', 'view-setup', 'view-login']) {
+        'btn-view-fit', 'btn-view-width', 'btn-view-actual', 'btn-fullscreen', 'btn-fullscreen-exit', 'btn-logout', 'error-message', 'view-setup', 'view-login']) {
         if (!info[id]) problems.push('index.html lacks #' + id);
     }
     if (problems.length) return problems;
     // ボタンは <button type="button">(フォームの外で submit にならない。キーボードで操作できる)
-    for (const id of ['btn-input-toggle', 'btn-pointer-lock', 'btn-view-fit', 'btn-view-width', 'btn-view-actual', 'btn-fullscreen', 'btn-logout']) {
+    for (const id of ['btn-input-toggle', 'btn-pointer-lock', 'btn-view-fit', 'btn-view-width', 'btn-view-actual', 'btn-fullscreen', 'btn-fullscreen-exit', 'btn-logout']) {
         if (info[id].tag !== 'button') problems.push('#' + id + ' must be a <button>');
         if (!/\btype="button"/.test(info[id].attrs)) problems.push('#' + id + ' needs type="button"');
         if (/tabindex="-1"/.test(info[id].attrs)) problems.push('#' + id + ' must stay reachable by keyboard');
@@ -2366,7 +2475,7 @@ function checkLayoutFiles() {
         if (ids !== 'id="btn-view-fit" id="btn-view-width" id="btn-view-actual"') problems.push('the group holds the three mode buttons in order, got: ' + ids);
     }
     const label = (id) => new RegExp('id="' + id + '"[^>]*>([^<]*)<').exec(html);
-    for (const [id, text] of [['btn-view-fit', 'ウィンドウに合わせる'], ['btn-view-width', '幅に合わせる'], ['btn-view-actual', '実寸 (100%)'], ['btn-fullscreen', '全画面'], ['btn-logout', 'ログアウト']]) {
+    for (const [id, text] of [['btn-view-fit', 'ウィンドウに合わせる'], ['btn-view-width', '幅に合わせる'], ['btn-view-actual', '実寸 (100%)'], ['btn-fullscreen', '全画面'], ['btn-fullscreen-exit', '全画面を終了'], ['btn-logout', 'ログアウト']]) {
         const m = label(id);
         if (!m || m[1] !== text) problems.push('#' + id + ' label: expected ' + text + ', got ' + (m && m[1]));
     }
@@ -2375,7 +2484,7 @@ function checkLayoutFiles() {
     }
     // 順序: 操作バー(左から)-> 映像 -> 状態と文言
     const order = ['class="bar-title"', 'id="btn-input-toggle"', 'id="btn-pointer-lock"', 'id="input-status"', 'id="usb-status"', 'role="group"', 'id="btn-fullscreen"', 'id="btn-logout"',
-        'class="video-wrap"', '<canvas id="video"', 'id="video-overlay"', 'id="video-status"', 'id="video-trust-hint"', 'class="hint video-hint"'];
+        'class="video-wrap"', '<canvas id="video"', 'id="btn-fullscreen-exit"', 'id="video-overlay"', 'id="video-status"', 'id="video-trust-hint"', 'class="hint video-hint"'];
     let last = -1;
     for (const s of order) {
         const i = at(s);
@@ -2429,12 +2538,22 @@ function checkLayoutFiles() {
     const fsHide = /#view-dashboard\.is-fullscreen \.bar,\s*#view-dashboard\.is-fullscreen \.video-info \{[^}]*display: none/.test(css);
     if (!fsHide) problems.push('in full screen the bar and the text under the video are hidden');
     if (!/#view-dashboard \.video-wrap:fullscreen \{[^}]*width: 100%;[^}]*height: 100%;[^}]*background-color: #000/.test(css)) problems.push('the full screen wrap fills the window on black');
-    if (!/\.mode-fit \.video-wrap,\s*#view-dashboard\.mode-actual \.video-wrap \{[^}]*flex: 1 1 0;[^}]*min-height: 0/.test(css)) problems.push('fit and actual: the video area takes the rest of the window height');
+    if (!/\.mode-fit \.video-wrap,\s*#view-dashboard\.mode-actual \.video-wrap \{[^}]*flex: 1 1 0;[^}]*[^-]min-height: 160px/.test(css)) problems.push('fit and actual: the video area takes the rest of the window height, never less than 160px');
     if (!/#view-dashboard\.mode-fit \.video-wrap \{[^}]*overflow: hidden/.test(css)) problems.push('fit: no scrolling');
     if (!/#view-dashboard\.mode-actual \.video-wrap \{[^}]*overflow: auto/.test(css)) problems.push('actual: only the video area scrolls');
     if (!/#view-dashboard\.mode-width \{[^}]*min-height: 100vh/.test(css)) problems.push('width: the page may grow taller than the window');
     if (!/#view-dashboard\.mode-width \.video-wrap \{[^}]*flex: none/.test(css)) problems.push('width: the video area follows the picture height');
-    if (!/#view-dashboard\.mode-fit,\s*#view-dashboard\.mode-actual \{[^}]*height: 100vh/.test(css)) problems.push('fit and actual: the page is one window high');
+    if (!/#view-dashboard\.mode-fit,\s*#view-dashboard\.mode-actual \{[^}]*min-height: 100vh;/.test(css)) problems.push('fit and actual: the page is at least one window high (and grows when the window is too short)');
+    if (/#view-dashboard\.mode-fit,\s*#view-dashboard\.mode-actual \{[^}]*[^-]height: /.test(css)) problems.push('fit and actual: the page height must not be fixed (the video area would be cut off in a short window)');
+    // 全画面を出る、映像の隅のボタン(canvas の外側の兄弟。全画面の間だけ表示。pointer-events はボタンだけ)
+    const fx = rule('.fullscreen-exit');
+    if (fx === null) problems.push('app.css lacks .fullscreen-exit');
+    else {
+        if (!/display: none/.test(fx)) problems.push('.fullscreen-exit is hidden outside full screen');
+        if (!/position: absolute/.test(fx) || !/top: \d+px/.test(fx) || !/right: \d+px/.test(fx)) problems.push('.fullscreen-exit sits in the top right corner, out of the layout flow');
+        if (!/rgba\(0, 0, 0, 0\.\d+\)/.test(fx)) problems.push('.fullscreen-exit has a translucent background');
+    }
+    if (!/#view-dashboard\.is-fullscreen \.fullscreen-exit \{[^}]*display: block/.test(css)) problems.push('.fullscreen-exit is shown in full screen');
     if (!/\.video-wrap \{\s*position: relative;\s*display: flex;/.test(css)) problems.push('.video-wrap is a flex box (the canvas is centered by auto margins)');
     if (!/margin: auto/.test(video || '')) problems.push('#video is centered with margin: auto');
     // 画面は、JavaScript が状態を取得するまで、どれも隠れている(一瞬の表示を出さない)
@@ -2451,6 +2570,12 @@ function checkLayoutFiles() {
     // フォーカス表示を消さない: ボタンに outline: none を付けない。キーボードのフォーカスが見える。
     if (/button[^{]*\{[^}]*outline:\s*(none|0)/.test(css)) problems.push('buttons must keep a visible focus ring');
     if (!/button:focus-visible \{[^}]*outline: 2px solid/.test(css)) problems.push('button:focus-visible must draw a ring');
+    if (/button:focus-visible \{[^}]*outline:\s*(none|0)/.test(css)) problems.push('button:focus-visible must not remove the ring');
+    if (!/#video:focus-visible \{[^}]*outline: 2px solid/.test(css)) problems.push('#video:focus-visible must draw a ring (keyboard focus on the picture)');
+    // ヒントは、確認していないことを断定しない(Esc の長押しは約 1 秒、ローカルのボタンはマウスで)
+    const hintText = />([^<]*Esc[^<]*)<\/p>/.exec(html);
+    if (!hintText || !/約 1 秒/.test(hintText[1]) || !/マウス/.test(hintText[1])) problems.push('the hint says how long to hold Esc (about 1 second) and that the buttons are used with the mouse');
+    if (hintText && /(同時|必ず|で終了します（)/.test(hintText[1])) problems.push('the hint must not claim what the browser does with Esc in full screen');
     if (!/button:disabled \{/.test(css)) problems.push('a disabled button must look disabled');
     // 既存の配色と枠の色
     if (!/#video\.input-active \{[^}]*border-color: #007bff/.test(css)) problems.push('#video.input-active keeps the blue frame');
@@ -2960,8 +3085,8 @@ function mutantList() {
         M('L100', 'updateFullscreenUI: no new layout', '        syncKeyboardLock();\n        updateVideoLayout();\n    }', '        syncKeyboardLock();\n    }'),
         M('L101', 'updateFullscreenUI: the keyboard lock is not synced', '        syncKeyboardLock();\n        updateVideoLayout();\n    }', '        updateVideoLayout();\n    }'),
         M('L102', 'updateInputUI: the keyboard lock is not synced', '        syncKeyboardLock();\n    }\n\n    btnInputToggle', '    }\n\n    btnInputToggle'),
-        M('L103', 'syncKeyboardLock: locks without input', 'const want = isFullscreen() && inputEnabled;', 'const want = isFullscreen();'),
-        M('L104', 'syncKeyboardLock: locks outside full screen', 'const want = isFullscreen() && inputEnabled;', 'const want = inputEnabled;'),
+        M('L103', 'syncKeyboardLock: locks without input', 'const want = isFullscreen() && inputEnabled && inputGranted;', 'const want = isFullscreen() && inputGranted;'),
+        M('L104', 'syncKeyboardLock: locks outside full screen', 'const want = isFullscreen() && inputEnabled && inputGranted;', 'const want = inputEnabled && inputGranted;'),
         M('L105', 'syncKeyboardLock: locks every time', '        if (want === keyboardLocked) return;\n', ''),
         M('L106', 'syncKeyboardLock: the state is not remembered', '        keyboardLocked = want;\n', ''),
         M('L107', 'syncKeyboardLock: another key', "kb.lock(['Escape'])", "kb.lock(['Esc'])"),
@@ -2980,6 +3105,23 @@ function mutantList() {
         M('L120', 'showView: the dashboard branch is for every view', 'if (view === viewDashboard) {', 'if (view !== viewDashboard) {'),
         M('L121', 'auth card id renamed', "document.getElementById('auth-card')", "document.getElementById('card')"),
         M('L122', 'video area id renamed', "document.getElementById('video-wrap')", "document.getElementById('video-area')"),
+        // ---- レビューの指摘への修正(N: 操作権でロック、遅れた全画面、終了ボタン) ----
+        M('N01', 'syncKeyboardLock: locks without the controller grant', 'const want = isFullscreen() && inputEnabled && inputGranted;', 'const want = isFullscreen() && inputEnabled;'),
+        M('N02', 'syncKeyboardLock: only the grant counts', 'const want = isFullscreen() && inputEnabled && inputGranted;', 'const want = isFullscreen() && inputGranted;'),
+        M('N03', 'GRANTED does not sync the lock', "                inputGranted = true;\n                syncKeyboardLock();\n", "                inputGranted = true;\n"),
+        M('N04', 'a denial does not sync the lock', "                inputGranted = false;\n                syncKeyboardLock();\n                wsInput.onclose = null;", "                inputGranted = false;\n                wsInput.onclose = null;"),
+        M('N05', 'closing the input connection does not sync the lock', "            inputGranted = false;\n            syncKeyboardLock();\n            elInputStatus.textContent", "            inputGranted = false;\n            elInputStatus.textContent"),
+        M('N06', 'disconnect does not sync the lock', "        inputGranted = false;\n        syncKeyboardLock();\n        elInputStatus.textContent = '入力: 未接続';\n        elUsbStatus.textContent = 'ターゲット: 未接続';\n    }", "        inputGranted = false;\n        elInputStatus.textContent = '入力: 未接続';\n        elUsbStatus.textContent = 'ターゲット: 未接続';\n    }"),
+        M('N07', 'a late full screen over a hidden dashboard is not left', "if (isFullscreen() && viewDashboard.classList.contains('view-hidden')) {", 'if (false) {'),
+        M('N08', 'a late full screen: the dashboard check is removed', "if (isFullscreen() && viewDashboard.classList.contains('view-hidden')) {", 'if (isFullscreen()) {'),
+        M('N09', 'a late full screen: the full screen check is removed', "if (isFullscreen() && viewDashboard.classList.contains('view-hidden')) {", "if (viewDashboard.classList.contains('view-hidden')) {"),
+        M('N10', 'a late full screen: the visibility check is inverted', "if (isFullscreen() && viewDashboard.classList.contains('view-hidden')) {", "if (isFullscreen() && !viewDashboard.classList.contains('view-hidden')) {"),
+        M('N11', 'a late full screen: a rejection is not handled', "                swallowRejection(document.exitFullscreen());\n            } catch (err) {\n                // already out\n            }\n        }\n        const on", "                document.exitFullscreen();\n            } catch (err) {\n                // already out\n            }\n        }\n        const on"),
+        M('N12', 'a late full screen: an error is not caught', "                // already out\n            }\n        }\n        const on", "                throw err;\n            }\n        }\n        const on"),
+        M('N13', 'the exit button is not wired', "    btnFullscreenExit.addEventListener('click', () => {\n        if (isFullscreen()) toggleFullscreen();\n    });\n", ''),
+        M('N14', 'the exit button requests full screen when it is not in it', "        if (isFullscreen()) toggleFullscreen();\n    });", "        toggleFullscreen();\n    });"),
+        M('N15', 'the exit button does nothing in full screen', "        if (isFullscreen()) toggleFullscreen();\n    });", "        if (!isFullscreen()) toggleFullscreen();\n    });"),
+        M('N16', 'exit button id renamed in app.js', "document.getElementById('btn-fullscreen-exit')", "document.getElementById('btn-fs-exit')"),
     ];
 }
 

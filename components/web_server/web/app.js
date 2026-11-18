@@ -19,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnViewWidth = document.getElementById('btn-view-width');
     const btnViewActual = document.getElementById('btn-view-actual');
     const btnFullscreen = document.getElementById('btn-fullscreen');
+    const btnFullscreenExit = document.getElementById('btn-fullscreen-exit');
     const elVideoStatus = document.getElementById('video-status');
     const btnInputToggle = document.getElementById('btn-input-toggle');
     const btnPointerLock = document.getElementById('btn-pointer-lock');
@@ -561,11 +562,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (p && typeof p.catch === 'function') p.catch(() => {});
     }
 
-    // Chromium only: Escape is sent to the target (not used to leave full screen) while input is on in full screen.
-    // Optional: any failure is ignored.
+    // Chromium only: Escape is sent to the target (not used to leave full screen) while input is on in full screen
+    // and this connection is the controller (inputGranted): nothing is sent to the target before that, so locking
+    // Escape would only take the key away from the browser. Optional: any failure is ignored.
     let keyboardLocked = false;
     function syncKeyboardLock() {
-        const want = isFullscreen() && inputEnabled;
+        const want = isFullscreen() && inputEnabled && inputGranted;
         if (want === keyboardLocked) return;
         keyboardLocked = want;
         try {
@@ -596,6 +598,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // The bar and the text under the video are hidden in full screen (the wrap is the only thing shown).
     function updateFullscreenUI() {
+        // A request that finished after the dashboard was hidden (logout, session end): do not stay in full screen
+        // over the login view.
+        if (isFullscreen() && viewDashboard.classList.contains('view-hidden')) {
+            try {
+                swallowRejection(document.exitFullscreen());
+            } catch (err) {
+                // already out
+            }
+        }
         const on = isFullscreen();
         btnFullscreen.textContent = on ? '全画面を終了' : '全画面';
         if (on) viewDashboard.classList.add('is-fullscreen');
@@ -605,6 +616,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     btnFullscreen.addEventListener('click', toggleFullscreen);
+    // The bar is hidden in full screen: this button (shown by CSS only while .is-fullscreen is set) is the way out
+    // for a device without an Escape key.
+    btnFullscreenExit.addEventListener('click', () => {
+        if (isFullscreen()) toggleFullscreen();
+    });
     document.addEventListener('fullscreenchange', updateFullscreenUI);
     window.addEventListener('resize', updateVideoLayout);
     if (typeof ResizeObserver === 'function') {
@@ -1023,6 +1039,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const type = data[0];
             if (type === 0x80) {
                 inputGranted = true;
+                syncKeyboardLock();
                 elInputStatus.textContent = '入力: 有効';
             } else if (type === 0x81) {
                 if (data.length >= 2) {
@@ -1035,6 +1052,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 // Do not reconnect if denied
                 inputGranted = false;
+                syncKeyboardLock();
                 wsInput.onclose = null;
                 wsInput.close();
                 wsInput = null;
@@ -1049,6 +1067,7 @@ document.addEventListener('DOMContentLoaded', () => {
         wsInput.onclose = () => {
             wsInput = null;
             inputGranted = false;
+            syncKeyboardLock();
             elInputStatus.textContent = '入力: 未接続';
             elUsbStatus.textContent = 'ターゲット: 未接続';
             wsInputReconnectTimer = setTimeout(() => {
@@ -1087,6 +1106,7 @@ document.addEventListener('DOMContentLoaded', () => {
             wsInput = null;
         }
         inputGranted = false;
+        syncKeyboardLock();
         elInputStatus.textContent = '入力: 未接続';
         elUsbStatus.textContent = 'ターゲット: 未接続';
     }
