@@ -1411,6 +1411,7 @@ static void ws_video_io_request_close(void* user_data, ws_video_conn_t conn) {
 }
 
 static void ws_input_send_done_cb(esp_err_t err, int socket, void *arg) {
+    free(arg);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "WS input send failed on fd=%d (err=0x%x)", socket, (unsigned)err);
     }
@@ -1418,16 +1419,30 @@ static void ws_input_send_done_cb(esp_err_t err, int socket, void *arg) {
 
 static int ws_input_io_send(void* user_data, ws_input_conn_t conn, const uint8_t* data, size_t len) {
     httpd_handle_t server = user_data ? ((ws_ctx_t *)user_data)->server : NULL;
-    if (!server) return -1;
+    if (!server || (len > 0 && !data)) return -1;
+
+    // httpd_ws_send_data_async() keeps only frame->payload pointer across queue deferral;
+    // copy stack-allocated control packets (0x80 GRANTED, 0x81 DENIED, 0x82 USB_STATE).
+    uint8_t *copy = NULL;
+    if (len > 0) {
+        copy = malloc(len);
+        if (!copy) return -1;
+        memcpy(copy, data, len);
+    }
+
     int fd = (int)(intptr_t)conn;
     httpd_ws_frame_t ws_pkt = {
-        .payload = (uint8_t*)data,
+        .payload = copy,
         .len = len,
         .type = HTTPD_WS_TYPE_BINARY,
         .final = true
     };
-    esp_err_t ret = httpd_ws_send_data_async(server, fd, &ws_pkt, ws_input_send_done_cb, NULL);
-    return (ret == ESP_OK) ? 0 : -1;
+    esp_err_t ret = httpd_ws_send_data_async(server, fd, &ws_pkt, ws_input_send_done_cb, copy);
+    if (ret != ESP_OK) {
+        free(copy);
+        return -1;
+    }
+    return 0;
 }
 
 static void ws_input_close_work_cb(void *arg) {
