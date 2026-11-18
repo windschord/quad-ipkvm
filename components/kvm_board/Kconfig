@@ -1,0 +1,147 @@
+menu "KVM Board (74HC139 / ATX / KVM LED) Configuration"
+
+    config KVM_BOARD_ENABLE
+        bool "Enable KVM/ATX real GPIO board driver and start kvm_service"
+        default n
+        help
+            Enable the real GPIO + GPTimer board HAL in components/kvm_board and start
+            kvm_service on boot. Keep disabled until the 74HC139 decoders, photorelays,
+            pull-ups/pull-downs, and KVM LED sense lines are wired and verified.
+            TODO(hw-verify)
+
+    config KVM_BOARD_GPIO_A0
+        int "74HC139 A0 address GPIO (-1 = unassigned)"
+        default -1
+        range -1 54
+        depends on KVM_BOARD_ENABLE
+        help
+            GPIO driving 74HC139 A0 (expects external 100k pull-down -> GND so reset state is CH1).
+            TODO(hw-verify)
+
+    config KVM_BOARD_GPIO_A1
+        int "74HC139 A1 address GPIO (-1 = unassigned)"
+        default -1
+        range -1 54
+        depends on KVM_BOARD_ENABLE
+        help
+            GPIO driving 74HC139 A1 (expects external 100k pull-down -> GND so reset state is CH1).
+            TODO(hw-verify)
+
+    config KVM_BOARD_GPIO_E_POWER
+        int "74HC139#1 E_PWR active-low enable GPIO (-1 = unassigned)"
+        default -1
+        range -1 54
+        depends on KVM_BOARD_ENABLE
+        help
+            Active-low enable for ATX POWER / POWER_FORCE (expects external 10k pull-up -> 3V3).
+            TODO(hw-verify)
+
+    config KVM_BOARD_GPIO_E_RESET
+        int "74HC139#1 E_RST active-low enable GPIO (-1 = unassigned)"
+        default -1
+        range -1 54
+        depends on KVM_BOARD_ENABLE
+        help
+            Active-low enable for ATX RESET (expects external 10k pull-up -> 3V3).
+            TODO(hw-verify)
+
+    config KVM_BOARD_GPIO_E_KVM
+        int "74HC139#2 E_KVM active-low enable GPIO (-1 = unassigned)"
+        default -1
+        range -1 54
+        depends on KVM_BOARD_ENABLE
+        help
+            Active-low enable for KVM switch button optocoupler (expects external 10k pull-up -> 3V3).
+            TODO(hw-verify)
+
+    config KVM_BOARD_GPIO_LED_CH1
+        int "KVM LED sense CH1 GPIO (-1 = unassigned)"
+        default -1
+        range -1 54
+        depends on KVM_BOARD_ENABLE
+        help
+            GPIO reading KVM channel 1 LED state.
+            TODO(hw-verify)
+
+    config KVM_BOARD_GPIO_LED_CH2
+        int "KVM LED sense CH2 GPIO (-1 = unassigned)"
+        default -1
+        range -1 54
+        depends on KVM_BOARD_ENABLE
+        help
+            GPIO reading KVM channel 2 LED state.
+            TODO(hw-verify)
+
+    config KVM_BOARD_GPIO_LED_CH3
+        int "KVM LED sense CH3 GPIO (-1 = unassigned)"
+        default -1
+        range -1 54
+        depends on KVM_BOARD_ENABLE
+        help
+            GPIO reading KVM channel 3 LED state.
+            TODO(hw-verify)
+
+    config KVM_BOARD_GPIO_LED_CH4
+        int "KVM LED sense CH4 GPIO (-1 = unassigned)"
+        default -1
+        range -1 54
+        depends on KVM_BOARD_ENABLE
+        help
+            GPIO reading KVM channel 4 LED state.
+            TODO(hw-verify)
+
+    config KVM_BOARD_LED_ACTIVE_LOW
+        bool "KVM LED sense inputs are active-low (0 = lit)"
+        default y
+        depends on KVM_BOARD_ENABLE
+        help
+            Wait for KVM photocoupler / open-collector LED wiring verification:
+            y = GPIO low (0) means LED ON; n = GPIO high (1) means LED ON.
+            TODO(hw-verify)
+
+    config KVM_BOARD_ALLOW_JTAG_INPUTS
+        bool "Allow JTAG GPIOs (GPIO2..5) for KVM LED inputs only"
+        default n
+        depends on KVM_BOARD_ENABLE
+        help
+            Leave disabled unless P1 pin budget requires reusing JTAG pins as LED inputs.
+            JTAG pins are always rejected for 74HC139 outputs (A0/A1/E_*).
+            TODO(hw-verify)
+
+    config KVM_BOARD_HARD_MAX_POWER_MS
+        int "Hardware timer hard cap for ATX POWER press (ms)"
+        default 500
+        range 1 500
+        depends on KVM_BOARD_ENABLE
+        help
+            Board-level GPTimer upper bound for POWER short press (capped at KVM_ATX_HARD_MAX_POWER_MS=500).
+            TODO(hw-verify)
+
+    config KVM_BOARD_HARD_MAX_RESET_MS
+        int "Hardware timer hard cap for ATX RESET press (ms)"
+        default 200
+        range 1 200
+        depends on KVM_BOARD_ENABLE
+        help
+            Board-level GPTimer upper bound for RESET press (capped at KVM_ATX_HARD_MAX_RESET_MS=200).
+            TODO(hw-verify)
+
+    config KVM_BOARD_HARD_MAX_FORCE_MS
+        int "Hardware timer hard cap for ATX POWER force-off hold (ms)"
+        default 5000
+        range 1 5000
+        depends on KVM_BOARD_ENABLE
+        help
+            Board-level GPTimer upper bound for FORCE hold (capped at KVM_ATX_HARD_MAX_FORCE_MS=5000).
+            TODO(hw-verify)
+
+    config KVM_BOARD_HARD_MAX_KVM_MS
+        int "Hardware timer hard cap for KVM switch pulse (ms)"
+        default 1000
+        range 1 5000
+        depends on KVM_BOARD_ENABLE
+        help
+            Board-level GPTimer upper bound for KVM switch optocoupler pulse.
+            TODO(hw-verify)
+
+endmenu
