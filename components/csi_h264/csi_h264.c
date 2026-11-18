@@ -37,7 +37,14 @@ struct csi_h264_t {
     uint32_t enc_h;
     uint32_t zeroed_w;
     uint32_t zeroed_h;
+    uint64_t err_log_count;
 };
+
+static bool should_log_h264_err(struct csi_h264_t *h)
+{
+    h->err_log_count++;
+    return (h->err_log_count <= 5u) || ((h->err_log_count % 100u) == 0u);
+}
 
 static esp_err_t ensure_buffers(struct csi_h264_t *h)
 {
@@ -56,7 +63,10 @@ static esp_err_t ensure_buffers(struct csi_h264_t *h)
         };
         esp_err_t err = ppa_register_client(&ppa_cfg, &h->ppa_srm);
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "ppa_register_client failed: %s", esp_err_to_name(err));
+            if (should_log_h264_err(h)) {
+                ESP_LOGE(TAG, "ppa_register_client failed (count=%" PRIu64 "): %s",
+                         h->err_log_count, esp_err_to_name(err));
+            }
             return err;
         }
     }
@@ -70,9 +80,12 @@ static esp_err_t ensure_buffers(struct csi_h264_t *h)
         h->yuv_buf = (uint8_t *)esp_h264_aligned_calloc(
             CSI_H264_DMA_ALIGN, 1u, (uint32_t)req_yuv, &actual_yuv, ESP_H264_MEM_SPIRAM);
         if (!h->yuv_buf || actual_yuv < req_yuv) {
-            ESP_LOGE(TAG, "PSRAM alloc for YUV420 buffer (%u B) failed (largest=%u B)",
-                     (unsigned)req_yuv,
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+            if (should_log_h264_err(h)) {
+                ESP_LOGE(TAG, "PSRAM alloc for YUV420 buffer (%u B) failed (largest=%u B, count=%" PRIu64 ")",
+                         (unsigned)req_yuv,
+                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
+                         h->err_log_count);
+            }
             return ESP_ERR_NO_MEM;
         }
         h->yuv_buf_bytes = (size_t)actual_yuv;
@@ -89,9 +102,12 @@ static esp_err_t ensure_buffers(struct csi_h264_t *h)
         h->out_buf = (uint8_t *)esp_h264_aligned_calloc(
             CSI_H264_DMA_ALIGN, 1u, (uint32_t)req_out, &actual_out, ESP_H264_MEM_SPIRAM);
         if (!h->out_buf || actual_out < req_out) {
-            ESP_LOGE(TAG, "PSRAM alloc for H.264 out buffer (%u B) failed (largest=%u B)",
-                     (unsigned)req_out,
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+            if (should_log_h264_err(h)) {
+                ESP_LOGE(TAG, "PSRAM alloc for H.264 out buffer (%u B) failed (largest=%u B, count=%" PRIu64 ")",
+                         (unsigned)req_out,
+                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
+                         h->err_log_count);
+            }
             return ESP_ERR_NO_MEM;
         }
         h->out_buf_bytes = (size_t)actual_out;
@@ -211,18 +227,24 @@ static esp_err_t ensure_encoder(struct csi_h264_t *h, uint32_t width, uint32_t h
 
     esp_h264_err_t h_err = esp_h264_enc_hw_new(&enc_cfg, &h->enc);
     if (h_err != ESP_H264_ERR_OK || !h->enc) {
-        ESP_LOGE(TAG, "esp_h264_enc_hw_new(%" PRIu32 "x%" PRIu32 ") failed: %d "
-                      "(free_int=%u B, largest_int=%u B)",
-                 width, height, (int)h_err,
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        if (should_log_h264_err(h)) {
+            ESP_LOGE(TAG, "esp_h264_enc_hw_new(%" PRIu32 "x%" PRIu32 ") failed: %d "
+                          "(free_int=%u B, largest_int=%u B, count=%" PRIu64 ")",
+                     width, height, (int)h_err,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                     h->err_log_count);
+        }
         h->enc = NULL;
         return (h_err == ESP_H264_ERR_MEM) ? ESP_ERR_NO_MEM : ESP_FAIL;
     }
 
     h_err = esp_h264_enc_open(h->enc);
     if (h_err != ESP_H264_ERR_OK) {
-        ESP_LOGE(TAG, "esp_h264_enc_open failed: %d", (int)h_err);
+        if (should_log_h264_err(h)) {
+            ESP_LOGE(TAG, "esp_h264_enc_open failed: %d (count=%" PRIu64 ")",
+                     (int)h_err, h->err_log_count);
+        }
         (void)esp_h264_enc_del(h->enc);
         h->enc = NULL;
         return (h_err == ESP_H264_ERR_MEM) ? ESP_ERR_NO_MEM : ESP_FAIL;
@@ -230,7 +252,10 @@ static esp_err_t ensure_encoder(struct csi_h264_t *h, uint32_t width, uint32_t h
 
     h_err = esp_h264_enc_hw_get_param_hd(h->enc, &h->param_hd);
     if (h_err != ESP_H264_ERR_OK || !h->param_hd) {
-        ESP_LOGE(TAG, "esp_h264_enc_hw_get_param_hd failed: %d", (int)h_err);
+        if (should_log_h264_err(h)) {
+            ESP_LOGE(TAG, "esp_h264_enc_hw_get_param_hd failed: %d (count=%" PRIu64 ")",
+                     (int)h_err, h->err_log_count);
+        }
         close_encoder(h);
         return ESP_FAIL;
     }
@@ -395,8 +420,9 @@ esp_err_t csi_h264_encode_prepared(csi_h264_handle_t h,
 
     if (force_idr) {
         esp_h264_err_t idr_err = esp_h264_enc_force_idr(&h->param_hd->base);
-        if (idr_err != ESP_H264_ERR_OK) {
-            ESP_LOGW(TAG, "esp_h264_enc_force_idr failed: %d", (int)idr_err);
+        if (idr_err != ESP_H264_ERR_OK && should_log_h264_err(h)) {
+            ESP_LOGW(TAG, "esp_h264_enc_force_idr failed: %d (count=%" PRIu64 ")",
+                     (int)idr_err, h->err_log_count);
         }
     }
 
@@ -424,7 +450,10 @@ esp_err_t csi_h264_encode_prepared(csi_h264_handle_t h,
         return CSI_H264_ERR_OUTPUT_OVERSIZE;
     }
     if (h_err != ESP_H264_ERR_OK) {
-        ESP_LOGW(TAG, "esp_h264_enc_process failed: %d", (int)h_err);
+        if (should_log_h264_err(h)) {
+            ESP_LOGW(TAG, "esp_h264_enc_process failed: %d (count=%" PRIu64 ")",
+                     (int)h_err, h->err_log_count);
+        }
         return (h_err == ESP_H264_ERR_TIMEOUT) ? ESP_ERR_TIMEOUT : ESP_FAIL;
     }
 
@@ -438,13 +467,16 @@ esp_err_t csi_h264_encode_prepared(csi_h264_handle_t h,
         return CSI_H264_ERR_OUTPUT_OVERSIZE;
     }
     if (ferr != CSI_H264_FRAME_OK) {
-        ESP_LOGW(TAG, "Malformed H.264 output (err=%d len=%" PRIu32 " key=%d head=%02x%02x%02x%02x %02x)",
-                 (int)ferr, out_frame.length, (int)is_key,
-                 out_frame.length > 0 ? h->out_buf[0] : 0u,
-                 out_frame.length > 1 ? h->out_buf[1] : 0u,
-                 out_frame.length > 2 ? h->out_buf[2] : 0u,
-                 out_frame.length > 3 ? h->out_buf[3] : 0u,
-                 out_frame.length > 4 ? h->out_buf[4] : 0u);
+        if (should_log_h264_err(h)) {
+            ESP_LOGW(TAG, "Malformed H.264 output (err=%d len=%" PRIu32 " key=%d head=%02x%02x%02x%02x %02x, count=%" PRIu64 ")",
+                     (int)ferr, out_frame.length, (int)is_key,
+                     out_frame.length > 0 ? h->out_buf[0] : 0u,
+                     out_frame.length > 1 ? h->out_buf[1] : 0u,
+                     out_frame.length > 2 ? h->out_buf[2] : 0u,
+                     out_frame.length > 3 ? h->out_buf[3] : 0u,
+                     out_frame.length > 4 ? h->out_buf[4] : 0u,
+                     h->err_log_count);
+        }
         return ESP_ERR_INVALID_RESPONSE;
     }
 

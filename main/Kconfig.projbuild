@@ -209,7 +209,7 @@ menu "Quad IP-KVM Configuration"
     config CSI_H264_QP_MAX
         int "H.264 maximum quantization parameter (QP, 0-51)"
         default 40
-        range 0 51
+        range CSI_H264_QP_MIN 51
         depends on CSI_H264_ENABLE
         help
             Maximum QP bound for rate control (must be >= CSI_H264_QP_MIN).

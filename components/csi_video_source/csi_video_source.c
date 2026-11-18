@@ -363,6 +363,18 @@ static void handle_h264_oom_fallback(csi_h264_handle_t h264, csi_jpeg_handle_t j
     (void)csi_jpeg_set_quality(jpeg, q_ctrl->q_cur);
 }
 
+static void check_h264_error_fallback(csi_h264_handle_t h264, csi_jpeg_handle_t jpeg,
+                                      jpeg_quality_ctrl_t *q_ctrl, const char *reason)
+{
+    if (csi_h264_ctrl_get_active_codec(&s_h264_ctrl) == CSI_H264_CODEC_MJPEG) {
+        ESP_LOGW(TAG, "H.264 persistent failure (%s); releasing H.264 stream and switching to MJPEG fallback (retry in %u frames)",
+                 reason, (unsigned)CSI_H264_OOM_RETRY_FRAMES);
+        csi_h264_release_stream(h264);
+        jpeg_quality_ctrl_reset_mode(q_ctrl);
+        (void)csi_jpeg_set_quality(jpeg, q_ctrl->q_cur);
+    }
+}
+
 static void process_h264_frame(csi_capture_handle_t cap, csi_h264_handle_t h264,
                                csi_jpeg_handle_t jpeg, jpeg_quality_ctrl_t *q_ctrl,
                                csi_video_pub_stats_t *pub_stats,
@@ -393,6 +405,7 @@ static void process_h264_frame(csi_capture_handle_t cap, csi_h264_handle_t h264,
 
     if (ppa_err != ESP_OK) {
         csi_h264_ctrl_end_frame(&s_h264_ctrl, CSI_H264_OUTCOME_ENCODE_ERR, false);
+        check_h264_error_fallback(h264, jpeg, q_ctrl, "PPA RGB888->YUV420");
         csi_video_pub_stats_on_error(pub_stats);
         if (pub_stats->encode_errors <= 5u || (pub_stats->encode_errors % 100u) == 0u) {
             ESP_LOGW(TAG, "H.264 PPA RGB888->YUV420 failed (count=%" PRIu64 "): %s",
@@ -401,7 +414,7 @@ static void process_h264_frame(csi_capture_handle_t cap, csi_h264_handle_t h264,
         return;
     }
 
-    csi_h264_frame_out_t hout;
+    csi_h264_frame_out_t hout = {0};
     uint32_t pts_ms = (uint32_t)now_monotonic_ms();
     esp_err_t herr = csi_h264_encode_prepared(h264, active_w, active_h, force_idr, pts_ms, &hout);
     uint32_t total_us = ppa_us + hout.enc_us;
@@ -410,6 +423,7 @@ static void process_h264_frame(csi_capture_handle_t cap, csi_h264_handle_t h264,
 
     if (herr == CSI_H264_ERR_OUTPUT_OVERSIZE) {
         csi_h264_ctrl_end_frame(&s_h264_ctrl, CSI_H264_OUTCOME_OVERSIZE, false);
+        check_h264_error_fallback(h264, jpeg, q_ctrl, "oversize");
         csi_video_pub_stats_on_oversize(pub_stats, hout.len, total_us);
         if (pub_stats->oversize_drops <= 5u || (pub_stats->oversize_drops % 60u) == 0u) {
             ESP_LOGW(TAG, "Dropped oversize H.264 frame: %u bytes > hub max %u bytes; next forced IDR (count=%" PRIu64 ")",
@@ -428,10 +442,22 @@ static void process_h264_frame(csi_capture_handle_t cap, csi_h264_handle_t h264,
 
     if (herr != ESP_OK) {
         csi_h264_ctrl_end_frame(&s_h264_ctrl, CSI_H264_OUTCOME_ENCODE_ERR, false);
+        check_h264_error_fallback(h264, jpeg, q_ctrl, "encode error");
         csi_video_pub_stats_on_error(pub_stats);
         if (pub_stats->encode_errors <= 5u || (pub_stats->encode_errors % 100u) == 0u) {
             ESP_LOGW(TAG, "HW H.264 encode failed (count=%" PRIu64 "): %s",
                      pub_stats->encode_errors, esp_err_to_name(herr));
+        }
+        return;
+    }
+
+    if (force_idr && !hout.is_key) {
+        csi_h264_ctrl_end_frame(&s_h264_ctrl, CSI_H264_OUTCOME_ENCODE_ERR, false);
+        check_h264_error_fallback(h264, jpeg, q_ctrl, "missing forced IDR");
+        csi_video_pub_stats_on_error(pub_stats);
+        if (pub_stats->encode_errors <= 5u || (pub_stats->encode_errors % 100u) == 0u) {
+            ESP_LOGW(TAG, "HW H.264 returned P-frame when IDR was forced (count=%" PRIu64 "); dropping frame",
+                     pub_stats->encode_errors);
         }
         return;
     }
@@ -842,7 +868,13 @@ void csi_video_source_configure(tc358743_handle_t tc_dev, const csi_video_source
     if (s_cfg.h264_qp_min > s_cfg.h264_qp_max) {
         s_cfg.h264_qp_min = s_cfg.h264_qp_max;
     }
-    bool h264_ok = (s_cfg.pixel_format == TC358743_FORMAT_RGB888);
+    bool h264_ok = (s_cfg.pixel_format == TC358743_FORMAT_RGB888) &&
+                   csi_h264_validate_enc_params(
+                       s_cfg.max_width, s_cfg.max_height, s_cfg.h264_gop,
+                       csi_h264_calc_target_fps(s_cfg.max_width, s_cfg.max_height),
+                       s_cfg.h264_bitrate_1080p_bps, s_cfg.h264_qp_min, s_cfg.h264_qp_max) &&
+                   (s_cfg.h264_bitrate_720p_bps > 0u) &&
+                   (csi_h264_calc_output_buf_size(s_cfg.hub_max_frame_bytes) > 0u);
     csi_h264_ctrl_init(&s_h264_ctrl, h264_ok, s_cfg.h264_gop);
     if (h264_ok) {
         s_csi_video_source.supported_codecs = (1u << VIDEO_CODEC_MJPEG) | (1u << VIDEO_CODEC_H264);
@@ -852,7 +884,11 @@ void csi_video_source_configure(tc358743_handle_t tc_dev, const csi_video_source
         s_csi_video_source.supported_codecs = 0u;
         s_csi_video_source.set_codec = NULL;
         s_csi_video_source.request_keyframe = NULL;
-        ESP_LOGW(TAG, "CSI H.264 unavailable: rev v1.3 PPA requires RGB888 CSI format (UYVY active)");
+        ESP_LOGW(TAG,
+                 "CSI H.264 unavailable: fmt=%s max=%" PRIu32 "x%" PRIu32 " out=%u gop=%u qp=%u..%u",
+                 (s_cfg.pixel_format == TC358743_FORMAT_RGB888) ? "RGB888" : "UYVY",
+                 s_cfg.max_width, s_cfg.max_height, (unsigned)s_cfg.hub_max_frame_bytes,
+                 (unsigned)s_cfg.h264_gop, (unsigned)s_cfg.h264_qp_min, (unsigned)s_cfg.h264_qp_max);
     }
 #else
     s_csi_video_source.supported_codecs = 0u;

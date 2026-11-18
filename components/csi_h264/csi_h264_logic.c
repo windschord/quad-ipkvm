@@ -22,7 +22,7 @@ bool csi_h264_check_resolution(uint32_t w, uint32_t h)
         h < CSI_H264_MIN_HEIGHT || h > CSI_H264_MAX_HEIGHT) {
         return false;
     }
-    if ((w & 1u) != 0u || (h & 1u) != 0u) {
+    if ((w & (CSI_H264_ALIGN_DIM - 1u)) != 0u || (h & 1u) != 0u) {
         return false;
     }
     return true;
@@ -108,8 +108,35 @@ csi_h264_frame_err_t csi_h264_check_frame(const uint8_t *data, size_t len,
     }
     if (expect_key) {
         uint8_t nal_type = nal_hdr & 0x1Fu;
-        // HW IDR access unit starts with SPS (7) or directly with IDR slice (5).
-        if (nal_type != 7u && nal_type != 5u) {
+        // HW IDR access unit starts with SPS (7) and contains at least one IDR slice (5).
+        if (nal_type != 7u) {
+            return CSI_H264_FRAME_ERR_FORMAT;
+        }
+        bool found_idr = false;
+        size_t i = 5u;
+        while (i + 3u < len) {
+            if (data[i] == 0x00u && data[i + 1u] == 0x00u) {
+                size_t hdr_idx = 0u;
+                if (data[i + 2u] == 0x01u && (i + 3u < len)) {
+                    hdr_idx = i + 3u;
+                } else if (data[i + 2u] == 0x00u && (i + 4u < len) && data[i + 3u] == 0x01u) {
+                    hdr_idx = i + 4u;
+                }
+                if (hdr_idx != 0u) {
+                    uint8_t nh = data[hdr_idx];
+                    if ((nh & 0x80u) != 0u) {
+                        return CSI_H264_FRAME_ERR_FORMAT;
+                    }
+                    if ((nh & 0x1Fu) == 5u) {
+                        found_idr = true;
+                    }
+                    i = hdr_idx + 1u;
+                    continue;
+                }
+            }
+            i++;
+        }
+        if (!found_idr) {
             return CSI_H264_FRAME_ERR_FORMAT;
         }
     }
@@ -136,6 +163,7 @@ void csi_h264_ctrl_init(csi_h264_ctrl_t *c, bool h264_capable, uint8_t gop)
     c->active_h = 0u;
     c->frames_since_idr = 0u;
     c->oom_cooldown_frames = 0u;
+    c->consec_failures = 0u;
     c->seen_req_epoch = 0u;
 
     c->switches_to_h264 = 0u;
@@ -206,6 +234,7 @@ void csi_h264_ctrl_on_mode_reset(csi_h264_ctrl_t *c)
     c->active_h = 0u;
     c->frames_since_idr = 0u;
     c->oom_cooldown_frames = 0u;
+    c->consec_failures = 0u;
 }
 
 bool csi_h264_ctrl_begin_frame(csi_h264_ctrl_t *c, uint32_t width, uint32_t height,
@@ -226,11 +255,13 @@ bool csi_h264_ctrl_begin_frame(csi_h264_ctrl_t *c, uint32_t width, uint32_t heig
     if (req_epoch != c->seen_req_epoch) {
         c->seen_req_epoch = req_epoch;
         c->oom_cooldown_frames = 0u;
+        c->consec_failures = 0u;
     }
 
     bool cooling_down = false;
     if (req != (uint32_t)CSI_H264_CODEC_H264) {
         c->oom_cooldown_frames = 0u;
+        c->consec_failures = 0u;
     } else if (c->oom_cooldown_frames > 0u) {
         c->oom_cooldown_frames--;
         cooling_down = true;
@@ -250,6 +281,7 @@ bool csi_h264_ctrl_begin_frame(csi_h264_ctrl_t *c, uint32_t width, uint32_t heig
         (void)__atomic_exchange_n(&c->keyframe_req, 0u, __ATOMIC_ACQ_REL);
         c->need_idr = false;
         c->frames_since_idr = 0u;
+        c->consec_failures = 0u;
         if (out_use_h264) {
             *out_use_h264 = false;
         }
@@ -281,6 +313,7 @@ bool csi_h264_ctrl_begin_frame(csi_h264_ctrl_t *c, uint32_t width, uint32_t heig
 
     bool gop_due = (c->frames_since_idr >= (uint32_t)c->gop);
     bool force_idr = c->need_idr || ext_req || gop_due;
+    c->need_idr = force_idr;
 
     if (out_use_h264) {
         *out_use_h264 = true;
@@ -302,18 +335,35 @@ void csi_h264_ctrl_end_frame(csi_h264_ctrl_t *c, csi_h264_frame_outcome_t outcom
         if (actual_is_idr) {
             c->need_idr = false;
             c->frames_since_idr = 1u;
+            c->consec_failures = 0u;
             c->idr_frames++;
-        } else {
-            // Keep need_idr latched if we still owe an IDR (unexpected P when IDR required).
-            if (!c->need_idr) {
-                c->frames_since_idr++;
-            }
+            break;
+        }
+        if (!c->need_idr) {
+            c->frames_since_idr++;
+            c->consec_failures = 0u;
             c->p_frames++;
+            break;
+        }
+        /* Unexpected P when IDR was required: treat as encode error below. */
+        /* fall through */
+    case CSI_H264_OUTCOME_OVERSIZE:
+    case CSI_H264_OUTCOME_ENCODE_ERR:
+        c->need_idr = true;
+        c->frames_since_idr = 0u;
+        c->self_idr_recoveries++;
+        c->consec_failures++;
+        if (c->consec_failures >= CSI_H264_MAX_CONSEC_FAILURES) {
+            c->consec_failures = 0u;
+            if (__atomic_load_n(&c->active_codec, __ATOMIC_RELAXED) != (uint32_t)CSI_H264_CODEC_MJPEG) {
+                __atomic_store_n(&c->active_codec, (uint32_t)CSI_H264_CODEC_MJPEG, __ATOMIC_RELEASE);
+                c->switches_to_mjpeg++;
+            }
+            (void)__atomic_exchange_n(&c->keyframe_req, 0u, __ATOMIC_ACQ_REL);
+            c->oom_cooldown_frames = CSI_H264_OOM_RETRY_FRAMES;
         }
         break;
     case CSI_H264_OUTCOME_PUBLISH_BUSY:
-    case CSI_H264_OUTCOME_OVERSIZE:
-    case CSI_H264_OUTCOME_ENCODE_ERR:
         c->need_idr = true;
         c->frames_since_idr = 0u;
         c->self_idr_recoveries++;
@@ -326,6 +376,7 @@ void csi_h264_ctrl_end_frame(csi_h264_ctrl_t *c, csi_h264_frame_outcome_t outcom
         (void)__atomic_exchange_n(&c->keyframe_req, 0u, __ATOMIC_ACQ_REL);
         c->need_idr = true;
         c->frames_since_idr = 0u;
+        c->consec_failures = 0u;
         c->oom_cooldown_frames = CSI_H264_OOM_RETRY_FRAMES;
         break;
     }

@@ -29,8 +29,10 @@ extern "C" {
 #define CSI_H264_MAX_GOP         255u
 #define CSI_H264_MAX_QP          51u
 
-// Frames to stay on MJPEG fallback after H.264 OOM before retrying H.264 (~2 s at 30 fps).
-#define CSI_H264_OOM_RETRY_FRAMES 60u
+// Frames to stay on MJPEG fallback after H.264 OOM or persistent encode failures before retrying (~2 s at 30 fps).
+#define CSI_H264_OOM_RETRY_FRAMES    60u
+// Consecutive non-OOM encode/oversize failure frames before falling back to MJPEG.
+#define CSI_H264_MAX_CONSEC_FAILURES 5u
 
 typedef enum {
     CSI_H264_CODEC_MJPEG = 0,
@@ -68,6 +70,7 @@ typedef struct {
     uint32_t active_h;
     uint32_t frames_since_idr;
     uint32_t oom_cooldown_frames;
+    uint32_t consec_failures;
     uint32_t seen_req_epoch;
 
     // Telemetry counters (publisher-thread-only).
@@ -82,8 +85,8 @@ typedef struct {
 // Rounds val up to a multiple of align. Returns 0 if align == 0 or on size_t overflow.
 size_t csi_h264_align_up(size_t val, size_t align);
 
-// Checks that (w, h) fits HW/contract limits [80..1920] x [80..1080] and has even dimensions
-// required by PPA SRM YUV420 output.
+// Checks that (w, h) fits HW/contract limits [80..1920] x [80..1080], has 16-px-aligned
+// width (required until non-16-aligned widths are verified on HW), and even height for YUV420 PPA.
 bool csi_h264_check_resolution(uint32_t w, uint32_t h);
 
 // Computes 16-px macroblock-aligned O_UYY_E_VYY buffer size (e.g. 1920x1080 -> 3,133,440 B).
@@ -107,7 +110,8 @@ bool csi_h264_validate_enc_params(uint32_t w, uint32_t h, uint8_t gop, uint8_t f
                                   uint32_t bitrate_bps, uint8_t qp_min, uint8_t qp_max);
 
 // Validates an Annex B H.264 access unit and Frame Hub size bound.
-// When expect_key is true, verifies the leading NAL unit is SPS (type 7) or IDR (type 5).
+// When expect_key is true, verifies the leading NAL unit is SPS (type 7) and the access
+// unit also contains an IDR slice (type 5).
 csi_h264_frame_err_t csi_h264_check_frame(const uint8_t *data, size_t len,
                                           bool expect_key, size_t max_frame_bytes);
 
