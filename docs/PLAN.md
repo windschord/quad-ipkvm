@@ -176,7 +176,7 @@ HANDOFF の範囲に、**状態表示用の OLED** と、パネル用の **I/O �
 | P5 | 準備のみ [ホスト] | `csi_video_source_get_status` / `get_sync_state` / `get_mode`（契約は `INTERFACES.md` 1.3、実装済み）。`kvm_logic` への配線と KVM 経由の確認は未着手。 |
 | P6 | 一部 [ホスト] | `kvm_logic`（状態機械）はホストテスト済み。`kvm_board` の HAL と API、ATX の回路は未着手・未確認。 |
 | P7 | 純 C・ビューア・結線（ホスト）まで。`csi_h264`（Antigravity）と実機が残り [ホスト] | H.264 低帯域モード。評価は `docs/P7_H264_EVAL.md`（PR #109）、契約は `docs/VIDEO_TRANSPORT.md` §9 と `INTERFACES.md` §1.4。**既定は MJPEG のまま**（`VIDEO_CODEC_H264_ALLOWED = n`）。純 C（`video_codec_policy`、`ws_video_core` のキーフレーム待ち、`http_guard_video_accept`）、ビューア、`web_server.c` / `main.c` の結線（IDF のビルドは未確認。device-check が要る）= Claude。`csi_h264` と実機の確認 = Antigravity。 |
-| P8 | 設計と契約のみ [未] | ISO の仮想メディア。**オーナー決定（2026-11-18）: Linux と Windows の ISO、4 GiB 超、32GB の microSD を FAT32 に再フォーマット、保存方式は案 1（FAT32 + 分割 + 直接セクタ読み出し）**。契約は `docs/ISO_MOUNT_DESIGN.md`。純 C（`iso_extent`、`iso_catalog`、`iso_upload`、`iso_media`、`mmc_scsi`、`iso_api`）= Claude（C-10〜C-12）、SD・USB MSC・HTTP の結合と実機 = Antigravity（A-13〜A-15）。最初の調査: INQUIRY のデバイス種別 5 にする手段（A-14）。 |
+| P8 | 設計と契約のみ [未] | ISO の仮想メディア。**オーナー決定（2026-11-18）: Linux と Windows の ISO、4 GiB 超、32GB の microSD を FAT32 に再フォーマット、保存方式は案 1（FAT32 + 分割 + 直接セクタ読み出し）**。契約は `docs/ISO_MOUNT_DESIGN.md`。純 C（`iso_extent`、`iso_catalog`、`iso_upload`、`iso_media`、`mmc_scsi`、`iso_api`）= Claude（C-10〜C-12）、SD・USB MSC・HTTP の結合と実機 = Antigravity（A-13〜A-15）。最初の調査: MSC の実装の手段（アプリのクラスドライバで BOT を自前で実装 か TinyUSB にパッチ。標準の MSC は不可。A-14）。 |
 | OLED（#44） | 一部 [ホスト] | `oled_ui`、`oled_render`、`mcp23017_logic`（純 C）まで。OLED-3b/4 は未着手。I2C バスは TC358743 と共用。 |
 
 **未確認・残っていること**

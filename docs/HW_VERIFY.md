@@ -316,15 +316,15 @@ ISO をアップロードして microSD に保存し、USB の仮想 CD-ROM と�
 | # | 確認項目 | 方法 | 結果 |
 |---|---|---|---|
 | I1 | **microSD の結線**（ピンと電源） | 回路図 `docs/ESP32-P4-ETH-schematic.pdf` 1 ページ「MicroSD Card」を画像にして目視 | **[目視、2026-11-18、Claude]** D0=GPIO39、D1=GPIO40、D2=GPIO41、D3(CD)=GPIO42、CLK=GPIO43、CMD=GPIO44（4 ビット）。各信号を 51kΩ で `ESP_LDO_VO4` にプルアップ（R8〜R12）。カードの VDD は `ESP_3V3` から PMOS（Q1、SI2301CDS）経由で、ゲートは GPIO45（R22 10kΩ で GND にプルダウン。R17 は NC）: **GPIO45 が Low または未設定で電源 ON、High で OFF**。カード検出（CD2）は 51kΩ でプルアップされているだけで、**GPIO に接続されていない**。計画（`PLAN.md` 4.4）の GPIO 割り当てと重ならない（B1 の確認と同じ P1 ヘッダの候補ピンに、39〜45 はない） |
-| I2 | **`ESP_LDO_VO4` の電圧**（SD の IO のプルアップの電源。IO のレベル）と、IDF で LDO のチャンネル 4 を有効化する設定 | IDF のソース（`sd_pwr_ctrl`）と、実機でのテスターの測定（SD のプルアップの電源） | **[未確認]** `TODO(hw-verify)`（カードの VDD は 3.3V。IO のレベルを合わせる。**推測で確定しない**） |
+| I2 | **`ESP_LDO_VO4` の電圧**（SD の IO のプルアップの電源。IO のレベル）と、IDF で LDO のチャンネル 4 を有効化する設定。**カードの電源 OFF（GPIO45 = High）のとき、VO4 のプルアップ（51kΩ）から、カードへ逆給電するか**（電源の入れ直しで、カードが確実にリセットされるか） | IDF のソース（`sd_pwr_ctrl`）と、実機でのテスターの測定（SD のプルアップの電源） | **[未確認]** `TODO(hw-verify)`（カードの VDD は 3.3V。IO のレベルを合わせる。**推測で確定しない**） |
 | I3 | **microSD の 4 ビットのモードの速度**（40 MHz の高速モードが使えるか）と、FAT32 の読み書きの実効速度 | 実機（SDMMC スロット 0）、`sdmmc_*` と FatFs の測定 | **[未確認]**（A-13） |
-| I4 | **FAT32 のカードで、`f_expand` による連続確保と、`CLMT` によるエクステントの取得が動くこと**。断片化したとき（`FR_NOT_ENOUGH_CORE`）の挙動 | 実機。大きなファイルを書いて、エクステントの一覧を取る | **[未確認]**（A-13） |
+| I4 | **FAT32 のカードで、通常の追記（`f_write`）で作ったパーツを、読み取りモードで開き、`CLMT`（`CONFIG_FATFS_USE_FASTSEEK=y`）によるエクステントの取得が動くこと**。断片化したとき（`FR_NOT_ENOUGH_CORE`、`ISO_MAX_EXTENTS` 超過 = `too_fragmented`）の挙動。1 GiB のパーツの CLMT の作成時間（`iso_worker` の予算の見積もり） | 実機。大きなファイルを書いて、エクステントの一覧を取る | **[未確認]**（A-13） |
 | I5 | **SD の I/O の直列化**: FatFs の diskio と、MSC の直接読み出しを、同じロックで直列化できること。アップロードと MSC の読み出しが同時に動く | 実機（自前の diskio のラッパー） | **[未確認]**（A-13、A-15） |
-| I6 | **INQUIRY のデバイス種別を 5（CD-ROM）にする手段**: esp_tinyusb 2.4.0 が持つ TinyUSB の版、`tud_msc_inquiry2_cb` の有無、パッチ、アプリのクラスドライバ | ソースの確認（`espressif/esp_tinyusb`、`espressif/tinyusb`） | **[未確認]**（A-14 の最初の調査。結果を `ISO_MOUNT_DESIGN.md` §1、§5.2 に反映） |
-| I7 | **USB OTG HS のエンドポイント数**に、MSC のバルク IN/OUT を足せること | TinyUSB の `dwc2_esp32.h`（16 本、IN は 8 本。HID ×3 + MSC で足りる）と、実機での列挙 | **[ソース確認]** TinyUSB 0.18.0 の `dwc2_esp32.h`（2026-11-18）。実機の列挙は **[未確認]** |
+| I6 | **MSC の実装の手段**: 標準の TinyUSB の MSC は、INQUIRY（種別 0 で固定）、MODE SENSE、REQUEST SENSE、READ のエラーのセンス、READ FORMAT CAPACITY を内蔵で決めるので使えない（`ISO_MOUNT_DESIGN.md` §1、§5.1）。**手段 1: アプリのクラスドライバ（`usbd_app_driver_get_cb`）で BOT を自前で実装 / 手段 2: `msc_device.c` にパッチ**。esp_tinyusb 2.4.0 が持つ TinyUSB の版、esp_tinyusb の MSC を無効にして、HID と共存できるか | ソースの確認（`espressif/esp_tinyusb`、`espressif/tinyusb`） | **[未確認]**（A-14 の最初の調査。結果を `ISO_MOUNT_DESIGN.md` §5.1 に反映） |
+| I7 | **USB OTG HS のエンドポイント数と FIFO の割り当て**に、MSC のバルク IN/OUT を足せること（FIFO は合計 4096 バイト。HID ×3 の IN + MSC の IN/OUT で足りるか） | TinyUSB の `dwc2_esp32.h`（16 本、IN は 8 本。HID ×3 + MSC で足りる）と、実機での列挙 | **[ソース確認]** TinyUSB 0.18.0 の `dwc2_esp32.h`（2026-11-18）。実機の列挙は **[未確認]** |
 | I8 | **HID + 仮想 CD-ROM の複合デバイスを、ターゲットの BIOS / UEFI が認識すること**。**Linux の ISO と Windows の ISO の、CD としての起動**（El Torito）。ターゲット OS（Linux、Windows）での、CD-ROM としての認識と読み出し | 実機（ターゲット PC。オーナーの物理作業を含む） | **[未確認]**（A-14） |
 | I9 | **READ TOC / GET CONFIGURATION のプロファイル**（DVD-ROM）が、Windows、Linux、UEFI で問題ないこと | 実機 | **[未確認]**（A-14） |
-| I10 | **アップロード中の入力（`/ws`）の遅延**（`esp_http_server` が 1 スレッドで、チャンク 128 KiB の処理中は他の要求が待つ）と、アップロードの実効速度（Ethernet 100 Mbps、TLS、SD の書き込み） | 実機。アップロードしながら、キーボードとマウスの入力の遅延を測る | **[未確認]**（A-15）。許容できなければ、アップロード専用のサーバーに移す |
+| I10 | **アップロード中の入力（`/ws`）の遅延（平均と最悪値）**（`esp_http_server` が 1 スレッドで、チャンク 128 KiB の処理中は他の要求が待つ）と、アップロードの実効速度（Ethernet 100 Mbps、TLS、SD の書き込み）。`DELETE`、`finalizing`（`iso_worker`）の最中の入力の遅延。`PUT` の拒否時の `Connection: close` が効くこと | 実機。アップロードしながら、キーボードとマウスの入力の遅延を測る | **[未確認]**（A-15）。許容できなければ、アップロード専用のサーバーに移す |
 | I11 | **電源断・SD の抜き取りのとき**、アップロードが `incomplete` として復帰し、再開できること。壊れた `meta` を `invalid` として扱うこと | 実機（書き込み中に電源を切る。カードを抜く） | **[未確認]**（A-13、A-15） |
 | I12 | **ターゲットが取り外しを防止している間の Web の取り外し・差し替え**（`locked_by_target`）、ターゲットの START STOP UNIT による取り外し | 実機（Linux の `eject`、BIOS / OS のドアロック） | **[未確認]**（A-14） |
 
