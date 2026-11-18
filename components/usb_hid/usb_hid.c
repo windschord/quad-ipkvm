@@ -9,27 +9,51 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_private/usb_phy.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "soc/usb_dwc_struct.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
 #include "tusb.h"
+#include "usb_vbus_ctrl.h"
 
 #if CFG_TUD_HID < USB_HID_ITF_COUNT
 #error "CONFIG_TINYUSB_HID_COUNT must be >= 3 when CONFIG_USB_DEVICE_ENABLE=y"
 #endif
 
+#ifndef CONFIG_USB_DEVICE_VBUS_SENSE_GPIO
+#define CONFIG_USB_DEVICE_VBUS_SENSE_GPIO -1
+#endif
+#ifndef CONFIG_USB_DEVICE_VBUS_POLL_MS
+#define CONFIG_USB_DEVICE_VBUS_POLL_MS 100
+#endif
+
+#define USB_HID_VBUS_TASK_STACK_SIZE 3072u
+#define USB_HID_VBUS_TASK_PRIO       5u
+#define USB_HID_VBUS_LOG_INTERVAL_MS 10000u
+
 static const char *TAG = "usb_hid";
 
 static usb_hid_mounted_cb_t s_on_mounted = NULL;
 static bool s_initialized = false;
+static bool s_force_uninstalled = false;
 static hid_sink_t s_sink;
 static usb_hid_sink_ctx_t s_sink_ctx;
 static char s_serial_str[17] = "QUADIPKVM0001";
+static usb_vbus_ctrl_t s_vbus_ctrl;
+static SemaphoreHandle_t s_usb_ctrl_mux = NULL;
+#if CONFIG_USB_DEVICE_VBUS_SENSE_GPIO >= 0
+static TaskHandle_t s_vbus_task = NULL;
+static uint32_t s_uninstalled_connect_err_count = 0;
+#endif
 
 static portMUX_TYPE s_report_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint8_t s_last_kbd_report[USB_HID_KBD_REPORT_LEN];
@@ -237,10 +261,187 @@ static void init_serial_from_mac(void) {
     }
 }
 
+#if CONFIG_USB_DEVICE_VBUS_SENSE_GPIO >= 0
+static bool is_utmi_phy_stopped(esp_err_t *out_err, usb_phy_status_t *out_st) {
+    usb_phy_status_t phy_st = USB_PHY_STATUS_FREE;
+    esp_err_t phy_err = usb_phy_get_phy_status(USB_PHY_TARGET_UTMI, &phy_st);
+    if (out_err) {
+        *out_err = phy_err;
+    }
+    if (out_st) {
+        *out_st = phy_st;
+    }
+    /* When tinyusb_driver_uninstall() releases the last PHY handle, phy_uninstall()
+     * frees the PHY controller object so usb_phy_get_phy_status() returns ESP_ERR_INVALID_STATE. */
+    return (phy_err == ESP_ERR_INVALID_STATE) ||
+           (phy_err == ESP_OK && phy_st == USB_PHY_STATUS_FREE);
+}
+
+static void log_vbus_stats(const char *reason, bool is_err) {
+    usb_vbus_ctrl_stats_t st = {0};
+    usb_vbus_ctrl_get_stats(&s_vbus_ctrl, &st);
+    UBaseType_t hwm = s_vbus_task ? uxTaskGetStackHighWaterMark(NULL) : 0;
+    ESP_LOG_LEVEL_LOCAL(
+        is_err ? ESP_LOG_ERROR : ESP_LOG_INFO, TAG,
+        "VBUS stats (%s): conn=%d uninstalled=%d connects=%" PRIu32
+        " disconnects=%" PRIu32 " force_off=%" PRIu32
+        " disc_fail=%" PRIu32 " failures=%" PRIu32 " stack_hwm=%u",
+        reason, usb_vbus_ctrl_is_connected(&s_vbus_ctrl) ? 1 : 0,
+        s_force_uninstalled ? 1 : 0, st.connects, st.disconnects,
+        st.force_off_count, st.disconnect_failure_count, st.failures,
+        (unsigned)hwm);
+}
+
+static bool vbus_apply_action(usb_vbus_ctrl_action_t action) {
+    switch (action) {
+        case USB_VBUS_CTRL_ACTION_CONNECT: {
+            if (s_force_uninstalled) {
+                s_uninstalled_connect_err_count++;
+                if (s_uninstalled_connect_err_count == 1u ||
+                    (s_uninstalled_connect_err_count % 100u) == 0u) {
+                    ESP_LOGE(TAG,
+                             "VBUS CONNECT rejected: TinyUSB driver uninstalled after stage-2 FORCE_OFF "
+                             "(reboot required; count=%" PRIu32 ")",
+                             s_uninstalled_connect_err_count);
+                }
+                return false;
+            }
+            bool call_ok = tud_connect();
+            bool reg_ok = (USB_DWC_HS.dctl_reg.sftdiscon == 0);
+            log_dwc_hs_regs("vbus-connect");
+            if (!call_ok || !reg_ok) {
+                ESP_LOGE(TAG, "VBUS CONNECT failed: tud_connect=%d sftdiscon=%u",
+                         call_ok ? 1 : 0, (unsigned)USB_DWC_HS.dctl_reg.sftdiscon);
+                return false;
+            }
+            return true;
+        }
+        case USB_VBUS_CTRL_ACTION_DISCONNECT: {
+            if (s_force_uninstalled) {
+                return true;
+            }
+            bool call_ok = tud_disconnect();
+            bool reg_ok = (USB_DWC_HS.dctl_reg.sftdiscon == 1);
+            log_dwc_hs_regs("vbus-disconnect");
+            if (!call_ok || !reg_ok) {
+                ESP_LOGE(TAG, "VBUS DISCONNECT failed: tud_disconnect=%d sftdiscon=%u",
+                         call_ok ? 1 : 0, (unsigned)USB_DWC_HS.dctl_reg.sftdiscon);
+                return false;
+            }
+            return true;
+        }
+        case USB_VBUS_CTRL_ACTION_FORCE_OFF: {
+            if (s_force_uninstalled) {
+                usb_phy_status_t phy_st = USB_PHY_STATUS_FREE;
+                esp_err_t phy_err = ESP_OK;
+                bool phy_stopped = is_utmi_phy_stopped(&phy_err, &phy_st);
+                if (!phy_stopped) {
+                    ESP_LOGE(TAG,
+                             "VBUS FORCE_OFF retry: driver already uninstalled, waiting for PHY stop "
+                             "(phy_err=%s phy_status=%d)",
+                             esp_err_to_name(phy_err), (int)phy_st);
+                }
+                return phy_stopped;
+            }
+            usb_dwc_dctl_reg_t dctl = USB_DWC_HS.dctl_reg;
+            dctl.sftdiscon = 1;
+            USB_DWC_HS.dctl_reg.val = dctl.val;
+            bool stage1_ok = (USB_DWC_HS.dctl_reg.sftdiscon == 1);
+            log_dwc_hs_regs("vbus-force-off-stage1");
+            if (stage1_ok) {
+                ESP_LOGE(TAG, "VBUS FORCE_OFF stage-1 succeeded via direct DCTL.sftdiscon=1");
+                return true;
+            }
+            ESP_LOGE(TAG, "VBUS FORCE_OFF stage-1 failed (sftdiscon=%u); uninstalling TinyUSB + UTMI PHY",
+                     (unsigned)USB_DWC_HS.dctl_reg.sftdiscon);
+            esp_err_t uninst_err = tinyusb_driver_uninstall();
+            usb_phy_status_t phy_st = USB_PHY_STATUS_FREE;
+            esp_err_t phy_err = ESP_OK;
+            bool phy_stopped = is_utmi_phy_stopped(&phy_err, &phy_st);
+            if (uninst_err == ESP_OK) {
+                s_force_uninstalled = true;
+                s_initialized = false;
+            }
+            bool stage2_ok = (uninst_err == ESP_OK) && phy_stopped;
+            ESP_LOGE(TAG,
+                     "VBUS FORCE_OFF stage-2: uninstall=%s phy_err=%s phy_status=%d (10s removal bound not guaranteed)",
+                     esp_err_to_name(uninst_err), esp_err_to_name(phy_err), (int)phy_st);
+            return stage2_ok;
+        }
+        default:
+            return true;
+    }
+}
+
+static void usb_vbus_task(void *pvParameters) {
+    (void)pvParameters;
+    uint64_t last_log_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    TickType_t last_wake = xTaskGetTickCount();
+    const TickType_t poll_ticks = pdMS_TO_TICKS(CONFIG_USB_DEVICE_VBUS_POLL_MS) > 0
+                                      ? pdMS_TO_TICKS(CONFIG_USB_DEVICE_VBUS_POLL_MS)
+                                      : 1;
+
+    while (1) {
+        vTaskDelayUntil(&last_wake, poll_ticks);
+        uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+        bool valid = GPIO_IS_VALID_GPIO(CONFIG_USB_DEVICE_VBUS_SENSE_GPIO);
+        bool present = valid ? (gpio_get_level((gpio_num_t)CONFIG_USB_DEVICE_VBUS_SENSE_GPIO) != 0) : false;
+
+        xSemaphoreTake(s_usb_ctrl_mux, portMAX_DELAY);
+        usb_vbus_ctrl_input_t in = {
+            .now_ms = now_ms,
+            .vbus_present = present,
+            .sample_valid = valid,
+        };
+        usb_vbus_ctrl_action_t action = usb_vbus_ctrl_update(&s_vbus_ctrl, &in);
+        if (action != USB_VBUS_CTRL_ACTION_NONE) {
+            bool ok = vbus_apply_action(action);
+            usb_vbus_ctrl_applied(&s_vbus_ctrl, action, ok);
+            bool suppress_uninstalled_repeat =
+                (action == USB_VBUS_CTRL_ACTION_CONNECT) && s_force_uninstalled &&
+                (s_uninstalled_connect_err_count > 1u) &&
+                ((s_uninstalled_connect_err_count % 100u) != 0u);
+            if (!suppress_uninstalled_repeat) {
+                log_vbus_stats(ok ? "action" : "action-fail",
+                               !ok || action == USB_VBUS_CTRL_ACTION_FORCE_OFF);
+                last_log_ms = now_ms;
+            } else if (now_ms - last_log_ms >= USB_HID_VBUS_LOG_INTERVAL_MS) {
+                log_vbus_stats("periodic", false);
+                last_log_ms = now_ms;
+            }
+        } else if (now_ms - last_log_ms >= USB_HID_VBUS_LOG_INTERVAL_MS) {
+            log_vbus_stats("periodic", false);
+            last_log_ms = now_ms;
+        }
+        xSemaphoreGive(s_usb_ctrl_mux);
+    }
+}
+#endif /* CONFIG_USB_DEVICE_VBUS_SENSE_GPIO >= 0 */
+
 esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
-    if (s_initialized) {
+    if (s_initialized || s_force_uninstalled) {
         return ESP_ERR_INVALID_STATE;
     }
+
+    if (!s_usb_ctrl_mux) {
+        s_usb_ctrl_mux = xSemaphoreCreateMutex();
+        ESP_RETURN_ON_FALSE(s_usb_ctrl_mux != NULL, ESP_ERR_NO_MEM, TAG, "mutex create failed");
+    }
+
+#if CONFIG_USB_DEVICE_VBUS_SENSE_GPIO >= 0
+    ESP_RETURN_ON_FALSE(GPIO_IS_VALID_GPIO(CONFIG_USB_DEVICE_VBUS_SENSE_GPIO),
+                        ESP_ERR_INVALID_ARG, TAG,
+                        "Invalid USB_DEVICE_VBUS_SENSE_GPIO=%d",
+                        CONFIG_USB_DEVICE_VBUS_SENSE_GPIO);
+    gpio_config_t vbus_gpio_cfg = {
+        .pin_bit_mask = (1ULL << (uint32_t)CONFIG_USB_DEVICE_VBUS_SENSE_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&vbus_gpio_cfg), TAG, "VBUS GPIO config failed");
+#endif
 
     init_serial_from_mac();
     s_on_mounted = on_mounted;
@@ -265,7 +466,8 @@ esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
      * In espressif/esp_tinyusb v2.4.0 (tinyusb.c:1564-1595), setting phy.self_powered = true
      * triggers VBUS GPIO monitoring via tinyusb_vbus_monitor_init(), which rejects vbus_monitor_io == -1.
      * Keep phy.self_powered = false when relying on DWC2 GOTGCTL software BVALID override without a
-     * VBUS sense GPIO; TODO(hw-verify): confirm enumeration behavior with 0xC0 / 0 mA descriptor on target BIOS/PC.
+     * direct VBUS pin into esp_tinyusb; external divided VBUS is polled by usb_vbus_ctrl instead.
+     * TODO(hw-verify): confirm enumeration behavior with 0xC0 / 0 mA descriptor on target BIOS/PC.
      */
     tusb_cfg.phy.self_powered = false;
     tusb_cfg.phy.vbus_monitor_io = -1;
@@ -280,11 +482,23 @@ esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
                         "tinyusb_driver_install failed");
     log_dwc_hs_regs("post-install");
 
-    tud_disconnect();
+    bool boot_disc_ok = tud_disconnect();
+    bool boot_reg_ok = (USB_DWC_HS.dctl_reg.sftdiscon == 1);
     log_dwc_hs_regs("soft-disconnect");
+    if (!boot_disc_ok || !boot_reg_ok) {
+        USB_DWC_HS.dctl_reg.sftdiscon = 1;
+        boot_reg_ok = (USB_DWC_HS.dctl_reg.sftdiscon == 1);
+        log_dwc_hs_regs("soft-disconnect-direct");
+        if (!boot_reg_ok) {
+            ESP_LOGE(TAG,
+                     "Boot soft-disconnect failed (tud_disconnect=%d sftdiscon=%u); "
+                     "starting VBUS ctrl as connected for DISCONNECT->FORCE_OFF recovery",
+                     boot_disc_ok ? 1 : 0, (unsigned)USB_DWC_HS.dctl_reg.sftdiscon);
+        }
+    }
 
 #if CONFIG_USB_DEVICE_BVALID_OVERRIDE
-    /* 3-wire J3 cable leaves VBUS (pin 1) floating: assert BVALID/VBVALID override in DWC2. */
+    /* 3-wire/4-wire J3 cable leaves J3 pin 1 disconnected: assert BVALID/VBVALID override in DWC2. */
     usb_dwc_gotgctl_reg_t gotgctl = USB_DWC_HS.gotgctl_reg;
     gotgctl.vbvalidoven = 1;
     gotgctl.vbvalidovval = 1;
@@ -302,6 +516,29 @@ esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
     log_dwc_hs_regs("force-fs");
 #endif
 
+    usb_vbus_ctrl_config_t vbus_cfg = usb_vbus_ctrl_config_default();
+#if CONFIG_USB_DEVICE_VBUS_SENSE_GPIO >= 0
+    s_uninstalled_connect_err_count = 0;
+    vbus_cfg.enabled = true;
+    usb_vbus_ctrl_init(&s_vbus_ctrl, &vbus_cfg);
+    if (!boot_reg_ok) {
+        usb_vbus_ctrl_applied(&s_vbus_ctrl, USB_VBUS_CTRL_ACTION_CONNECT, true);
+    }
+    log_dwc_hs_regs("vbus-wait-disconnected");
+    ESP_LOGI(TAG, "USB soft-disconnected at boot; VBUS sense on GPIO %d (poll=%d ms)",
+             CONFIG_USB_DEVICE_VBUS_SENSE_GPIO, CONFIG_USB_DEVICE_VBUS_POLL_MS);
+    s_initialized = true;
+    if (xTaskCreate(usb_vbus_task, "usb_vbus", USB_HID_VBUS_TASK_STACK_SIZE, NULL,
+                    USB_HID_VBUS_TASK_PRIO, &s_vbus_task) != pdPASS) {
+        s_initialized = false;
+        s_vbus_task = NULL;
+        (void)tinyusb_driver_uninstall();
+        return ESP_ERR_NO_MEM;
+    }
+#else
+    (void)boot_reg_ok;
+    vbus_cfg.enabled = false;
+    usb_vbus_ctrl_init(&s_vbus_ctrl, &vbus_cfg);
 #if CONFIG_USB_DEVICE_START_DISCONNECTED
     log_dwc_hs_regs("start-disconnected");
     ESP_LOGI(TAG, "USB soft-disconnected at boot (USB_DEVICE_START_DISCONNECTED=y)");
@@ -309,10 +546,11 @@ esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
     tud_connect();
     log_dwc_hs_regs("post-config-connect");
 #endif
-
     s_initialized = true;
+#endif
+
     ESP_LOGI(TAG,
-             "USB composite HID ready (VID=0x%04x PID=0x%04x fs=%s bvalid=%s serial=%s ready=%d)",
+             "USB composite HID ready (VID=0x%04x PID=0x%04x fs=%s bvalid=%s vbus_gpio=%d serial=%s ready=%d)",
              CONFIG_USB_DEVICE_VID, CONFIG_USB_DEVICE_PID,
 #if CONFIG_USB_DEVICE_FORCE_FULL_SPEED
              "on",
@@ -324,6 +562,7 @@ esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
 #else
              "off",
 #endif
+             CONFIG_USB_DEVICE_VBUS_SENSE_GPIO,
              s_serial_str,
              s_sink.ready(s_sink.ctx) ? 1 : 0);
     return ESP_OK;
@@ -334,10 +573,24 @@ const hid_sink_t *usb_hid_get_sink(void) {
 }
 
 esp_err_t usb_hid_set_connected(bool connected) {
-    ESP_RETURN_ON_FALSE(s_initialized, ESP_ERR_INVALID_STATE, TAG, "not initialized");
+    ESP_RETURN_ON_FALSE(s_initialized && !s_force_uninstalled,
+                        ESP_ERR_INVALID_STATE, TAG, "not initialized");
+#if CONFIG_USB_DEVICE_VBUS_SENSE_GPIO >= 0
+    (void)connected;
+    ESP_LOGW(TAG, "usb_hid_set_connected() rejected while VBUS sensing (GPIO %d) governs connection",
+             CONFIG_USB_DEVICE_VBUS_SENSE_GPIO);
+    return ESP_ERR_INVALID_STATE;
+#else
+    xSemaphoreTake(s_usb_ctrl_mux, portMAX_DELAY);
+    if (s_force_uninstalled) {
+        xSemaphoreGive(s_usb_ctrl_mux);
+        return ESP_ERR_INVALID_STATE;
+    }
     bool ok = connected ? tud_connect() : tud_disconnect();
     log_dwc_hs_regs(connected ? "connect" : "disconnect");
+    xSemaphoreGive(s_usb_ctrl_mux);
     return ok ? ESP_OK : ESP_FAIL;
+#endif
 }
 
 #else /* !CONFIG_USB_DEVICE_ENABLE */
