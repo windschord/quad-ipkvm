@@ -269,54 +269,44 @@ typedef struct {
 
 ## 7. ISO の仮想メディア: 純 C（Claude）→ SD・USB・HTTP の結合（Antigravity）
 
-設計の全体は `docs/ISO_MOUNT_DESIGN.md`、HTTP の API は `docs/WEB_API.md` §8。**純 C の部品は IDF のヘッダーに依存せず、I/O・時刻・乱数は、次の関数ポインタ（シーム）で注入する**。実機側（Antigravity）は、これらを実装して渡す。Kconfig の接頭辞は、純 C と API が `ISO_*`（Claude）、SD と USB が `SD_*`、`USB_MSC_*`（Antigravity）。
+設計の全体は `docs/ISO_MOUNT_DESIGN.md`、HTTP の API は `docs/WEB_API.md` §8。**純 C の部品は IDF のヘッダーに依存せず、I/O・時刻・乱数・SHA-256 は、`components/iso_seams/include/iso_seams.h`（宣言だけ。C-9 の成果物）の関数ポインタで注入する**。実機側（Antigravity）は、これらを実装して渡す。Kconfig の接頭辞は、純 C と API が `ISO_*`（Claude）、SD と USB が `SD_*`、`USB_MSC_*`（Antigravity）。
 
 ### 7.1 層
 
 | 層 | 担当 | 内容 |
 |---|---|---|
-| `iso_api`、`iso_catalog`、`iso_upload`、`iso_media`、`iso_extent`、`mmc_scsi`（純 C） | Claude（C-10〜C-12） | 要求の検査、メタデータ、受信の状態機械、仮想ドライブの状態、CD のブロック → SD のセクタ、CD-ROM の SCSI コマンド（**全コマンド**） |
-| `iso_blockdev_t`、`iso_fs_t`、`iso_clock_t`、`iso_sha256_t`、`iso_random_t`（実装） | Antigravity（A-13、A-15） | SD の直接読み出し、FAT32 のファイル操作、時刻、SHA-256（mbedTLS）、乱数 |
-| ワーカータスク（`iso_worker`）、ロック（`iso_state_mutex`、`sd_io_lock`）、自前の diskio | Antigravity（A-13） | 長い処理の実行、排他（`ISO_MOUNT_DESIGN.md` §4） |
-| MSC クラス、`mmc_scsi` への結線 | Antigravity（A-14） | **自前の BOT（アプリのクラスドライバ）または、パッチした TinyUSB**。**受け取った全ての CDB を `mmc_scsi_execute` に渡す**。記述子 |
+| `iso_api`、`iso_catalog`、`iso_upload`、`iso_media`、`iso_extent`、`mmc_scsi`、`msc_bot`（純 C） | Claude（C-10〜C-13） | 要求の検査、メタデータ、受信の状態機械、仮想ドライブの状態、CD のブロック → SD のセクタ、CD-ROM の SCSI コマンド（**全コマンド**）、BOT の状態機械 |
+| `iso_blockdev_t`、`iso_fs_t`、`iso_clock_t`、`iso_sha256_t`、`iso_random_t`、`iso_sd_status_t`（実装） | Antigravity（A-13。SHA-256 と乱数は A-15） | SD の直接読み出し、FAT32 のファイル操作、時刻、SHA-256（mbedTLS）、乱数、`sd.state` の供給（SD の監視） |
+| ワーカータスク（`iso_worker`）、ロック（`iso_op_mutex`、`iso_state_mutex`、`sd_io_lock`）、自前の diskio | Antigravity（A-13） | 長い処理の実行、排他（`ISO_MOUNT_DESIGN.md` §4） |
+| MSC クラスと `iso_msc_task`、`mmc_scsi` への結線 | Antigravity（A-14） | **自前の BOT（アプリのクラスドライバ）または、パッチした TinyUSB**。**USB のタスクで SD を読まない**。**受け取った全ての CDB を `mmc_scsi_execute` に渡す**。記述子 |
 | HTTP のハンドラー | Antigravity（A-15）+ Claude（C-12） | 受信 → バッファ → SD、`/api/v1/iso/*` の結線（ワイルドカードの URI 照合、`http_guard` の `PUT` / `DELETE`） |
 
-### 7.2 シーム（概要。**確定は C-10 / C-11 で、ヘッダーとして出す**。ここにある型の意味と義務は変えない）
+### 7.2 シーム（`iso_seams.h` が正）
+- **エラー**: `iso_err_t`（`ISO_ERR_NO_CARD`、`NO_SPACE`、`IO`、`NOT_FOUND`、`EXISTS`、`INVALID`、`TOO_FRAGMENTED`、`EPOCH`、`BUSY`、`NOMEM`、`UNSUPPORTED_FS`）。0 = 成功、負 = エラー。
+- **`iso_blockdev_t`**（SD の 512B セクタの直接読み出し）: `sector_count`、`epoch`、`read_sectors(ctx, epoch, lba, n, out)`。**ブロックする**。**`sd_io_lock` を内部で取り、取った後で `epoch` を比べ、違えば `ISO_ERR_EPOCH`**。**書き込み用の関数はない**（イメージは読み取り専用）。
+- **`iso_fs_t`**（FAT32）: `mount_info`（FAT32 か、クラスタの大きさ、全体と空き）、`mkdir`、`remove`、`rename`（宛先があると `ISO_ERR_EXISTS`。`import` だけ）、`stat`（`first_cluster` を含む）、`dir_open` / `dir_next` / `dir_close`、`open_for_write(append)`、`write`（順に追記だけ）、`sync`、`close`（失敗した `write` の後でも呼べる）、**`truncate(path, size)`**（`close` → 開き直し → `f_lseek` → `f_truncate`。ハンドル版はない）、**`overwrite(path, data, len)`**（作成、または先頭から上書きして同期。`meta.a/b` 用）、`open_for_read`、`read`、**`get_extents`**（読み取りモード、`CONFIG_FATFS_USE_FASTSEEK=y`、`cltbl` の確保と解放は関数の中）。**パスは、ボリュームのルートからの絶対パス（`/iso/<id>/p000`）。最大 `ISO_PATH_MAX`**。
+- **`iso_clock_t`**（`now_ms`。単調増加）、**`iso_random_t`**（`next`）、**`iso_sha256_t`**（`state_size` と `init` / `update` / `final`。状態は呼び出し側が確保）、**`iso_sd_status_t`**（`sd.state`）。
 
-**`iso_blockdev_t`（SD の 512B セクタの直接アクセス。`iso_extent` の下）**
-- `uint64_t sector_count(ctx)`: セクタ数（カードなし・未初期化は 0）。セクタの大きさは 512 固定。
-- `int read_sectors(ctx, uint64_t lba, uint32_t n, uint8_t *out)`: **ブロックする**。0 = 成功、負 = エラー（タイムアウト、CRC、カードなし）。**`sd_io_lock` を内部で取る**（FatFs の diskio と同じロック）。呼び出し側は、ロックを意識しない。
-- **義務**: 書き込み用の関数は、このシームに**ない**（イメージはターゲットに読み取り専用）。書き込みは `iso_fs_t` だけ（FatFs 経由）。
-
-**`iso_fs_t`（FAT32 のファイル操作。`iso_catalog` と `iso_upload` が使う）**
-- `mkdir`、`remove`（ファイル、空のディレクトリ）、`rename`（**宛先が存在すると失敗する。`import` の取り込みだけが使う**。`meta` の更新には使わない）、`stat`（大きさ、存在）、ディレクトリの一覧、空き容量（`total_bytes`、`free_bytes`）、`open_for_write(path, append)`、`write(handle, data, len)`（**順に追記だけ**）、`sync`、`truncate(path または handle, size)`（**書き込み失敗後に、チャンクを書く前の大きさに戻す**）、`close`、`open_for_read`、`read`、`overwrite(path, data, len)`（**`meta.a` / `meta.b` の更新用: 既存のファイルの先頭から、固定長（256 バイト）を上書きして `sync`**）。
-- **`get_extents(path, extent_t *out, size_t max, size_t *n)`**: ファイルの、連続した SD のセクタの区間（`{uint64_t start_sector; uint64_t sector_count;}`）の一覧を返す（IDF: **読み取りモードで開いて**、`f_lseek` の `CREATE_LINKMAP`（`CONFIG_FATFS_USE_FASTSEEK=y` が必要）と、`fs->database` と `csize` からセクタを計算）。`max` を超える、または `FR_NOT_ENOUGH_CORE` のときは、必要な数を返して失敗（`iso_catalog` が `too_fragmented` にする）。
-- **`mount_info(out)`**: FAT の種類（FAT32 か）と、クラスタの大きさ（バイト）。`iso_catalog` は、FAT32 かつクラスタ ≥ 2048 を検査する（`ISO_MOUNT_DESIGN.md` §3）。
-- **義務**: 戻り値は 0 = 成功、負 = エラー。エラーの種類（SD なし、空き不足、I/O エラー）を区別できる値を返す。`write` の失敗は、そのファイルを不完全として扱えるように、`close` と `truncate` を呼べる状態を保つ。
-
-**`iso_clock_t`**: `uint64_t now_ms(ctx)`（単調増加。巻き戻りは、純 C 側が「経過 0」に倒す）。**`iso_sha256_t`**: `init` / `update` / `final`（逐次）。**`iso_random_t`**: `uint32_t next(ctx)`（`<id>` の生成用。衝突したら、純 C 側が引き直す）。
-
-**ワーカーのステップ関数（純 C。実装は、ステップごとに `sd_io_lock` を取って呼ぶ）**
-- `iso_upload_hash_step(ctx, budget_bytes)`: SHA-256 の再計算を、`budget_bytes` ずつ進める。戻り値: 続きがある / 完了 / エラー。中止の印（`DELETE`）を、ステップごとに見る。
-- `iso_index_step(ctx, ...)`: エクステントの作成（パーツごと）を進める。**起動時に `ready` のイメージごと**にも使う。
-- `iso_catalog_delete_step(ctx, ...)`: パーツのファイルを 1 つずつ削除する。
-- 純 C は、**スレッドを作らず、ブロックしない**。時間の予算は、グルーが決める。
-
-**ロックの規則**（`ISO_MOUNT_DESIGN.md` §4.1）: 純 C の部品は、スレッドセーフではない。グルーが `iso_state_mutex` で直列化する。**`iso_state_mutex` を持ったまま、SD の I/O やネットワークの I/O をしない**。**`sd_io_lock` は内側**（`iso_state_mutex` を持ったまま `sd_io_lock` を取らない）。`mmc_scsi` の READ は、`iso_state_mutex` の下で**エクステントの表のスナップショット（参照カウント付き）**を取り、放してから SD を読む。
-
-### 7.3 MSC（USB）と `mmc_scsi`
-- **標準の TinyUSB の MSC は、契約を満たさない**（TUR / START STOP / PREVENT / READ CAPACITY / READ FORMAT CAPACITY / INQUIRY / MODE SENSE(6) / REQUEST SENSE を内蔵で処理し、アプリに渡さない。INQUIRY は種別 0 で固定。READ のエラーのセンスが上書きされる）。**MSC の層は、手段によらず、受け取った全ての CDB（最大 16 バイト）を `mmc_scsi_execute(ctx, cdb, cdb_len, out, out_cap)` に渡し、その結果（データ、センス、ステータス）を、そのまま返す**。手段は A-14 の調査で決める（`ISO_MOUNT_DESIGN.md` §5.1: 手段 1 = アプリのクラスドライバで BOT を自前で実装、手段 2 = `msc_device.c` へのパッチ）。
-- `mmc_scsi_execute` の戻り値は `{status（GOOD / CHECK CONDITION）、sense{key, asc, ascq}、data_len（out に書いた応答のバイト数）、read{is_read, lba, blocks}}`。**READ(10)/READ(12) のときは、`data_len` は 0 で、`read` に範囲が入る**。グルーは、`mmc_scsi_read_blocks(ctx, lba, blocks, buf, cap)` を、MSC の転送の大きさごとに呼んで、データを送る（先読みしない）。**論理サイズ以降のバイトのゼロ埋めは `mmc_scsi_read_blocks` が行う**。READ の途中の I/O エラーは、**MEDIUM ERROR（03h/11h/00h）** を CSW の失敗と一緒に返す。
-- **ブロック長は 2048**。バッファの大きさは、2048 の倍数にする（A-14）。
-- **LUN は 1 つ**。`USB_MSC_ENABLE` が無効なら、記述子に MSC を入れない（今の構成のまま）。**MSC のインターフェース番号は 3**（HID の後）。
-- **メディアの状態は `iso_media` が持つ**（`mmc_scsi` から参照する）。Web の `mount` / `eject` は、`iso_media` に対する操作で、次のコマンドの応答と、GET EVENT STATUS NOTIFICATION に反映される。**USB のバスリセット・切断では、グルーが `iso_media_bus_reset()` を呼ぶ**（`prevent_removal` の解除）。**SD の再初期化（抜き取り、I/O エラー）では、グルーが `iso_media_force_eject()` を呼ぶ**（`prevent_removal` を無視して `EMPTY` にする）。
+### 7.3 MSC（USB）、`mmc_scsi`、`msc_bot`
+- **標準の TinyUSB の MSC は、契約を満たさない**（INQUIRY は種別 0 で固定、MODE SENSE(6) はヘッダーだけ、READ のエラーのセンスが「メディアなし」に上書き、READ(12) が別経路。`ISO_MOUNT_DESIGN.md` §5.1）。**MSC の層は、手段によらず、受け取った全ての CDB（最大 16 バイト）を `mmc_scsi_execute` に渡し、その結果（データ、センス、ステータス）を、そのまま返す**。手段は A-14 の調査で決める（手段 1 = アプリのクラスドライバで BOT を自前で実装、手段 2 = `msc_device.c` へのパッチ）。
+- **`mmc_scsi_execute(ctx, cdb, cdb_len, dir, expected_len, out, out_cap, result)`**: `dir` と `expected_len` は、CBW の方向と `dCBWDataTransferLength`。`result` は `{status（GOOD / CHECK CONDITION）、sense{key, asc, ascq}、data_len、read{is_read, lba, blocks}}`。**READ(10)/READ(12) のときは、`data_len` は 0 で、`read` に範囲が入る**。**OUT のデータを受け取るコマンド（WRITE、MODE SELECT）は、データを受け取らず、失敗にする**。
+- **`mmc_scsi_read_blocks(ctx, lba, blocks, buf, cap)`**: MSC の転送の大きさごとに呼ぶ（先読みしない）。**ゼロ埋め（`size_bytes` 以降）はここで行う**。I/O のエラーは **MEDIUM ERROR（03h/11h/00h）**、`ISO_ERR_EPOCH` も同じ。
+- **`mmc_scsi_command_done(ctx)`**: **コマンドの終わり（正常、STALL、リセット、切断のどれでも）に、必ず 1 回呼ぶ**。`execute` が取った、エクステントの表への参照と `epoch` を放す。
+- **`msc_bot`（C-13、純 C）**: BOT の状態機械（CBW の検証、13 のケース、データ IN / OUT / なし、STALL、CSW、リセット回復）。USB のハードウェアの転送（`xfer`）は、関数ポインタで注入する。手段 2 のときは、CBW/CSW の部分は TinyUSB が持ち、`msc_bot` は、13 のケースの判定と `command_done` の保証に使う。
+- **`iso_msc_task`（A-14）**: **`mmc_scsi_execute` と `mmc_scsi_read_blocks` は、USB のタスク（`tud_task`。HID も処理する）ではなく、MSC 専用のタスクが呼ぶ**。USB のタスクは、CBW を渡し、ダブルバッファで転送を発行する（ブロックしない）。
+- **ブロック長は 2048**。バッファの大きさは、2048 の倍数にする（A-14）。**LUN は 1 つ**。`USB_MSC_ENABLE` が無効なら、記述子に MSC を入れない（今の構成のまま）。**MSC のインターフェース番号は 3**（HID の後）。
+- **メディアの状態は `iso_media` が持つ**（`mmc_scsi` から参照する）。Web の `mount` / `eject` は、`iso_media` に対する操作で、次のコマンドの応答と、GET EVENT STATUS NOTIFICATION に反映される。**USB のバスリセット・切断では、グルーが `iso_media_bus_reset()` を呼ぶ**（`prevent_removal` の解除と、`command_done` の保証）。**SD の再初期化（抜き取り、I/O エラー）では、SD の監視タスク（ロックを持たない文脈）が `iso_media_force_eject()` を呼ぶ**（`prevent_removal` を無視して `EMPTY` にし、`epoch` を進める）。**`force_eject()` と `bus_reset()` を、`sd_io_lock` を持つ文脈（diskio の中）から呼ばない**。
 - INQUIRY の応答の全体（種別 5 のバイトを含む）は、`mmc_scsi` が作る。
 
 ### 7.4 HTTP（`iso_api`）
-- **`iso_api_put_precheck(ctx, hdr)`**: `PUT` の、本体を読む前の判定（`WEB_API.md` §8 の判定の順序の 3〜11）。結果は「受理して本体を読む」か「エラーの応答（ステータスとコード）」。**エラーのときは、グルーは本体を読まずに応答して、`Connection: close` を付ける**。受理したら、グルーは、チャンクの全体をバッファに受信してから、`iso_upload_write_chunk` を呼ぶ。
-- **ワイルドカードの URI 照合**（`/api/v1/iso/*`）、`max_uri_handlers` の増加、`http_guard` に `PUT` / `DELETE` と `application/octet-stream` を許可すること、ハンドラーのスタックの実測（A-15）。
+- **`iso_api_put_precheck(ctx, hdr)`**: `PUT` の、本体を読む前の判定（`WEB_API.md` §8 の判定の順序の 3〜12。空き容量のキャッシュ値の 507 を含む）。結果は「受理して本体を読む」か「エラーの応答（ステータスとコード）」。**エラーのときは、グルーは本体を読まずに応答して、`Connection: close` を付ける**（A-15 が最初に、これが実際にソケットを閉じることを確認する）。受理したら、グルーは、**チャンクの全体を、`ISO_PUT_RECV_TIMEOUT_S` 以内にバッファに受信してから**、`iso_upload` の書き込みを呼ぶ。
+- **ワイルドカードの URI 照合**（`/api/v1/iso/*`）、`max_uri_handlers` の増加、`http_guard` に `PUT` / `DELETE` と `application/octet-stream` を許可すること（既存は `GET` / `POST` と JSON だけ）、ハンドラーのスタックの実測（A-15）。**定義していないメソッドは 405**。
 
-### 7.5 Antigravity への依頼
-- **A-13**（SD）、**A-14**（USB MSC。**最初に MSC の実装の手段を調査し、結果を `ISO_MOUNT_DESIGN.md` §5.1 に反映**）、**A-15**（HTTP）。範囲と完了条件は `ISO_MOUNT_DESIGN.md` §8、未確認の項目は同 §10 と `HW_VERIFY.md` I 章。
+### 7.5 ワーカーとロック（`ISO_MOUNT_DESIGN.md` §4）
+- **ロックの階層**: `iso_op_mutex`（変更する操作の全体。I/O を含む）→ `iso_state_mutex`（公開ビュー。短く、I/O なし）。FatFs の volume mutex → `sd_io_lock`（シームの中が取る。呼び出し側は取らない）。**MSC と `GET` は、`iso_state_mutex` だけを取る**。
+- **ワーカー**: 1 つのタスク、`ISO_WORKER_QUEUE`（既定 8）の FIFO。ジョブは `FINISH` / `INDEX` / `DELETE` / `IDLE_CLOSE`（同じイメージには 1 つ。`DELETE` は割り込み、中止の印を立てる）。**ステップ関数**（純 C。ブロックせず、スレッドを作らない）: `iso_job_step(ctx, job, budget_bytes)` が `CONTINUE` / `DONE` / `ERROR(iso_err_t)` を返す。`budget_bytes` の既定は `ISO_WORKER_BUDGET_KIB`（1024 KiB）。**中止の印は、ステップの先頭で見る**。アイドルのタイムアウトは、ワーカーが 1 秒ごとに `iso_upload_tick(ctx, now_ms)` を呼んで判定し、`IDLE_CLOSE` を投入する。
+
+### 7.6 Antigravity への依頼
+- **A-13**（SD）、**A-14**（USB MSC。**最初に MSC の実装の手段を調査し、結果を `ISO_MOUNT_DESIGN.md` §5.1 に反映**）、**A-15**（HTTP）。範囲と完了条件は `ISO_MOUNT_DESIGN.md` §8、未確認の項目は同 §10 と `HW_VERIFY.md` I 章。**A-13 は、`iso_seams.h` の合意（この PR のマージ）の後に始める**。
 - **共有ファイル**（`main/main.c`、`main/Kconfig.projbuild`、`main/CMakeLists.txt`、`test/host/CMakeLists.txt`）は、自分の接頭辞の差分だけを小さく（§3）。
 - 実機の確認（BIOS / UEFI での CD の起動、Windows の ISO）は、オーナーの物理作業を含む。Antigravity がまとめて具体的に依頼する（Issue #71 の運用ルール 1）。
