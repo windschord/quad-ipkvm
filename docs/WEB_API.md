@@ -290,7 +290,7 @@ ISO のアップロード、一覧、マウント（ターゲットの USB に�
 | アップロードの枠が使用中（`uploading` または `finalizing` がある） | `409 {"error":"upload_in_progress"}` |
 | 同じ名前がある | `409 {"error":"name_exists"}` |
 | イメージが上限（`ISO_MAX_IMAGES`）に達している | `409 {"error":"too_many_images"}` |
-| 空き容量が足りない（キャッシュ値から、途中のイメージの `size_bytes − received` の合計を引いた値が、`size` + 予備 `ISO_FREE_RESERVE_MIB` に満たない）、`size` がカードの全体の大きさ（`total_bytes`）を超える | `507 {"error":"insufficient_storage","free_bytes":N}` |
+| 空き容量が足りない（`キャッシュ値 − 採取後に書いたバイト数 − 途中のイメージの (size_bytes − received) の合計` が、`size` + 予備 `ISO_FREE_RESERVE_MIB` に満たない。`ISO_MOUNT_DESIGN.md` §4.2）、`size` がカードの全体の大きさ（`total_bytes`）を超える | `507 {"error":"insufficient_storage","free_bytes":N}` |
 | 処理中の SD の I/O エラー | `503 {"error":"sd_unavailable"}` |
 
 #### 8.3 チャンクの送信 `PUT /api/v1/iso/<id>`
@@ -319,7 +319,7 @@ ISO のアップロード、一覧、マウント（ターゲットの USB に�
 リクエスト: `{}`（ボディなし、または空のオブジェクト。ほかのキーは 400）。**最終処理（SHA-256 の確認、エクステントの作成、ISO の署名の検査）は、ワーカーが行う**。
 | 結果 | 応答 |
 |---|---|
-| 受理（最終処理を始めた）。すでに `finalizing`（**冪等**: 何度呼んでもよい） | `202 {"state":"finalizing"}`（クライアントは `GET /api/v1/iso` で `ready` または `invalid` になるのを待つ） |
+| 受理（最終処理を始めた）。すでに `finalizing`（**冪等**: 何度呼んでもよい） | `202 {"state":"finalizing"}`（クライアントは `GET /api/v1/iso` で、`ready`、`invalid`、**`incomplete`** のどれかになるまで待つ。**`incomplete` になったら（最終処理中の SD の I/O エラー）、待つのをやめ、`sd.state` が `ready` に戻るのを待って、`received == size` なら `finish` を送り直し、`received < size` なら、先にアップロードを再開する**） |
 | すでに `ready` | `200 {"state":"ready","sha256":"<64 桁の 16 進、または null>"}`（冪等） |
 | `invalid`（以前の最終処理で失敗した） | `422 {"error":"<invalid_reason>"}`（`checksum_mismatch` / `not_iso` / `too_fragmented` / `part_mismatch` / `meta_corrupt`） |
 | `id` が不正、そのイメージがない（`deleting` を含む） | `404 {"error":"not_found"}` |
@@ -364,10 +364,10 @@ ISO のアップロード、一覧、マウント（ターゲットの USB に�
 削除は、`finalizing` のイメージにも掛けられる（ワーカーは、1 ステップごとに中止の印を見る）。**削除が終わるまで、そのイメージが使っていた空きは戻らない**（`free_bytes` は、完了時に更新）。
 
 #### 8.8 取り込み（rescan）`POST /api/v1/iso/rescan`
-リクエスト: `{}`。PC で `/iso/import/` にコピーした ISO（4 GiB 弱まで）を、イメージとして取り込む（`ISO_MOUNT_DESIGN.md` §3.3）。**同期で返る**（1 つのファイルで、`mkdir`、`meta` の作成と同期、`rename` があり、数百 ms〜数秒かかる。そのため、1 回の処理を上限で抑える。**その間、同じサーバーの他の要求は待つ**）。先頭クラスタが既存のイメージと同じファイル（`rename` の途中の電源断のクロスリンク）は、取り込まず `skipped` に数える。
+リクエスト: `{}`、または `{"cursor":C}`（前回の応答の `next_cursor`。0 以上 65535 以下の整数。ほかのキーは 400）。PC で `/iso/import/` にコピーした ISO（4 GiB 弱まで）を、イメージとして取り込む（`ISO_MOUNT_DESIGN.md` §3.3）。**同期で返る**（1 つのファイルで、`mkdir`、`meta` の作成と同期、`rename` があり、数百 ms〜数秒かかる。そのため、1 回の処理を上限で抑える。**その間、同じサーバーの他の要求は待つ**）。先頭クラスタが既存のイメージと同じファイル（`rename` の途中の電源断のクロスリンク）は、取り込まず `skipped` に数える。
 | 結果 | 応答 |
 |---|---|
-| 完了（1 回に最大 `ISO_RESCAN_BATCH`（既定 4）個まで） | `200 {"imported":N,"skipped":M,"remaining":R}`（取り込んだ数、規則に合わずに飛ばした数（予算に数えない）、まだ取り込んでいない候補の数）。**`remaining`（まだ取り込んでいない候補の数。`skipped` は含まない）が 0 になる、または `imported` が 0 になるまで、ビューアが繰り返す**。取り込んだものは、エクステントの作成のため `finalizing` を経て `ready` になる |
+| 完了（1 回に、エントリを最大 `ISO_RESCAN_BATCH`（既定 4）個まで調べる） | `200 {"imported":N,"skipped":M,"next_cursor":C'}`（`imported` = 取り込んだ数、`skipped` = 規則に合わずに飛ばした数、`next_cursor` = 次の呼び出しの `cursor`（**調べていないエントリがなければ `null`**））。**ビューアは、`next_cursor` が `null` になるまで、繰り返す**（各回で、取り込むか、位置が進むので、必ず終わる）。取り込んだものは、エクステントの作成のため `finalizing` を経て `ready` になる |
 | ボディ不正 | `400 {"error":"invalid_request"}` |
 | SD が使えない（`sd.state` が `ready` でない） | `503 {"error":"not_ready"}` |
 | アップロードの枠が使用中（`uploading` または `finalizing`） | `409 {"error":"upload_in_progress"}` |
