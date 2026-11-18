@@ -352,6 +352,17 @@ static void process_mjpeg_frame(csi_capture_handle_t cap, csi_jpeg_handle_t jpeg
 }
 
 #if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+static void handle_h264_oom_fallback(csi_h264_handle_t h264, csi_jpeg_handle_t jpeg,
+                                     jpeg_quality_ctrl_t *q_ctrl, const char *stage)
+{
+    ESP_LOGW(TAG, "H.264 %s OOM; releasing H.264 stream and switching to MJPEG fallback (retry in %u frames)",
+             stage, (unsigned)CSI_H264_OOM_RETRY_FRAMES);
+    csi_h264_release_stream(h264);
+    csi_h264_ctrl_end_frame(&s_h264_ctrl, CSI_H264_OUTCOME_FALLBACK_MJPEG, false);
+    jpeg_quality_ctrl_reset_mode(q_ctrl);
+    (void)csi_jpeg_set_quality(jpeg, q_ctrl->q_cur);
+}
+
 static void process_h264_frame(csi_capture_handle_t cap, csi_h264_handle_t h264,
                                csi_jpeg_handle_t jpeg, jpeg_quality_ctrl_t *q_ctrl,
                                csi_video_pub_stats_t *pub_stats,
@@ -361,7 +372,7 @@ static void process_h264_frame(csi_capture_handle_t cap, csi_h264_handle_t h264,
                                bool force_idr)
 {
     if (!h264) {
-        csi_h264_ctrl_end_frame(&s_h264_ctrl, CSI_H264_OUTCOME_FALLBACK_MJPEG, false);
+        handle_h264_oom_fallback(h264, jpeg, q_ctrl, "init");
         process_mjpeg_frame(cap, jpeg, q_ctrl, pub_stats, win_ppa_us, win_jpeg_us,
                             raw_data, raw_len, buf_idx, active_w, active_h, is_uyvy);
         return;
@@ -371,8 +382,7 @@ static void process_h264_frame(csi_capture_handle_t cap, csi_h264_handle_t h264,
     esp_err_t ppa_err = csi_h264_ppa_rgb_to_yuv(h264, raw_data, raw_len,
                                                 active_w, active_h, &ppa_us);
     if (ppa_err == ESP_ERR_NO_MEM) {
-        ESP_LOGW(TAG, "H.264 buffer alloc OOM; falling back to MJPEG for this frame");
-        csi_h264_ctrl_end_frame(&s_h264_ctrl, CSI_H264_OUTCOME_FALLBACK_MJPEG, false);
+        handle_h264_oom_fallback(h264, jpeg, q_ctrl, "buffer alloc");
         process_mjpeg_frame(cap, jpeg, q_ctrl, pub_stats, win_ppa_us, win_jpeg_us,
                             raw_data, raw_len, buf_idx, active_w, active_h, is_uyvy);
         return;
@@ -406,6 +416,13 @@ static void process_h264_frame(csi_capture_handle_t cap, csi_h264_handle_t h264,
                      (unsigned)hout.len, (unsigned)s_cfg.hub_max_frame_bytes,
                      pub_stats->oversize_drops);
         }
+        return;
+    }
+
+    if (herr == ESP_ERR_NO_MEM) {
+        // CSI buffer is already released above: transition control to MJPEG without touching raw_data.
+        handle_h264_oom_fallback(h264, jpeg, q_ctrl, "encoder init");
+        csi_video_pub_stats_on_error(pub_stats);
         return;
     }
 

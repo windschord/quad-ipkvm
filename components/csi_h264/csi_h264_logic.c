@@ -127,6 +127,7 @@ void csi_h264_ctrl_init(csi_h264_ctrl_t *c, bool h264_capable, uint8_t gop)
     c->h264_capable = h264_capable;
     c->gop = (gop < CSI_H264_MIN_GOP) ? CSI_H264_MIN_GOP : gop;
     __atomic_store_n(&c->requested_codec, (uint32_t)CSI_H264_CODEC_MJPEG, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&c->requested_epoch, 0u, __ATOMIC_SEQ_CST);
     __atomic_store_n(&c->active_codec, (uint32_t)CSI_H264_CODEC_MJPEG, __ATOMIC_SEQ_CST);
     __atomic_store_n(&c->keyframe_req, 0u, __ATOMIC_SEQ_CST);
 
@@ -134,6 +135,8 @@ void csi_h264_ctrl_init(csi_h264_ctrl_t *c, bool h264_capable, uint8_t gop)
     c->active_w = 0u;
     c->active_h = 0u;
     c->frames_since_idr = 0u;
+    c->oom_cooldown_frames = 0u;
+    c->seen_req_epoch = 0u;
 
     c->switches_to_h264 = 0u;
     c->switches_to_mjpeg = 0u;
@@ -150,10 +153,12 @@ int csi_h264_ctrl_set_codec(csi_h264_ctrl_t *c, csi_h264_codec_t codec)
     }
     if (codec == CSI_H264_CODEC_MJPEG) {
         __atomic_store_n(&c->requested_codec, (uint32_t)CSI_H264_CODEC_MJPEG, __ATOMIC_RELEASE);
+        __atomic_fetch_add(&c->requested_epoch, 1u, __ATOMIC_RELEASE);
         return 0;
     }
     if (codec == CSI_H264_CODEC_H264 && c->h264_capable) {
         __atomic_store_n(&c->requested_codec, (uint32_t)CSI_H264_CODEC_H264, __ATOMIC_RELEASE);
+        __atomic_fetch_add(&c->requested_epoch, 1u, __ATOMIC_RELEASE);
         return 0;
     }
     return -1;
@@ -200,6 +205,7 @@ void csi_h264_ctrl_on_mode_reset(csi_h264_ctrl_t *c)
     c->active_w = 0u;
     c->active_h = 0u;
     c->frames_since_idr = 0u;
+    c->oom_cooldown_frames = 0u;
 }
 
 bool csi_h264_ctrl_begin_frame(csi_h264_ctrl_t *c, uint32_t width, uint32_t height,
@@ -216,9 +222,24 @@ bool csi_h264_ctrl_begin_frame(csi_h264_ctrl_t *c, uint32_t width, uint32_t heig
     }
 
     uint32_t req = __atomic_load_n(&c->requested_codec, __ATOMIC_ACQUIRE);
+    uint32_t req_epoch = __atomic_load_n(&c->requested_epoch, __ATOMIC_ACQUIRE);
+    if (req_epoch != c->seen_req_epoch) {
+        c->seen_req_epoch = req_epoch;
+        c->oom_cooldown_frames = 0u;
+    }
+
+    bool cooling_down = false;
+    if (req != (uint32_t)CSI_H264_CODEC_H264) {
+        c->oom_cooldown_frames = 0u;
+    } else if (c->oom_cooldown_frames > 0u) {
+        c->oom_cooldown_frames--;
+        cooling_down = true;
+    }
+
     uint32_t prev_active = __atomic_load_n(&c->active_codec, __ATOMIC_RELAXED);
     bool res_ok = csi_h264_check_resolution(width, height);
-    bool want_h264 = c->h264_capable && res_ok && (req == (uint32_t)CSI_H264_CODEC_H264);
+    bool want_h264 = c->h264_capable && res_ok &&
+                     (req == (uint32_t)CSI_H264_CODEC_H264) && !cooling_down;
 
     if (!want_h264) {
         bool switched = (prev_active != (uint32_t)CSI_H264_CODEC_MJPEG);
@@ -298,8 +319,14 @@ void csi_h264_ctrl_end_frame(csi_h264_ctrl_t *c, csi_h264_frame_outcome_t outcom
         c->self_idr_recoveries++;
         break;
     case CSI_H264_OUTCOME_FALLBACK_MJPEG:
+        if (__atomic_load_n(&c->active_codec, __ATOMIC_RELAXED) != (uint32_t)CSI_H264_CODEC_MJPEG) {
+            __atomic_store_n(&c->active_codec, (uint32_t)CSI_H264_CODEC_MJPEG, __ATOMIC_RELEASE);
+            c->switches_to_mjpeg++;
+        }
+        (void)__atomic_exchange_n(&c->keyframe_req, 0u, __ATOMIC_ACQ_REL);
         c->need_idr = true;
         c->frames_since_idr = 0u;
+        c->oom_cooldown_frames = CSI_H264_OOM_RETRY_FRAMES;
         break;
     }
 }

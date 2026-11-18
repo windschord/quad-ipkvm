@@ -303,10 +303,17 @@ static void test_ctrl_self_idr_recovery_and_fallback(void)
     TEST_ASSERT_TRUE(force_idr);
     csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_PUBLISHED, true);
 
-    // MJPEG fallback frame resets need_idr cleanly without incrementing self_idr_recoveries.
+    // MJPEG fallback transitions active_codec -> MJPEG with OOM cooldown
+    // without incrementing self_idr_recoveries.
     csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_FALLBACK_MJPEG, false);
     TEST_ASSERT_EQUAL_UINT(3u, c.self_idr_recoveries);
+    TEST_ASSERT_EQUAL_INT(CSI_H264_CODEC_MJPEG, csi_h264_ctrl_get_active_codec(&c));
     TEST_ASSERT_FALSE(csi_h264_ctrl_begin_frame(&c, 1920u, 1080u, &use_h264, &force_idr));
+    TEST_ASSERT_FALSE(use_h264);
+    TEST_ASSERT_FALSE(force_idr);
+    csi_h264_ctrl_on_mode_reset(&c);
+    TEST_ASSERT_TRUE(csi_h264_ctrl_begin_frame(&c, 1920u, 1080u, &use_h264, &force_idr));
+    TEST_ASSERT_TRUE(use_h264);
     TEST_ASSERT_TRUE(force_idr);
     csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_PUBLISHED, true);
 
@@ -334,14 +341,14 @@ static void test_ctrl_self_idr_recovery_and_fallback(void)
     TEST_ASSERT_TRUE(csi_h264_ctrl_begin_frame(&c, 1922u, 1080u, &use_h264, &force_idr));
     TEST_ASSERT_FALSE(use_h264);
     TEST_ASSERT_FALSE(force_idr);
-    TEST_ASSERT_EQUAL_UINT(1u, c.switches_to_mjpeg);
+    TEST_ASSERT_EQUAL_UINT(2u, c.switches_to_mjpeg);
     TEST_ASSERT_EQUAL_INT(CSI_H264_CODEC_MJPEG, csi_h264_ctrl_get_active_codec(&c));
 
     // Returning to valid resolution switches cleanly back to H.264 with IDR forced.
     TEST_ASSERT_TRUE(csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr));
     TEST_ASSERT_TRUE(use_h264);
     TEST_ASSERT_TRUE(force_idr);
-    TEST_ASSERT_EQUAL_UINT(2u, c.switches_to_h264);
+    TEST_ASSERT_EQUAL_UINT(3u, c.switches_to_h264);
 }
 
 static void test_ctrl_downgrade_clears_pending_request(void)
@@ -457,13 +464,95 @@ static void test_ctrl_fuzz_invariants(void)
                 expect_idr_next = false;
             } else {
                 consec_p++;
-                TEST_ASSERT_LESS_THAN_UINT(gop, consec_p + 1u);
+                TEST_ASSERT_LESS_THAN_UINT(gop, consec_p);
             }
         } else {
             expect_idr_next = true;
             consec_p = 0u;
         }
     }
+}
+
+static void test_ctrl_oom_fallback_and_retry(void)
+{
+    csi_h264_ctrl_t c;
+    csi_h264_ctrl_init(&c, true, 10u);
+    csi_h264_ctrl_set_codec(&c, CSI_H264_CODEC_H264);
+
+    bool use_h264 = false;
+    bool force_idr = false;
+    TEST_ASSERT_TRUE(csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr));
+    TEST_ASSERT_TRUE(use_h264);
+    TEST_ASSERT_TRUE(force_idr);
+    TEST_ASSERT_EQUAL_UINT(1u, c.switches_to_h264);
+
+    // Pending keyframe request must be discarded immediately on OOM fallback to MJPEG
+    // (must not leak across an immediate mode reset before the next begin_frame).
+    csi_h264_ctrl_request_keyframe(&c);
+    csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_FALLBACK_MJPEG, false);
+    TEST_ASSERT_EQUAL_UINT(0u, c.keyframe_req);
+    TEST_ASSERT_EQUAL_INT(CSI_H264_CODEC_MJPEG, csi_h264_ctrl_get_active_codec(&c));
+    TEST_ASSERT_EQUAL_UINT(1u, c.switches_to_mjpeg);
+    TEST_ASSERT_EQUAL_UINT(0u, c.self_idr_recoveries);
+    TEST_ASSERT_EQUAL_UINT(CSI_H264_OOM_RETRY_FRAMES, c.oom_cooldown_frames);
+
+    // Verify immediate mode reset after FALLBACK_MJPEG does not apply a stale keyframe request.
+    csi_h264_ctrl_on_mode_reset(&c);
+    TEST_ASSERT_TRUE(csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr));
+    TEST_ASSERT_TRUE(use_h264);
+    TEST_ASSERT_TRUE(force_idr);
+    TEST_ASSERT_EQUAL_UINT(0u, c.keyframe_reqs_applied);
+    csi_h264_ctrl_request_keyframe(&c);
+    csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_FALLBACK_MJPEG, false);
+    TEST_ASSERT_EQUAL_UINT(2u, c.switches_to_mjpeg);
+    TEST_ASSERT_EQUAL_UINT(2u, c.switches_to_h264);
+
+    // Idempotent second FALLBACK_MJPEG must not double-count switches_to_mjpeg.
+    csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_FALLBACK_MJPEG, false);
+    TEST_ASSERT_EQUAL_UINT(2u, c.switches_to_mjpeg);
+
+    // Cooldown runs for exactly CSI_H264_OOM_RETRY_FRAMES MJPEG frames, keeping requested=H264.
+    for (uint32_t i = 0u; i < CSI_H264_OOM_RETRY_FRAMES; i++) {
+        if (i == 5u) {
+            csi_h264_ctrl_request_keyframe(&c); // no-op while active_codec == MJPEG
+        }
+        TEST_ASSERT_FALSE(csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr));
+        TEST_ASSERT_FALSE(use_h264);
+        TEST_ASSERT_FALSE(force_idr);
+        TEST_ASSERT_EQUAL_INT(CSI_H264_CODEC_MJPEG, csi_h264_ctrl_get_active_codec(&c));
+        TEST_ASSERT_EQUAL_INT(CSI_H264_CODEC_H264, csi_h264_ctrl_get_requested_codec(&c));
+    }
+    TEST_ASSERT_EQUAL_UINT(0u, c.oom_cooldown_frames);
+
+    // Next frame after cooldown automatically retries H.264 with forced IDR.
+    TEST_ASSERT_TRUE(csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr));
+    TEST_ASSERT_TRUE(use_h264);
+    TEST_ASSERT_TRUE(force_idr);
+    TEST_ASSERT_EQUAL_UINT(3u, c.switches_to_h264);
+    TEST_ASSERT_EQUAL_UINT(0u, c.keyframe_reqs_applied);
+    csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_PUBLISHED, true);
+
+    // Re-requesting H.264 during cooldown clears cooldown immediately via requested_epoch.
+    csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_FALLBACK_MJPEG, false);
+    TEST_ASSERT_FALSE(csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr));
+    TEST_ASSERT_FALSE(use_h264);
+    csi_h264_ctrl_set_codec(&c, CSI_H264_CODEC_H264);
+    TEST_ASSERT_TRUE(csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr));
+    TEST_ASSERT_TRUE(use_h264);
+    TEST_ASSERT_TRUE(force_idr);
+    csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_PUBLISHED, true);
+
+    // Explicit switch to MJPEG during cooldown clears cooldown before any later switch back.
+    csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_FALLBACK_MJPEG, false);
+    csi_h264_ctrl_set_codec(&c, CSI_H264_CODEC_MJPEG);
+    TEST_ASSERT_FALSE(csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr));
+    TEST_ASSERT_FALSE(use_h264);
+    TEST_ASSERT_EQUAL_UINT(0u, c.oom_cooldown_frames);
+    csi_h264_ctrl_set_codec(&c, CSI_H264_CODEC_H264);
+    TEST_ASSERT_TRUE(csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr));
+    TEST_ASSERT_TRUE(use_h264);
+    TEST_ASSERT_TRUE(force_idr);
+    csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_PUBLISHED, true);
 }
 
 int main(void)
@@ -480,6 +569,7 @@ int main(void)
     RUN_TEST(test_ctrl_switch_gop_and_request_keyframe);
     RUN_TEST(test_ctrl_self_idr_recovery_and_fallback);
     RUN_TEST(test_ctrl_downgrade_clears_pending_request);
+    RUN_TEST(test_ctrl_oom_fallback_and_retry);
     RUN_TEST(test_ctrl_fuzz_invariants);
     return UNITY_END();
 }

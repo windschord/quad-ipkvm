@@ -29,6 +29,9 @@ extern "C" {
 #define CSI_H264_MAX_GOP         255u
 #define CSI_H264_MAX_QP          51u
 
+// Frames to stay on MJPEG fallback after H.264 OOM before retrying H.264 (~2 s at 30 fps).
+#define CSI_H264_OOM_RETRY_FRAMES 60u
+
 typedef enum {
     CSI_H264_CODEC_MJPEG = 0,
     CSI_H264_CODEC_H264 = 1,
@@ -55,6 +58,7 @@ typedef struct {
 
     // Cross-task lock-free fields (accessed with __atomic_* builtins).
     uint32_t requested_codec;  // written by web_server (set_codec), read by publisher
+    uint32_t requested_epoch;  // bumped by set_codec() so new requests clear OOM cooldown
     uint32_t active_codec;     // written by publisher, read by request_keyframe (MJPEG no-op)
     uint32_t keyframe_req;     // set by request_keyframe(), atomically cleared by publisher
 
@@ -63,6 +67,8 @@ typedef struct {
     uint32_t active_w;
     uint32_t active_h;
     uint32_t frames_since_idr;
+    uint32_t oom_cooldown_frames;
+    uint32_t seen_req_epoch;
 
     // Telemetry counters (publisher-thread-only).
     uint32_t switches_to_h264;
