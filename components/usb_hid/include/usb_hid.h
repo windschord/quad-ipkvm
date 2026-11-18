@@ -34,6 +34,9 @@ const hid_sink_t *usb_hid_get_sink(void);
 
 /**
  * @brief Assert or release USB soft-disconnect (DCTL.SFTDISCON) on OTG_HS.
+ *
+ * When VBUS sensing is active (CONFIG_USB_DEVICE_VBUS_SENSE_GPIO >= 0), connection
+ * state is owned exclusively by usb_vbus_ctrl and manual calls return ESP_ERR_INVALID_STATE.
  */
 esp_err_t usb_hid_set_connected(bool connected);
 

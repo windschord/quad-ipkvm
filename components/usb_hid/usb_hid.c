@@ -261,6 +261,21 @@ static void init_serial_from_mac(void) {
 }
 
 #if CONFIG_USB_DEVICE_VBUS_SENSE_GPIO >= 0
+static bool is_utmi_phy_stopped(esp_err_t *out_err, usb_phy_status_t *out_st) {
+    usb_phy_status_t phy_st = USB_PHY_STATUS_FREE;
+    esp_err_t phy_err = usb_phy_get_phy_status(USB_PHY_TARGET_UTMI, &phy_st);
+    if (out_err) {
+        *out_err = phy_err;
+    }
+    if (out_st) {
+        *out_st = phy_st;
+    }
+    /* When tinyusb_driver_uninstall() releases the last PHY handle, phy_uninstall()
+     * frees the PHY controller object so usb_phy_get_phy_status() returns ESP_ERR_INVALID_STATE. */
+    return (phy_err == ESP_ERR_INVALID_STATE) ||
+           (phy_err == ESP_OK && phy_st == USB_PHY_STATUS_FREE);
+}
+
 static void log_vbus_stats(const char *reason, bool is_err) {
     usb_vbus_ctrl_stats_t st = {0};
     usb_vbus_ctrl_get_stats(&s_vbus_ctrl, &st);
@@ -309,7 +324,16 @@ static bool vbus_apply_action(usb_vbus_ctrl_action_t action) {
         }
         case USB_VBUS_CTRL_ACTION_FORCE_OFF: {
             if (s_force_uninstalled) {
-                return true;
+                usb_phy_status_t phy_st = USB_PHY_STATUS_FREE;
+                esp_err_t phy_err = ESP_OK;
+                bool phy_stopped = is_utmi_phy_stopped(&phy_err, &phy_st);
+                if (!phy_stopped) {
+                    ESP_LOGE(TAG,
+                             "VBUS FORCE_OFF retry: driver already uninstalled, waiting for PHY stop "
+                             "(phy_err=%s phy_status=%d)",
+                             esp_err_to_name(phy_err), (int)phy_st);
+                }
+                return phy_stopped;
             }
             usb_dwc_dctl_reg_t dctl = USB_DWC_HS.dctl_reg;
             dctl.sftdiscon = 1;
@@ -324,11 +348,8 @@ static bool vbus_apply_action(usb_vbus_ctrl_action_t action) {
                      (unsigned)USB_DWC_HS.dctl_reg.sftdiscon);
             esp_err_t uninst_err = tinyusb_driver_uninstall();
             usb_phy_status_t phy_st = USB_PHY_STATUS_FREE;
-            esp_err_t phy_err = usb_phy_get_phy_status(USB_PHY_TARGET_UTMI, &phy_st);
-            /* When tinyusb_driver_uninstall() releases the last PHY handle, phy_uninstall()
-             * frees the PHY controller object so usb_phy_get_phy_status() returns ESP_ERR_INVALID_STATE. */
-            bool phy_stopped = (phy_err == ESP_ERR_INVALID_STATE) ||
-                               (phy_err == ESP_OK && phy_st == USB_PHY_STATUS_FREE);
+            esp_err_t phy_err = ESP_OK;
+            bool phy_stopped = is_utmi_phy_stopped(&phy_err, &phy_st);
             if (uninst_err == ESP_OK) {
                 s_force_uninstalled = true;
                 s_initialized = false;
@@ -519,6 +540,12 @@ const hid_sink_t *usb_hid_get_sink(void) {
 esp_err_t usb_hid_set_connected(bool connected) {
     ESP_RETURN_ON_FALSE(s_initialized && !s_force_uninstalled,
                         ESP_ERR_INVALID_STATE, TAG, "not initialized");
+#if CONFIG_USB_DEVICE_VBUS_SENSE_GPIO >= 0
+    (void)connected;
+    ESP_LOGW(TAG, "usb_hid_set_connected() rejected while VBUS sensing (GPIO %d) governs connection",
+             CONFIG_USB_DEVICE_VBUS_SENSE_GPIO);
+    return ESP_ERR_INVALID_STATE;
+#else
     xSemaphoreTake(s_usb_ctrl_mux, portMAX_DELAY);
     if (s_force_uninstalled) {
         xSemaphoreGive(s_usb_ctrl_mux);
@@ -528,6 +555,7 @@ esp_err_t usb_hid_set_connected(bool connected) {
     log_dwc_hs_regs(connected ? "connect" : "disconnect");
     xSemaphoreGive(s_usb_ctrl_mux);
     return ok ? ESP_OK : ESP_FAIL;
+#endif
 }
 
 #else /* !CONFIG_USB_DEVICE_ENABLE */
