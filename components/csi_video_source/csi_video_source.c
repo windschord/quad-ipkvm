@@ -1,10 +1,20 @@
 #include "csi_video_source.h"
+#include "sdkconfig.h"
 
 #include <inttypes.h>
 #include <string.h>
 #include "csi_capture.h"
 #include "csi_jpeg.h"
 #include "jpeg_quality_ctrl.h"
+#if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+#include "csi_h264.h"
+#include "csi_h264_logic.h"
+_Static_assert((int)CSI_H264_CODEC_MJPEG == (int)VIDEO_CODEC_MJPEG, "MJPEG codec enum mismatch");
+_Static_assert((int)CSI_H264_CODEC_H264 == (int)VIDEO_CODEC_H264, "H.264 codec enum mismatch");
+#define CSI_VIDEO_TASK_STACK       8192u
+#else
+#define CSI_VIDEO_TASK_STACK       6144u
+#endif
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -15,7 +25,6 @@
 
 static const char *TAG = "csi_video_src";
 
-#define CSI_VIDEO_TASK_STACK       6144u
 #define CSI_VIDEO_TASK_PRIO        5
 #define CSI_VIDEO_ACQUIRE_WAIT_MS  200u
 #define CSI_VIDEO_POLL_SLICE_MS    50u
@@ -39,6 +48,22 @@ static csi_capture_handle_t s_active_cap = NULL;
 
 // Lock-free seqlock status store (docs/INTERFACES.md §1.3).
 static csi_video_seq_t s_seq_status;
+
+#if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+static csi_h264_ctrl_t s_h264_ctrl;
+
+static int csi_video_source_set_codec(const video_source_t *source, video_codec_t codec)
+{
+    (void)source;
+    return csi_h264_ctrl_set_codec(&s_h264_ctrl, (csi_h264_codec_t)codec);
+}
+
+static void csi_video_source_request_keyframe(const video_source_t *source)
+{
+    (void)source;
+    csi_h264_ctrl_request_keyframe(&s_h264_ctrl);
+}
+#endif
 
 static void csi_video_shutdown_handler(void)
 {
@@ -150,6 +175,37 @@ static void log_periodic_stats(const csi_video_pub_stats_t *pub,
                            ? (size_t)(pub->win_jpeg_bytes / pub->win_frames)
                            : 0u;
 
+#if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+    if (csi_h264_ctrl_get_active_codec(&s_h264_ctrl) == CSI_H264_CODEC_H264) {
+        double avg_ppa_ms = (pub->win_frames > 0u)
+                                ? ((double)win_ppa_us / (double)pub->win_frames / 1000.0)
+                                : 0.0;
+        double avg_hw_ms = (pub->win_frames > 0u)
+                               ? ((double)win_jpeg_us / (double)pub->win_frames / 1000.0)
+                               : 0.0;
+        ESP_LOGI(TAG,
+                 "%" PRIu32 "x%" PRIu32 " H264 @ %.2f fps | enc avg=%.2f ms (ppa=%.2f + h264=%.2f) max=%.2f ms | "
+                 "au min=%u avg=%u max=%u (peak=%u) B idr=%" PRIu64 " p=%" PRIu64 " req=%" PRIu64 " recov=%" PRIu64 " sw=%" PRIu32 "/%" PRIu32 " | "
+                 "pub=%" PRIu64 " busy_drop=%" PRIu64 " oversize_drop=%" PRIu64 " enc_err=%" PRIu64 " | "
+                 "hub clients=%d dropped=%" PRIu64 " | csi done=%" PRIu32 " ovw=%" PRIu32 " | "
+                 "free_int=%u B min_int=%u B free_psram=%u B | stack_free=%u B",
+                 width, height, enc_fps, avg_enc_ms, avg_ppa_ms, avg_hw_ms, max_enc_ms,
+                 (unsigned)pub->win_min_jpeg_bytes, (unsigned)avg_bytes,
+                 (unsigned)pub->win_max_jpeg_bytes, (unsigned)pub->peak_jpeg_bytes,
+                 s_h264_ctrl.idr_frames, s_h264_ctrl.p_frames,
+                 s_h264_ctrl.keyframe_reqs_applied, s_h264_ctrl.self_idr_recoveries,
+                 s_h264_ctrl.switches_to_h264, s_h264_ctrl.switches_to_mjpeg,
+                 pub->published, pub->pool_busy_drops, pub->oversize_drops, pub->encode_errors,
+                 hub_st.active_clients, hub_st.dropped_frames,
+                 cap_st.completed, cap_st.overwritten,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
+        return;
+    }
+#endif
+
     if (configured_cap_format() == CSI_PIXEL_FORMAT_UYVY) {
         double avg_ppa_ms = (pub->win_frames > 0u)
                                 ? ((double)win_ppa_us / (double)pub->win_frames / 1000.0)
@@ -209,11 +265,234 @@ static void apply_adaptive_quality(csi_jpeg_handle_t jpeg, jpeg_quality_ctrl_t *
     }
 }
 
+static void process_mjpeg_frame(csi_capture_handle_t cap, csi_jpeg_handle_t jpeg,
+                                jpeg_quality_ctrl_t *q_ctrl, csi_video_pub_stats_t *pub_stats,
+                                uint64_t *win_ppa_us, uint64_t *win_jpeg_us,
+                                const uint8_t *raw_data, size_t raw_len, int buf_idx,
+                                uint32_t active_w, uint32_t active_h, bool is_uyvy)
+{
+    const uint8_t *jpeg_data = NULL;
+    size_t jpeg_len = 0u;
+    int64_t t_enc0 = esp_timer_get_time();
+    int64_t t_enc1 = t_enc0;
+    uint32_t ppa_us = 0u;
+    uint32_t jpg_us = 0u;
+    esp_err_t enc_err = ESP_OK;
+
+    if (is_uyvy) {
+        enc_err = csi_jpeg_ppa_swap_uyvy(jpeg, raw_data, raw_len, active_w, active_h);
+        int64_t t_ppa1 = esp_timer_get_time();
+        // Return the CSI buffer to the ping-pong pool as soon as PPA SRM has copied it to ppa_buf.
+        (void)csi_capture_release(cap, buf_idx);
+        ppa_us = (t_ppa1 > t_enc0) ? (uint32_t)(t_ppa1 - t_enc0) : 0u;
+        if (enc_err == ESP_OK) {
+            enc_err = csi_jpeg_encode_swapped_uyvy(jpeg, active_w, active_h, &jpeg_data, &jpeg_len);
+            t_enc1 = esp_timer_get_time();
+            jpg_us = (t_enc1 > t_ppa1) ? (uint32_t)(t_enc1 - t_ppa1) : 0u;
+        } else {
+            t_enc1 = t_ppa1;
+        }
+    } else {
+        enc_err = csi_jpeg_encode(jpeg, raw_data, raw_len,
+                                  active_w, active_h, &jpeg_data, &jpeg_len);
+        t_enc1 = esp_timer_get_time();
+        // Return the PSRAM buffer to the CSI ping-pong pool immediately after DMA2D finishes reading it.
+        (void)csi_capture_release(cap, buf_idx);
+        jpg_us = (t_enc1 > t_enc0) ? (uint32_t)(t_enc1 - t_enc0) : 0u;
+    }
+
+    uint32_t enc_us = (t_enc1 > t_enc0) ? (uint32_t)(t_enc1 - t_enc0) : 0u;
+    if (enc_err != ESP_OK) {
+        csi_video_pub_stats_on_error(pub_stats);
+        if (pub_stats->encode_errors <= 5u || (pub_stats->encode_errors % 100u) == 0u) {
+            ESP_LOGW(TAG, "HW JPEG/PPA encode failed (count=%" PRIu64 "): %s",
+                     pub_stats->encode_errors, esp_err_to_name(enc_err));
+        }
+        if (enc_err == CSI_JPEG_ERR_OUTPUT_OVERSIZE) {
+            apply_adaptive_quality(jpeg, q_ctrl, 0u, true, s_cfg.hub_max_frame_bytes);
+        }
+        return;
+    }
+
+    csi_jpeg_frame_err_t ferr = csi_jpeg_check_frame(
+        jpeg_data, jpeg_len, s_cfg.hub_max_frame_bytes);
+    if (ferr == CSI_JPEG_FRAME_OK) {
+        // Single-publisher contract (docs/INTERFACES.md §1.2).
+        video_frame_t *dst = frame_hub_begin_publish(s_hub, jpeg_len);
+        if (dst) {
+            memcpy(dst->data, jpeg_data, jpeg_len);
+            uint64_t ts_ms = (uint64_t)(esp_timer_get_time() / 1000);
+            frame_hub_commit(s_hub, dst, jpeg_len, active_w, active_h, ts_ms);
+            csi_video_pub_stats_on_published(pub_stats, jpeg_len, enc_us);
+            *win_ppa_us += ppa_us;
+            *win_jpeg_us += jpg_us;
+        } else {
+            csi_video_pub_stats_on_pool_busy(pub_stats, jpeg_len, enc_us);
+            *win_ppa_us += ppa_us;
+            *win_jpeg_us += jpg_us;
+        }
+    } else if (ferr == CSI_JPEG_FRAME_ERR_OVERSIZE) {
+        csi_video_pub_stats_on_oversize(pub_stats, jpeg_len, enc_us);
+        *win_ppa_us += ppa_us;
+        *win_jpeg_us += jpg_us;
+        if (pub_stats->oversize_drops <= 5u || (pub_stats->oversize_drops % 60u) == 0u) {
+            ESP_LOGW(TAG, "Dropped oversize JPEG: %u bytes > hub max %u bytes (count=%" PRIu64 ")",
+                     (unsigned)jpeg_len, (unsigned)s_cfg.hub_max_frame_bytes,
+                     pub_stats->oversize_drops);
+        }
+    } else {
+        csi_video_pub_stats_on_error(pub_stats);
+    }
+
+    if (ferr == CSI_JPEG_FRAME_OK || ferr == CSI_JPEG_FRAME_ERR_OVERSIZE) {
+        apply_adaptive_quality(jpeg, q_ctrl, jpeg_len,
+                               ferr == CSI_JPEG_FRAME_ERR_OVERSIZE,
+                               s_cfg.hub_max_frame_bytes);
+    }
+}
+
+#if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+static void handle_h264_oom_fallback(csi_h264_handle_t h264, csi_jpeg_handle_t jpeg,
+                                     jpeg_quality_ctrl_t *q_ctrl, const char *stage)
+{
+    ESP_LOGW(TAG, "H.264 %s OOM; releasing H.264 stream and switching to MJPEG fallback (retry in %u frames)",
+             stage, (unsigned)CSI_H264_OOM_RETRY_FRAMES);
+    csi_h264_release_stream(h264);
+    csi_h264_ctrl_end_frame(&s_h264_ctrl, CSI_H264_OUTCOME_FALLBACK_MJPEG, false);
+    jpeg_quality_ctrl_reset_mode(q_ctrl);
+    (void)csi_jpeg_set_quality(jpeg, q_ctrl->q_cur);
+}
+
+static void check_h264_error_fallback(csi_h264_handle_t h264, csi_jpeg_handle_t jpeg,
+                                      jpeg_quality_ctrl_t *q_ctrl, const char *reason)
+{
+    if (csi_h264_ctrl_get_active_codec(&s_h264_ctrl) == CSI_H264_CODEC_MJPEG) {
+        ESP_LOGW(TAG, "H.264 persistent failure (%s); releasing H.264 stream and switching to MJPEG fallback (retry in %u frames)",
+                 reason, (unsigned)CSI_H264_OOM_RETRY_FRAMES);
+        csi_h264_release_stream(h264);
+        jpeg_quality_ctrl_reset_mode(q_ctrl);
+        (void)csi_jpeg_set_quality(jpeg, q_ctrl->q_cur);
+    }
+}
+
+static void process_h264_frame(csi_capture_handle_t cap, csi_h264_handle_t h264,
+                               csi_jpeg_handle_t jpeg, jpeg_quality_ctrl_t *q_ctrl,
+                               csi_video_pub_stats_t *pub_stats,
+                               uint64_t *win_ppa_us, uint64_t *win_jpeg_us,
+                               const uint8_t *raw_data, size_t raw_len, int buf_idx,
+                               uint32_t active_w, uint32_t active_h, bool is_uyvy,
+                               bool force_idr)
+{
+    if (!h264) {
+        handle_h264_oom_fallback(h264, jpeg, q_ctrl, "init");
+        process_mjpeg_frame(cap, jpeg, q_ctrl, pub_stats, win_ppa_us, win_jpeg_us,
+                            raw_data, raw_len, buf_idx, active_w, active_h, is_uyvy);
+        return;
+    }
+
+    uint32_t ppa_us = 0u;
+    esp_err_t ppa_err = csi_h264_ppa_rgb_to_yuv(h264, raw_data, raw_len,
+                                                active_w, active_h, &ppa_us);
+    if (ppa_err == ESP_ERR_NO_MEM) {
+        handle_h264_oom_fallback(h264, jpeg, q_ctrl, "buffer alloc");
+        process_mjpeg_frame(cap, jpeg, q_ctrl, pub_stats, win_ppa_us, win_jpeg_us,
+                            raw_data, raw_len, buf_idx, active_w, active_h, is_uyvy);
+        return;
+    }
+
+    // Release CSI ping-pong buffer right after PPA SRM finishes reading RGB888.
+    (void)csi_capture_release(cap, buf_idx);
+
+    if (ppa_err != ESP_OK) {
+        csi_h264_ctrl_end_frame(&s_h264_ctrl, CSI_H264_OUTCOME_ENCODE_ERR, false);
+        check_h264_error_fallback(h264, jpeg, q_ctrl, "PPA RGB888->YUV420");
+        csi_video_pub_stats_on_error(pub_stats);
+        if (pub_stats->encode_errors <= 5u || (pub_stats->encode_errors % 100u) == 0u) {
+            ESP_LOGW(TAG, "H.264 PPA RGB888->YUV420 failed (count=%" PRIu64 "): %s",
+                     pub_stats->encode_errors, esp_err_to_name(ppa_err));
+        }
+        return;
+    }
+
+    csi_h264_frame_out_t hout = {0};
+    uint32_t pts_ms = (uint32_t)now_monotonic_ms();
+    esp_err_t herr = csi_h264_encode_prepared(h264, active_w, active_h, force_idr, pts_ms, &hout);
+    uint32_t total_us = ppa_us + hout.enc_us;
+    *win_ppa_us += ppa_us;
+    *win_jpeg_us += hout.enc_us;
+
+    if (herr == CSI_H264_ERR_OUTPUT_OVERSIZE) {
+        csi_h264_ctrl_end_frame(&s_h264_ctrl, CSI_H264_OUTCOME_OVERSIZE, false);
+        check_h264_error_fallback(h264, jpeg, q_ctrl, "oversize");
+        csi_video_pub_stats_on_oversize(pub_stats, hout.len, total_us);
+        if (pub_stats->oversize_drops <= 5u || (pub_stats->oversize_drops % 60u) == 0u) {
+            ESP_LOGW(TAG, "Dropped oversize H.264 frame: %u bytes > hub max %u bytes; next forced IDR (count=%" PRIu64 ")",
+                     (unsigned)hout.len, (unsigned)s_cfg.hub_max_frame_bytes,
+                     pub_stats->oversize_drops);
+        }
+        return;
+    }
+
+    if (herr == ESP_ERR_NO_MEM) {
+        // CSI buffer is already released above: transition control to MJPEG without touching raw_data.
+        handle_h264_oom_fallback(h264, jpeg, q_ctrl, "encoder init");
+        csi_video_pub_stats_on_error(pub_stats);
+        return;
+    }
+
+    if (herr != ESP_OK) {
+        csi_h264_ctrl_end_frame(&s_h264_ctrl, CSI_H264_OUTCOME_ENCODE_ERR, false);
+        check_h264_error_fallback(h264, jpeg, q_ctrl, "encode error");
+        csi_video_pub_stats_on_error(pub_stats);
+        if (pub_stats->encode_errors <= 5u || (pub_stats->encode_errors % 100u) == 0u) {
+            ESP_LOGW(TAG, "HW H.264 encode failed (count=%" PRIu64 "): %s",
+                     pub_stats->encode_errors, esp_err_to_name(herr));
+        }
+        return;
+    }
+
+    if (force_idr && !hout.is_key) {
+        csi_h264_ctrl_end_frame(&s_h264_ctrl, CSI_H264_OUTCOME_ENCODE_ERR, false);
+        check_h264_error_fallback(h264, jpeg, q_ctrl, "missing forced IDR");
+        csi_video_pub_stats_on_error(pub_stats);
+        if (pub_stats->encode_errors <= 5u || (pub_stats->encode_errors % 100u) == 0u) {
+            ESP_LOGW(TAG, "HW H.264 returned P-frame when IDR was forced (count=%" PRIu64 "); dropping frame",
+                     pub_stats->encode_errors);
+        }
+        return;
+    }
+
+    video_frame_t *dst = frame_hub_begin_publish(s_hub, hout.len);
+    if (dst) {
+        memcpy(dst->data, hout.data, hout.len);
+        uint64_t ts_ms = (uint64_t)(esp_timer_get_time() / 1000);
+        frame_hub_commit_info_t info = {
+            .size = hout.len,
+            .width = active_w,
+            .height = active_h,
+            .timestamp_ms = ts_ms,
+            .codec = VIDEO_CODEC_H264,
+            .flags = hout.is_key ? VIDEO_FRAME_FLAG_KEY : 0u,
+        };
+        frame_hub_commit_ex(s_hub, dst, &info);
+        csi_h264_ctrl_end_frame(&s_h264_ctrl, CSI_H264_OUTCOME_PUBLISHED, hout.is_key);
+        csi_video_pub_stats_on_published(pub_stats, hout.len, total_us);
+    } else {
+        // Pool busy (client slow): self-request IDR on next frame because seq did not advance (§9.6).
+        csi_h264_ctrl_end_frame(&s_h264_ctrl, CSI_H264_OUTCOME_PUBLISH_BUSY, hout.is_key);
+        csi_video_pub_stats_on_pool_busy(pub_stats, hout.len, total_us);
+    }
+}
+#endif
+
 static void csi_video_task(void *arg)
 {
     (void)arg;
     csi_capture_handle_t cap = NULL;
     csi_jpeg_handle_t jpeg = NULL;
+#if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+    csi_h264_handle_t h264 = NULL;
+#endif
 
     // 1. Pre-allocate HW JPEG output buffer and 2x max-mode CSI PSRAM buffers ONCE at startup
     //    so resolution switches never fragment PSRAM (docs/P2B_PLAN.md P2b-7).
@@ -259,6 +538,28 @@ static void csi_video_task(void *arg)
     csi_capture_stats_t pool_st;
     csi_capture_get_stats(cap, &pool_st);
     size_t max_buf_cap = pool_st.buffer_bytes;
+
+#if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+    if (s_h264_ctrl.h264_capable) {
+        csi_h264_config_t h264_cfg = {
+            .max_width = s_cfg.max_width,
+            .max_height = s_cfg.max_height,
+            .max_output_bytes = s_cfg.hub_max_frame_bytes,
+            .gop = s_cfg.h264_gop,
+            .bitrate_720p_bps = s_cfg.h264_bitrate_720p_bps,
+            .bitrate_1080p_bps = s_cfg.h264_bitrate_1080p_bps,
+            .qp_min = s_cfg.h264_qp_min,
+            .qp_max = s_cfg.h264_qp_max,
+            .prealloc_buffers = s_cfg.h264_prealloc_buffers,
+        };
+        esp_err_t h_err = csi_h264_create(&h264_cfg, &h264);
+        if (h_err != ESP_OK) {
+            ESP_LOGE(TAG, "csi_h264_create failed (%s); continuing in MJPEG-only mode",
+                     esp_err_to_name(h_err));
+            h264 = NULL;
+        }
+    }
+#endif
 
     csi_mode_tracker_t tracker;
     csi_mode_tracker_init(&tracker);
@@ -327,6 +628,9 @@ static void csi_video_task(void *arg)
                 tracker.last_frame_ms = last_mode_poll_ms;
                 jpeg_quality_ctrl_reset_mode(&q_ctrl);
                 (void)csi_jpeg_set_quality(jpeg, q_ctrl.q_cur);
+#if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+                csi_h264_ctrl_on_mode_reset(&s_h264_ctrl);
+#endif
                 csi_video_pub_stats_reset_window(&pub_stats);
                 win_ppa_us = 0u;
                 win_jpeg_us = 0u;
@@ -387,49 +691,42 @@ static void csi_video_task(void *arg)
                          tracker.consecutive_sample_errors, tracker.sample_errors);
             }
 
-            if (act == CSI_MODE_ACT_STOP_NO_SIGNAL) {
+            if (act == CSI_MODE_ACT_STOP_NO_SIGNAL ||
+                act == CSI_MODE_ACT_STOP_MODE_CHANGED ||
+                act == CSI_MODE_ACT_REJECT_OUT_OF_RANGE ||
+                act == CSI_MODE_ACT_RECOVER_STALL) {
                 (void)csi_capture_stop(cap);
                 ensure_no_signal_status();
-                if (!sample_ok) {
-                    ESP_LOGW(TAG, "TC358743 signal poll failed %" PRIu32 " consecutive times; CSI DMA stopped",
-                             tracker.consecutive_sample_errors);
+#if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+                csi_h264_ctrl_on_mode_reset(&s_h264_ctrl);
+                csi_h264_release_stream(h264);
+#endif
+                if (act == CSI_MODE_ACT_RECOVER_STALL) {
+                    ESP_LOGW(TAG, "CSI frame stall (>= %u ms) while HDMI locked; pulsing HPD recovery (#%" PRIu32 ")...",
+                             (unsigned)CSI_MODE_STALL_TIMEOUT_MS, tracker.stall_recoveries);
+                    (void)tc358743_nudge_hpd(s_tc_dev);
+                    continue;
+                }
+                if (act == CSI_MODE_ACT_STOP_NO_SIGNAL) {
+                    if (!sample_ok) {
+                        ESP_LOGW(TAG, "TC358743 signal poll failed %" PRIu32 " consecutive times; CSI DMA stopped",
+                                 tracker.consecutive_sample_errors);
+                    } else {
+                        ESP_LOGW(TAG, "HDMI sync lost (SYS_STATUS ddc5v=%d); CSI DMA stopped",
+                                 (int)sample.ddc5v);
+                    }
+                } else if (act == CSI_MODE_ACT_STOP_MODE_CHANGED) {
+                    ESP_LOGI(TAG, "HDMI resolution change detected (-> candidate %" PRIu32 "x%" PRIu32
+                                  ", sample 1/%u); CSI DMA stopped",
+                             sample.width, sample.height, (unsigned)CSI_MODE_STABLE_COUNT);
                 } else {
-                    ESP_LOGW(TAG, "HDMI sync lost (SYS_STATUS ddc5v=%d); CSI DMA stopped",
-                             (int)sample.ddc5v);
+                    ESP_LOGW(TAG, "HDMI switched to out-of-range mode %" PRIu32 "x%" PRIu32
+                                  " (geom_err=%d); CSI DMA stopped",
+                             sample.width, sample.height, (int)gerr);
                 }
                 if (!sleep_interruptible_ms(CSI_MODE_POLL_INTERVAL_MS)) {
                     break;
                 }
-                continue;
-            }
-            if (act == CSI_MODE_ACT_STOP_MODE_CHANGED) {
-                (void)csi_capture_stop(cap);
-                ensure_no_signal_status();
-                ESP_LOGI(TAG, "HDMI resolution change detected (-> candidate %" PRIu32 "x%" PRIu32
-                              ", sample 1/%u); CSI DMA stopped",
-                         sample.width, sample.height, (unsigned)CSI_MODE_STABLE_COUNT);
-                if (!sleep_interruptible_ms(CSI_MODE_POLL_INTERVAL_MS)) {
-                    break;
-                }
-                continue;
-            }
-            if (act == CSI_MODE_ACT_REJECT_OUT_OF_RANGE) {
-                (void)csi_capture_stop(cap);
-                ensure_no_signal_status();
-                ESP_LOGW(TAG, "HDMI switched to out-of-range mode %" PRIu32 "x%" PRIu32
-                              " (geom_err=%d); CSI DMA stopped",
-                         sample.width, sample.height, (int)gerr);
-                if (!sleep_interruptible_ms(CSI_MODE_POLL_INTERVAL_MS)) {
-                    break;
-                }
-                continue;
-            }
-            if (act == CSI_MODE_ACT_RECOVER_STALL) {
-                (void)csi_capture_stop(cap);
-                ensure_no_signal_status();
-                ESP_LOGW(TAG, "CSI frame stall (>= %u ms) while HDMI locked; pulsing HPD recovery (#%" PRIu32 ")...",
-                         (unsigned)CSI_MODE_STALL_TIMEOUT_MS, tracker.stall_recoveries);
-                (void)tc358743_nudge_hpd(s_tc_dev);
                 continue;
             }
         }
@@ -448,83 +745,39 @@ static void csi_video_task(void *arg)
 
         csi_mode_tracker_on_frame(&tracker, now_monotonic_ms());
 
-        const uint8_t *jpeg_data = NULL;
-        size_t jpeg_len = 0u;
-        int64_t t_enc0 = esp_timer_get_time();
-        int64_t t_enc1 = t_enc0;
-        uint32_t ppa_us = 0u;
-        uint32_t jpg_us = 0u;
-        esp_err_t enc_err = ESP_OK;
-
-        if (is_uyvy) {
-            enc_err = csi_jpeg_ppa_swap_uyvy(jpeg, raw_data, raw_len, active_w, active_h);
-            int64_t t_ppa1 = esp_timer_get_time();
-            // Return the CSI buffer to the ping-pong pool as soon as PPA SRM has copied it to ppa_buf.
-            (void)csi_capture_release(cap, buf_idx);
-            ppa_us = (t_ppa1 > t_enc0) ? (uint32_t)(t_ppa1 - t_enc0) : 0u;
-            if (enc_err == ESP_OK) {
-                enc_err = csi_jpeg_encode_swapped_uyvy(jpeg, active_w, active_h, &jpeg_data, &jpeg_len);
-                t_enc1 = esp_timer_get_time();
-                jpg_us = (t_enc1 > t_ppa1) ? (uint32_t)(t_enc1 - t_ppa1) : 0u;
-            } else {
-                t_enc1 = t_ppa1;
+#if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+        bool use_h264 = false;
+        bool force_idr = false;
+        if (csi_h264_ctrl_begin_frame(&s_h264_ctrl, active_w, active_h, &use_h264, &force_idr)) {
+            ESP_LOGI(TAG, "Video publisher switched -> %s (%" PRIu32 "x%" PRIu32 ")",
+                     use_h264 ? "H.264" : "MJPEG", active_w, active_h);
+            if (!use_h264) {
+                csi_h264_release_stream(h264);
+                jpeg_quality_ctrl_reset_mode(&q_ctrl);
+                (void)csi_jpeg_set_quality(jpeg, q_ctrl.q_cur);
             }
-        } else {
-            enc_err = csi_jpeg_encode(jpeg, raw_data, raw_len,
-                                      active_w, active_h, &jpeg_data, &jpeg_len);
-            t_enc1 = esp_timer_get_time();
-            // Return the PSRAM buffer to the CSI ping-pong pool immediately after DMA2D finishes reading it.
-            (void)csi_capture_release(cap, buf_idx);
-            jpg_us = (t_enc1 > t_enc0) ? (uint32_t)(t_enc1 - t_enc0) : 0u;
+            csi_video_pub_stats_reset_window(&pub_stats);
+            win_ppa_us = 0u;
+            win_jpeg_us = 0u;
+            win_start_us = esp_timer_get_time();
         }
-
-        uint32_t enc_us = (t_enc1 > t_enc0) ? (uint32_t)(t_enc1 - t_enc0) : 0u;
-        if (enc_err != ESP_OK) {
-            csi_video_pub_stats_on_error(&pub_stats);
-            if (pub_stats.encode_errors <= 5u || (pub_stats.encode_errors % 100u) == 0u) {
-                ESP_LOGW(TAG, "HW JPEG/PPA encode failed (count=%" PRIu64 "): %s",
-                         pub_stats.encode_errors, esp_err_to_name(enc_err));
-            }
-            if (enc_err == CSI_JPEG_ERR_OUTPUT_OVERSIZE) {
-                apply_adaptive_quality(jpeg, &q_ctrl, 0u, true, s_cfg.hub_max_frame_bytes);
-            }
+        if (use_h264) {
+            process_h264_frame(cap, h264, jpeg, &q_ctrl, &pub_stats,
+                               &win_ppa_us, &win_jpeg_us,
+                               raw_data, raw_len, buf_idx,
+                               active_w, active_h, is_uyvy, force_idr);
         } else {
-            csi_jpeg_frame_err_t ferr = csi_jpeg_check_frame(
-                jpeg_data, jpeg_len, s_cfg.hub_max_frame_bytes);
-            if (ferr == CSI_JPEG_FRAME_OK) {
-                // Single-publisher contract (docs/INTERFACES.md §1.2).
-                video_frame_t *dst = frame_hub_begin_publish(s_hub, jpeg_len);
-                if (dst) {
-                    memcpy(dst->data, jpeg_data, jpeg_len);
-                    uint64_t ts_ms = (uint64_t)(esp_timer_get_time() / 1000);
-                    frame_hub_commit(s_hub, dst, jpeg_len, active_w, active_h, ts_ms);
-                    csi_video_pub_stats_on_published(&pub_stats, jpeg_len, enc_us);
-                    win_ppa_us += ppa_us;
-                    win_jpeg_us += jpg_us;
-                } else {
-                    csi_video_pub_stats_on_pool_busy(&pub_stats, jpeg_len, enc_us);
-                    win_ppa_us += ppa_us;
-                    win_jpeg_us += jpg_us;
-                }
-            } else if (ferr == CSI_JPEG_FRAME_ERR_OVERSIZE) {
-                csi_video_pub_stats_on_oversize(&pub_stats, jpeg_len, enc_us);
-                win_ppa_us += ppa_us;
-                win_jpeg_us += jpg_us;
-                if (pub_stats.oversize_drops <= 5u || (pub_stats.oversize_drops % 60u) == 0u) {
-                    ESP_LOGW(TAG, "Dropped oversize JPEG: %u bytes > hub max %u bytes (count=%" PRIu64 ")",
-                             (unsigned)jpeg_len, (unsigned)s_cfg.hub_max_frame_bytes,
-                             pub_stats.oversize_drops);
-                }
-            } else {
-                csi_video_pub_stats_on_error(&pub_stats);
-            }
-
-            if (ferr == CSI_JPEG_FRAME_OK || ferr == CSI_JPEG_FRAME_ERR_OVERSIZE) {
-                apply_adaptive_quality(jpeg, &q_ctrl, jpeg_len,
-                                       ferr == CSI_JPEG_FRAME_ERR_OVERSIZE,
-                                       s_cfg.hub_max_frame_bytes);
-            }
+            process_mjpeg_frame(cap, jpeg, &q_ctrl, &pub_stats,
+                                &win_ppa_us, &win_jpeg_us,
+                                raw_data, raw_len, buf_idx,
+                                active_w, active_h, is_uyvy);
         }
+#else
+        process_mjpeg_frame(cap, jpeg, &q_ctrl, &pub_stats,
+                            &win_ppa_us, &win_jpeg_us,
+                            raw_data, raw_len, buf_idx,
+                            active_w, active_h, is_uyvy);
+#endif
 
         int64_t now_us = esp_timer_get_time();
         if (now_us - win_start_us >= CSI_VIDEO_STATS_PERIOD_US) {
@@ -549,6 +802,14 @@ cleanup:
         (void)csi_jpeg_close(jpeg);
         jpeg = NULL;
     }
+#if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+    if (h264) {
+        (void)csi_h264_destroy(h264);
+        h264 = NULL;
+    }
+    csi_h264_ctrl_on_mode_reset(&s_h264_ctrl);
+    __atomic_store_n(&s_h264_ctrl.active_codec, (uint32_t)CSI_H264_CODEC_MJPEG, __ATOMIC_SEQ_CST);
+#endif
     csi_video_seq_write(&s_seq_status, KVM_VIDEO_SYNC_UNKNOWN, 0u, 0u);
     s_task_handle = NULL;
     if (s_done_sem) {
@@ -556,6 +817,19 @@ cleanup:
     }
     vTaskDelete(NULL);
 }
+
+static int csi_video_source_start(const video_source_t *source, frame_hub_t *hub);
+static void csi_video_source_stop(const video_source_t *source);
+
+static video_source_t s_csi_video_source = {
+    .name = "csi",
+    .start = csi_video_source_start,
+    .stop = csi_video_source_stop,
+    .ctx = NULL,
+    .supported_codecs = 0u,
+    .set_codec = NULL,
+    .request_keyframe = NULL,
+};
 
 void csi_video_source_configure(tc358743_handle_t tc_dev, const csi_video_source_cfg_t *cfg)
 {
@@ -574,6 +848,53 @@ void csi_video_source_configure(tc358743_handle_t tc_dev, const csi_video_source
     if (s_cfg.data_lanes == 0u) {
         s_cfg.data_lanes = 2u;
     }
+#if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+    if (s_cfg.h264_gop == 0u) {
+        s_cfg.h264_gop = CONFIG_CSI_H264_GOP;
+    }
+    if (s_cfg.h264_bitrate_720p_bps == 0u) {
+        s_cfg.h264_bitrate_720p_bps = (uint32_t)CONFIG_CSI_H264_BITRATE_720P_KBPS * 1000u;
+    }
+    if (s_cfg.h264_bitrate_1080p_bps == 0u) {
+        s_cfg.h264_bitrate_1080p_bps = (uint32_t)CONFIG_CSI_H264_BITRATE_1080P_KBPS * 1000u;
+    }
+    if (s_cfg.h264_qp_max == 0u && s_cfg.h264_qp_min == 0u) {
+        s_cfg.h264_qp_min = CONFIG_CSI_H264_QP_MIN;
+        s_cfg.h264_qp_max = CONFIG_CSI_H264_QP_MAX;
+    }
+    if (s_cfg.h264_qp_max > CSI_H264_MAX_QP) {
+        s_cfg.h264_qp_max = CSI_H264_MAX_QP;
+    }
+    if (s_cfg.h264_qp_min > s_cfg.h264_qp_max) {
+        s_cfg.h264_qp_min = s_cfg.h264_qp_max;
+    }
+    bool h264_ok = (s_cfg.pixel_format == TC358743_FORMAT_RGB888) &&
+                   csi_h264_validate_enc_params(
+                       s_cfg.max_width, s_cfg.max_height, s_cfg.h264_gop,
+                       csi_h264_calc_target_fps(s_cfg.max_width, s_cfg.max_height),
+                       s_cfg.h264_bitrate_1080p_bps, s_cfg.h264_qp_min, s_cfg.h264_qp_max) &&
+                   (s_cfg.h264_bitrate_720p_bps > 0u) &&
+                   (csi_h264_calc_output_buf_size(s_cfg.hub_max_frame_bytes) > 0u);
+    csi_h264_ctrl_init(&s_h264_ctrl, h264_ok, s_cfg.h264_gop);
+    if (h264_ok) {
+        s_csi_video_source.supported_codecs = (1u << VIDEO_CODEC_MJPEG) | (1u << VIDEO_CODEC_H264);
+        s_csi_video_source.set_codec = csi_video_source_set_codec;
+        s_csi_video_source.request_keyframe = csi_video_source_request_keyframe;
+    } else {
+        s_csi_video_source.supported_codecs = 0u;
+        s_csi_video_source.set_codec = NULL;
+        s_csi_video_source.request_keyframe = NULL;
+        ESP_LOGW(TAG,
+                 "CSI H.264 unavailable: fmt=%s max=%" PRIu32 "x%" PRIu32 " out=%u gop=%u qp=%u..%u",
+                 (s_cfg.pixel_format == TC358743_FORMAT_RGB888) ? "RGB888" : "UYVY",
+                 s_cfg.max_width, s_cfg.max_height, (unsigned)s_cfg.hub_max_frame_bytes,
+                 (unsigned)s_cfg.h264_gop, (unsigned)s_cfg.h264_qp_min, (unsigned)s_cfg.h264_qp_max);
+    }
+#else
+    s_csi_video_source.supported_codecs = 0u;
+    s_csi_video_source.set_codec = NULL;
+    s_csi_video_source.request_keyframe = NULL;
+#endif
     csi_video_seq_init(&s_seq_status);
     s_configured = true;
 }
@@ -606,6 +927,9 @@ static int csi_video_source_start(const video_source_t *source, frame_hub_t *hub
 
     s_hub = hub;
     csi_video_seq_init(&s_seq_status);
+#if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+    csi_h264_ctrl_on_mode_reset(&s_h264_ctrl);
+#endif
     __atomic_store_n(&s_stop_requested, 0, __ATOMIC_SEQ_CST);
 
     if (xTaskCreate(csi_video_task, "csi_video", CSI_VIDEO_TASK_STACK,
@@ -629,13 +953,6 @@ static void csi_video_source_stop(const video_source_t *source)
         }
     }
 }
-
-static const video_source_t s_csi_video_source = {
-    .name = "csi",
-    .start = csi_video_source_start,
-    .stop = csi_video_source_stop,
-    .ctx = NULL,
-};
 
 const video_source_t *csi_video_source_get(void)
 {

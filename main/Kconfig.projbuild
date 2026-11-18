@@ -155,6 +155,77 @@ menu "Quad IP-KVM Configuration"
             JPEG compression quality passed to esp_driver_jpeg (YUV420 subsampling).
             Reference default on ESP32-P4 rev v1.3 is 70 (docs/P2B_PLAN.md P2b-5).
 
+    config CSI_H264_ENABLE
+        bool "Enable HW H.264 low-bandwidth encoder mode in csi_video_source (P7)"
+        default n
+        depends on VIDEO_SOURCE_CSI
+        help
+            Adds H.264 Baseline encoding (PPA RGB888 -> O_UYY_E_VYY + esp_h264 HW encoder)
+            to csi_video_source so Frame Hub can switch to H.264 when VIDEO_CODEC_H264_ALLOWED=y
+            and all connected /video clients pass ?accept=h264 (docs/VIDEO_TRANSPORT.md 9).
+            Requires TC358743 RGB888 CSI output on ESP32-P4 rev v1.3; when n (default),
+            no H.264 code is linked and video_source_t behavior is identical to MJPEG-only.
+            TODO(hw-verify): 1080p headroom/churn and real-browser WebCodecs playback remain to be verified (720p60 verified; see docs/HW_VERIFY.md).
+
+    config CSI_H264_GOP
+        int "H.264 IDR keyframe interval (frames, 1-255)"
+        default 30
+        range 1 255
+        depends on CSI_H264_ENABLE
+        help
+            Number of frames between periodic IDR keyframes (esp_h264 gop is uint8_t, 1..255).
+            30 gives ~1.5 s at 720p (~20.5 fps) and ~3.3 s at 1080p (~9.1 fps), staying below
+            VIDEO_CODEC_KEY_WAIT_MS (5000 ms).
+            TODO(hw-verify): tune on live 720p/1080p HDMI workloads.
+
+    config CSI_H264_BITRATE_720P_KBPS
+        int "H.264 target bitrate at <=720p (kbps)"
+        default 1500
+        range 200 10000
+        depends on CSI_H264_ENABLE
+        help
+            Rate-control target bitrate in kbps for resolutions up to 1280x720.
+            TODO(hw-verify): tune for desktop/text clarity vs WAN bandwidth.
+
+    config CSI_H264_BITRATE_1080P_KBPS
+        int "H.264 target bitrate above 720p up to 1080p (kbps)"
+        default 2000
+        range 200 10000
+        depends on CSI_H264_ENABLE
+        help
+            Rate-control target bitrate in kbps for resolutions above 1280x720 up to 1920x1080.
+            2000 kbps keeps high-detail 1080p IDR below FRAME_HUB_MAX_FRAME_KB=768.
+            TODO(hw-verify): tune on live 1080p HDMI workloads.
+
+    config CSI_H264_QP_MIN
+        int "H.264 minimum quantization parameter (QP, 0-51)"
+        default 20
+        range 0 51
+        depends on CSI_H264_ENABLE
+        help
+            Minimum QP bound for rate control (smaller = higher quality, larger frames).
+            TODO(hw-verify)
+
+    config CSI_H264_QP_MAX
+        int "H.264 maximum quantization parameter (QP, 0-51)"
+        default 40
+        range CSI_H264_QP_MIN 51
+        depends on CSI_H264_ENABLE
+        help
+            Maximum QP bound for rate control (must be >= CSI_H264_QP_MIN).
+            TODO(hw-verify)
+
+    config CSI_H264_PREALLOC_BUFFERS
+        bool "Preallocate H.264 PSRAM YUV/output buffers at CSI task start"
+        default n
+        depends on CSI_H264_ENABLE
+        help
+            When y, registers PPA SRM and allocates max-mode PSRAM YUV (~3 MiB) and
+            output (~768 KiB) buffers once at CSI startup to avoid PSRAM fragmentation.
+            When n, allocates H.264 buffers on switch to H.264 and frees them on switch back to MJPEG.
+            720p60 HW check confirmed default n frees ~5.3 MiB PSRAM in MJPEG idle with no leak across 6 churn cycles (docs/HW_VERIFY.md).
+            TODO(hw-verify): verify 1080p churn headroom/fragmentation.
+
     config MIPI_PHY_POWER_ENABLE
         bool "Enable MIPI PHY power"
         default n

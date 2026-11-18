@@ -41,6 +41,9 @@
 #ifndef CONFIG_CSI_CAPTURE_ISP_BYPASS
 #define CONFIG_CSI_CAPTURE_ISP_BYPASS 1
 #endif
+#ifndef CONFIG_CSI_H264_PREALLOC_BUFFERS
+#define CONFIG_CSI_H264_PREALLOC_BUFFERS 0
+#endif
 
 #ifndef CONFIG_NET_ETH_INIT
 #define CONFIG_NET_ETH_INIT 0
@@ -404,6 +407,14 @@ void app_main(void)
                     .jpeg_quality = CONFIG_JPEG_ENCODE_QUALITY,
                     .hub_max_frame_bytes = (size_t)CONFIG_FRAME_HUB_MAX_FRAME_KB * 1024u,
                     .pixel_format = CONFIG_TC358743_CSI_FORMAT_UYVY ? TC358743_FORMAT_UYVY : TC358743_FORMAT_RGB888,
+#if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+                    .h264_gop = CONFIG_CSI_H264_GOP,
+                    .h264_bitrate_720p_bps = (uint32_t)CONFIG_CSI_H264_BITRATE_720P_KBPS * 1000u,
+                    .h264_bitrate_1080p_bps = (uint32_t)CONFIG_CSI_H264_BITRATE_1080P_KBPS * 1000u,
+                    .h264_qp_min = CONFIG_CSI_H264_QP_MIN,
+                    .h264_qp_max = CONFIG_CSI_H264_QP_MAX,
+                    .h264_prealloc_buffers = CONFIG_CSI_H264_PREALLOC_BUFFERS,
+#endif
                 };
                 csi_video_source_configure(tc_dev, &vs_cfg);
                 const video_source_t *vs = csi_video_source_get();
