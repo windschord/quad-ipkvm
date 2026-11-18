@@ -318,6 +318,25 @@ PHY は IP101GRI。B 章の GPIO 候補（ATX・パネル用）とは重複し�
   - ターゲット PC の Ubuntu デスクトップ（TC358743 経由 `1280x720 @ 30 fps`）にて、High-Speed（`rhport=1, speed=2`, 480 Mbps）列挙、`WS /ws` 経由の **キーボード入力**・**絶対ポインタ（通常モード）**・**相対ポインタ（「マウス(相対)切替」）** がすべて正常に動作することを確認（PR #131 の `ws_input_io_send` 非同期 WS ペイロードヒープコピー修正、および PR #132 の EMAC DMA `1536 B x 20` / lwIP `TCP_SND_BUF=32768`・`RTO=600 ms` 調整と併用し、30 秒間の激しいウィンドウ移動を含む約 61 秒・1,800 フレーム連続配信で送信タイムアウト・切断ゼロを確認）。
   - ターゲット PC を再起動して **BIOS セットアップ画面** に入り、**Boot Keyboard（Interface 0、`SubClass=1, Protocol=1`、EP `0x81`）によるキー操作が BIOS 画面で正常に動作することを確認**（ターゲット PC の BIOS がマウス非対応のテキスト BIOS のため、BIOS 上でのマウス操作は対象外）。
 
+## I. microSD と USB MSC（ISO の仮想メディア）— P8。設計は `docs/ISO_MOUNT_DESIGN.md`
+
+ISO をアップロードして microSD に保存し、USB の仮想 CD-ROM としてターゲット PC に見せる機能の前提。**電気的な数値は、確認するまで確定しない**。オーナーの決定（2026-11-18）: Linux と Windows の ISO、4 GiB 超、32GB の microSD を **FAT32 に再フォーマット**（PC で行う）。
+
+| # | 確認項目 | 方法 | 結果 |
+|---|---|---|---|
+| I1 | **microSD の結線**（ピンと電源） | 回路図 `docs/ESP32-P4-ETH-schematic.pdf` 1 ページ「MicroSD Card」を画像にして目視 | **[目視、2026-11-18、Claude]** D0=GPIO39、D1=GPIO40、D2=GPIO41、D3(CD)=GPIO42、CLK=GPIO43、CMD=GPIO44（4 ビット）。**D0〜D3 と CMD の 5 本**を 51kΩ で `ESP_LDO_VO4` にプルアップ（R8〜R12）。**CLK にはプルアップがない**。カードの VDD は `ESP_3V3` から PMOS（Q1、SI2301CDS）経由で、ゲートは GPIO45（R22 10kΩ で GND にプルダウン。R17 は NC）: **GPIO45 が Low または未設定で電源 ON、High で OFF**。カード検出（CD2）は 51kΩ でプルアップされているだけで、**GPIO に接続されていない**。計画（`PLAN.md` 4.4）の GPIO 割り当てと重ならない（B1 の確認と同じ P1 ヘッダの候補ピンに、39〜45 はない） |
+| I2 | **`ESP_LDO_VO4` の電圧**（SD の IO のプルアップの電源。IO のレベル）と、IDF で LDO のチャンネル 4 を有効化する設定。**カードの電源 OFF（GPIO45 = High）のとき、VO4 のプルアップ（51kΩ）から、カードへ逆給電するか**（電源の入れ直しで、カードが確実にリセットされるか） | IDF のソース（`sd_pwr_ctrl`）と、実機でのテスターの測定（SD のプルアップの電源） | **[未確認]** `TODO(hw-verify)`（カードの VDD は 3.3V。IO のレベルを合わせる。**推測で確定しない**） |
+| I3 | **microSD の 4 ビットのモードの速度**（40 MHz の高速モードが使えるか）と、FAT32 の読み書きの実効速度 | 実機（SDMMC スロット 0）、`sdmmc_*` と FatFs の測定 | **[未確認]**（A-13） |
+| I4 | **FAT32 のカードで、通常の追記（`f_write`）で作ったパーツを、読み取りモードで開き、`CLMT`（`CONFIG_FATFS_USE_FASTSEEK=y`）によるエクステントの取得が動くこと**。断片化したとき（`FR_NOT_ENOUGH_CORE`、`ISO_MAX_EXTENTS` 超過 = `too_fragmented`）の挙動。1 GiB のパーツの CLMT の作成時間（`iso_worker` の予算の見積もり） | 実機。大きなファイルを書いて、エクステントの一覧を取る | **[未確認]**（A-13） |
+| I5 | **SD の I/O の直列化**: FatFs の diskio と、MSC の直接読み出しを、同じロックで直列化できること。アップロードと MSC の読み出しが同時に動く | 実機（自前の diskio のラッパー） | **[未確認]**（A-13、A-15） |
+| I6 | **MSC の実装の手段**: 標準の TinyUSB の MSC は、INQUIRY（種別 0 で固定）、MODE SENSE(6)（ヘッダーだけ）、READ FORMAT CAPACITY の形、READ のエラーのセンス（3Ah に上書き）、READ(12) が別経路なので使えない（`ISO_MOUNT_DESIGN.md` §1、§5.1）。**手段 1: アプリのクラスドライバ（`usbd_app_driver_get_cb`）で BOT を自前で実装 / 手段 2: `msc_device.c` にパッチ**。esp_tinyusb 2.4.0 が持つ TinyUSB の版、esp_tinyusb の MSC を無効にして、HID と共存できるか | ソースの確認（`espressif/esp_tinyusb`、`espressif/tinyusb`） | **[未確認]**（A-14 の最初の調査。結果を `ISO_MOUNT_DESIGN.md` §5.1 に反映） |
+| I7 | **USB OTG HS のエンドポイント数と FIFO の割り当て**に、MSC のバルク IN/OUT を足せること（FIFO は合計 4096 バイト。HID ×3 の IN + MSC の IN/OUT で足りるか） | TinyUSB の `dwc2_esp32.h`（16 本、IN は 8 本。HID ×3 + MSC で足りる）と、実機での列挙 | **[ソース確認]** TinyUSB 0.18.0 の `dwc2_esp32.h`（2026-11-18）。実機の列挙は **[未確認]** |
+| I8 | **HID + 仮想 CD-ROM の複合デバイスを、ターゲットの BIOS / UEFI が認識すること**。**Linux の ISO と Windows の ISO の、CD としての起動**（El Torito）。ターゲット OS（Linux、Windows）での、CD-ROM としての認識と読み出し | 実機（ターゲット PC。オーナーの物理作業を含む） | **[未確認]**（A-14） |
+| I9 | **READ TOC / GET CONFIGURATION のプロファイル**（DVD-ROM）が、Windows、Linux、UEFI で問題ないこと | 実機 | **[未確認]**（A-14） |
+| I10 | **アップロード中の入力（`/ws`）と HID の遅延（平均と最悪値）**（`esp_http_server` が 1 スレッドで、チャンク 128 KiB の処理中は他の要求が待つ）と、アップロードの実効速度（Ethernet 100 Mbps、TLS、SD の書き込み）。`DELETE`、`finalizing`（`iso_worker`）の最中の入力の遅延。`PUT` の拒否時の `Connection: close` が効くこと。**アップロードとターゲットの読み出しを同時にしたときの HID の遅延**（`iso_msc_task`）。**ワーカーの稼働中（`DELETE`、`finalizing`、`INDEX`）の `PUT` の遅延と、httpd が `iso_op_mutex` を待った時間・`503 busy` の頻度。`rescan` の 1 回の所要時間（httpd を止める時間）** | 実機。アップロードしながら、キーボードとマウスの入力の遅延を測る | **[未確認]**（A-15）。許容できなければ、アップロード専用のサーバーに移す |
+| I11 | **電源断・SD の抜き取りのとき**、アップロードが `incomplete` として復帰し、再開できること。壊れた `meta` を `invalid` として扱うこと。**`import` の `rename` の途中の電源断（クロスリンクの検出）、`DELETE` の途中の電源断（`deleting` の再開）** | 実機（書き込み中に電源を切る。カードを抜く） | **[未確認]**（A-13、A-15） |
+| I12 | **ターゲットが取り外しを防止している間の Web の取り外し・差し替え**（`locked_by_target`）、ターゲットの START STOP UNIT による取り外し | 実機（Linux の `eject`、BIOS / OS のドアロック） | **[未確認]**（A-14） |
+
 ## Z. WS /video タスク未確認一覧
 測定条件（2026-10-28）: ESP-IDF v6.0.1、`29c4173` に D10 の検証用パッチ（ワーカーの `add_security_headers` の削除）と、`ws_video` タスクが 5 秒ごとにヒープ/スタックを出すログ（どちらもコミットしていない）を当てたビルド、`CONFIG_NET_ETH_INIT=y`、テストパターン（`CONFIG_TEST_PATTERN_FPS=10`、JPEG 約 6.9KB）。クライアントは PC の Python（`websockets`、同一 LAN、Ethernet 100M のボード）。ブラウザでの確認は含まない。
 

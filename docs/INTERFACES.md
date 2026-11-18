@@ -101,8 +101,11 @@ struct video_source_t { ...既存（name, start, stop, ctx）...;
 | `TC358743_*`、`MIPI_PHY_*`、`CSI_*`（`CSI_H264_*` を含む）、`VIDEO_SOURCE_*`、`JPEG_*` | **HDMI 担当** | `TC358743_RESET_GPIO`、`MIPI_PHY_POWER_ENABLE`、`CSI_*` |
 | `KVM_BOARD_*` | **Antigravity（A-9）** | `KVM_BOARD_ENABLE`、`KVM_BOARD_GPIO_*`、`KVM_BOARD_HARD_MAX_*` |
 | `WEB_SERVER_*`、`NET_ETH_*`、`OLED_*`、`KVM_*`（`KVM_BOARD_*` を除く）、`ATX_*`、`HID_*`、`FRAME_HUB_*`、`VIDEO_CODEC_*` | **Claude** | `WEB_SERVER_WS_MAX_CLIENTS`、`NET_ETH_INIT`、`VIDEO_CODEC_H264_ALLOWED` |
+| `SD_*`、`USB_MSC_*`、`USB_DEVICE_*` | **実機担当（Antigravity）** | `SD_FREQ_KHZ`、`USB_MSC_ENABLE`、`USB_DEVICE_VBUS_SENSE_GPIO` |
+| `ISO_*` | **Claude**（ISO の仮想メディアの API とロジック。`docs/ISO_MOUNT_DESIGN.md`） | `ISO_ENABLE`、`ISO_UPLOAD_CHUNK_KB` |
 
 - 他の担当の接頭辞の項目は、**変更しない**（必要なときは、その担当に依頼する）。**例外**: Issue に「この Issue に限り変更してよい」と、範囲を明記したものだけ（例: #69 は、実機を共有しているため、Antigravity が `ws_video_core`、`web_server.c` の WS 送信まわり、`WEB_SERVER_*` の Kconfig を変更してよい。PR は Claude がレビューする）。
+- **接頭辞が重なるときは、長い方を優先する**（例: `KVM_BOARD_*` は実機担当、それ以外の `KVM_*` は Claude）。
 - `FRAME_HUB_*` は Claude 担当だが、映像の大きさに依存するので、HDMI 担当が値の変更を提案してよい（上の 1.2）。
 - 無効な Kconfig の bool は未定義になる。`main.c` で `if (CONFIG_X)` を使うときは、`#ifndef CONFIG_X / #define CONFIG_X 0 / #endif` を足す（既存の書き方に合わせる）。
 
@@ -264,3 +267,49 @@ typedef struct {
 - **`kvm_service_start(const kvm_board_hal_t *hal)`（`components/kvm_service/include/kvm_service.h`）の呼び出し元は A-9**（実機の HAL ができたら `main/main.c` から呼ぶ）。C-5b の時点では呼ばれないので、`web_server` の KVM / ATX の API は 503 `not_ready` を返す。HAL の `ctx` は起動後もずっと有効であること。パルス長・間隔・余裕・tick 周期は Kconfig（`ATX_*`、`KVM_*`）で、値はすべて `TODO(hw-verify)`。
 - **`video_sync` は実装不要**（C-6a）。`kvm_service_start` は、渡された HAL を内部にコピーして、`video_sync` だけを `video_status_get()` の `state` を返す関数（`video_status_hal_sync`）に置き換えてから `kvm_ctrl_init` に渡す。映像の状態は、映像ソースが `video_status_set_provider()` で登録する（1.3）。**`kvm_service_start` は、映像ソースの登録（`main.c` の映像ソースのブロック）より後に呼ぶ**（登録は読み手のタスクの起動前に 1 回だけ、という規則のため）。
 - それまで、ホストでは**モック HAL**（`test/host/kvm_board/`）で検証する。モックは、上の「ボード側の義務」の 2 と 4 も再現し、`kvm_ctrl` が不変条件に反した順序で呼ばないことをテストで固定する。
+
+## 7. ISO の仮想メディア: 純 C（Claude）→ SD・USB・HTTP の結合（Antigravity）
+
+設計の全体は `docs/ISO_MOUNT_DESIGN.md`、HTTP の API は `docs/WEB_API.md` §8。**純 C の部品は IDF のヘッダーに依存せず、I/O・時刻・乱数・SHA-256 は、`components/iso_seams/include/iso_seams.h`（宣言だけ。C-9 の成果物）の関数ポインタで注入する**。実機側（Antigravity）は、これらを実装して渡す。Kconfig の接頭辞は、純 C と API が `ISO_*`（Claude）、SD と USB が `SD_*`、`USB_MSC_*`（Antigravity）。
+
+### 7.1 層
+
+| 層 | 担当 | 内容 |
+|---|---|---|
+| `iso_api`、`iso_catalog`、`iso_upload`、`iso_media`、`iso_extent`、`mmc_scsi`、`msc_bot`（純 C） | Claude（C-10〜C-13） | 要求の検査、メタデータ、受信の状態機械、仮想ドライブの状態、CD のブロック → SD のセクタ、CD-ROM の SCSI コマンド（**全コマンド**）、BOT の状態機械 |
+| `iso_blockdev_t`、`iso_fs_t`、`iso_clock_t`、`iso_sha256_t`、`iso_random_t`、`iso_sd_status_t`（実装） | Antigravity（A-13。SHA-256 と乱数は A-15） | SD の直接読み出し、FAT32 のファイル操作、時刻、SHA-256（mbedTLS）、乱数、`sd.state` の供給（SD の監視） |
+| ワーカータスク（`iso_worker`）、ロック（`iso_op_mutex`、`iso_state_mutex`、`sd_io_lock`）、自前の diskio | Antigravity（A-13） | 長い処理の実行、排他（`ISO_MOUNT_DESIGN.md` §4） |
+| MSC クラスと `iso_msc_task`、`mmc_scsi` への結線 | Antigravity（A-14） | **自前の BOT（アプリのクラスドライバ）または、パッチした TinyUSB**。**USB のタスクで SD を読まない**。**受け取った全ての CDB を `mmc_scsi_execute` に渡す**。記述子 |
+| HTTP のハンドラー | Antigravity（A-15）+ Claude（C-12） | 受信 → バッファ → SD、`/api/v1/iso/*` の結線（ワイルドカードの URI 照合、`http_guard` の `PUT` / `DELETE`） |
+
+### 7.2 シーム（`iso_seams.h` が正）
+- **エラー**: `iso_err_t`（`ISO_ERR_NO_CARD`、`NO_SPACE`、`IO`、`NOT_FOUND`、`EXISTS`、`INVALID`、`TOO_FRAGMENTED`、`EPOCH`、`BUSY`、`NOMEM`、`UNSUPPORTED_FS`）。0 = 成功、負 = エラー。
+- **`iso_blockdev_t`**（SD の 512B セクタの直接読み出し）: `sector_count`、`epoch`（**原子的な値。持ち主はこの実装**）、`epoch_bump`（SD の再初期化と `force_eject` が呼ぶ。どのロックの中からも呼んでよい）、`read_sectors(ctx, epoch, lba, n, out)`。**ブロックする**。**`sd_io_lock` を内部で取り、取った後で `epoch` を比べ、違えば `ISO_ERR_EPOCH`**。**書き込み用の関数はない**（イメージは読み取り専用）。
+- **`iso_fs_t`**（FAT32）: `mount_info`（FAT32 か、クラスタの大きさ、全体と空き）、`mkdir`、`remove`、`rename`（宛先があると `ISO_ERR_EXISTS`。`import` だけ）、`stat`（`first_cluster` を含む）、`dir_open` / `dir_next` / `dir_close`、`open_for_write(append)`、`write`（順に追記だけ）、`sync`、`close`（失敗した `write` の後でも呼べる）、**`truncate(path, size)`**（`close` → 開き直し → `f_lseek` → `f_truncate`。ハンドル版はない）、**`overwrite(path, data, len)`**（作成、または先頭から上書きして同期。`meta.a/b` 用）、`open_for_read`、`read`、**`get_extents`**（読み取りモード、`CONFIG_FATFS_USE_FASTSEEK=y`、`cltbl` の確保と解放は関数の中）。**パスは、ボリュームのルートからの絶対パス（`/iso/<id>/p000`）。最大 `ISO_PATH_MAX`（288。`/iso/import/` + 255 バイトの名前に足りる。切り詰めない）**。
+- **`iso_clock_t`**（`now_ms`。単調増加）、**`iso_random_t`**（`next`）、**`iso_sha256_t`**（`state_size` と `init` / `update` / `final`。状態は呼び出し側が確保）、**`iso_sd_status_t`**（`sd.state`）。
+
+### 7.3 MSC（USB）、`mmc_scsi`、`msc_bot`
+- **標準の TinyUSB の MSC は、契約を満たさない**（INQUIRY は種別 0 で固定、MODE SENSE(6) はヘッダーだけ、READ のエラーのセンスが「メディアなし」に上書き、READ(12) が別経路。`ISO_MOUNT_DESIGN.md` §5.1）。**MSC の層は、手段によらず、受け取った全ての CDB（最大 16 バイト）を `mmc_scsi_execute` に渡し、その結果（データ、センス、ステータス）を、そのまま返す**。手段は A-14 の調査で決める（手段 1 = アプリのクラスドライバで BOT を自前で実装、手段 2 = `msc_device.c` へのパッチ）。
+- **`mmc_scsi_execute(ctx, cdb, cdb_len, dir, expected_len, out, out_cap, result)`**: `dir` と `expected_len` は、CBW の方向と `dCBWDataTransferLength`。`result` は `{status（GOOD / CHECK CONDITION）、sense{key, asc, ascq}、data_len、read{is_read, lba, blocks}}`。**READ(10)/READ(12) のときは、`data_len` は 0 で、`read` に範囲が入る**。**`msc_bot`（C-13）は、READ の転送長として `read.blocks × 2048` を `expected_len` と比べ、`data_len` を転送長の判定に使わない**（C-13 のテストに「READ(10)、`blocks = 1`、`expected_len = 2048`、`data_len = 0` が、データ IN として完了する」を含める）。**OUT のデータを受け取るコマンド（WRITE、MODE SELECT）は、データを受け取らず、失敗にする**。
+- **`mmc_scsi_read_blocks(ctx, lba, blocks, buf, cap)`**: MSC の転送の大きさごとに呼ぶ（先読みしない）。**`read_sectors` に渡す `epoch` は、コマンドの開始時の値ではなく、エクステントの表が作られたとき（`INDEX`）に記録した、カードの `epoch`**（ISO_MOUNT_DESIGN.md §4.1）。**ゼロ埋め（`size_bytes` 以降）はここで行う**。I/O のエラーは **MEDIUM ERROR（03h/11h/00h）**、`ISO_ERR_EPOCH` も同じ。
+- **`mmc_scsi_command_done(ctx)`**: **コマンドの終わり（正常、STALL、リセット、切断のどれでも）に、必ず 1 回呼ぶ**。`execute` が取った、エクステントの表への参照を放す（**参照を放すのは、これだけ**。冪等）。
+- **`msc_bot`（C-13、純 C）**: BOT の状態機械（CBW の検証、13 のケース、データ IN / OUT / なし、STALL、CSW、リセット回復）。USB のハードウェアの転送（`xfer`）は、関数ポインタで注入する。手段 2 のときは、CBW/CSW の部分は TinyUSB が持ち、`msc_bot` は、13 のケースの判定と `command_done` の保証に使う。
+- **`msc_bot` のスレッドモデル**: **`msc_bot` の状態は、USB のタスクだけが触る**。`iso_msc_task` は、実行と読み出しだけを担い、完了をキューで返す。Reset が実行中に来たら、中止の印を立て、完了を待ってから `command_done`（`ISO_MOUNT_DESIGN.md` §5.1）。手段 2（パッチ）では、非 READ(10) の非同期化に拡張が要る。
+- **`iso_msc_task`（A-14）**: **`mmc_scsi_execute` と `mmc_scsi_read_blocks` は、USB のタスク（`tud_task`。HID も処理する）ではなく、MSC 専用のタスクが呼ぶ**。USB のタスクは、CBW を渡し、ダブルバッファで転送を発行する（ブロックしない）。
+- **ブロック長は 2048**。バッファの大きさは、2048 の倍数にする（A-14）。**LUN は 1 つ**。`USB_MSC_ENABLE` が無効なら、記述子に MSC を入れない（今の構成のまま）。**MSC のインターフェース番号は 3**（HID の後）。
+- **メディアの状態は `iso_media` が持つ**（`mmc_scsi` から参照する）。Web の `mount` / `eject` は、`iso_media` に対する操作で、次のコマンドの応答と、GET EVENT STATUS NOTIFICATION に反映される。**USB のバスリセット・切断では、グルーが `iso_media_bus_reset()` を呼ぶ**（`prevent_removal` の解除と、進行中のコマンドへの中止の印。**参照は放さない**。`command_done` は、BOT 層が、`iso_msc_task` の完了を待ってから呼ぶ）。**SD の再初期化（抜き取り、I/O エラー）では、SD の監視タスク（ロックを持たない文脈）が `iso_media_force_eject()` を呼ぶ**（`prevent_removal` を無視して `EMPTY` にし、`epoch` を進める）。**`force_eject()` と `bus_reset()` を、`sd_io_lock` を持つ文脈（diskio の中）から呼ばない**。
+- INQUIRY の応答の全体（種別 5 のバイトを含む）は、`mmc_scsi` が作る。
+
+### 7.4 HTTP（`iso_api`）
+- **`iso_api_put_precheck(ctx, hdr)`**: `PUT` の、本体を読む前の判定（`WEB_API.md` §8 の判定の順序の 3〜12。空き容量のキャッシュ値の 507 を含む）。結果は「受理して本体を読む」か「エラーの応答（ステータスとコード）」。**エラーのときは、グルーは本体を読まずに応答して、`Connection: close` を付ける**（A-15 が最初に、これが実際にソケットを閉じることを確認する）。受理したら、グルーは、**チャンクの全体を、`ISO_PUT_RECV_TIMEOUT_S` 以内にバッファに受信してから**、`iso_upload` の書き込みを呼ぶ。
+- **ワイルドカードの URI 照合**（`/api/v1/iso/*`）、`max_uri_handlers` の増加、`http_guard` に `PUT` / `DELETE` と `application/octet-stream` を許可すること（既存は `GET` / `POST` と JSON だけ）、ハンドラーのスタックの実測（A-15）。**定義していないメソッドは 405**。
+
+### 7.5 ワーカーとロック（`ISO_MOUNT_DESIGN.md` §4）
+- **純 C の部品は、スレッドセーフではない**。**関数ごとに、グルーが取るロックは、`ISO_MOUNT_DESIGN.md` §4.1 の対応表**。**`iso_core.h`（ジョブの型、`iso_job_step`、`iso_upload_tick`、ビュー更新のコールバック、`iso_media_force_eject` / `bus_reset` のプロトタイプ）は、C-10 が出す**。`iso_worker` の実装は、その後（A-13 の後半）。
+- **ロックの階層**: `iso_op_mutex`（変更する操作の全体。I/O を含む）→ `iso_state_mutex`（公開ビュー。短く、I/O なし）。FatFs の volume mutex → `sd_io_lock`（シームの中が取る。呼び出し側は取らない）。**MSC と `GET` は、`iso_state_mutex` だけを取る**。
+- **ワーカー**: 1 つのタスク、`ISO_WORKER_QUEUE`（既定 8）の FIFO と、**`INDEX` が必要なイメージの集合**（キューに積まない）。ジョブは `FINISH` / `INDEX` / `DELETE` / `IDLE_CLOSE`（同じイメージには 1 つ。優先順位は `DELETE`（割り込み、中止の印）、`FINISH`、`IDLE_CLOSE`、`INDEX`。あふれたら `ISO_ERR_BUSY` → API は `503 busy`）。**ステップ関数**（純 C。ブロックせず、スレッドを作らない）: `iso_job_step(ctx, job, budget_bytes)` が `CONTINUE` / `DONE` / `ERROR(iso_err_t)` を返す。`budget_bytes` の既定は `ISO_WORKER_BUDGET_KIB`（1024 KiB）。**中止の印は、ステップの先頭で見る**。アイドルのタイムアウトは、ワーカーが 1 秒ごとに `iso_upload_tick(ctx, now_ms)` を呼んで判定し、`IDLE_CLOSE` を投入する。
+
+### 7.6 Antigravity への依頼
+- **A-13**（SD）、**A-14**（USB MSC。**最初に MSC の実装の手段を調査し、結果を `ISO_MOUNT_DESIGN.md` §5.1 に反映**）、**A-15**（HTTP）。範囲と完了条件は `ISO_MOUNT_DESIGN.md` §8、未確認の項目は同 §10 と `HW_VERIFY.md` I 章。**A-13 は、`iso_seams.h` の合意（この PR のマージ）の後に始める**。
+- **共有ファイル**（`main/main.c`、`main/Kconfig.projbuild`、`main/CMakeLists.txt`、`test/host/CMakeLists.txt`）は、自分の接頭辞の差分だけを小さく（§3）。
+- 実機の確認（BIOS / UEFI での CD の起動、Windows の ISO）は、オーナーの物理作業を含む。Antigravity がまとめて具体的に依頼する（Issue #71 の運用ルール 1）。
