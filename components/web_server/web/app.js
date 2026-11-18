@@ -12,7 +12,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const loginPassword = document.getElementById('login-password');
     const btnLogout = document.getElementById('btn-logout');
 
+    const elAuthCard = document.getElementById('auth-card');
     const elVideo = document.getElementById('video');
+    const elVideoWrap = document.getElementById('video-wrap');
+    const btnViewFit = document.getElementById('btn-view-fit');
+    const btnViewWidth = document.getElementById('btn-view-width');
+    const btnViewActual = document.getElementById('btn-view-actual');
+    const btnFullscreen = document.getElementById('btn-fullscreen');
+    const btnFullscreenExit = document.getElementById('btn-fullscreen-exit');
     const elVideoStatus = document.getElementById('video-status');
     const btnInputToggle = document.getElementById('btn-input-toggle');
     const btnPointerLock = document.getElementById('btn-pointer-lock');
@@ -50,6 +57,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.exitPointerLock();
             }
         }
+        syncKeyboardLock();
     }
 
     btnInputToggle.addEventListener('click', () => {
@@ -438,6 +446,196 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    // The size of the video box (the view modes). Pure functions, checked on the host by tools/test/check_video_viewer.js.
+    // mode: 'fit' = the largest box with the aspect of the picture that fits in avail (it enlarges too), 'width' = the
+    // width of avail and the height from the aspect (the page scrolls when it is taller), 'actual' = one picture
+    // pixel is one CSS pixel. avail and video are { w, h }. The result is { w, h } in whole CSS pixels: the sides are
+    // rounded down (so a fit box is never larger than avail) and are at least 1. null when a side of avail or video is
+    // not a finite number >= 1, or the mode is unknown.
+    const VideoLayout = {
+        MODES: ['fit', 'width', 'actual'],
+        // A saved value is used only when it is exactly one of the modes; anything else is the default, 'fit'.
+        normalizeMode(value) {
+            for (let i = 0; i < this.MODES.length; i++) {
+                if (value === this.MODES[i]) return value;
+            }
+            return 'fit';
+        },
+        validSize(v) {
+            return v !== null && typeof v === 'object' && Number.isFinite(v.w) && Number.isFinite(v.h) && v.w >= 1 && v.h >= 1;
+        },
+        fitSize(mode, avail, video) {
+            if (!this.validSize(avail) || !this.validSize(video)) return null;
+            const aw = Math.floor(avail.w);
+            const ah = Math.floor(avail.h);
+            const vw = Math.floor(video.w);
+            const vh = Math.floor(video.h);
+            if (mode === 'actual') return { w: vw, h: vh };
+            if (mode === 'width') return { w: aw, h: Math.max(1, Math.floor(aw * vh / vw)) };
+            if (mode === 'fit') {
+                // Limited by the width when avail is not wider than the picture in proportion (aw / ah <= vw / vh).
+                if (aw * vh <= ah * vw) return { w: aw, h: Math.max(1, Math.floor(aw * vh / vw)) };
+                return { w: Math.max(1, Math.floor(ah * vw / vh)), h: ah };
+            }
+            return null;
+        }
+    };
+
+    // ---- View modes and full screen ----
+    // The canvas box is set here (CSSOM, never by CSS) to the exact size VideoLayout.fitSize gives: the mouse position
+    // is computed from this box (getMousePos), so the box must be the picture itself, with no stretching or black bars.
+    const VIEW_MODE_KEY = 'quadkvm.viewMode';
+    const viewModeButtons = [['fit', btnViewFit], ['width', btnViewWidth], ['actual', btnViewActual]];
+
+    // Storage can be missing or throw (private window, blocked site data): the page works without it.
+    function loadViewMode() {
+        try {
+            return VideoLayout.normalizeMode(localStorage.getItem(VIEW_MODE_KEY));
+        } catch (err) {
+            return 'fit';
+        }
+    }
+
+    function saveViewMode(mode) {
+        try {
+            localStorage.setItem(VIEW_MODE_KEY, mode);
+        } catch (err) {
+            // the mode is just not kept
+        }
+    }
+
+    let viewMode = loadViewMode();
+    let laidOutW = 0; // the picture size the box was last set for
+    let laidOutH = 0;
+
+    function isFullscreen() {
+        return document.fullscreenElement === elVideoWrap;
+    }
+
+    // The border of the canvas is outside the size that is set (content box): it is taken off the area.
+    function borderSize(whole, inner) {
+        const b = whole - inner;
+        return Number.isFinite(b) && b > 0 ? b : 0;
+    }
+
+    function updateVideoLayout() {
+        const picture = { w: elVideo.width, h: elVideo.height };
+        const avail = {
+            w: elVideoWrap.clientWidth - borderSize(elVideo.offsetWidth, elVideo.clientWidth),
+            h: elVideoWrap.clientHeight - borderSize(elVideo.offsetHeight, elVideo.clientHeight)
+        };
+        // Full screen: the wrap is the whole window, and the picture is always fitted into it.
+        const size = VideoLayout.fitSize(isFullscreen() ? 'fit' : viewMode, avail, picture);
+        if (size === null) return; // no resolution yet, or the dashboard is not shown: nothing to set
+        elVideo.style.width = size.w + 'px';
+        elVideo.style.height = size.h + 'px';
+        laidOutW = picture.w;
+        laidOutH = picture.h;
+    }
+
+    // Called after the canvas resolution may have changed (every JPEG frame, every H.264 frame).
+    function noteVideoSize() {
+        if (elVideo.width !== laidOutW || elVideo.height !== laidOutH) updateVideoLayout();
+    }
+
+    function updateViewModeUI() {
+        for (let i = 0; i < viewModeButtons.length; i++) {
+            const mode = viewModeButtons[i][0];
+            viewModeButtons[i][1].setAttribute('aria-pressed', mode === viewMode ? 'true' : 'false');
+            viewDashboard.classList.remove('mode-' + mode);
+        }
+        viewDashboard.classList.add('mode-' + viewMode);
+    }
+
+    function setViewMode(mode) {
+        viewMode = VideoLayout.normalizeMode(mode);
+        saveViewMode(viewMode);
+        updateViewModeUI();
+        updateVideoLayout();
+    }
+
+    viewModeButtons.forEach((entry) => {
+        entry[1].addEventListener('click', () => setViewMode(entry[0]));
+    });
+
+    function swallowRejection(p) {
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+    }
+
+    // Chromium only: Escape is sent to the target (not used to leave full screen) while input is on in full screen
+    // and this connection is the controller (inputGranted): nothing is sent to the target before that, so locking
+    // Escape would only take the key away from the browser. Optional: any failure is ignored.
+    let keyboardLocked = false;
+    function syncKeyboardLock() {
+        const want = isFullscreen() && inputEnabled && inputGranted;
+        if (want === keyboardLocked) return;
+        keyboardLocked = want;
+        try {
+            const kb = typeof navigator !== 'undefined' ? navigator.keyboard : undefined;
+            if (!kb) return;
+            if (want) {
+                if (typeof kb.lock === 'function') swallowRejection(kb.lock(['Escape']));
+            } else if (typeof kb.unlock === 'function') {
+                kb.unlock();
+            }
+        } catch (err) {
+            // not available here
+        }
+    }
+
+    function fullscreenSupported() {
+        return !!document.fullscreenEnabled && typeof elVideoWrap.requestFullscreen === 'function';
+    }
+
+    function toggleFullscreen() {
+        try {
+            if (isFullscreen()) swallowRejection(document.exitFullscreen());
+            else swallowRejection(elVideoWrap.requestFullscreen());
+        } catch (err) {
+            // refused: the page stays as it is
+        }
+    }
+
+    // The bar and the text under the video are hidden in full screen (the wrap is the only thing shown).
+    function updateFullscreenUI() {
+        // A request that finished after the dashboard was hidden (logout, session end): do not stay in full screen
+        // over the login view.
+        if (isFullscreen() && viewDashboard.classList.contains('view-hidden')) {
+            try {
+                swallowRejection(document.exitFullscreen());
+            } catch (err) {
+                // already out
+            }
+        }
+        const on = isFullscreen();
+        btnFullscreen.textContent = on ? '全画面を終了' : '全画面';
+        if (on) viewDashboard.classList.add('is-fullscreen');
+        else viewDashboard.classList.remove('is-fullscreen');
+        syncKeyboardLock();
+        updateVideoLayout();
+    }
+
+    btnFullscreen.addEventListener('click', toggleFullscreen);
+    // The bar is hidden in full screen: this button (shown by CSS only while .is-fullscreen is set) is the way out
+    // for a device without an Escape key.
+    btnFullscreenExit.addEventListener('click', () => {
+        if (isFullscreen()) toggleFullscreen();
+    });
+    document.addEventListener('fullscreenchange', updateFullscreenUI);
+    window.addEventListener('resize', updateVideoLayout);
+    if (typeof ResizeObserver === 'function') {
+        try {
+            new ResizeObserver(updateVideoLayout).observe(elVideoWrap);
+        } catch (err) {
+            // the resize event is enough
+        }
+    }
+    if (!fullscreenSupported()) {
+        btnFullscreen.disabled = true;
+        btnFullscreen.title = 'このブラウザでは全画面を使えません';
+    }
+    updateViewModeUI();
+
     // H.264 over /video (docs/VIDEO_TRANSPORT.md 9.2, 9.3): one binary message = one Annex B access unit. Pure
     // functions on a Uint8Array, checked on the host by tools/test/check_video_viewer.js.
     const H264 = {
@@ -652,6 +850,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const h = frame.displayHeight || frame.codedHeight;
             if (elVideo.width !== w) elVideo.width = w;
             if (elVideo.height !== h) elVideo.height = h;
+            noteVideoSize();
             ctx.drawImage(frame, 0, 0);
             setH264Shown(true);
         } catch (err) {
@@ -796,6 +995,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const bmp = await createImageBitmap(frameData);
                 elVideo.width = bmp.width;
                 elVideo.height = bmp.height;
+                noteVideoSize();
                 ctx.drawImage(bmp, 0, 0);
                 bmp.close();
             } catch (err) {
@@ -839,6 +1039,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const type = data[0];
             if (type === 0x80) {
                 inputGranted = true;
+                syncKeyboardLock();
                 elInputStatus.textContent = '入力: 有効';
             } else if (type === 0x81) {
                 if (data.length >= 2) {
@@ -851,6 +1052,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 // Do not reconnect if denied
                 inputGranted = false;
+                syncKeyboardLock();
                 wsInput.onclose = null;
                 wsInput.close();
                 wsInput = null;
@@ -865,6 +1067,7 @@ document.addEventListener('DOMContentLoaded', () => {
         wsInput.onclose = () => {
             wsInput = null;
             inputGranted = false;
+            syncKeyboardLock();
             elInputStatus.textContent = '入力: 未接続';
             elUsbStatus.textContent = 'ターゲット: 未接続';
             wsInputReconnectTimer = setTimeout(() => {
@@ -903,6 +1106,7 @@ document.addEventListener('DOMContentLoaded', () => {
             wsInput = null;
         }
         inputGranted = false;
+        syncKeyboardLock();
         elInputStatus.textContent = '入力: 未接続';
         elUsbStatus.textContent = 'ターゲット: 未接続';
     }
@@ -1029,6 +1233,21 @@ document.addEventListener('DOMContentLoaded', () => {
         viewLogin.classList.add('view-hidden');
         viewDashboard.classList.add('view-hidden');
         view.classList.remove('view-hidden');
+        if (view === viewDashboard) {
+            // The dashboard has the whole window; the card (title and forms) is only for the setup and the login.
+            elAuthCard.classList.add('view-hidden');
+            updateVideoLayout();
+        } else {
+            elAuthCard.classList.remove('view-hidden');
+            if (isFullscreen()) {
+                // e.g. the session ended while the video was full screen
+                try {
+                    swallowRejection(document.exitFullscreen());
+                } catch (err) {
+                    // already out
+                }
+            }
+        }
     }
 
     async function fetchStatus() {
