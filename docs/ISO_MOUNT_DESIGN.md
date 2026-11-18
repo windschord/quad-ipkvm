@@ -2,7 +2,7 @@
 
 ブラウザから ISO をアップロードして microSD に保存し、ターゲット PC に **USB の仮想 CD-ROM** として見せる機能。**この文書が契約**（API は `docs/WEB_API.md` §8、境界は `docs/INTERFACES.md` §7）。担当: 設計・純 C・API・ビューア = Claude、SD・USB・実機 = Antigravity。
 
-> **版**: v3。v2 の独立レビュー（blocker 1、major 14）を反映した（ロックの階層、MSC の I/O タスク、`truncate` の定義、2 スロットの規則、状態遷移表、ワーカーのジョブ、スナップショットと `epoch`、`msc_bot` など）。初版（PR #135）の独立レビューで、`meta` のレイアウトの重なり、`rename` の原子性の誤り、TinyUSB の標準の MSC が契約を満たさないこと、判定の順序と表の食い違い、長い同期処理が httpd を止めること、などが見つかり、**全面的に直した**（この版）。
+> **版**: v4（v3 の独立レビュー: blocker 0、major 8 を反映。httpd のロック待ち、参照の解放の主体、`epoch` の持ち主、`rescan` の `remaining`、パス長、`msc_bot` のスレッドモデル、ワーカーのキュー、ロックと関数の対応表）。v3。v2 の独立レビュー（blocker 1、major 14）を反映した（ロックの階層、MSC の I/O タスク、`truncate` の定義、2 スロットの規則、状態遷移表、ワーカーのジョブ、スナップショットと `epoch`、`msc_bot` など）。初版（PR #135）の独立レビューで、`meta` のレイアウトの重なり、`rename` の原子性の誤り、TinyUSB の標準の MSC が契約を満たさないこと、判定の順序と表の食い違い、長い同期処理が httpd を止めること、などが見つかり、**全面的に直した**（この版）。
 
 ## 0. オーナーの決定（2026-11-18）と、この文書での扱い
 
@@ -78,7 +78,7 @@
 - **パーツの大きさは 1 GiB（1,073,741,824 バイト = 524,288 個の CD ブロック）**。最後のパーツだけ、残りの大きさ。FAT32 の 1 ファイルの上限（4 GiB − 1 バイト）に余裕がある。イメージの最大は、パーツ 16 個 = **16 GiB**（`ISO_MAX_PARTS`。READ CAPACITY(10) の 32 ビットに収まる）。
 - **2 つの大きさを区別する**: **`size_bytes`**（アップロードで宣言した実バイト数。`meta` の @8）と、**`capacity_blocks` = ⌈`size_bytes` / 2048⌉**（CD として見せるブロック数。READ CAPACITY が返す）。`size_bytes` が 2048 の倍数でないとき、**`size_bytes` 以降のバイトは 0 を返す**。**このゼロ埋めは `mmc_scsi_read_blocks` が、バイト単位で行う**（`iso_extent` は、セクタ単位の区間だけを返す。ファイルの最後のセクタの、EOF より後ろのバイトは、0 とは限らない）。
 - **`f_expand` は使わない**。アップロードは、パーツを先頭から順に、**通常の `f_write` で追記**する。**1 つのチャンクは、全体をバッファに受信してから、書く**（接続が途中で切れたとき、何も書かない）。**チャンクがパーツの境界をまたぐときは、書き込みを分割する**（最初のパーツの残りまで書き、次のパーツを作って続きを書く）。
-- **書き込みの失敗の取り消し（`truncate`）**: FatFs の `f_truncate` は、**`fp->err` が立っている（直前の `f_write` が失敗した）ハンドルでは、即エラーを返す**（`ff.c`）。また、現在の読み書き位置が EOF 未満のときだけ切る。→ **`iso_fs_t.truncate(path, size)` は、「ハンドルを `close`（`f_sync` はエラーを見ない）→ 開き直す → `f_lseek(size)` → `f_truncate`」と定義する**。ハンドル版は作らない。`size` は、**そのチャンクを書く前の、メモリ上のファイルの大きさ**（純 C が持つ）。失敗した書き込みで FAT が進んでいても、これで戻る。**`truncate` 自体が失敗したら、アップロードは `incomplete` になり、`received` は再起動後と同じく、実ファイルの大きさから決める**（§3.4）。
+- **書き込みの失敗の取り消し（`truncate`）**: FatFs の `f_truncate` は、**`fp->err` が立っている（直前の `f_write` が失敗した）ハンドルでは、即エラーを返す**（`ff.c`）。また、現在の読み書き位置が EOF 未満のときだけ切る。→ **`iso_fs_t.truncate(path, size)` は、「ハンドルを `close`（`f_sync` はエラーを見ない。`close` が失敗しても、ハンドルは解放する）→ `stat` で実ファイルの大きさを見る（`size` より小さければ `ISO_ERR_INVALID`。`f_lseek` が、書き込みモードで、ファイルを伸ばしてしまうため）→ 開き直す → `f_lseek(size)` → `f_truncate`」と定義する**。ハンドル版は作らない。`size` は、**そのチャンクを書く前の、メモリ上のファイルの大きさ**（純 C が持つ）。**書き込みの失敗の仕方によっては、ディレクトリ上の大きさが元のままで、連鎖だけが伸びていることがある**（このとき `f_truncate` は何もしない）。**孤児の末尾クラスタが残りうるが、次の追記が既存の次クラスタを再利用し、読み出しは `iso_extent` が大きさでクリップするので、無害**。**`truncate` 自体が失敗したら、アップロードは `incomplete` になり、`received` は再起動後と同じく、実ファイルの大きさから決める**（§3.4）。
 - **`f_sync` は、`ISO_SYNC_KIB`（既定 4096 = 4 MiB）ごと、パーツの終わり、アイドルのタイムアウト、`finish`、中止のとき**に行う。**同期したときの、パーツのファイルの大きさが、`received` の正**（§3.4）。
 - **`begin` で空き容量（`size` + 予備 `ISO_FREE_RESERVE_MIB` = 64 MiB）を検査する**（足りなければ 507）。再開した最初の `PUT` でも、**残りの大きさ + 予備**を検査する（中断中に、別のイメージが空きを使ったとき）。書き込み中に FatFs が「空きなし」を返したときも、取り消して `incomplete` にし、**507** を返す。
 - **連続は必須ではない**: 読み出しは、`CLMT`（クラスタのリンクマップ）から作る**エクステントの一覧**で行う。**エクステントの数が `ISO_MAX_EXTENTS`（既定 4096。イメージ全体）を超える**ときは、そのイメージを **`invalid`（理由 `too_fragmented`）**にする（最終処理で検査する。§3.4）。**`too_fragmented` にするのは、`f_lseek(CREATE_LINKMAP)` の `FR_NOT_ENOUGH_CORE` と、数の超過だけ**（`f_open` が LFN バッファの確保に失敗して返す `FR_NOT_ENOUGH_CORE` は別。再試行する）。エクステントの一覧は **PSRAM** に置く。**`iso_extent` は、一覧を、ファイルのセクタ数（`⌈ファイルの大きさ / 512⌉`）でクリップする**（FatFs の連鎖は、クラッシュ後の孤児の末尾クラスタまで列挙しうる）。
@@ -123,12 +123,12 @@
 
 ### 3.3 PC から直接コピーする（`import`）
 `/iso/import/` に、PC で **4 GiB 弱までの ISO ファイル**（`*.iso`。拡張子は大文字小文字を区別しない）をコピーすると、`POST /api/v1/iso/rescan`（と起動時）で、イメージとして取り込める。**日本語などのファイル名を読むため、`CONFIG_FATFS_API_ENCODING_UTF_8`（`FF_LFN_UNICODE=2`）が必要**（A-13。既定の OEM（CP437）では、日本語名のファイルは `skipped` になる）。
-- **取り込みは `rename` で `/iso/<id>/p000` に移す**（コピーしない。ディレクトリを作ってから移すので、宛先は存在しない）。名前はファイル名（拡張子を除く）。**名前の規則に合わない、または同名がある、または `ISO_MAX_IMAGES` に達している**ファイルは、取り込まず `skipped` に数える（ファイルは `import/` に残す）。
-- **`rename` の途中で電源が落ちると、同じクラスタの連鎖を、`import/foo.iso` と `<id>/p000` の 2 つのエントリが指す**（FatFs の `f_rename` は、新エントリの登録 → 旧エントリの削除の 2 段階。`ff.c` のコメントにもある）。**起動時と `rescan` で、`import/` のファイルの先頭クラスタ（`iso_fs_t.stat` の `first_cluster`）が、既存の `<id>/p000` と同じなら、そのファイルは取り込まず、警告をログに出す**（`skipped` に数える）。**このファイルを `f_unlink` してはならない**（連鎖を解放してしまい、`<id>/p000` が壊れる）。PC で `chkdsk` などを使って直す（`HW_VERIFY` I11）。
+- **取り込みは `rename` で `/iso/<id>/p000` に移す**（コピーしない。ディレクトリを作ってから移すので、宛先は存在しない）。名前はファイル名（拡張子を除く）。**名前の規則に合わない（63 バイトを超える、FatFs が名前を返せない（255 バイト超）を含む）、同名がある、`ISO_MAX_IMAGES` に達している、サイズが 34,816 バイト未満、セクタ 16 に署名（`CD001` / `BEA01`）がない**ファイルは、取り込まず `skipped` に数える（ファイルは `import/` に残す。`invalid` のイメージは作らない）。
+- **`rename` の途中で電源が落ちると、同じクラスタの連鎖を、`import/foo.iso` と `<id>/p000` の 2 つのエントリが指す**（FatFs の `f_rename` は、新エントリの登録 → 旧エントリの削除の 2 段階。`ff.c` のコメントにもある）。**起動時と `rescan` で、`import/` のファイルの先頭クラスタ（`iso_fs_t.stat` の `first_cluster`）が、既存の `<id>/p000` と同じなら、そのファイルは取り込まず、警告をログに出す**（`skipped` に数える）。**このファイルを `f_unlink` してはならない**。**同じ理由で、`DELETE`（`<id>/p000` の削除）の前にも、`import/` に同じ先頭クラスタのファイルがないか確かめ、あれば `409 crosslinked` で拒否する**（`p000` を消すと、`import/` 側が、解放済みのクラスタを指して、次の `rescan` で取り込まれてしまう）（連鎖を解放してしまい、`<id>/p000` が壊れる）。PC で `chkdsk` などを使って直す（`HW_VERIFY` I11）。
 - **SHA-256 は計算しない**（フラグ 0、`sha256: null`）。**`not_iso` の検査（セクタ 16 の署名）だけ行い、`ready` にする**。エクステントの作成は、通常の `ready` と同じく、ワーカーが行う（§4.2。それまで `finalizing`）。
-- **`rescan` は、1 回の呼び出しで最大 `ISO_RESCAN_BATCH`（既定 4）個のファイルまで処理し、残りは `remaining` で返す**（1 つのファイルで、`mkdir`、`meta` の作成と `f_sync`、`rename` があり、数百 ms〜数秒かかる。単一スレッドの httpd を長く止めない。§4.2）。ビューアは、`remaining` が 0 になるまで繰り返す。**書き込み途中のファイルを取り込む危険**を避けるため、`rescan` は、ユーザーの操作（と起動時）でだけ行う。
+- **`rescan` は、1 回の呼び出しで、`rename` を伴う取り込みを最大 `ISO_RESCAN_BATCH`（既定 4）個まで処理する**（1 つのファイルで、`mkdir`、`meta` の作成と `f_sync`、`rename` があり、数百 ms〜数秒かかる。単一スレッドの httpd を長く止めない。§4.2）。**取り込まない（`skipped`）ファイルは、予算に数えない**（名前の検査と `stat` だけで安い）。**`remaining` は、まだ取り込んでいない候補の数**（`skipped` は含まない）。ビューアは、`remaining` が 0 になるか、`imported` が 0 になるまで繰り返す。**書き込み途中のファイルを取り込む危険**を避けるため、`rescan` は、ユーザーの操作（と起動時）でだけ行う。
 - **4 GiB を超える ISO は、FAT32 のファイルとして置けないので、ブラウザのアップロード（パーツに分割される）を使う**。
-- **起動時のスキャン**（`iso_catalog` の仕事）: `/iso/` の直下の各ディレクトリを調べる。名前が `<id>` の形式でないものは無視する。**`ISO_MAX_IMAGES` を超える分は、一覧に出さない**（カードの空きは使う。`GET` の `hidden_images` に数を出す）。
+- **起動時のスキャン**（`iso_catalog` の仕事）: `/iso/` の直下の各ディレクトリを調べる。名前が `<id>` の形式でないものは無視する。**`ISO_MAX_IMAGES` を超える分は、一覧に出さない**（カードの空きは使う。`GET` の `hidden_images` に数を出す。**見える順はディレクトリの順。見えているイメージを `DELETE` すると、次のスキャン（`DELETE` の完了時に行う）で、隠れていたものが見えるようになる**）。
 
 ### 3.4 状態、遷移、`received`
 
@@ -142,8 +142,10 @@
 | `uploading` | 再起動 | `incomplete` | `received` は、同期済みのパーツのファイルの大きさ |
 | `uploading` / `incomplete` | `finish`（`received == size_bytes`） | `finalizing`（`FINISH` ジョブ） | `meta` の状態は、`ready` になるまで変えない |
 | `uploading` / `incomplete` | `finish`（`received < size_bytes`） | 変化なし | 409 `size_mismatch` |
+| `incomplete` | `finish`（`received == size_bytes`、別のイメージが枠を使っている） | 変化なし | 409 `upload_in_progress` |
+| `invalid` | `finish` | 変化なし | 422（`invalid_reason`） |
 | `incomplete` | `PUT`（枠が空いている） | `uploading` | 再開 |
-| `finalizing`（`FINISH`） | 検査に成功 | `ready` | パーツを同期して閉じ、`meta` を `ready` で書く（SHA-256 のフラグ 1 または 2） |
+| `finalizing`（`FINISH`） | 検査に成功 | `ready` | パーツを同期して閉じ、`meta` を `ready` で書く（SHA-256 のフラグは 0（import）または 2。宣言値（1）は、検証の後に 2 に変わる） |
 | `finalizing`（`FINISH`） | 検査に失敗（`checksum_mismatch`、`not_iso`、`too_fragmented`、`part_mismatch`） | `invalid` | 理由を `meta` に保存 |
 | `finalizing`（`FINISH`） | SD の I/O エラー | `incomplete` | `received` は、実ファイルの大きさから決める。再試行は `finish` |
 | `finalizing`（`FINISH`） | 再起動 | `incomplete` | `received == size_bytes` なので、**ビューアが、一覧を見て自動で `finish` を送る**（§C-12） |
@@ -155,14 +157,14 @@
 | `deleting` | 完了 | （一覧から消える） | 手順は下 |
 | `deleting` | 再起動 | `deleting` を続ける | `meta` の状態が 4 のものは、起動時にジョブを作り直す |
 
-- **削除の手順**（`DELETE` ジョブ。**順序が重要**）: (1) `meta` を状態 `deleting`（4）で書いて同期（**これで、途中で電源が落ちても、パーツが欠けた `ready` が残らない**）。(2) ディレクトリ内の、`p*` のファイルを 1 つずつ `f_unlink`。(3) `meta.a`、`meta.b` を `f_unlink`。(4) `rmdir`。**ディレクトリのファイルは、`meta` の内容に頼らず、一覧から消す**（`meta_corrupt` のものも、同じ手順で消える。(1) は、有効なスロットがあるときだけ）。
+- **削除の手順**（`DELETE` ジョブ。**順序が重要**）: (1) `meta` を状態 `deleting`（4）で書いて同期（**これで、途中で電源が落ちても、パーツが欠けた `ready` が残らない**）。(2) ディレクトリ内の、`p*` のファイルを 1 つずつ `f_unlink`。(3) `meta.a`、`meta.b` を `f_unlink`（**採用していない（古い）スロットを先に、`deleting` を書いた方を最後に消す**。途中で電源が落ちても、古い `ready` が単独で採用されない）。(4) `rmdir`。**ディレクトリのファイルは、`meta` の内容に頼らず、一覧から消す**（`meta_corrupt` のものも、同じ手順で消える。(1) は、有効なスロットがあるときだけ）。
 - **`received`（受信済みのバイト数）の正は、同期済みのパーツのファイルの大きさの合計**（先頭から順に数え、パーツの大きさに満たないパーツで止める）。メモリ上の値は、その時点の同期前の分を含むが、**再起動すると、同期済みの分に戻る**。クライアントは、`offset_mismatch` の `received`、または `GET` の `received` から続ける。
 - **SHA-256 の逐次の状態は、メモリ上にだけある**。**再起動、SD のエラーによる巻き戻し（`truncate`）で失われる**。失われたときは、`FINISH` ジョブが、SD を読み直して計算する。アイドルのタイムアウトでは、状態を保つ（失わない）。**宣言値（フラグ 1）は、`meta` に保存されているので、再起動しても残る**。
 - **アップロードの枠**: **`uploading` のイメージと、`FINISH` ジョブ中の `finalizing` のイメージが使う**。`INDEX` ジョブ（起動時など）は使わない（その間も、`begin` は受け付ける）。
 - **マウントできるのは、エクステントの表が公開された `ready` だけ**（`INDEX` の間は 409 `image_not_ready`）。
 - **マウント中のイメージは、削除も、変更もできない**（409 `mounted`）。
 - **`ready` になるのは、全パーツを `f_sync` と `f_close` した後**。
-- **SD の再初期化の手順**（抜き取り、I/O エラーからの復帰。**起動時と同じ流れ**）: ① `iso_media_force_eject()`（カードの世代 `epoch` を進め、進行中の READ を失敗させる。§4.1）→ ② ワーカーのジョブを全て取り消す → ③ 開いているファイルハンドルを全て捨てる → ④ アップロードを `incomplete` にして、SHA-256 の状態を捨てる → ⑤ `f_mount` → ⑥ カタログを、起動時のスキャンで作り直す → ⑦ `ready` のイメージごとに `INDEX` ジョブ。**自動ではマウントしない**。
+- **SD の再初期化の手順**（抜き取り、I/O エラーからの復帰。**起動時と同じ流れ**。**①（`iso_state_mutex` のみ）の後、`iso_op_mutex` を取って ②〜⑦ を行う**）: ① `iso_media_force_eject()`（カードの世代 `epoch` を進め、進行中の READ を失敗させる。§4.1）→ ② ワーカーのジョブを全て取り消す → ③ 開いているファイルハンドルを全て捨てる → ④ アップロードを `incomplete` にして、SHA-256 の状態を捨てる → ⑤ `f_mount` → ⑥ カタログを、起動時のスキャンで作り直す → ⑦ `ready` のイメージごとに `INDEX` ジョブ。**自動ではマウントしない**。
 
 ## 4. 排他、ワーカー、性能
 
@@ -170,18 +172,26 @@
 
 | 順（外 → 内） | ロック | 守るもの | 保持の規則 |
 |---|---|---|---|
-| 1 | `iso_op_mutex` | **変更する操作の全体**: カタログの更新、アップロードの書き込み、ワーカーのステップ、`mount` / `eject` / `DELETE` の状態更新。**I/O を含めて直列化する** | httpd のハンドラー（`begin` / `PUT` / `finish` / `DELETE` / `rescan` / `mount` / `eject`）と、ワーカーが取る。**MSC と `GET` は取らない**。ワーカーは、**ステップごとに放す**（`DELETE` や `mount` が割り込める） |
-| 2 | `iso_state_mutex` | **公開ビュー**: メディアの状態（`iso_media`）、カタログの要約のコピー（`GET` 用）、エクステントの表への参照、`sd.state`、`epoch`、キャッシュした `free_bytes` | **短い区間だけ**（メモリの読み書きだけ。**I/O、ネットワーク、`sd_io_lock`、FatFs を呼ばない**）。純 C は、操作の最後に、ビューを更新する（グルーが渡すコールバックで公開）。**MSC と `GET` は、このロックだけ取る** |
+| 1 | `iso_op_mutex` | **変更する操作の全体**: カタログの更新、アップロードの書き込み、ワーカーのステップ、`mount` / `eject` / `DELETE` の状態更新。**I/O を含めて直列化する** | httpd のハンドラー（`begin` / `PUT` / `finish` / `DELETE` / `rescan` / `mount` / `eject`）と、ワーカーが取る。**httpd のハンドラーは、`ISO_OP_LOCK_WAIT_MS`（既定 20 ms）以内に取れなければ、待たずに `503 {"error":"busy"}` + `Retry-After: 1` を返す**（単一スレッドの httpd を、ワーカーの長いステップで止めない。`/ws` の入力が止まる）。**MSC と `GET` は取らない**。ワーカーは、**ステップごとに放す**（`DELETE` や `mount` が割り込める） |
+| 2 | `iso_state_mutex` | **公開ビュー**: メディアの状態（`iso_media`）、カタログの要約のコピー（`GET` 用）、エクステントの表への参照、`sd.state`、キャッシュした `free_bytes` | **短い区間だけ**（メモリの読み書きだけ。**I/O、ネットワーク、`sd_io_lock`、FatFs を呼ばない**）。純 C は、操作の最後に、ビューを更新する（グルーが渡すコールバックで公開）。**MSC と `GET` は、このロックだけ取る**。**`epoch` は、このロックの対象ではない**（下の「`epoch`」） |
 | 3 | FatFs の volume mutex | FatFs の 1 回の API 呼び出しの全体 | `iso_op_mutex` を持つ側だけが、FatFs を呼ぶ |
 | 4 | `sd_io_lock` | SD への 1 回のアクセス（diskio の 1 回の読み書き、または `read_sectors` の 1 回） | **シームの中が、自分で取る**。**呼び出し側（純 C、ワーカー、MSC）は、決して取らない**（取ると、自己デッドロックと、FatFs との ABBA が起きる） |
 
 - **順序**: 1 → 2 は、取ってよい（2 は短い）。1 → 3 → 4 も、取ってよい。**2 を持ったまま、1・3・4 を取らない**。**MSC は、2 を取って放してから、4（`read_sectors`）を取る**（1 は取らない）。
 - **MSC と `GET` は、変更する操作が I/O 中でも、止まらない**（ビューは、操作の途中の値ではなく、最後に公開された値を返す）。
 - **`iso_media_force_eject()`、`iso_media_bus_reset()` は、2 だけを取る**。**`sd_io_lock` を持つ文脈（diskio の中）から呼ばない**。diskio は、エラーを**戻り値で上げ**、ロックを持たない文脈（SD の監視タスク）が、`force_eject()` を呼ぶ。
-- **READ の経路と、スナップショットの寿命**: `mmc_scsi_execute` は、READ(10)/(12) のとき、`iso_state_mutex` の下で**エクステントの表への参照（参照カウント）と、その時点の `epoch`** を取り、**`mmc_scsi_command_done(ctx)` が、参照を放す**（**BOT 層は、正常終了、STALL、リセット、切断のどの場合も、必ず呼ぶ**。`iso_media_bus_reset()` と `force_eject()` も、保持中の参照を放す）。
+- **READ の経路と、スナップショットの寿命**: `mmc_scsi_execute` は、READ(10)/(12) のとき、`iso_state_mutex` の下で**エクステントの表への参照（参照カウント）と、その時点の `epoch`** を取り、**参照を放すのは `mmc_scsi_command_done(ctx)` だけ**（**BOT 層は、正常終了、STALL、リセット、切断のどの場合も、必ず 1 回だけ呼ぶ。取り消し済みでも冪等**）。**`iso_media_bus_reset()` と `force_eject()` は、参照を放さない**（`epoch` を進め、進行中のコマンドに中止の印を立てるだけ）。表の実体は、参照が 0 になった時点で解放する（遅延解放）。コマンドは、**参照を持っている間だけ**表を読む（`iso_extent` の引き直しも、その間）ので、表が解放済みになることはない。
   - **Web の `eject`**: 参照を落とすだけで、進行中の READ の完了を待たない。**進行中のコマンドは、取得済みのスナップショットで完了してよい**。次の**コマンド**からは、NOT READY（メディアなし）。
-  - **`DELETE` のジョブは、エクステントの表の参照が、カタログの分だけになるまで待つ**（`eject` の直後でも、進行中の READ が、解放されたクラスタを読まない）。
-  - **`epoch`**: SD の再初期化・`force_eject` で、**`epoch` を進める**。**`iso_blockdev_t.read_sectors` は、`epoch` を受け取り、`sd_io_lock` の下で、現在の値と比べて、違えば `ISO_ERR_EPOCH` で失敗する**（別のカードの任意のセクタを、ISO の続きとして返さない。§5.5）。
+  - **`DELETE` のジョブは、エクステントの表の参照が、カタログの分だけになるまで待つ**（`eject` の直後でも、進行中の READ が、解放されたクラスタを読まない）。**待ちには上限を付ける**（`ISO_DELETE_REF_WAIT_S`、既定 30 秒）。ホストが IN を読まなくなっても、BOT のタイムアウトとリセットが `command_done` を呼ぶ。上限を超えたら、ジョブは `ERROR(ISO_ERR_BUSY)` で、`deleting` のまま、次の機会（SD の再初期化、起動時、再度の `DELETE`）に続ける。
+  - **`epoch`（M6）**: **原子的な `uint32_t`。持ち主は `iso_blockdev_t` の実装（A-13）**。`iso_blockdev_t.epoch_bump(ctx)` で進め（**SD の再初期化と `force_eject` が呼ぶ**。`iso_state_mutex` の下から呼んでよい）、**`read_sectors` は、`sd_io_lock` の下で、ロックなしに（原子的に）読んで**、引数の `epoch` と違えば `ISO_ERR_EPOCH` で失敗する（別のカードの任意のセクタを、ISO の続きとして返さない。§5.5）。**`iso_state_mutex` は、`sd_io_lock` の中から取らない**（階層のため）。
+- **関数とロックの対応**（グルーが、純 C の関数を、次のロックで包んで呼ぶ。**純 C の部品は、スレッドセーフではない**）:
+  | 呼ぶ関数 | 呼ぶ側が取るロック |
+  |---|---|
+  | `iso_api_*`（`put_precheck` を除く）、`iso_catalog_*`、`iso_upload_*`、ジョブのステップ、`iso_upload_tick` | `iso_op_mutex`（純 C は、ビューの更新を、渡されたコールバックで行う。コールバックの中が `iso_state_mutex` を取る） |
+  | `iso_api_put_precheck`、`GET` の組み立て | `iso_state_mutex`（ビューだけを読む） |
+  | `iso_media_*`（`mount`、`eject`、`force_eject`、`bus_reset`、`prevent_removal` など）、`mmc_scsi_execute`、`mmc_scsi_command_done` | `iso_state_mutex`（短い） |
+  | `mmc_scsi_read_blocks`、`iso_extent` の変換 | なし（参照を保持している間。`read_sectors` が `sd_io_lock` を取る） |
+  | `iso_fs_t` / `iso_blockdev_t` の各関数 | 呼び出し側は取らない（FatFs の volume mutex と `sd_io_lock` は、中が取る）。`iso_fs_t` は、`iso_op_mutex` を持つ側だけが呼ぶ |
 - **FatFs の volume mutex は、1 回の API 呼び出しの全体で保持される**（`ff.c` の `validate` から `LEAVE_FF` まで）。**FatFs 経由の呼び出し（`f_lseek(CREATE_LINKMAP)`、`f_unlink`、`f_write`、`mkdir` など）は、互いに待たされる**。例: 1 GiB のパーツの `CLMT` の作成（数百 ms）と `f_unlink`（数百 ms〜秒）の間、`PUT` の `f_write` は待つ。**止められないのは、MSC の直接読み出し（`sd_io_lock` だけ）だけ**。→ ワーカーは、**パーツごと・ファイルごとにステップを分け、ステップの間に `iso_op_mutex` を放す**。それでも 1 ステップの時間は短くならない。**`HW_VERIFY` I10 で、ワーカーの稼働中の `PUT` の遅延を測る**。
 
 ### 4.2 ワーカータスク（A-13）と、HTTP の長さの制限
@@ -198,13 +208,14 @@
 | チャンクの `PUT`（受信 + `f_write`） | 128 KiB で数十 ms | 同期（httpd のスレッド） |
 
 - **ジョブの契約**:
-  - **ワーカーは 1 つのタスク、ジョブのキューは長さ `ISO_WORKER_QUEUE`（既定 8）の FIFO**。種類は `FINISH(id)`、`INDEX(id)`、`DELETE(id)`、`IDLE_CLOSE(id)`。**同じイメージには、同時に 1 つのジョブだけ**（重複する投入は、すでに動いているジョブに合流する。`DELETE` だけは、先頭に割り込ませ、動いているジョブに中止の印を立てる）。
+  - **ワーカーは 1 つのタスク**。ジョブは、**キュー**（長さ `ISO_WORKER_QUEUE`（既定 8）の FIFO）と、**`INDEX` が必要なイメージの集合**（キューに積まない。ワーカーが空いたときに 1 つずつ選ぶ）。種類は `FINISH(id)`、`INDEX(id)`、`DELETE(id)`、`IDLE_CLOSE(id)`。**優先順位: `DELETE`（先頭に割り込む。動いているジョブに中止の印を立てる）、`FINISH`、`IDLE_CLOSE`、`INDEX`**（利用者が待つ操作を、数分かかる `INDEX` の後ろに並べない）。**キューがあふれたら、投入は `ISO_ERR_BUSY`**（API は `503 busy`）。**同じイメージには、同時に 1 つのジョブだけ**（重複する投入は、すでに動いているジョブに合流する）。
   - **ステップ関数は、1 回に `ISO_WORKER_BUDGET_KIB`（既定 1024 KiB）以内の仕事を進め**、`CONTINUE`（続きがある）/ `DONE` / `ERROR(iso_err_t)` を返す。**中止の印は、ステップの先頭で見る**。**`ERROR` のとき**: `FINISH` は `incomplete`（§3.4）、`INDEX` は SD の I/O エラーなら表なしのまま、`DELETE` は、ログを出して、次の SD の再初期化か、起動時に続ける。
   - ステップ関数は、ステップごとに `iso_op_mutex` を取り、**シームが `sd_io_lock` を自分で取る**（§4.1）。
+- **ステップの時間**: ステップ関数は、イベント待ちで長く待たない（I/O の待ちは除く）。**1 ステップの上限は、FatFs の 1 回の呼び出し（`CLMT` の作成、`f_unlink` など）の時間**で、数百 ms〜秒になりうる。その間、httpd は `iso_op_mutex` の try-lock が失敗して `503 busy` を返す（§4.1）。`HW_VERIFY` I10 で、**httpd が `iso_op_mutex` を待った時間と、`busy` の頻度**を測る。
 - **アップロードを受信しながら、ターゲットがマウント中の別のイメージを読む**ことがある。`sd_io_lock` で直列化されるので、どちらも遅くなる（ターゲットの読み出しが遅くなっても、壊れない）。
 - 1 つの CD ブロック（2048 バイト）= SD の 4 セクタ（512 バイト）。**クラスタが 2048 バイト以上（§3）なので、1 つの CD ブロックはクラスタの境界をまたがない**。
 - 読み出しは、`iso_extent` が「連続した SD のセクタの区間（スパン）」の一覧を返し、グルーが区間ごとに `read_sectors` を呼ぶ。1 回の MSC の転送の単位で、先読みはしない。**性能の目標は `TODO(hw-verify)`**（Linux の ISO のブートに足りる速度）。
-- **`GET /api/v1/iso` は、公開ビュー（RAM）から返す**（SD を読まない。`iso_op_mutex` も取らない）。`free_bytes` はキャッシュする。**更新するのは、マウント時と、ワーカー（`finish`、`DELETE` の完了）だけ**（FSInfo が無効なとき、FatFs は FAT 全体を数える。32GB のカードで数秒かかりうる）。**httpd のハンドラーからは更新しない**。
+- **`GET /api/v1/iso` は、公開ビュー（RAM）から返す**（SD を読まない。`iso_op_mutex` も取らない）。`free_bytes` はキャッシュする。**更新するのは、マウント時と、ワーカー（`finish`、`DELETE` の完了）だけ**（FSInfo が無効なとき、FatFs は FAT 全体を数える。32GB のカードで数秒かかりうる）。**httpd のハンドラーからは更新しない**。**`begin` の空き検査は、キャッシュ値から、途中のイメージ（`uploading` と `incomplete`）の「`size_bytes` − `received`」の合計を引いた値で行う**（途中のイメージが、後から空きを使うため）。
 - **diskio のラッパー（A-13）は、`disk_read` / `disk_write` だけでなく、`CTRL_SYNC`、`GET_SECTOR_COUNT`、`GET_SECTOR_SIZE`、`GET_BLOCK_SIZE`、`CTRL_TRIM`（`FF_USE_TRIM`）なども正しく処理する**。
 
 ## 5. USB: 仮想 CD-ROM
@@ -225,6 +236,10 @@
 | × | 標準の MSC + コールバックだけ | — | **採用しない**: INQUIRY が種別 0 のまま、MODE SENSE のページが返せず、READ のエラーのセンスが上書きされる |
 
 **MSC の読み出しを、USB のタスクで行わない（重要）**: `tud_task` は 1 つのタスクで、**HID の IN（キーボードとマウス）も同じタスクで処理する**。そこで `sd_io_lock` を待つ、または SD を読むと、アップロードの書き込みやカードの内部処理（数百 ms）の間、**キーボードとマウスが止まる**（本機の主機能）。→ **MSC 専用の I/O タスク（`iso_msc_task`）を置く**: USB のタスクは、CBW を受け取って `iso_msc_task` に渡し、**`mmc_scsi_execute` と `mmc_scsi_read_blocks`（ブロックする）は `iso_msc_task` が呼ぶ**。データは、2 つのバッファの交互（ダブルバッファ）で、USB のタスクが転送を発行する（**USB のタスクは、ブロックしない**）。**`HW_VERIFY` I10 で、アップロードとターゲットの読み出しを同時にしたときの、HID の遅延を測る**。
+
+**`msc_bot` のスレッドモデル**: **`msc_bot` の状態は、USB のタスクだけが触る**。`iso_msc_task` は「`mmc_scsi_execute` + `mmc_scsi_read_blocks`（ブロックする）」だけを担い、**完了を、キューで USB のタスクへ返す**。**BOT の Reset、`CLEAR_FEATURE(HALT)`、切断が、`iso_msc_task` の実行中に来たとき**: USB のタスクは、中止の印を立て、**`iso_msc_task` の完了イベントを待ってから**、`mmc_scsi_command_done` を呼ぶ（参照を放すのは、`command_done` だけ。§4.1）。C-13 のテストに「実行中の Reset」を含める。
+
+**手段 2 の制約**: TinyUSB の `tusb_msc.c` で、非 READ(10) の IN コマンドは、`tud_msc_scsi_cb` の**同期の戻り値**で長さが決まる（0 は「Hi > Dn」の失敗）。「0 = 未準備、再試行」は `tud_msc_read10_cb` だけにある（再試行は USB タスクを空回しする）。**したがって、手段 2 のままでは、`iso_msc_task` の非同期を READ(10) 以外で実現できない**（USB のタスクでブロックするか、`msc_device.c` を大きく改造する）。BOT の Reset のフックもない。**手段 2 を選ぶ場合は、この非同期化の拡張が要る**。
 
 **A-14 が調査すること**: (a) esp_tinyusb 2.4.0 が持つ TinyUSB の版。(b) `usbd_app_driver_get_cb` が使えるか、esp_tinyusb の複合デバイスの記述子・HID と共存できるか（esp_tinyusb の MSC を無効にできるか）。(c) 手段 1 と 2 の、実装量と保守の負担。(d) `iso_msc_task` の優先度と、スタックの大きさ。結果を、この表と §5.2 に反映する。
 
@@ -281,7 +296,7 @@ El Torito のブートは、ISO の中身（ブートカタログ）が持つ。
 - ブラウザは、ISO を `chunk_size` ごとに切り（`Blob.slice`）、**`PUT /api/v1/iso/<id>` を順に送る**（1 つの要求 = 1 つのチャンク）。要求のたびに `X-Upload-Offset`（その要求の先頭のバイト位置）を付ける。**サーバーは、`received` と一致するときだけ受け付ける**（不一致は 409 `offset_mismatch` と、現在の `received`）。再開は、`GET /api/v1/iso` の `received` から続ける。
 - **`chunk_size` は、`begin` の応答で、サーバーが決める**（既定 128 KiB。`ISO_UPLOAD_CHUNK_KB`、16〜1024）。**`esp_http_server` は 1 つのタスクで動く**ので、1 つの要求の処理中は、同じサーバーの `/ws`（入力）と API が止まる。**チャンクは、全体をバッファに受信してから書く**（§3.1。バッファの確保元と、DMA の可否は A-15 が決める）。チャンクを小さくして、1 つの要求を短く（128 KiB で数十 ms の見込み）する。映像は専用のサーバー（`video_port`）なので、影響を受けない。**アップロード中の入力の遅延は、平均だけでなく最悪値も、実機で測る**（`HW_VERIFY` I10）。許容できなければ、アップロード専用のサーバー（別のポート）に移す（API はそのままで、ホストだけが変わる）。
 - **`PUT` は、本体を読む前に、ヘッダーだけで判定する**（認証、Origin、`id`、状態、`X-Upload-Offset`、`Content-Length`、**空き容量（キャッシュ値。507）**。純 C の `iso_api_put_precheck`。`INTERFACES.md` 7.4）。**拒否するときは、本体を読まずに応答し、`Connection: close` を付ける**（残りの本体を、単一スレッドの httpd が読み捨てて止まるのを避ける）。
-- **1 つのチャンクの受信全体に期限を設ける**（`ISO_PUT_RECV_TIMEOUT_S`、既定 2 秒。ソケットの受信タイムアウトと合計の経過時間）。**超えたら、何も書かずに接続を閉じる**。帯域が細い経路（VPN など）で 128 KiB の受信が長引くと、その間 `/ws` の入力が止まるため。**クライアントは、`PUT` のネットワークエラーのとき、`GET /api/v1/iso` で `received` を取り直して続ける**（`Connection: close` で未読の本体を残して閉じると、TCP のリセットで、ブラウザが応答を読めず `TypeError` になりうる）。クライアントは、遅いときは、`chunk_size` より小さいチャンクを送ってよい（`Content-Length` は 1 以上 `chunk_size` 以下）。**専用サーバー（別のポート）へ移す条件**: `HW_VERIFY` I10 で、アップロード中の入力の遅延の最悪値が許容値（`TODO(hw-verify)`: オーナーが決める。目安 100 ms）を超えるとき。
+- **`iso_api_put_precheck`（ヘッダーだけ。ビューを読む）の後、本体を全部受信してから、`iso_op_mutex` を（try-lock で）取り、状態、`X-Upload-Offset`、`size` を、もう一度検査する**（受信の間に、ワーカーの `IDLE_CLOSE` や `DELETE` が状態を変えうる）。**1 つのチャンクの受信全体に期限を設ける**（`ISO_PUT_RECV_TIMEOUT_S`、既定 2 秒。ソケットの受信タイムアウトと合計の経過時間）。**超えたら、何も書かずに接続を閉じる**。帯域が細い経路（VPN など）で 128 KiB の受信が長引くと、その間 `/ws` の入力が止まるため。**クライアントは、`PUT` のネットワークエラーのとき、`GET /api/v1/iso` で `received` を取り直して続ける**（`Connection: close` で未読の本体を残して閉じると、TCP のリセットで、ブラウザが応答を読めず `TypeError` になりうる）。クライアントは、遅いときは、`chunk_size` より小さいチャンクを送ってよい（`Content-Length` は 1 以上 `chunk_size` 以下）。**専用サーバー（別のポート）へ移す条件**: `HW_VERIFY` I10 で、アップロード中の入力の遅延の最悪値が許容値（`TODO(hw-verify)`: オーナーが決める。目安 100 ms）を超えるとき。
 - **SHA-256 は、受信しながら順に計算する**（mbedTLS）。`finish` で、宣言値（あれば）と比べる。**状態が失われたとき**（§3.4）は、`finish` の最終処理が SD を読み直して計算する（ワーカー）。
 - **アップロードは、同時に 1 つだけ**（409 `upload_in_progress`）。**`finalizing` のイメージも、スロットを使っている扱い**（`begin` と `rescan` は 409）。アイドルが `ISO_UPLOAD_IDLE_S`（既定 300 秒）続くと、`incomplete` にする（ファイルを `f_sync`、`f_close` して、`meta` を書く。残す。SHA-256 の状態は保つ）。
 - **`DELETE` は、`uploading` のイメージを削除できる**（アップロードの中止）。ファイルを閉じ、SHA-256 の状態を捨て、スロットを空ける。クライアントの `PUT` のループは、次の `PUT` で 404 を受ける。
@@ -314,12 +329,12 @@ El Torito のブートは、ISO の中身（ブートカタログ）が持つ。
 | **C-10**（#139） | 純 C: `iso_extent`、`iso_catalog`（メタデータ 256 バイトの符号化、2 スロット、名前の規則、起動時のスキャン、import）、`iso_upload`（受信の状態機械、再開、SHA-256 の注入、タイムアウト、`iso_upload_hash_step`）。ホストテスト、ファズ、変異テスト | Claude | `iso_extent` は、すぐ始めてよい |
 | **C-11**（#140） | 純 C: `mmc_scsi`（§5.4。**全コマンド**）と `iso_media`（§5.5）。MMC / SPC の文書と照合。ホストテスト、ファズ、変異テスト | Claude | A-14 と並行 |
 | **C-12**（#141） | 純 C: `iso_api`（要求の検査、`iso_api_put_precheck`、判定の順序、状態遷移）と `web_server` の結線の一部、ビューアの画面（一覧、アップロードの進捗と再開、マウント、取り外し、削除） | Claude | C-10、C-11 の後 |
-| **A-13**（#137） | SD（**`CONFIG_FATFS_API_ENCODING_UTF_8`**、`epoch`、`iso_fs_t.truncate` の定義（§3.1）を含む）: SDMMC（スロット 0、GPIO39〜44、`ESP_LDO_VO4`、電源スイッチ GPIO45）、FAT32 のマウントと検査（§3）、**自前の diskio（`sd_io_lock`）**、`iso_blockdev_t` と `iso_fs_t` の実装（`truncate`、`get_extents`、`CONFIG_FATFS_USE_FASTSEEK=y`）、`iso_worker`（§4.2）。電圧・速度の実測 | Antigravity | |
+| **A-13**（#137） | SD（**`iso_worker` の実装は、C-10 が `iso_core.h`（ジョブの型、ステップ関数、`iso_upload_tick`、ビュー更新のコールバック、`iso_media_force_eject` / `bus_reset` のプロトタイプ）を出した後の、A-13 の後半**。**前半は SD、FatFs、diskio、`epoch`、ロック**。**`CONFIG_FATFS_API_ENCODING_UTF_8`**、`epoch`、`iso_fs_t.truncate` の定義（§3.1）を含む）: SDMMC（スロット 0、GPIO39〜44、`ESP_LDO_VO4`、電源スイッチ GPIO45）、FAT32 のマウントと検査（§3）、**自前の diskio（`sd_io_lock`）**、`iso_blockdev_t` と `iso_fs_t` の実装（`truncate`、`get_extents`、`CONFIG_FATFS_USE_FASTSEEK=y`）、`iso_worker`（§4.2）。電圧・速度の実測 | Antigravity | |
 | **A-14**（#136） | USB MSC: **最初に、§5.1 の調査（手段 1 か 2）**。**`iso_msc_task`（USB のタスクで SD を読まない）**。MSC の記述子（インターフェース 3）、`mmc_scsi` への結線（全コマンド）、`usb_hid_logic` のテストの更新。BIOS / UEFI での確認 | Antigravity | 調査の結果を、この文書 §5.1 に反映する |
 | **C-13**（#143） | 純 C: **`msc_bot`**（BOT の状態機械: CBW の検証、13 のケース、データ IN / OUT / なし、STALL、CSW、リセット、`mmc_scsi_command_done` の確実な呼び出し）。ホストテスト、ファズ、変異テスト | Claude | A-14 の手段 1 のときに使う（手段 2 のときは、一部だけ） |
 | **A-15**（#138） | HTTP: アップロードのハンドラー（受信 → バッファ → SD、mbedTLS の SHA-256、拒否時の `Connection: close`）、`/api/v1/iso*` の結線（**ワイルドカードの URI 照合、`max_uri_handlers`、`http_guard` に `PUT` / `DELETE` と `application/octet-stream`、ハンドラーのスタックの実測**）。入力の遅延と転送速度の実測 | Antigravity | C-12 と協調 |
 
-**Kconfig の接頭辞**: `ISO_*` = Claude（API とロジック）、`SD_*` と `USB_MSC_*` = Antigravity。**`ISO_ENABLE` は、`SD_ENABLE` と `USB_MSC_ENABLE` に依存する**（どちらかが無効なら、ISO の機能は無効で、パスは登録しない）。`ISO_*` の項目: `ISO_ENABLE`、`ISO_MAX_IMAGES`（16）、`ISO_MAX_PARTS`（16）、`ISO_MAX_EXTENTS`（4096）、`ISO_FREE_RESERVE_MIB`（64）、`ISO_UPLOAD_CHUNK_KB`（128）、`ISO_UPLOAD_IDLE_S`（300）、`ISO_SYNC_KIB`（4096）、`ISO_AUTOMOUNT_LAST`（n）、`ISO_RESCAN_BATCH`（4）、`ISO_WORKER_QUEUE`（8）、`ISO_WORKER_BUDGET_KIB`（1024）、`ISO_PUT_RECV_TIMEOUT_S`（2）。固定の定数: アップロードの `receiving` と `idle` の境（`ISO_UPLOAD_ACTIVE_S` = 5 秒）。SD の GPIO と LDO のチャンネルは、**回路図の固定の値**（Kconfig にしない。§1）。
+**Kconfig の接頭辞**: `ISO_*` = Claude（API とロジック）、`SD_*` と `USB_MSC_*` = Antigravity。**`ISO_ENABLE` は、`SD_ENABLE` と `USB_MSC_ENABLE` に依存する**（どちらかが無効なら、ISO の機能は無効で、パスは登録しない）。`ISO_*` の項目: `ISO_ENABLE`、`ISO_MAX_IMAGES`（16）、`ISO_MAX_PARTS`（16）、`ISO_MAX_EXTENTS`（4096）、`ISO_FREE_RESERVE_MIB`（64）、`ISO_UPLOAD_CHUNK_KB`（128）、`ISO_UPLOAD_IDLE_S`（300）、`ISO_SYNC_KIB`（4096）、`ISO_AUTOMOUNT_LAST`（n）、`ISO_RESCAN_BATCH`（4）、`ISO_WORKER_QUEUE`（8）、`ISO_WORKER_BUDGET_KIB`（1024）、`ISO_OP_LOCK_WAIT_MS`（20）、`ISO_DELETE_REF_WAIT_S`（30）、`ISO_PUT_RECV_TIMEOUT_S`（2）。固定の定数: アップロードの `receiving` と `idle` の境（`ISO_UPLOAD_ACTIVE_S` = 5 秒）。SD の GPIO と LDO のチャンネルは、**回路図の固定の値**（Kconfig にしない。§1）。
 
 ## 9. 状態の正と、各部品のテスト（純 C）
 
@@ -328,7 +343,7 @@ El Torito のブートは、ISO の中身（ブートカタログ）が持つ。
 | `iso_extent` | LBA → (パーツ、オフセット) → SD セクタの変換が、パーツの境界・エクステントの境界・最終ブロック・パディングで正しい。範囲外は拒否。区間の併合が、順序と数を保つ |
 | `iso_catalog` | `meta`（256 バイト）の符号化と復号が往復する（名前 63 バイト、CRC が名前と重ならない）。**2 つのスロットの選択**（世代番号、巻き戻り、一方が壊れている、両方が壊れている）。壊れた `meta` の拒否。名前の規則（UTF-8、長さ、禁止文字）。**状態の遷移表（§3.4）の全ての行**。2 スロットの規則（無効 / 存在しない / 同世代）。同名の拒否。上限。起動時のスキャン（`uploading` → `incomplete`、孤立ディレクトリ、不正な名前）。import（名前の衝突、上限、拡張子の大小） |
 | `iso_upload` | `received` と一致しないオフセットの拒否。チャンクの上限。チャンクがパーツの境界をまたぐときの分割。書き込み失敗の `truncate` と `received`。SHA-256 の状態が失われたときの再計算。同時 1 つ（`finalizing` を含む）。アイドルのタイムアウト。`finish` の判定（サイズ、SHA-256、ISO の署名 `CD001` / `BEA01`、`too_fragmented`）。時刻の巻き戻り |
-| `msc_bot` | CBW の検証（署名、LUN、長さ）、13 のケース（Hn / Hi / Ho と Dn / Di / Do の組み合わせ）、データ IN の途中の失敗、OUT のデータの読み捨て、STALL とリセットからの復帰、`mmc_scsi_command_done` を、どの終わり方でも 1 回だけ呼ぶこと |
+| `msc_bot` | **実行中の Reset（`iso_msc_task` の完了を待ってから `command_done`）**、CBW の検証（署名、LUN、長さ）、13 のケース（Hn / Hi / Ho と Dn / Di / Do の組み合わせ）、データ IN の途中の失敗、OUT のデータの読み捨て、STALL とリセットからの復帰、`mmc_scsi_command_done` を、どの終わり方でも 1 回だけ呼ぶこと |
 | `iso_media` | メディアの変更が、1 回だけ UNIT ATTENTION になる。`prevent_removal` と取り外し・差し替えの規則。バスリセットで `prevent_removal` が解除される。SD の再初期化での強制取り外し。ターゲットの取り外しが、Web の状態に残る（次の `mount` / `eject` まで） |
 | `mmc_scsi` | 各コマンドの応答のバイト列（手書きの期待値）。CDB の長さ・予約ビットの検査。メディアなし / ありの両方。範囲外、書き込み、未対応のコマンドのセンス。論理サイズ以降のゼロ埋め |
 | `iso_api` | 判定の順序（`WEB_API.md` §8）。状態ごとのエラーの対応表。`iso_api_put_precheck`（本体を読む前の判定） |

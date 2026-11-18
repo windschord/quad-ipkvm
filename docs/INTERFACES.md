@@ -283,19 +283,20 @@ typedef struct {
 
 ### 7.2 シーム（`iso_seams.h` が正）
 - **エラー**: `iso_err_t`（`ISO_ERR_NO_CARD`、`NO_SPACE`、`IO`、`NOT_FOUND`、`EXISTS`、`INVALID`、`TOO_FRAGMENTED`、`EPOCH`、`BUSY`、`NOMEM`、`UNSUPPORTED_FS`）。0 = 成功、負 = エラー。
-- **`iso_blockdev_t`**（SD の 512B セクタの直接読み出し）: `sector_count`、`epoch`、`read_sectors(ctx, epoch, lba, n, out)`。**ブロックする**。**`sd_io_lock` を内部で取り、取った後で `epoch` を比べ、違えば `ISO_ERR_EPOCH`**。**書き込み用の関数はない**（イメージは読み取り専用）。
-- **`iso_fs_t`**（FAT32）: `mount_info`（FAT32 か、クラスタの大きさ、全体と空き）、`mkdir`、`remove`、`rename`（宛先があると `ISO_ERR_EXISTS`。`import` だけ）、`stat`（`first_cluster` を含む）、`dir_open` / `dir_next` / `dir_close`、`open_for_write(append)`、`write`（順に追記だけ）、`sync`、`close`（失敗した `write` の後でも呼べる）、**`truncate(path, size)`**（`close` → 開き直し → `f_lseek` → `f_truncate`。ハンドル版はない）、**`overwrite(path, data, len)`**（作成、または先頭から上書きして同期。`meta.a/b` 用）、`open_for_read`、`read`、**`get_extents`**（読み取りモード、`CONFIG_FATFS_USE_FASTSEEK=y`、`cltbl` の確保と解放は関数の中）。**パスは、ボリュームのルートからの絶対パス（`/iso/<id>/p000`）。最大 `ISO_PATH_MAX`**。
+- **`iso_blockdev_t`**（SD の 512B セクタの直接読み出し）: `sector_count`、`epoch`（**原子的な値。持ち主はこの実装**）、`epoch_bump`（SD の再初期化と `force_eject` が呼ぶ。どのロックの中からも呼んでよい）、`read_sectors(ctx, epoch, lba, n, out)`。**ブロックする**。**`sd_io_lock` を内部で取り、取った後で `epoch` を比べ、違えば `ISO_ERR_EPOCH`**。**書き込み用の関数はない**（イメージは読み取り専用）。
+- **`iso_fs_t`**（FAT32）: `mount_info`（FAT32 か、クラスタの大きさ、全体と空き）、`mkdir`、`remove`、`rename`（宛先があると `ISO_ERR_EXISTS`。`import` だけ）、`stat`（`first_cluster` を含む）、`dir_open` / `dir_next` / `dir_close`、`open_for_write(append)`、`write`（順に追記だけ）、`sync`、`close`（失敗した `write` の後でも呼べる）、**`truncate(path, size)`**（`close` → 開き直し → `f_lseek` → `f_truncate`。ハンドル版はない）、**`overwrite(path, data, len)`**（作成、または先頭から上書きして同期。`meta.a/b` 用）、`open_for_read`、`read`、**`get_extents`**（読み取りモード、`CONFIG_FATFS_USE_FASTSEEK=y`、`cltbl` の確保と解放は関数の中）。**パスは、ボリュームのルートからの絶対パス（`/iso/<id>/p000`）。最大 `ISO_PATH_MAX`（288。`/iso/import/` + 255 バイトの名前に足りる。切り詰めない）**。
 - **`iso_clock_t`**（`now_ms`。単調増加）、**`iso_random_t`**（`next`）、**`iso_sha256_t`**（`state_size` と `init` / `update` / `final`。状態は呼び出し側が確保）、**`iso_sd_status_t`**（`sd.state`）。
 
 ### 7.3 MSC（USB）、`mmc_scsi`、`msc_bot`
 - **標準の TinyUSB の MSC は、契約を満たさない**（INQUIRY は種別 0 で固定、MODE SENSE(6) はヘッダーだけ、READ のエラーのセンスが「メディアなし」に上書き、READ(12) が別経路。`ISO_MOUNT_DESIGN.md` §5.1）。**MSC の層は、手段によらず、受け取った全ての CDB（最大 16 バイト）を `mmc_scsi_execute` に渡し、その結果（データ、センス、ステータス）を、そのまま返す**。手段は A-14 の調査で決める（手段 1 = アプリのクラスドライバで BOT を自前で実装、手段 2 = `msc_device.c` へのパッチ）。
 - **`mmc_scsi_execute(ctx, cdb, cdb_len, dir, expected_len, out, out_cap, result)`**: `dir` と `expected_len` は、CBW の方向と `dCBWDataTransferLength`。`result` は `{status（GOOD / CHECK CONDITION）、sense{key, asc, ascq}、data_len、read{is_read, lba, blocks}}`。**READ(10)/READ(12) のときは、`data_len` は 0 で、`read` に範囲が入る**。**OUT のデータを受け取るコマンド（WRITE、MODE SELECT）は、データを受け取らず、失敗にする**。
 - **`mmc_scsi_read_blocks(ctx, lba, blocks, buf, cap)`**: MSC の転送の大きさごとに呼ぶ（先読みしない）。**ゼロ埋め（`size_bytes` 以降）はここで行う**。I/O のエラーは **MEDIUM ERROR（03h/11h/00h）**、`ISO_ERR_EPOCH` も同じ。
-- **`mmc_scsi_command_done(ctx)`**: **コマンドの終わり（正常、STALL、リセット、切断のどれでも）に、必ず 1 回呼ぶ**。`execute` が取った、エクステントの表への参照と `epoch` を放す。
+- **`mmc_scsi_command_done(ctx)`**: **コマンドの終わり（正常、STALL、リセット、切断のどれでも）に、必ず 1 回呼ぶ**。`execute` が取った、エクステントの表への参照を放す（**参照を放すのは、これだけ**。冪等）。
 - **`msc_bot`（C-13、純 C）**: BOT の状態機械（CBW の検証、13 のケース、データ IN / OUT / なし、STALL、CSW、リセット回復）。USB のハードウェアの転送（`xfer`）は、関数ポインタで注入する。手段 2 のときは、CBW/CSW の部分は TinyUSB が持ち、`msc_bot` は、13 のケースの判定と `command_done` の保証に使う。
+- **`msc_bot` のスレッドモデル**: **`msc_bot` の状態は、USB のタスクだけが触る**。`iso_msc_task` は、実行と読み出しだけを担い、完了をキューで返す。Reset が実行中に来たら、中止の印を立て、完了を待ってから `command_done`（`ISO_MOUNT_DESIGN.md` §5.1）。手段 2（パッチ）では、非 READ(10) の非同期化に拡張が要る。
 - **`iso_msc_task`（A-14）**: **`mmc_scsi_execute` と `mmc_scsi_read_blocks` は、USB のタスク（`tud_task`。HID も処理する）ではなく、MSC 専用のタスクが呼ぶ**。USB のタスクは、CBW を渡し、ダブルバッファで転送を発行する（ブロックしない）。
 - **ブロック長は 2048**。バッファの大きさは、2048 の倍数にする（A-14）。**LUN は 1 つ**。`USB_MSC_ENABLE` が無効なら、記述子に MSC を入れない（今の構成のまま）。**MSC のインターフェース番号は 3**（HID の後）。
-- **メディアの状態は `iso_media` が持つ**（`mmc_scsi` から参照する）。Web の `mount` / `eject` は、`iso_media` に対する操作で、次のコマンドの応答と、GET EVENT STATUS NOTIFICATION に反映される。**USB のバスリセット・切断では、グルーが `iso_media_bus_reset()` を呼ぶ**（`prevent_removal` の解除と、`command_done` の保証）。**SD の再初期化（抜き取り、I/O エラー）では、SD の監視タスク（ロックを持たない文脈）が `iso_media_force_eject()` を呼ぶ**（`prevent_removal` を無視して `EMPTY` にし、`epoch` を進める）。**`force_eject()` と `bus_reset()` を、`sd_io_lock` を持つ文脈（diskio の中）から呼ばない**。
+- **メディアの状態は `iso_media` が持つ**（`mmc_scsi` から参照する）。Web の `mount` / `eject` は、`iso_media` に対する操作で、次のコマンドの応答と、GET EVENT STATUS NOTIFICATION に反映される。**USB のバスリセット・切断では、グルーが `iso_media_bus_reset()` を呼ぶ**（`prevent_removal` の解除と、進行中のコマンドへの中止の印。**参照は放さない**。`command_done` は、BOT 層が、`iso_msc_task` の完了を待ってから呼ぶ）。**SD の再初期化（抜き取り、I/O エラー）では、SD の監視タスク（ロックを持たない文脈）が `iso_media_force_eject()` を呼ぶ**（`prevent_removal` を無視して `EMPTY` にし、`epoch` を進める）。**`force_eject()` と `bus_reset()` を、`sd_io_lock` を持つ文脈（diskio の中）から呼ばない**。
 - INQUIRY の応答の全体（種別 5 のバイトを含む）は、`mmc_scsi` が作る。
 
 ### 7.4 HTTP（`iso_api`）
@@ -303,8 +304,9 @@ typedef struct {
 - **ワイルドカードの URI 照合**（`/api/v1/iso/*`）、`max_uri_handlers` の増加、`http_guard` に `PUT` / `DELETE` と `application/octet-stream` を許可すること（既存は `GET` / `POST` と JSON だけ）、ハンドラーのスタックの実測（A-15）。**定義していないメソッドは 405**。
 
 ### 7.5 ワーカーとロック（`ISO_MOUNT_DESIGN.md` §4）
+- **純 C の部品は、スレッドセーフではない**。**関数ごとに、グルーが取るロックは、`ISO_MOUNT_DESIGN.md` §4.1 の対応表**。**`iso_core.h`（ジョブの型、`iso_job_step`、`iso_upload_tick`、ビュー更新のコールバック、`iso_media_force_eject` / `bus_reset` のプロトタイプ）は、C-10 が出す**。`iso_worker` の実装は、その後（A-13 の後半）。
 - **ロックの階層**: `iso_op_mutex`（変更する操作の全体。I/O を含む）→ `iso_state_mutex`（公開ビュー。短く、I/O なし）。FatFs の volume mutex → `sd_io_lock`（シームの中が取る。呼び出し側は取らない）。**MSC と `GET` は、`iso_state_mutex` だけを取る**。
-- **ワーカー**: 1 つのタスク、`ISO_WORKER_QUEUE`（既定 8）の FIFO。ジョブは `FINISH` / `INDEX` / `DELETE` / `IDLE_CLOSE`（同じイメージには 1 つ。`DELETE` は割り込み、中止の印を立てる）。**ステップ関数**（純 C。ブロックせず、スレッドを作らない）: `iso_job_step(ctx, job, budget_bytes)` が `CONTINUE` / `DONE` / `ERROR(iso_err_t)` を返す。`budget_bytes` の既定は `ISO_WORKER_BUDGET_KIB`（1024 KiB）。**中止の印は、ステップの先頭で見る**。アイドルのタイムアウトは、ワーカーが 1 秒ごとに `iso_upload_tick(ctx, now_ms)` を呼んで判定し、`IDLE_CLOSE` を投入する。
+- **ワーカー**: 1 つのタスク、`ISO_WORKER_QUEUE`（既定 8）の FIFO と、**`INDEX` が必要なイメージの集合**（キューに積まない）。ジョブは `FINISH` / `INDEX` / `DELETE` / `IDLE_CLOSE`（同じイメージには 1 つ。優先順位は `DELETE`（割り込み、中止の印）、`FINISH`、`IDLE_CLOSE`、`INDEX`。あふれたら `ISO_ERR_BUSY` → API は `503 busy`）。**ステップ関数**（純 C。ブロックせず、スレッドを作らない）: `iso_job_step(ctx, job, budget_bytes)` が `CONTINUE` / `DONE` / `ERROR(iso_err_t)` を返す。`budget_bytes` の既定は `ISO_WORKER_BUDGET_KIB`（1024 KiB）。**中止の印は、ステップの先頭で見る**。アイドルのタイムアウトは、ワーカーが 1 秒ごとに `iso_upload_tick(ctx, now_ms)` を呼んで判定し、`IDLE_CLOSE` を投入する。
 
 ### 7.6 Antigravity への依頼
 - **A-13**（SD）、**A-14**（USB MSC。**最初に MSC の実装の手段を調査し、結果を `ISO_MOUNT_DESIGN.md` §5.1 に反映**）、**A-15**（HTTP）。範囲と完了条件は `ISO_MOUNT_DESIGN.md` §8、未確認の項目は同 §10 と `HW_VERIFY.md` I 章。**A-13 は、`iso_seams.h` の合意（この PR のマージ）の後に始める**。

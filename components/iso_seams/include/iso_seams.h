@@ -40,10 +40,10 @@ typedef enum {
 
 /* ---- パス ---------------------------------------------------------------
  * iso_fs_t のパスは、ボリュームのルートからの絶対パス（例 "/iso/a1b2c3d4/p000"）。
- * 区切りは '/'。最大 ISO_PATH_MAX（終端の NUL を含む）。ドライブ名（"0:" など）は、実装が付ける。
+ * 区切りは '/'。最大 ISO_PATH_MAX（終端の NUL を含む。超えるものは切り詰めず ISO_ERR_INVALID）。ドライブ名（"0:" など）は、実装が付ける。
  * ユーザーの入力から、パスを作らない（ISO_MOUNT_DESIGN.md §7）。 */
-#define ISO_PATH_MAX 64
-#define ISO_NAME_MAX 255 /* ディレクトリの 1 エントリの名前（FatFs の LFN）*/
+#define ISO_NAME_MAX 255 /* ディレクトリの 1 エントリの名前（FatFs の LFN。UTF-8 のバイト数）*/
+#define ISO_PATH_MAX 288 /* "/iso/import/" (12) + ISO_NAME_MAX + NUL に余裕。切り詰めない（超えたら ISO_ERR_INVALID）*/
 
 /* ---- SD の状態 ---------------------------------------------------------- */
 typedef enum {
@@ -58,10 +58,13 @@ typedef struct {
     void *ctx;
     /* セクタ数（カードなし・未初期化は 0）。セクタの大きさは 512 固定。 */
     uint64_t (*sector_count)(void *ctx);
-    /* カードの世代。SD の再初期化・force_eject で進む。 */
+    /* カードの世代（原子的な uint32_t。持ち主はこの実装）。SD の再初期化と force_eject が epoch_bump で進める。
+     * epoch / epoch_bump は、どのロックの中からも呼んでよい（ロックを取らない）。 */
     uint32_t (*epoch)(void *ctx);
+    void (*epoch_bump)(void *ctx);
     /* ブロックする。0 = 成功、負 = iso_err_t。sd_io_lock を内部で取り、取った後で
-     * 現在の epoch と引数 epoch を比べ、違えば ISO_ERR_EPOCH を返す。 */
+     * 現在の epoch（ロックなしの原子的な読み出し）と引数 epoch を比べ、違えば ISO_ERR_EPOCH を返す。
+     * out は、DMA 可能で、キャッシュライン境界に合わせたバッファ（USB のバッファと共用するかは A-14 が決める）。 */
     int (*read_sectors)(void *ctx, uint32_t epoch, uint64_t lba, uint32_t n, uint8_t *out);
 } iso_blockdev_t;
 
@@ -92,6 +95,7 @@ typedef struct {
 
     int (*mount_info)(void *ctx, iso_mount_info_t *out);
 
+    /* すでに存在すれば ISO_ERR_EXISTS（<id> の引き直しに使う）。 */
     int (*mkdir)(void *ctx, const char *path);
     /* ファイル、または空のディレクトリを消す。ファイルの消去はクラスタの連鎖を解放する（import の
      * クロスリンクしたファイルには、呼んではならない）。 */
@@ -105,14 +109,18 @@ typedef struct {
     int (*dir_next)(void *ctx, iso_dir_t *dir, char *name, iso_stat_t *st);
     void (*dir_close)(void *ctx, iso_dir_t *dir);
 
-    /* 書き込み用。append = true は、末尾に続けて書く（無ければ作る）。順に追記だけ。 */
+    /* 書き込み用。append = true は、末尾に続けて書く（無ければ作る）。append = false は、新規作成で、
+     * すでに存在すれば ISO_ERR_EXISTS（FA_CREATE_NEW）。順に追記だけ。 */
     int (*open_for_write)(void *ctx, const char *path, bool append, iso_file_t **out);
+    /* 書いたバイト数が len に満たない（FatFs は、空きがないとき FR_OK のまま bw < btw で返す）ときは、
+     * ISO_ERR_NO_SPACE を返す。 */
     int (*write)(void *ctx, iso_file_t *f, const void *data, size_t len);
     int (*sync)(void *ctx, iso_file_t *f);
     /* 失敗した write の後でも呼べる。 */
     int (*close)(void *ctx, iso_file_t *f);
     /* close → 開き直し → f_lseek(size) → f_truncate。ハンドル版はない（失敗した write のハンドルでは
-     * f_truncate が即エラーになるため）。ISO_MOUNT_DESIGN.md §3.1。 */
+     * f_truncate が即エラーになるため）。実ファイルが size より小さければ ISO_ERR_INVALID（f_lseek がファイルを
+     * 伸ばしてしまうため）。close が失敗してもハンドルは解放する。ISO_MOUNT_DESIGN.md §3.1。 */
     int (*truncate)(void *ctx, const char *path, uint64_t size);
     /* 作成、または先頭から上書きして、同期する。meta.a / meta.b の更新用（256 バイト）。 */
     int (*overwrite)(void *ctx, const char *path, const void *data, size_t len);
