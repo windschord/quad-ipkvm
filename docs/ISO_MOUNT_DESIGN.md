@@ -197,12 +197,12 @@ El Torito のブートは、ISO の中身（ブートカタログ）が持つ。
 | ID | 内容 | 担当 | 備考 |
 |---|---|---|---|
 | **C-9** | この設計と契約（`ISO_MOUNT_DESIGN.md`、`INTERFACES.md` §7、`WEB_API.md` §8、`PLAN.md`、`HW_VERIFY.md` I 章） | Claude | **この PR** |
-| **C-10** | 純 C: `iso_extent`（エクステントと LBA の変換）、`iso_catalog`（メタデータの符号化、名前の規則）、`iso_upload`（受信の状態機械、SHA-256 の注入、タイムアウト）。ホストテスト、ファズ、変異テスト | Claude | A-13 と並行 |
-| **C-11** | 純 C: `mmc_scsi`（§5.3）と `iso_media`（§5.4）。MMC / SPC の文書と照合。ホストテスト、ファズ、変異テスト | Claude | A-14 と並行 |
-| **C-12** | 純 C: `iso_api`（要求の検査、判定の順序、状態遷移）と `web_server` の結線、ビューアの画面（一覧、アップロードの進捗と再開、マウント、取り外し、削除） | Claude | C-10、C-11 の後 |
-| **A-13** | SD: SDMMC（スロット 0、GPIO39〜44、`ESP_LDO_VO4`、電源スイッチ GPIO45）、FAT32 のマウント、**自前の diskio（`sd_io_lock`）**、`iso_blockdev_t` と `iso_fs_t` の実装（`f_expand`、`CLMT`）。電圧・速度の実測 | Antigravity | |
-| **A-14** | USB MSC: **最初に、INQUIRY のデバイス種別を CD-ROM にする手段を調査**（esp_tinyusb 2.4.0 の TinyUSB の版、`tud_msc_inquiry2_cb`、パッチ、アプリのクラスドライバ）。MSC の記述子、`mmc_scsi` への結線、`usb_hid_logic` のテストの更新。BIOS / UEFI での確認 | Antigravity | 調査の結果を、この文書 §1、§5.2 に反映する |
-| **A-15** | HTTP: アップロードのハンドラー（ストリーミング受信 → SD、mbedTLS の SHA-256）、`/api/v1/iso/*` の結線。入力の遅延と転送速度の実測 | Antigravity | C-12 と協調 |
+| **C-10**（#139） | 純 C: `iso_extent`（エクステントと LBA の変換）、`iso_catalog`（メタデータの符号化、名前の規則）、`iso_upload`（受信の状態機械、SHA-256 の注入、タイムアウト）。ホストテスト、ファズ、変異テスト | Claude | A-13 と並行 |
+| **C-11**（#140） | 純 C: `mmc_scsi`（§5.3）と `iso_media`（§5.4）。MMC / SPC の文書と照合。ホストテスト、ファズ、変異テスト | Claude | A-14 と並行 |
+| **C-12**（#141） | 純 C: `iso_api`（要求の検査、判定の順序、状態遷移）と `web_server` の結線、ビューアの画面（一覧、アップロードの進捗と再開、マウント、取り外し、削除） | Claude | C-10、C-11 の後 |
+| **A-13**（#137） | SD: SDMMC（スロット 0、GPIO39〜44、`ESP_LDO_VO4`、電源スイッチ GPIO45）、FAT32 のマウント、**自前の diskio（`sd_io_lock`）**、`iso_blockdev_t` と `iso_fs_t` の実装（`f_expand`、`CLMT`）。電圧・速度の実測 | Antigravity | |
+| **A-14**（#136） | USB MSC: **最初に、INQUIRY のデバイス種別を CD-ROM にする手段を調査**（esp_tinyusb 2.4.0 の TinyUSB の版、`tud_msc_inquiry2_cb`、パッチ、アプリのクラスドライバ）。MSC の記述子、`mmc_scsi` への結線、`usb_hid_logic` のテストの更新。BIOS / UEFI での確認 | Antigravity | 調査の結果を、この文書 §1、§5.2 に反映する |
+| **A-15**（#138） | HTTP: アップロードのハンドラー（ストリーミング受信 → SD、mbedTLS の SHA-256）、`/api/v1/iso/*` の結線。入力の遅延と転送速度の実測 | Antigravity | C-12 と協調 |
 
 **Kconfig の接頭辞**: `ISO_*` = Claude（API とロジック）、`SD_*` と `USB_MSC_*` = Antigravity。SD の GPIO と LDO のチャンネルは、**回路図の固定の値**（Kconfig にしない。§1）。
 
