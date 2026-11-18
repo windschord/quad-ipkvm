@@ -1,0 +1,7 @@
+# Promptless integer mirror of CSI_H264_ENABLE so kconfgen always emits it into
+# sdkconfig.json (0 or 1) even when VIDEO_SOURCE_CSI=n hides CSI_H264_ENABLE.
+# Used by components/csi_h264/idf_component.yml rules to gate espressif/esp_h264.
+config CSI_H264_DEPS_ENABLED
+    int
+    default 1 if CSI_H264_ENABLE
+    default 0
