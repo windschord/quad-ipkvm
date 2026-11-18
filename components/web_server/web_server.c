@@ -28,6 +28,7 @@
 #include "lwip/sockets.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <string.h>
 #include "esp_rom_sys.h"
 #include "auth_crypto_mbedtls.h"
@@ -1329,12 +1330,84 @@ static void ws_video_status_get_adapter(void* user_data, video_status_t* out) {
     video_status_get(out);
 }
 
+// --- Stale close guard (docs/VIDEO_TRANSPORT.md 5.1) ---
+// httpd_sess_trigger_close(server, fd) does NOT queue the fd. It looks the session up and queues httpd_sess_close(session) with
+// a pointer to the session (`struct sock_db *`); the httpd thread runs that later. If the connection is deleted in between (the
+// client went away) and a NEW connection takes the same `sock_db` slot, the queued close shuts the new connection down
+// (httpd_sess_close only skips a session whose lru_counter is 0, and a new one is not 0). Seen on the device as
+// "WS video registered fd=46" and, in the same tick, "WS video client closed fd=46" when a client reconnected within 0 ms.
+//
+// So a close request is not given to httpd right away. It is queued to the httpd thread as {server, fd, generation}, where the
+// generation (ws_clients) identifies THAT connection and is read under the lock when the request is made. The httpd thread
+// runs the work, checks under the lock that fd still has the same generation, and only then calls httpd_sess_trigger_close().
+// A request for a connection that is already gone or replaced is dropped (and logged).
+//
+// This SHRINKS the window; it does not remove it. After the check, httpd_sess_trigger_close() queues the real close again, and that
+// one runs at the start of the NEXT httpd loop. What is left is the rest of one loop: the session processing (a disconnect
+// is detected and the session deleted) and accept (a new connection may take the freed slot). The public API has no way to close
+// a session directly from the httpd thread. The work runs on the httpd thread, which is also the only thread that deletes
+// sessions and runs the handlers that register connections, so nothing can change between the check and the call.
+//
+// Locks: the request is made with the lock of that core held (every ws_video_core_* / ws_input_core_* call in this file is), and
+// takes no other lock. httpd_queue_work() is called with the lock held; that is only safe because
+// CONFIG_HTTPD_QUEUE_WORK_BLOCKING is n (sdkconfig.defaults). The work function takes the lock on the httpd thread. With "blocking
+// = y" the holder could wait for the queue while the httpd thread waits for the lock (ws_send_slice_work_cb has the same shape).
+typedef struct {
+    httpd_handle_t server;
+    int fd;
+    uint32_t gen;
+} ws_close_work_t;
+
+// Queue "close (fd, gen)" to the httpd thread of `server`. If that is not possible (gen 0 = the connection is not in the table,
+// malloc or httpd_queue_work failed), close the way it was done before this guard, so that a request is never dropped.
+static void ws_queue_close(httpd_handle_t server, int fd, uint32_t gen, httpd_work_fn_t work_cb) {
+    ws_close_work_t *work = (gen != 0) ? malloc(sizeof(*work)) : NULL;
+    if (work) {
+        work->server = server;
+        work->fd = fd;
+        work->gen = gen;
+        if (httpd_queue_work(server, work_cb, work) == ESP_OK) {
+            return;
+        }
+        free(work);
+    }
+    ESP_LOGW(TAG, "WS close fd=%d: could not queue the guarded close, closing directly", fd);
+    httpd_sess_trigger_close(server, fd);
+}
+
+// Runs on the httpd thread, after the lock was released. slot_state: the state of the slot that (fd, gen) found, or -1 if none.
+// Only an ACTIVE connection is closed: CLOSING is a connection whose close_fn already ran (ws_clients_remove is only called from
+// close_fn), so httpd has already deleted that session and there is nothing left to close. Calling httpd_sess_trigger_close(fd)
+// then could only hit a new connection that was accepted with the same fd and is not registered yet.
+static void ws_close_work_finish(ws_close_work_t *work, const char *label, int slot_state) {
+    if (slot_state == (int)WS_CLIENT_ACTIVE) {
+        httpd_sess_trigger_close(work->server, work->fd);
+    } else if (slot_state == (int)WS_CLIENT_CLOSING) {
+        ESP_LOGD(TAG, "%s: skipped a close request (fd=%d, the connection is already closed)", label, work->fd);
+    } else {
+        ESP_LOGI(TAG, "%s: dropped a stale close request (fd=%d, the connection was replaced)", label, work->fd);
+    }
+    free(work);
+}
+
+static void ws_video_close_work_cb(void *arg) {
+    ws_close_work_t *work = (ws_close_work_t *)arg;
+    if (!work) return;
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    int slot = ws_clients_find_gen(&s_ws_core.clients, work->fd, work->gen);
+    int state = (slot >= 0) ? (int)s_ws_core.clients.clients[slot].state : -1;
+    xSemaphoreGive(s_ws_mutex);
+    ws_close_work_finish(work, "WS video", state);
+}
+
+// Called by ws_video_core with `s_ws_mutex` held (see above).
 static void ws_video_io_request_close(void* user_data, ws_video_conn_t conn) {
     httpd_handle_t video_server = user_data ? ((ws_ctx_t *)user_data)->video_server : NULL;
     if (!video_server) return;
     int fd = (int)(intptr_t)conn;
     ESP_LOGI(TAG, "WS video requesting close on fd=%d", fd);
-    httpd_sess_trigger_close(video_server, fd);
+    uint32_t gen = ws_clients_slot_gen(&s_ws_core.clients, ws_clients_find(&s_ws_core.clients, fd));
+    ws_queue_close(video_server, fd, gen, ws_video_close_work_cb);
 }
 
 static void ws_input_send_done_cb(esp_err_t err, int socket, void *arg) {
@@ -1357,11 +1430,23 @@ static int ws_input_io_send(void* user_data, ws_input_conn_t conn, const uint8_t
     return (ret == ESP_OK) ? 0 : -1;
 }
 
+static void ws_input_close_work_cb(void *arg) {
+    ws_close_work_t *work = (ws_close_work_t *)arg;
+    if (!work) return;
+    xSemaphoreTake(s_ws_input_mutex, portMAX_DELAY);
+    int slot = ws_clients_find_gen(&s_ws_input_core.clients, work->fd, work->gen);
+    int state = (slot >= 0) ? (int)s_ws_input_core.clients.clients[slot].state : -1;
+    xSemaphoreGive(s_ws_input_mutex);
+    ws_close_work_finish(work, "WS input", state);
+}
+
+// Called by ws_input_core with `s_ws_input_mutex` held (see "Stale close guard" above).
 static void ws_input_io_request_close(void* user_data, ws_input_conn_t conn) {
     httpd_handle_t server = user_data ? ((ws_ctx_t *)user_data)->server : NULL;
     if (!server) return;
     int fd = (int)(intptr_t)conn;
-    httpd_sess_trigger_close(server, fd);
+    uint32_t gen = ws_clients_slot_gen(&s_ws_input_core.clients, ws_clients_find(&s_ws_input_core.clients, fd));
+    ws_queue_close(server, fd, gen, ws_input_close_work_cb);
 }
 
 static bool ws_input_usb_ready(void* user_data) {

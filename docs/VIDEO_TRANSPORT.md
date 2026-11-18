@@ -49,6 +49,23 @@ Issue #82（A-7 後続）の ②③ への回答。実機の測定は `docs/HW_V
 - **証明書の信頼（自己署名のため）**: 自己署名の証明書の例外は、ブラウザによって、ホスト単位（Chrome）かホスト + ポート単位（Firefox、Safari）。**別のポートの WebSocket は、例外を受け入れていないと、静かに失敗する**。そのため、映像の接続が失敗したとき、ビューアは「`https://host:8444/` を開いて証明書を受け入れてから、再読み込み」というリンクを表示する。`GET /`（映像サーバー）は、静的な小さなページ（「この接続を信頼しました。元のページへ戻ってください」+ 元の Origin へのリンク）を返す。**このページは、認証なしで返してよい**が、本文に動的な値（Cookie、状態）を含めない。
 - 終了と再起動: 2 つのサーバーの `close_fn` を、それぞれ映像用 / 入力用の核に結びつける（既存の `ws_video_close_fn` を、映像サーバーの `close_fn` にする）。
 
+### 5.1 接続を閉じる要求と、古い要求（世代番号）
+**症状**: 0 ms 差の再接続（クライアントが切れて、すぐ同じ fd で接続し直す）のとき、`WS video registered fd=46` の直後に、同じ tick で `WS video client closed fd=46` が出て、**新しい接続が閉じられる**ことがあった（実機）。
+
+**原因**（ESP-IDF v6.0.1 の `esp_http_server/src/httpd_sess.c` で確認）: `httpd_sess_trigger_close(server, fd)` は、**fd ではなく、セッションの構造体（`struct sock_db *`）へのポインタ**を `httpd_queue_work(handle, httpd_sess_close, session)` で積む。実行は `httpd` のスレッドが、後で行う（ループの (1) 制御メッセージの処理）。積まれたまま、その接続が削除され（(2) セッションの処理）、**新しい接続が同じ `sock_db` のスロットを再利用する**（(3) `accept`）と、積まれていた close が新しい接続を閉じる（`httpd_sess_close` の「競合なら無視する」判定は `lru_counter` が 0 のときだけ効き、新しい接続は 0 ではない）。
+
+**修正**（`web_server.c`。`/video` と `/ws` の両方）:
+- `ws_clients` が、接続ごとの**世代番号**（`uint32_t`、`ws_clients_add` が単調増加のカウンタから割り当てる。0 は「無効」で、ラップアラウンドでも飛ばす）を持つ（`ws_clients_slot_gen`、`ws_clients_find_gen`）。
+- `io_request_close`（ロック保持中に呼ばれる）は、その接続の世代を読み、`{server, fd, gen}` を `httpd_queue_work` で **`httpd` のスレッドに積む**。`httpd` のスレッドで、ロックを取り、**今も同じ世代の ACTIVE な接続か**を確かめてから、`httpd_sess_trigger_close(server, fd)` を呼ぶ。違えば何もせず、`WS video: dropped a stale close request (fd=…, the connection was replaced)`（入力は `WS input: …`）を出す。CLOSING（`close_fn` が既に走った接続。`ws_clients_remove` は `close_fn` からしか呼ばれない）は、閉じるものが無いので呼ばない（`ESP_LOGD`）。
+- `malloc` または `httpd_queue_work` が失敗したときは、従来どおり `httpd_sess_trigger_close(server, fd)` を直接呼ぶ（要求を落とさない。世代を読めない = 表に無い fd のときも同じ）。
+- 前提: `CONFIG_HTTPD_QUEUE_WORK_BLOCKING=n`（`sdkconfig.defaults` で明示）。`y` だと、ロックを保持して `httpd_queue_work` を呼ぶ今の構造（`ws_send_slice_work_cb` も同じ）は、キューが埋まったとき、`httpd` のスレッドがロックを待つのと組み合わさって、デッドロックしうる。
+
+**残る窓（ゼロではない。「縮めた」のであって、「無くした」のではない）**: 世代の確認の後、`httpd_sess_trigger_close` は、本当の close をもう一度積む。それが走るのは、**次のループの (1)**。その間にある、**同じループの (2)（切断の検出と削除）と (3)（`accept`）**が、残る窓。公開 API には、`httpd` のスレッドの中から、直接セッションを閉じる方法がない。以前の窓は「要求から実行まで」（`httpd` の作業キューが詰まると数 ms 以上）だったのが、ループ 1 回の後半に縮む。
+
+**検証**:
+- ホスト: `ws_clients` の世代（`test/host/ws_clients/`、ミューテーション `tools/test/mutate_ws_clients.py`、結果は `docs/WS_CLIENTS_TESTS.md`）。`web_server.c` のこの部分は、IDF のビルドも実機もない環境では、**関数を切り出して、偽の FreeRTOS / `httpd` API と本物の純 C に対して動かした**（積むだけの偽の `httpd_queue_work`、呼ばれた fd を記録する偽の `httpd_sess_trigger_close`、失敗させられる `malloc`）。通常、古い close、フォールバック、入力側、スロットが FREE / CLOSING のとき、のすべてを確認した（結果は、この修正の PR の本文。ハーネスはコミットしていない）。
+- **実機（Antigravity が確認する）**: 0 ms 差の再接続を何十回も繰り返して（切って、すぐ繋ぎ直す）、**`registered` の直後に、同じ fd の `client closed` が出ないこと**。修正が働いたときは、`dropped a stale close request` のログが出る（出ないままでも、`registered` の直後の `closed` が無ければ良い。窓が閉じた場合と、そもそも起きなかった場合を、このログで区別する）。残る窓（上）のために、**ごく稀に**、`registered` の直後の `closed` が残る可能性がある。そのときは、頻度を報告する。
+
 ## 6. 検証
 - ホスト（純 C）: `ws_video_core`（`on_send_begin`、キュー待ちの別上限、期限の関数、期限超過でそのクライアントだけを閉じる）、`http_guard_origin_ok_for_port`（表のテスト + ミューテーション）、`jpeg_quality_ctrl`（HDMI 担当）。
 - 実機（device-check。Antigravity）: `slowclient.py` の `40 KB/s` で、**通常のクライアントが 10 fps 以上を維持し、切断されない**（遅いクライアントのスライスが交互に入る分の遅れを含めて）、`/status` が 1 秒を超えない。§1 の「推定」（キューの待ちが原因）が正しいかも、ここで確認する（送信の開始のログと、期限の超過のログを見る）。`10 KB/s`・`2 KB/s`・`no read` で、遅いクライアントだけが、期限で閉じられる。1080p の高密度画面で `oversize_drop = 0`（品質の引き下げが働く）。Chrome と Firefox で、証明書の例外を受け入れる手順（上の「信頼」のページ）が働く。メモリ（ヒープの空き、2 つ目のサーバーのスタック）。
