@@ -1,12 +1,17 @@
+/* Only the width mode scrolls the page. Its scroll bar must not change the width the video is fitted to, so the
+   space is kept. (Browsers without :has() skip this; the resize observer then follows the change.) */
+html:has(#view-dashboard.mode-width:not(.is-fullscreen)) {
+    scrollbar-gutter: stable;
+}
 body {
     font-family: sans-serif;
     margin: 0;
-    padding: 20px;
+    padding: 0;
     background-color: #f0f0f0;
 }
 .container {
     max-width: 600px;
-    margin: 0 auto;
+    margin: 20px auto;
     background: #fff;
     padding: 20px;
     border-radius: 8px;
@@ -29,9 +34,13 @@ input[type="password"] {
     border-radius: 4px;
 }
 .hint {
-    margin: -10px 0 15px;
+    margin: 0;
     font-size: 0.85em;
     color: #555;
+}
+/* The hint under a form field sits closer to the field than to the next one. */
+form .hint {
+    margin: -10px 0 15px;
 }
 button {
     padding: 10px;
@@ -44,6 +53,14 @@ button {
 button:hover {
     background-color: #0056b3;
 }
+button:focus-visible {
+    outline: 2px solid #ff9800;
+    outline-offset: 2px;
+}
+button:disabled {
+    background-color: #8aa4c0;
+    cursor: not-allowed;
+}
 .view-hidden {
     display: none;
 }
@@ -55,25 +72,99 @@ button:hover {
     background-color: #f2dede;
     border: 1px solid #ebccd1;
     padding: 10px;
-    margin-bottom: 15px;
+    max-width: 600px;
+    margin: 10px auto;
     border-radius: 4px;
 }
 
+/* The canvas box is set by app.js (VideoLayout.fitSize) to an exact size in CSS pixels with the aspect of the
+   picture: the mouse position is computed from this box, so CSS must never stretch it or add black bars inside
+   it (no max-width, no fitting of the picture inside a larger box). */
 #video {
-    max-width: 100%;
+    display: block;
+    flex: none;
+    margin: auto;
     border: 1px solid #ccc;
     cursor: default;
     outline: none;
+}
+#video:focus-visible {
+    outline: 2px solid #ff9800;
+    outline-offset: 2px;
 }
 #video.input-active {
     cursor: crosshair;
     border-color: #007bff;
 }
-.controls {
-    margin-bottom: 10px;
+
+/* The dashboard: the full width of the window. The bar on top, the video, then the status and the hints. */
+#view-dashboard:not(.view-hidden) {
     display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    gap: 6px;
+    padding: 6px 8px;
+    background-color: #fff;
+}
+.bar {
+    display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 10px;
+    gap: 6px 8px;
+}
+.bar-title {
+    font-weight: bold;
+    margin-right: 4px;
+}
+.bar button {
+    padding: 4px 10px;
+    font-size: 0.9em;
+}
+.bar-modes {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    margin-left: auto;
+}
+.bar-modes button[aria-pressed="true"] {
+    background-color: #003f8a;
+    font-weight: bold;
+    box-shadow: inset 0 0 0 2px #fff, 0 0 0 2px #003f8a;
+}
+.video-info {
+    font-size: 0.9em;
+}
+.video-info p {
+    margin: 6px 0 0;
+}
+/* The three display modes (the class is set by app.js; the saved mode, also while the window is full screen).
+   fit and actual: the page is exactly one window high and only the video area changes (actual scrolls inside it).
+   width: the page scrolls. */
+#view-dashboard.mode-fit,
+#view-dashboard.mode-actual {
+    height: 100vh;
+    height: 100dvh;
+}
+#view-dashboard.mode-width {
+    min-height: 100vh;
+}
+#view-dashboard.mode-fit .video-wrap,
+#view-dashboard.mode-actual .video-wrap {
+    flex: 1 1 0;
+    min-height: 0;
+}
+#view-dashboard.mode-fit .video-wrap {
+    overflow: hidden;
+}
+#view-dashboard.mode-actual .video-wrap {
+    overflow: auto;
+}
+#view-dashboard.mode-width .video-wrap {
+    flex: none;
+}
+#view-dashboard.is-fullscreen .bar,
+#view-dashboard.is-fullscreen .video-info {
+    display: none;
 }
 #input-status, #usb-status {
     font-size: 0.9em;
@@ -98,6 +189,17 @@ button:hover {
 /* The video state (no signal, checking, resolution changed) over the canvas. The last frame stays visible behind it. */
 .video-wrap {
     position: relative;
+    display: flex;
+}
+/* Full screen: the wrap fills the window (fit mode), black around the picture. */
+#view-dashboard .video-wrap:fullscreen {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background-color: #000;
+}
+#view-dashboard .video-wrap:fullscreen #video {
+    border-width: 0;
 }
 .video-overlay-hidden {
     display: none;

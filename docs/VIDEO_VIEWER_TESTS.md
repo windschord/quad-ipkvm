@@ -162,3 +162,55 @@ C 側・アセットの道具 `python3 tools/test/mutate_video_viewer.py <repo> 
 - サーバー側との結合(`/video?accept=h264` を `web_server.c` が受け付けるか。`esp_http_server` が URI のクエリを除いて照合するか、`http_guard` / Origin の検査がクエリで壊れないか)。**未確認(`web_server.c` 側の確認事項)**。
 - ビューアは、サーバーへ IDR を要求できない(ビューアからのデータフレームは切断の対象。`docs/WEB_API.md` §5)。`decodeQueueSize` で P を捨てた後は、次の IDR(`CSI_H264_GOP`、既定 fps × 2 = 約 2 秒)まで映像が止まる。この間隔が実用上許せるかは、実機で確認する。
 - `new Blob([bytes], {type: "image/jpeg"})` を `createImageBitmap` に渡す経路(`accept` を付けた接続の JPEG)の描画の確認(偽の `createImageBitmap` で、呼び出しだけ確認した)。
+
+## 8. 表示モードとフルスクリーン(ダッシュボードを全幅にする。オーナーの要望: 映像が小さく、画面が読めない)
+
+仕様は `docs/WEB_API.md` §0 の「ビューアの画面」。担当範囲は `web/index.html`、`app.css`、`app.js` とそのテストだけ(C のコードと、埋め込むファイルの一覧は変えていない)。
+
+### 8.1 変更の要点
+
+- **構造**: ログイン・初期設定は、これまでどおり狭いカード(`#auth-card`)。ダッシュボード(`#view-dashboard`)をカードの外に出し、ウィンドウの全幅にした(`showView` が、ダッシュボードのときだけカードを隠す)。`#error-message` はカードの外に出した(ダッシュボードでも見える)。body の余白は 0 にし、カードの余白は `.container` の `margin: 20px auto` に移した。
+- **操作バー**: タイトル、`#btn-input-toggle`、`#btn-pointer-lock`、`#input-status`、`#usb-status`、表示サイズの 3 つのボタン(`role="group" aria-label="表示サイズ"`、`aria-pressed`)、`#btn-fullscreen`、`#btn-logout`。狭い幅では折り返す。見出し「ログイン済み」(`<h2>`)はタイトルに置き換えた(`docs/BRINGUP.md` の確認手順の文を直した)。
+- **重なりの不具合**: `.hint` の負のマージン(`-10px 0 15px`)は、フォームの中の指定だった。`form .hint` に移し、`.hint` は `margin: 0` にした。`#video-status`、証明書の案内、ヒントは、映像の下(`.video-info`)に置いた。
+- **箱の計算**: 純関数 `VideoLayout.fitSize(mode, avail, video)` / `normalizeMode(value)`(`VideoTarget` / `VideoStatus` と同じ書き方)。`app.js` が、使える領域(`#video-wrap` の `clientWidth` / `clientHeight` から canvas の枠線を引いた値)と canvas の解像度から、`elVideo.style.width / height`(CSSOM)を整数ピクセルで設定する。CSS は箱を変えない(`max-width`、`object-fit` なし。`#video` は `display: block; flex: none; margin: auto`)。マウスの換算(`getMousePos`)は、これまでどおり箱から計算するので、黒帯や伸縮で座標がずれない。使える領域は、`fit` / `actual` では、ダッシュボードを `height: 100vh` の縦の flex にして、映像の領域が残りの高さを取る(バーや下の文言の高さを、JavaScript で足し引きしない)。`width` だけ、ページがスクロールする(`html:has(...)` で `scrollbar-gutter: stable`)。
+- **再計算の契機**: 解像度の変更(JPEG は毎フレーム、H.264 は出力のたび。前回と違うときだけ)、`resize`、`ResizeObserver`(`#video-wrap`。文言の増減やスクロールバーでの大きさの変化)、モードの変更、`fullscreenchange`、ダッシュボードの表示。解像度または領域が不明(0、数でない)のときは設定しない。
+- **全画面**: `.video-wrap` に `requestFullscreen()`(`.catch` で拒否を無視。同期の例外も無視)。API が無い(`document.fullscreenEnabled` が偽、または `requestFullscreen` が無い)ときは、ボタンを `disabled` にして `title` に理由を出す。全画面中は、ダッシュボードに `is-fullscreen` を付けて、バーと下の文言を隠す。表示は常に `fit`(保存したモードと `aria-pressed` は変えない)。ボタンの文字は `document.fullscreenElement === #video-wrap` で決め、`fullscreenchange` で更新する。
+- **Esc(任意)**: Chromium の `navigator.keyboard.lock(['Escape'])` を、**全画面かつ入力が有効な間だけ**呼ぶ(入力を切る、全画面を出る、で `unlock`)。失敗は無視する。入力が無効なら Esc は奪わない(Esc の短押しで全画面を出られる)。ヒントの文言に、全画面では Esc でブラウザが全画面を終了すること、Esc を奪える Chromium 系では入力が有効な間は Esc の長押しで終了することを足した。
+
+### 8.2 判断した点
+
+1. **端数の規則**: 幅も高さも**切り捨て**(`Math.floor`)。`fit` は、結果が使える領域を超えない(例: 領域 1000x600、映像 1280x720 -> 1000x562(562.5 を切り捨て))。1 未満にはしない(1 にする)。`fit` で幅が先に尽きるかは、整数の掛け算 `aw*vh <= ah*vw` で決める(小数の割り算の誤差を避ける)。入力は、`w`・`h` が有限の数で 1 以上であること(0.5、0、負、`NaN`、`Infinity`、文字列、欠落は `null`)。`avail` の端数は、先に切り捨てる。
+2. **枠線**: `#video` の枠線(1px)は残した(`#video.input-active` の枠の色を保つため)。枠線は設定する大きさ(content box)の外なので、領域から `offsetWidth - clientWidth` を引く。全画面では、枠線を 0 にする。
+3. **全画面の領域**: `.video-wrap:fullscreen` を `width: 100%; height: 100%` の黒にして、その `clientWidth / clientHeight` を使う(ウィンドウ全体と同じ)。
+4. **`html:has()`**: `:has()` が無いブラウザでは、`width` のスクロールバーが出たときに、幅が変わって `ResizeObserver` が追う(一瞬ずれうる)。対象のブラウザは、最近の Chromium / Firefox / Safari。
+5. **ボタン**: すべて `<button type="button">`。フォーカスの枠(`:focus-visible`、オレンジ 2px)を足した。`disabled` のボタンの見た目(以前は、無効でも有効に見えた)も足した。選択中のモードは、色と太字と白い内枠で示す(色だけに頼らない)。
+6. **`#video` の `outline: none`** は、そのまま(マウスのクリックで枠が出ないように)。キーボードのフォーカスだけ `:focus-visible` で出す。
+
+### 8.3 テスト(実際に走らせたもの)
+
+`node tools/test/check_video_viewer.js` -> `video viewer ok (... 137 fit-size cases, 26 view-mode cases, browser scenarios)`。`cmake -S test/host -B <build> && cmake --build <build> -j && ctest --test-dir <build> --output-on-failure` -> **72 個すべて成功**(変更前も 72。C のテストは、`test_web_pages` が新しい `index.html` / `app.css` / `app.js` を禁止パターン(インラインの `style`、`<script>`、`on*`、外部の URL、`innerHTML` など)で検査して通る)。
+
+| 内容 | 場所 | 件数 |
+|---|---|---|
+| `VideoLayout.fitSize`(手書きの期待値。fit / width / actual、領域が映像より小さい・大きい、縦長・横長の領域、縦長の映像、同じ縦横比、極端に小さい領域(1x1、10x1)、細い映像(1x1000)、端数、0・負・`NaN`・`Infinity`・文字列・`null`・欠落(3 モードのすべて)、映像が 0x0、未知のモード、結果が整数で領域を超えない性質) | (E) | 137 件 + 性質 |
+| `VideoLayout.normalizeMode`(3 つ、`null`、空、大文字、前後の空白、`constructor` / `__proto__` / `toString`、数、真偽値、配列、`String` オブジェクト) | (E) | 26 件 |
+| 偽の DOM(`localStorage`、`requestFullscreen` / `exitFullscreen`、`fullscreenElement`、`navigator.keyboard`、`ResizeObserver`、`window` のイベント)でのシナリオ: 既定、モードのボタン(`aria-pressed`、class、箱、保存)、起動時の復元(3 つ + 不正な値 9 種 + 別のキー)、`localStorage` が無い / `getItem` が例外 / `setItem` が例外、解像度の変更(幅だけ・高さだけ・H.264)、同じ解像度では再計算しない、リサイズ、`ResizeObserver`(作れない場合も)、解像度・領域が不明、枠線の補正、全画面(要求、`.video-wrap` に対して呼ぶこと、拒否・同期の例外・Promise なし、API なし 5 通り、`fullscreenchange`、他の要素の全画面、常に `fit`、保存したモードを変えない、全画面での解像度変更、全画面でセッションが終わる)、`keyboard.lock`(入力の有無、二重呼び出し、全画面の中での入力の切替、失敗、API なし)、画面の切替(カードの表示) | (E) | 29 の定義(復元の 2 つの表の繰り返しを含む) |
+| `index.html` の構造(ボタンの `type="button"`、グループの `role` / `aria-label`、ラベル、初期の `aria-pressed`、バーの順序、映像の下の文言が `.video-wrap` の外、ダッシュボードがカードの外、画面の初期が隠れている)と `app.css` の要点(`.hint` に負のマージンがない、`#video` に `max-width` / `object-fit` がない、フォーカスの枠、モードごとの規則、全画面の規則、余白) | (E) | 静的検査 |
+
+### 8.4 ミューテーションテスト
+
+- **`app.js`**(`node tools/test/check_video_viewer.js --mutations`): 全体で **459 個 / 殺した 419 / 同値 40 / 生き残り 0 / 一致なし 0**。今回の追加分は **L01〜L122 の 122 個: 殺した 112、同値 10、生き残り 0**。既存の 337 個は、同じ結果(殺した 307、同値 30)。
+  - 対象: `normalizeMode`(検証、既定値、ループの範囲、`==`)、`validSize`(各条件)、`fitSize`(各モード、丸め、最小値 1、比較、未知のモード)、保存と復元(キー、検証、例外)、モードのボタン(対応、`aria-pressed`、class)、`updateVideoLayout`(入力、枠線、全画面の `fit`、設定の順序と単位)、再計算の契機(解像度、`resize`、`ResizeObserver`、`fullscreenchange`、表示)、全画面(対応の判定、無効化と `title`、要求と終了、拒否、ラベル、class)、`keyboard.lock`(条件、重複、キー、失敗)、画面の切替(カード、レイアウト、全画面を出る)。
+  - **最初の実行で生き残った 3 個を、ケースを足して潰した**: L17(`avail.h` の丸め: 高さで決まる場合の 400.6 のケースを足した)、L61(高さの枠線に幅の値を使う: 枠線が幅 2px・高さ 4px の場合を足した)、L71(幅だけの変更で再計算しない: 幅だけ・高さだけ変わる解像度の列に直した)。
+  - 同値の 10 個(理由は各ミュータントに書いた): L29(`aw*vh == ah*vw` のとき、どちらの枝でも同じ結果)、L47(ボタンは有効なモードしか渡さない)、L59・L60(枠線の 0 と非数は、どちらも 0 になる)、L92・L93・L112〜L115(`Promise` / `navigator.keyboard` が無いときの例外を、呼び出し側の `try/catch` が捨てる二重の防御)。
+- **`index.html` / `app.css` / C 側**(`python3 tools/test/mutate_video_viewer.py <repo> <作業用> <結果.json>`): 全体で **114 個 / 殺した 113 / 同値 1(既存の H13) / 生き残り 0 / ビルドエラー 0**。今回の追加分は **I17〜I38(22 個)、C10〜C39(30 個)の 52 個で、すべて殺した**。既存の I13・I16 は、構造の変更でインデントが変わった(16 -> 12 空白)ので、置換前の文字列を直した(意味は同じ)。内容: `type="button"` の欠落、`role` / `aria-label` / ラベル / 初期の `aria-pressed` / `id` の変更、映像の下の文言を枠の中に入れる、ダッシュボードをカードの中に入れる、`#error-message` をカードの中に入れる、インラインの `style` / `<script>`、バーの順序、`tabindex="-1"`、`.hint` の負のマージンの復活、`max-width` / `object-fit` の追加、`display: block` / `flex: none` / `margin: auto` の除去、バーの折り返し、選択中の見た目、`display: flex` の常時表示、全画面での表示と大きさと背景、モードごとの `overflow` / 高さ / `flex`、フォーカスの枠の除去、`disabled` の見た目、枠の色、body とダッシュボードの余白、`scrollbar-gutter`、全画面の枠線。
+
+### 8.5 ブラウザでの確認(Playwright + 実際の Chrome 153。`/usr/bin/google-chrome`)
+
+`web/` の静的ファイルを Node の簡易サーバーで配り、`/api/v1/auth/status` を「ログイン済み」で返し、`WebSocket` を、1280x720 の JPEG と `{"t":"video","state":"locked","w":1280,"h":720}` を返す偽物に置き換えて、ダッシュボードを表示した(スクリプトは、作業用の一時ディレクトリにあり、リポジトリには入れていない)。
+
+- 1280x800 のウィンドウ、`fit`: 映像の箱 1262x709(枠線を含めて 1264x711)。バーは 1 行(24px)、状態の行とヒントは映像の下で、**重ならない**(状態の行が 761〜776、ヒントが 782〜)。1920x1080 -> 1772x997。600x800 -> 582x327(バーは 3 行に折り返す)。390x844 -> 372x209(スマートフォンの幅)。
+- `width`(1280x800): 1247x701(スクロールバーの分を空けた幅)。1280x500 に縮めると、ページが縦にスクロールし、横にはスクロールしない。`actual`: 1280x720 のまま、領域(884x477)より大きいときは、映像の領域だけがスクロールする(`scrollWidth` 1282 > `clientWidth` 884、ページは 600 のまま)。
+- 保存と復元: `actual` を選んで再読み込みすると、`actual` で起動する。
+- **マウスの絶対座標**: 偽の `/ws`(`0x80` の GRANTED を返す)の送信を記録し、実際の Chrome のマウス操作で、箱の左上・右下・中央を指した。`fit` 1280x800: 左上 (0, 0)、右下 (32741, 32721)(箱の端の 1.5px 内側)、中央 (16384, 16360)。700x900 の `fit`・`width` でも、同じく 0 と 32767 の近く、中央が 16384 の近く。黒帯・伸縮によるずれはない。
+- 全画面(`#btn-fullscreen` のクリック): `document.fullscreenElement` が `#video-wrap`、ボタンが「全画面を終了」、ダッシュボードに `is-fullscreen`、バーと下の文言は 0 の高さ、箱は 1280x720(黒の上下の帯)。`document.exitFullscreen()` で戻ると、`fit` の 1262x709 に戻る。

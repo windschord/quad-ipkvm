@@ -9,6 +9,11 @@
 //      VideoTarget.withAccept の表のテスト、偽の VideoDecoder / EncodedVideoChunk / VideoFrame / Blob を入れた偽の環境での、
 //      accept の申告、JPEG との判別、最初の IDR まで P を捨てる、解像度の変化での作り直し、decodeQueueSize、VideoFrame の close、
 //      フォールバック(1 回だけ)、表示。
+//  (E) 表示モードとフルスクリーン(ダッシュボードを全幅にして、映像を画面に合わせる): 純関数 VideoLayout(fitSize / normalizeMode)の、
+//      手書きの表と境界(0・負・NaN・未知のモード・映像が 0x0)。偽の DOM / localStorage / Fullscreen API / navigator.keyboard /
+//      ResizeObserver での、モードのボタン -> aria-pressed、canvas の箱(style.width / height)、保存と復元(不正な値、例外)、
+//      解像度の変更(JPEG / H.264)での再計算、リサイズ、フルスクリーン(要求、拒否、API なし、fullscreenchange、Esc の lock)。
+//      index.html の構造(ボタンの type、グループ、順序、重ならない)と app.css の要点も、実ファイルから読む。
 // `--mutations` は、app.js の追加分を 1 か所ずつ変えたコピーに対して (A)(B) を動かし、落ちることを確認する。
 // 使い方: node tools/test/check_video_viewer.js [--mutations [ID ...]]      (依存なし。ID を付けると、そのミュータントだけ)
 'use strict';
@@ -384,7 +389,10 @@ function makeElement(info) {
         _sets: [], // 代入されたプロパティの名前(innerHTML に代入していないことを調べる)
     };
     return new Proxy(el, {
-        get(t, p) { return p in t ? t[p] : function () {}; },
+        get(t, p) {
+            if (p === 'requestFullscreen' && !(p in t)) return undefined; // the Fullscreen API is absent until a test defines it
+            return p in t ? t[p] : function () {};
+        },
         set(t, p, v) { t._sets.push(String(p)); t[p] = v; return true; },
     });
 }
@@ -398,13 +406,29 @@ FakeWebSocket.OPEN = 1;
 FakeWebSocket.instances = [];
 
 // loc: { host, hostname, port }. statusRef.value: 状態の応答の JSON (fetch のたびに読む)。
-async function boot(source, loc, statusRef, extraGlobals) {
+// opts(省略可): setup(elements, document) = DOMContentLoaded の前に呼ぶ(大きさなどを決める)、
+//   noRequestFullscreen = #video-wrap に requestFullscreen を定義しない(Fullscreen API が無いブラウザ)、
+//   fullscreenEnabled = document.fullscreenEnabled の値(既定 true)。
+async function boot(source, loc, statusRef, extraGlobals, opts) {
+    opts = opts || {};
     const infos = parseIndexHtml();
     const elements = {};
     for (const id of Object.keys(infos)) elements[id] = makeElement(infos[id]);
+    // Fullscreen API の偽物: requestFullscreen の呼び出し(this)、exitFullscreen の呼び出し回数、返す値の種類
+    const fs = { requests: [], exits: 0, mode: 'ok' };
+    if (!opts.noRequestFullscreen && elements['video-wrap']) {
+        elements['video-wrap'].requestFullscreen = function () {
+            fs.requests.push(this);
+            if (fs.mode === 'throw') throw new TypeError('not allowed');
+            if (fs.mode === 'reject') return Promise.reject(new Error('denied'));
+            if (fs.mode === 'undefined') return undefined;
+            return Promise.resolve();
+        };
+    }
     const timers = [];
     let timerSeq = 0;
     const listeners = {};
+    const winListeners = {};
     FakeWebSocket.instances = [];
     const sockets = FakeWebSocket.instances;
     const document = {
@@ -413,10 +437,18 @@ async function boot(source, loc, statusRef, extraGlobals) {
         pointerLockElement: null,
         hidden: false,
         exitPointerLock() {},
+        fullscreenEnabled: opts.fullscreenEnabled === undefined ? true : opts.fullscreenEnabled,
+        fullscreenElement: null,
+        exitFullscreen() {
+            fs.exits++;
+            if (fs.mode === 'reject') return Promise.reject(new Error('denied'));
+            return Promise.resolve();
+        },
     };
+    if (opts.setup) opts.setup(elements, document);
     const ctxObj = {
         document,
-        window: { addEventListener() {} },
+        window: { addEventListener(type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); } },
         location: loc,
         WebSocket: FakeWebSocket,
         fetch: async () => ({ ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(statusRef.value)), headers: { get() { return null; } } }),
@@ -440,7 +472,7 @@ async function boot(source, loc, statusRef, extraGlobals) {
     listeners.DOMContentLoaded();
     await flush();
     const h = {
-        elements, timers, sockets,
+        elements, timers, sockets, document, fs, winListeners, docListeners: listeners,
         videoSockets() { return sockets.filter((s) => /\/video(\?accept=h264)?$/.test(s.url)); },
         lastVideo() { const v = h.videoSockets(); return v[v.length - 1]; },
         hintHidden() { return elements['video-trust-hint']._classes.has('trust-hint-hidden'); },
@@ -1664,16 +1696,782 @@ async function checkH264Browser(source) {
 }
 
 
+// ---------- (E) 表示モード(VideoLayout)とフルスクリーン ----------
+// 映像の箱は、縦横比どおりの整数ピクセルで、CSSOM(elVideo.style.width / height)に設定する(マウスの座標換算が、この箱から計算するため)。
+// 端数の規則(ここで決める): 幅・高さはどちらも切り捨て(floor)。fit では、結果が使える領域を超えない。1 未満にはならない(1 にする)。
+// fit の判定は整数の掛け算 aw*vh <= ah*vw(幅で決まる = 幅が先に尽きる)。同じ縦横比なら、幅で決まる側に入り、領域いっぱいになる。
+function loadVideoLayout(source) {
+    const m = /const VideoLayout = (\{[\s\S]*?\n    \});/.exec(source);
+    if (!m) throw new Error('VideoLayout not found in app.js');
+    return new Function('return ' + m[1])();
+}
+
+const SZ = (w, h) => ({ w, h });
+// [名前, mode, avail, video, 期待({w,h} または null)]。期待値は手書き(実装から計算しない)。
+const FIT_CASES = [
+    // --- fit ---
+    ['fit: 1000x600 for 1280x720: width limited, 562.5 rounds down', 'fit', SZ(1000, 600), SZ(1280, 720), SZ(1000, 562)],
+    ['fit: 1000x563: width limited (720000 <= 720640), 562.5 -> 562', 'fit', SZ(1000, 563), SZ(1280, 720), SZ(1000, 562)],
+    ['fit: 1000x562: the height runs out first (720000 > 719360), 999.1 -> 999', 'fit', SZ(1000, 562), SZ(1280, 720), SZ(999, 562)],
+    ['fit: 1000x561: height limited, 997.3 -> 997', 'fit', SZ(1000, 561), SZ(1280, 720), SZ(997, 561)],
+    ['fit: the same aspect fills the area (and enlarges)', 'fit', SZ(1920, 1080), SZ(1280, 720), SZ(1920, 1080)],
+    ['fit: the same aspect, 4:3 (4000x3000 for 640x480)', 'fit', SZ(4000, 3000), SZ(640, 480), SZ(4000, 3000)],
+    ['fit: smaller than the picture shrinks it', 'fit', SZ(640, 360), SZ(1280, 720), SZ(640, 360)],
+    ['fit: a landscape area: the height decides (711.1 -> 711)', 'fit', SZ(1000, 400), SZ(1280, 720), SZ(711, 400)],
+    ['fit: a tall area: the width decides (225)', 'fit', SZ(400, 1000), SZ(1280, 720), SZ(400, 225)],
+    ['fit: 4:3 picture in a wide area (533.3 -> 533)', 'fit', SZ(1000, 400), SZ(1024, 768), SZ(533, 400)],
+    ['fit: 4:3 picture in a square area', 'fit', SZ(1000, 1000), SZ(1024, 768), SZ(1000, 750)],
+    ['fit: a portrait picture (720x1280) in 1000x600 (337.5 -> 337)', 'fit', SZ(1000, 600), SZ(720, 1280), SZ(337, 600)],
+    ['fit: 1366x768 window, 1080p picture: 1475280 > 1474560, height decides (1365.3 -> 1365)', 'fit', SZ(1366, 768), SZ(1920, 1080), SZ(1365, 768)],
+    ['fit: fractional avail is rounded down first (1000.9x600.9)', 'fit', SZ(1000.9, 600.9), SZ(1280, 720), SZ(1000, 562)],
+    ['fit: fractional avail.h 400.6 is rounded down (height limited: 711, not 712)', 'fit', SZ(1000, 400.6), SZ(1280, 720), SZ(711, 400)],
+    ['fit: fractional avail.w 710.9 is rounded down (width limited by 710)', 'fit', SZ(710.9, 1000), SZ(1280, 720), SZ(710, 399)],
+    ['fit: a 1x1 picture fills the shorter side', 'fit', SZ(500, 300), SZ(1, 1), SZ(300, 300)],
+    ['fit: extremely small area 1x1 (0.56 -> never below 1)', 'fit', SZ(1, 1), SZ(1280, 720), SZ(1, 1)],
+    ['fit: extremely thin area 10x1 (1.77 -> 1)', 'fit', SZ(10, 1), SZ(1280, 720), SZ(1, 1)],
+    ['fit: extremely narrow area 1x1000 (0.56 -> 1)', 'fit', SZ(1, 1000), SZ(1280, 720), SZ(1, 1)],
+    ['fit: avail of exactly 1 is valid', 'fit', SZ(1, 1), SZ(1, 1), SZ(1, 1)],
+    ['fit: huge area, small picture', 'fit', SZ(7680, 4320), SZ(160, 90), SZ(7680, 4320)],
+    ['fit: a very thin picture (1x1000) in 100x1: the width never below 1', 'fit', SZ(100, 1), SZ(1, 1000), SZ(1, 1)],
+    ['fit: a very thin picture (1x1000) in 100x500: 0.5 -> 1', 'fit', SZ(100, 500), SZ(1, 1000), SZ(1, 500)],
+    // --- width ---
+    ['width: 1000 wide, 1280x720 (562.5 -> 562; the height is not limited)', 'width', SZ(1000, 400), SZ(1280, 720), SZ(1000, 562)],
+    ['width: the height of avail does not matter', 'width', SZ(1000, 100), SZ(1280, 720), SZ(1000, 562)],
+    ['width: 4:3', 'width', SZ(1000, 600), SZ(1024, 768), SZ(1000, 750)],
+    ['width: enlarges a small picture', 'width', SZ(3000, 500), SZ(1280, 720), SZ(3000, 1687)],
+    ['width: shrinks', 'width', SZ(640, 500), SZ(1280, 720), SZ(640, 360)],
+    ['width: a portrait picture is taller than the area (3377.8 -> 3377)', 'width', SZ(1900, 100), SZ(720, 1280), SZ(1900, 3377)],
+    ['width: fractional width is rounded down (1000.7)', 'width', SZ(1000.7, 50), SZ(1280, 720), SZ(1000, 562)],
+    ['width: 1x1 area, the height never below 1', 'width', SZ(1, 1), SZ(1280, 720), SZ(1, 1)],
+    // --- actual ---
+    ['actual: the picture size, larger than the area', 'actual', SZ(1000, 400), SZ(1280, 720), SZ(1280, 720)],
+    ['actual: the picture size, smaller than the area', 'actual', SZ(2000, 1200), SZ(1280, 720), SZ(1280, 720)],
+    ['actual: the picture size in a 1x1 area', 'actual', SZ(1, 1), SZ(1280, 720), SZ(1280, 720)],
+    ['actual: 1366x768', 'actual', SZ(1000, 400), SZ(1366, 768), SZ(1366, 768)],
+    ['actual: a fractional picture size is rounded down', 'actual', SZ(1000, 400), SZ(1280.7, 720.2), SZ(1280, 720)],
+    ['actual: a 1x1 picture', 'actual', SZ(1000, 400), SZ(1, 1), SZ(1, 1)],
+    ['actual: the largest picture (65535x65535)', 'actual', SZ(1000, 400), SZ(65535, 65535), SZ(65535, 65535)],
+    // --- avail that is not usable: null in every mode ---
+    ...['fit', 'width', 'actual'].flatMap((m) => [
+        [m + ': avail.w = 0', m, SZ(0, 600), SZ(1280, 720), null],
+        [m + ': avail.h = 0', m, SZ(1000, 0), SZ(1280, 720), null],
+        [m + ': avail 0x0 (the dashboard is hidden)', m, SZ(0, 0), SZ(1280, 720), null],
+        [m + ': avail.w negative', m, SZ(-1, 600), SZ(1280, 720), null],
+        [m + ': avail.h negative', m, SZ(1000, -600), SZ(1280, 720), null],
+        [m + ': avail.w 0.5 (below 1)', m, SZ(0.5, 600), SZ(1280, 720), null],
+        [m + ': avail.h 0.99', m, SZ(1000, 0.99), SZ(1280, 720), null],
+        [m + ': avail.w NaN', m, SZ(NaN, 600), SZ(1280, 720), null],
+        [m + ': avail.h NaN (a client size that is a function in the fake DOM)', m, SZ(1000, function () {}), SZ(1280, 720), null],
+        [m + ': avail.w Infinity', m, SZ(Infinity, 600), SZ(1280, 720), null],
+        [m + ': avail.h -Infinity', m, SZ(1000, -Infinity), SZ(1280, 720), null],
+        [m + ': avail.w a string', m, SZ('1000', 600), SZ(1280, 720), null],
+        [m + ': avail.h null', m, SZ(1000, null), SZ(1280, 720), null],
+        [m + ': avail.w undefined', m, SZ(undefined, 600), SZ(1280, 720), null],
+        [m + ': avail missing h', m, { w: 1000 }, SZ(1280, 720), null],
+        [m + ': avail null', m, null, SZ(1280, 720), null],
+        [m + ': avail undefined', m, undefined, SZ(1280, 720), null],
+        [m + ': avail a number', m, 1000, SZ(1280, 720), null],
+        // --- video that is not usable ---
+        [m + ': video 0x0 (no resolution yet)', m, SZ(1000, 600), SZ(0, 0), null],
+        [m + ': video.w = 0', m, SZ(1000, 600), SZ(0, 720), null],
+        [m + ': video.h = 0', m, SZ(1000, 600), SZ(1280, 0), null],
+        [m + ': video.w negative', m, SZ(1000, 600), SZ(-1280, 720), null],
+        [m + ': video.h negative', m, SZ(1000, 600), SZ(1280, -720), null],
+        [m + ': video.w NaN', m, SZ(1000, 600), SZ(NaN, 720), null],
+        [m + ': video.h Infinity', m, SZ(1000, 600), SZ(1280, Infinity), null],
+        [m + ': video.w a string', m, SZ(1000, 600), SZ('1280', 720), null],
+        [m + ': video null', m, SZ(1000, 600), null, null],
+        [m + ': video undefined', m, SZ(1000, 600), undefined, null],
+        [m + ': video missing w', m, SZ(1000, 600), { h: 720 }, null],
+    ]),
+    // --- unknown mode ---
+    ['mode "FIT" (case)', 'FIT', SZ(1000, 600), SZ(1280, 720), null],
+    ['mode " fit"', ' fit', SZ(1000, 600), SZ(1280, 720), null],
+    ['mode empty', '', SZ(1000, 600), SZ(1280, 720), null],
+    ['mode undefined', undefined, SZ(1000, 600), SZ(1280, 720), null],
+    ['mode null', null, SZ(1000, 600), SZ(1280, 720), null],
+    ['mode a number', 5, SZ(1000, 600), SZ(1280, 720), null],
+    ['mode "full"', 'full', SZ(1000, 600), SZ(1280, 720), null],
+    ['mode "constructor"', 'constructor', SZ(1000, 600), SZ(1280, 720), null],
+    ['mode "__proto__"', '__proto__', SZ(1000, 600), SZ(1280, 720), null],
+    ['mode "toString"', 'toString', SZ(1000, 600), SZ(1280, 720), null],
+    ['mode an array ["fit"]', ['fit'], SZ(1000, 600), SZ(1280, 720), null],
+];
+
+// [名前, 入力, 期待]
+const NORMALIZE_CASES = [
+    ['fit', 'fit', 'fit'],
+    ['width', 'width', 'width'],
+    ['actual', 'actual', 'actual'],
+    ['null (nothing saved)', null, 'fit'],
+    ['undefined', undefined, 'fit'],
+    ['empty string', '', 'fit'],
+    ['upper case FIT', 'FIT', 'fit'],
+    ['upper case WIDTH', 'WIDTH', 'fit'],
+    ['upper case ACTUAL', 'Actual', 'fit'],
+    ['trailing space "width "', 'width ', 'fit'],
+    ['leading space " actual"', ' actual', 'fit'],
+    ['unknown "bogus"', 'bogus', 'fit'],
+    ['"full"', 'full', 'fit'],
+    ['"constructor"', 'constructor', 'fit'],
+    ['"__proto__"', '__proto__', 'fit'],
+    ['"toString"', 'toString', 'fit'],
+    ['"MODES"', 'MODES', 'fit'],
+    ['"hasOwnProperty"', 'hasOwnProperty', 'fit'],
+    ['number 0', 0, 'fit'],
+    ['number 1', 1, 'fit'],
+    ['true', true, 'fit'],
+    ['empty object', {}, 'fit'],
+    ['array ["width"]', ['width'], 'fit'],
+    ['String object new String("width")', new String('width'), 'fit'],
+    ['object whose toString gives "actual"', { toString() { return 'actual'; } }, 'fit'],
+    ['JSON text "\\"actual\\""', '"actual"', 'fit'],
+];
+
+function checkLayoutPure(source) {
+    const problems = [];
+    let vl;
+    try { vl = loadVideoLayout(source); } catch (e) { return [String(e.message)]; }
+    for (const [name, mode, avail, video, want] of FIT_CASES) {
+        let got;
+        try { got = vl.fitSize(mode, avail, video); } catch (e) { problems.push('fitSize ' + name + ': threw ' + e.message); continue; }
+        if (JSON.stringify(got) !== JSON.stringify(want)) problems.push('fitSize ' + name + ': expected ' + JSON.stringify(want) + ', got ' + JSON.stringify(got));
+        if (got !== null && !(Number.isInteger(got.w) && Number.isInteger(got.h) && got.w >= 1 && got.h >= 1)) problems.push('fitSize ' + name + ': not whole pixels >= 1: ' + JSON.stringify(got));
+    }
+    for (const [name, input, want] of NORMALIZE_CASES) {
+        let got;
+        try { got = vl.normalizeMode(input); } catch (e) { problems.push('normalizeMode ' + name + ': threw ' + e.message); continue; }
+        if (got !== want) problems.push('normalizeMode ' + name + ': expected ' + want + ', got ' + got);
+    }
+    // 性質: fit は使える領域を超えず、縦横比がほぼ保たれる(誤差は 1 ピクセル未満 + 切り捨て分)。幅は 1 〜 80 の組で総当たり。
+    for (let aw = 1; aw <= 40; aw += 3) {
+        for (let ah = 1; ah <= 40; ah += 4) {
+            for (const [vw, vh] of [[16, 9], [4, 3], [9, 16], [1, 1], [5, 2]]) {
+                const g = vl.fitSize('fit', SZ(aw, ah), SZ(vw, vh));
+                if (g === null || g.w > aw || g.h > ah || g.w < 1 || g.h < 1) { problems.push('fit property (box inside avail) ' + [aw, ah, vw, vh] + ': ' + JSON.stringify(g)); continue; }
+                // どちらかの辺が領域いっぱい(最大であること。1 に切り上げた場合を除く)
+                if (g.w !== aw && g.h !== ah && g.w > 1 && g.h > 1) problems.push('fit property (one side fills the area) ' + [aw, ah, vw, vh] + ': ' + JSON.stringify(g));
+            }
+        }
+    }
+    return problems;
+}
+
+// ---- 偽の localStorage ----
+// init: 最初の中身。opts.getThrows / setThrows: その操作が例外を投げる(プライベートウィンドウ、ブロック)
+function makeStorage(init, opts) {
+    opts = opts || {};
+    const s = { data: Object.assign({}, init), reads: [], writes: [] };
+    s.getItem = (k) => {
+        s.reads.push(k);
+        if (opts.getThrows) throw new Error('SecurityError');
+        return Object.prototype.hasOwnProperty.call(s.data, k) ? s.data[k] : null;
+    };
+    s.setItem = (k, v) => {
+        if (opts.setThrows) throw new Error('QuotaExceededError');
+        s.writes.push([k, v]);
+        s.data[k] = String(v);
+    };
+    return s;
+}
+
+const VIEW_KEY = 'quadkvm.viewMode';
+
+async function checkLayoutBrowser(source) {
+    const problems = [];
+    const eq = (name, got, want) => {
+        if (JSON.stringify(got) !== JSON.stringify(want)) problems.push(name + ': expected ' + JSON.stringify(want) + ', got ' + JSON.stringify(got));
+    };
+    const guard = async (name, fn) => {
+        try { await fn(); } catch (e) { problems.push(name + ': threw ' + (e && e.message)); }
+    };
+    const WRAP = [1000, 400]; // 使える領域(#video-wrap の clientWidth / clientHeight)の既定
+    const FULL = [1600, 800]; // 全画面のときの領域
+    // 開いたページ。o: wrap = [w, h]、storage = 偽の localStorage(null で localStorage というグローバルが無い)、
+    //  noRequest / fullscreenEnabled(boot の opts)、globals(追加のグローバル)、video = [w, h](canvas の最初の大きさ)、
+    //  canvasBox = [offsetW, clientW, offsetH, clientH](canvas の枠線)、status(状態の応答)
+    const page = async (o) => {
+        o = o || {};
+        const st = { value: o.status || READY_AUTH() };
+        const globals = Object.assign({}, o.globals || {});
+        const storage = o.storage === undefined ? makeStorage({}) : o.storage;
+        if (storage !== null) globals.localStorage = storage;
+        const wrapSize = o.wrap === undefined ? WRAP : o.wrap;
+        const h = await boot(source, L('kvm.local', 'kvm.local', ''), st, globals, {
+            noRequestFullscreen: o.noRequest,
+            fullscreenEnabled: o.fullscreenEnabled,
+            setup(els, doc) {
+                if (o.noFullscreenEnabled) delete doc.fullscreenEnabled;
+                if (wrapSize !== null) {
+                    els['video-wrap'].clientWidth = wrapSize[0];
+                    els['video-wrap'].clientHeight = wrapSize[1];
+                }
+                if (o.video) { els['video'].width = o.video[0]; els['video'].height = o.video[1]; }
+                if (o.canvasBox) {
+                    els['video'].offsetWidth = o.canvasBox[0];
+                    els['video'].clientWidth = o.canvasBox[1];
+                    els['video'].offsetHeight = o.canvasBox[2];
+                    els['video'].clientHeight = o.canvasBox[3];
+                }
+            },
+        });
+        h.st = st;
+        h.storage = storage;
+        h.wrap = () => h.elements['video-wrap'];
+        h.size = () => [h.elements['video'].style.width, h.elements['video'].style.height];
+        h.pressed = () => ['btn-view-fit', 'btn-view-width', 'btn-view-actual'].map((id) => h.elements[id].getAttribute('aria-pressed'));
+        h.dash = () => h.elements['view-dashboard']._classes;
+        h.click = (id) => h.elements[id]._listeners.click();
+        h.setWrap = (w, hh) => { h.wrap().clientWidth = w; h.wrap().clientHeight = hh; };
+        h.enterFs = () => { h.document.fullscreenElement = h.wrap(); h.docListeners.fullscreenchange(); };
+        h.exitFs = () => { h.document.fullscreenElement = null; h.docListeners.fullscreenchange(); };
+        h.fsLabel = () => h.elements['btn-fullscreen'].textContent;
+        // 映像のフレームを 1 枚届ける(偽の JPEG フレーム = { w, h })
+        h.frame = async (w, hh) => { await h.msg({ w, h: hh }); await flush(); };
+        return h;
+    };
+    const px = (w, hh) => [w + 'px', hh + 'px'];
+    const MODES = ['fit', 'width', 'actual'];
+    const classesOf = (h) => MODES.filter((m) => h.dash().has('mode-' + m));
+
+    // 1. 既定は fit: 領域 1000x400 に 1280x720 -> 高さで決まる 711x400。ボタンと class
+    await guard('layout/default', async () => {
+        const h = await page();
+        eq('1 default: fit box', h.size(), px(711, 400));
+        eq('1 aria-pressed', h.pressed(), ['true', 'false', 'false']);
+        eq('1 dashboard class', classesOf(h), ['fit']);
+        eq('1 nothing is written before a choice', h.storage.writes, []);
+        eq('1 the saved mode is read from quadkvm.viewMode', h.storage.reads, [VIEW_KEY]);
+        eq('1 the dashboard is shown, the card is hidden', [h.dash().has('view-hidden'), h.elements['auth-card']._classes.has('view-hidden')], [false, true]);
+        eq('1 full screen is not on', h.dash().has('is-fullscreen'), false);
+    });
+
+    // 2. モードのボタン: クリック -> aria-pressed、箱、class、保存。fit -> width -> actual -> fit
+    await guard('layout/mode buttons', async () => {
+        const h = await page();
+        h.click('btn-view-width');
+        eq('2 width: box', h.size(), px(1000, 562));
+        eq('2 width: aria-pressed', h.pressed(), ['false', 'true', 'false']);
+        eq('2 width: class', classesOf(h), ['width']);
+        eq('2 width: saved', h.storage.writes, [[VIEW_KEY, 'width']]);
+        h.click('btn-view-actual');
+        eq('2 actual: box (the picture size, larger than the area)', h.size(), px(1280, 720));
+        eq('2 actual: aria-pressed', h.pressed(), ['false', 'false', 'true']);
+        eq('2 actual: class', classesOf(h), ['actual']);
+        eq('2 actual: saved', h.storage.writes, [[VIEW_KEY, 'width'], [VIEW_KEY, 'actual']]);
+        h.click('btn-view-fit');
+        eq('2 fit again: box', h.size(), px(711, 400));
+        eq('2 fit again: aria-pressed', h.pressed(), ['true', 'false', 'false']);
+        eq('2 fit again: class', classesOf(h), ['fit']);
+        eq('2 fit again: saved', h.storage.writes[2], [VIEW_KEY, 'fit']);
+        // 同じボタンをもう一度: そのまま
+        h.click('btn-view-fit');
+        eq('2 the same button twice: still pressed', h.pressed(), ['true', 'false', 'false']);
+    });
+
+    // 3. 起動時の復元: 保存値 -> モード。不正な値は既定(fit)に戻る(保存し直しはしない)
+    for (const [saved, want, box] of [['fit', 'fit', px(711, 400)], ['width', 'width', px(1000, 562)], ['actual', 'actual', px(1280, 720)]]) {
+        await guard('layout/restore ' + saved, async () => {
+            const h = await page({ storage: makeStorage({ [VIEW_KEY]: saved }) });
+            eq('3 restored ' + saved + ': box', h.size(), box);
+            eq('3 restored ' + saved + ': aria-pressed', h.pressed(), MODES.map((m) => (m === want ? 'true' : 'false')));
+            eq('3 restored ' + saved + ': class', classesOf(h), [want]);
+            eq('3 restored ' + saved + ': nothing written', h.storage.writes, []);
+        });
+    }
+    for (const bad of ['bogus', '', 'FIT', 'Width', ' actual', 'constructor', '__proto__', 'null', '0']) {
+        await guard('layout/restore bad ' + JSON.stringify(bad), async () => {
+            const h = await page({ storage: makeStorage({ [VIEW_KEY]: bad }) });
+            eq('3 bad saved value ' + JSON.stringify(bad) + ': fit', [h.size(), h.pressed(), classesOf(h)], [px(711, 400), ['true', 'false', 'false'], ['fit']]);
+        });
+    }
+    await guard('layout/the key is only the view mode', async () => {
+        const h = await page({ storage: makeStorage({ other: 'actual', viewMode: 'actual', 'quadkvm.viewmode': 'actual' }) });
+        eq('3 other keys do not count', [h.size(), h.pressed()], [px(711, 400), ['true', 'false', 'false']]);
+    });
+
+    // 4. localStorage が使えない・例外を投げても動く
+    await guard('layout/storage missing', async () => {
+        const h = await page({ storage: null });
+        eq('4 no localStorage: fit', [h.size(), h.pressed()], [px(711, 400), ['true', 'false', 'false']]);
+        h.click('btn-view-width');
+        eq('4 no localStorage: the mode still changes', [h.size(), h.pressed()], [px(1000, 562), ['false', 'true', 'false']]);
+    });
+    await guard('layout/getItem throws', async () => {
+        const h = await page({ storage: makeStorage({ [VIEW_KEY]: 'actual' }, { getThrows: true }) });
+        eq('4 getItem throws: fit', [h.size(), h.pressed()], [px(711, 400), ['true', 'false', 'false']]);
+        h.click('btn-view-actual');
+        eq('4 getItem throws: the mode still changes', [h.size(), h.pressed()], [px(1280, 720), ['false', 'false', 'true']]);
+    });
+    await guard('layout/setItem throws', async () => {
+        const h = await page({ storage: makeStorage({}, { setThrows: true }) });
+        h.click('btn-view-width');
+        eq('4 setItem throws: the mode still changes', [h.size(), h.pressed(), classesOf(h)], [px(1000, 562), ['false', 'true', 'false'], ['width']]);
+        h.click('btn-view-actual');
+        eq('4 setItem throws: and again', [h.size(), h.pressed()], [px(1280, 720), ['false', 'false', 'true']]);
+    });
+
+    // 5. 解像度の変更で再計算される(幅だけ、高さだけの変更も)
+    await guard('layout/resolution change', async () => {
+        const h = await page();
+        await h.frame(1280, 720);
+        eq('5 first frame (same size as the canvas): same box', h.size(), px(711, 400));
+        await h.frame(1024, 768);
+        eq('5 4:3 frame: height limited 533x400', h.size(), px(533, 400));
+        await h.frame(1000, 768);
+        eq('5 only the width changed (1024x768 -> 1000x768): 520x400 (520.8)', h.size(), px(520, 400));
+        await h.frame(1000, 720);
+        eq('5 only the height changed (1000x768 -> 1000x720): 555x400 (555.5)', h.size(), px(555, 400));
+        await h.frame(1000, 400);
+        eq('5 only the height changed again: width limited 1000x400', h.size(), px(1000, 400));
+        await h.frame(1280, 720);
+        eq('5 back to 16:9', h.size(), px(711, 400));
+        h.click('btn-view-actual');
+        await h.frame(1024, 768);
+        eq('5 actual: the new picture size', h.size(), px(1024, 768));
+        h.click('btn-view-width');
+        eq('5 width: 4:3 box', h.size(), px(1000, 750));
+    });
+    await guard('layout/a frame of the same size does not lay out again', async () => {
+        const h = await page();
+        await h.frame(1280, 720);
+        h.setWrap(500, 500); // no resize event: the next frame of the same size leaves the box alone
+        await h.frame(1280, 720);
+        eq('5b same resolution: no new layout', h.size(), px(711, 400));
+        await h.frame(1280, 721);
+        eq('5b another resolution: new layout in the new area (500 wide: 500x281)', h.size(), px(500, 281));
+    });
+    await guard('layout/H.264 frame', async () => {
+        const env = makeCodecs();
+        const globals = Object.assign({ localStorage: makeStorage({}) }, env.globals);
+        const st = { value: READY_AUTH() };
+        const h = await boot(source, L('kvm.local', 'kvm.local', ''), st, globals, {
+            setup(els) { els['video-wrap'].clientWidth = WRAP[0]; els['video-wrap'].clientHeight = WRAP[1]; },
+        });
+        h.lastVideo().onopen();
+        await h.msg(hx(AU_IDR720).buffer);
+        await flush();
+        const d = env.decoders[0];
+        d.emit(env.frame(1024, 768));
+        eq('5c H.264 frame of another size: canvas', [h.canvas().width, h.canvas().height], [1024, 768]);
+        eq('5c H.264 frame of another size: box', [h.canvas().style.width, h.canvas().style.height], px(533, 400));
+        d.emit(env.frame(1000, 768));
+        eq('5c only the width changed (1024x768 -> 1000x768)', [h.canvas().style.width, h.canvas().style.height], px(520, 400));
+        d.emit(env.frame(1000, 720));
+        eq('5c only the height changed (1000x768 -> 1000x720)', [h.canvas().style.width, h.canvas().style.height], px(555, 400));
+        d.emit(env.frame(1000, 400));
+        eq('5c only the height changed again', [h.canvas().style.width, h.canvas().style.height], px(1000, 400));
+    });
+
+    // 6. ウィンドウのリサイズ(resize イベント)と、領域の大きさの変化(ResizeObserver)で再計算される
+    await guard('layout/resize', async () => {
+        const h = await page();
+        eq('6 resize listener is on the window', (h.winListeners.resize || []).length, 1);
+        h.setWrap(1920, 900);
+        h.winListeners.resize[0]();
+        eq('6 resize: 1600x900 box (1920x900 area: height limited, 1600.0)', h.size(), px(1600, 900));
+        h.setWrap(300, 900);
+        h.winListeners.resize[0]();
+        eq('6 narrow window: width limited 300x168 (168.75)', h.size(), px(300, 168));
+        h.click('btn-view-width');
+        h.setWrap(800, 100);
+        h.winListeners.resize[0]();
+        eq('6 width mode follows the width only', h.size(), px(800, 450));
+    });
+    await guard('layout/ResizeObserver', async () => {
+        const observers = [];
+        class FakeResizeObserver {
+            constructor(cb) { this.cb = cb; this.targets = []; observers.push(this); }
+            observe(t) { this.targets.push(t); }
+            disconnect() {}
+        }
+        const h = await page({ globals: { ResizeObserver: FakeResizeObserver } });
+        eq('6b one observer, watching the video area', [observers.length, observers[0] && observers[0].targets.length, observers[0] && observers[0].targets[0] === h.wrap()], [1, 1, true]);
+        h.setWrap(640, 480);
+        observers[0].cb([]);
+        eq('6b the area changed: box', h.size(), px(640, 360));
+    });
+    await guard('layout/ResizeObserver throws', async () => {
+        class BadObserver { constructor() { throw new Error('nope'); } }
+        const h = await page({ globals: { ResizeObserver: BadObserver } });
+        eq('6c a ResizeObserver that cannot be made: the page still works', h.size(), px(711, 400));
+    });
+
+    // 7. 解像度が不明(0)、または領域が不明(0 / 数でない)のときは、箱を設定しない
+    await guard('layout/unknown resolution', async () => {
+        const h = await page({ video: [0, 0] });
+        eq('7 resolution 0x0: no box', h.size(), [undefined, undefined]);
+        h.winListeners.resize[0]();
+        eq('7 resolution 0x0: still none after a resize', h.size(), [undefined, undefined]);
+        h.click('btn-view-actual');
+        eq('7 resolution 0x0: none in actual mode too', h.size(), [undefined, undefined]);
+        await h.frame(1280, 720);
+        eq('7 the first real frame sets the box', h.size(), px(1280, 720));
+    });
+    await guard('layout/unknown resolution (width only)', async () => {
+        const h = await page({ video: [1280, 0] });
+        eq('7 height 0: no box', h.size(), [undefined, undefined]);
+    });
+    await guard('layout/unknown area', async () => {
+        const h = await page({ wrap: [0, 0] });
+        eq('7 area 0x0: no box', h.size(), [undefined, undefined]);
+        h.setWrap(1000, 400);
+        h.winListeners.resize[0]();
+        eq('7 the area appears: box', h.size(), px(711, 400));
+        h.setWrap(0, 0);
+        h.winListeners.resize[0]();
+        eq('7 the area goes to 0 (hidden): the last box stays', h.size(), px(711, 400));
+        const h2 = await page({ wrap: null }); // clientWidth is a function in the fake DOM = not a number
+        eq('7 area not a number: no box', h2.size(), [undefined, undefined]);
+    });
+
+    // 8. canvas の枠線(offsetWidth - clientWidth)は領域から引く: 枠線 1px x 2 = 2px
+    await guard('layout/border', async () => {
+        const h = await page({ canvasBox: [1002, 1000, 502, 500] });
+        eq('8 border 2px taken off the area (998x398): 707x398 (707.5)', h.size(), px(707, 398));
+        h.click('btn-view-width');
+        eq('8 width: 998 wide, 561 high (561.4)', h.size(), px(998, 561));
+        h.click('btn-view-actual');
+        eq('8 actual: the picture size (the border is outside)', h.size(), px(1280, 720));
+    });
+    await guard('layout/border absent or odd', async () => {
+        const h = await page({ canvasBox: [1000, 1000, 500, 500] });
+        eq('8 no border: the whole area', h.size(), px(711, 400));
+        const h2 = await page({ canvasBox: [998, 1000, 498, 500] }); // offset < client: not a border
+        eq('8 offset smaller than client counts as no border', h2.size(), px(711, 400));
+        // a border that differs between the width (2px) and the height (4px)
+        const h3 = await page({ canvasBox: [1002, 1000, 504, 500] });
+        eq('8 border 2px wide and 4px high: area 998x396, 704x396', h3.size(), px(704, 396));
+    });
+
+    // 9. フルスクリーン
+    await guard('fullscreen/enter and exit', async () => {
+        const h = await page();
+        eq('9 button enabled, no title', [h.elements['btn-fullscreen'].disabled, h.elements['btn-fullscreen'].title], [false, undefined]);
+        const label0 = h.fsLabel();
+        h.click('btn-fullscreen');
+        eq('9 requestFullscreen on .video-wrap, once', [h.fs.requests.length, h.fs.requests[0] === h.wrap(), h.fs.exits], [1, true, 0]);
+        eq('9 nothing changes until the browser reports it', [h.fsLabel() === label0, h.dash().has('is-fullscreen'), h.size()], [true, false, px(711, 400)]);
+        h.setWrap(FULL[0], FULL[1]);
+        h.enterFs();
+        eq('9 in full screen: label', h.fsLabel(), '全画面を終了');
+        eq('9 in full screen: bar and text hidden by class', h.dash().has('is-fullscreen'), true);
+        eq('9 in full screen: the box fits the window (1422x800)', h.size(), px(1422, 800));
+        eq('9 the saved mode is not touched', [h.pressed(), classesOf(h), h.storage.writes], [['true', 'false', 'false'], ['fit'], []]);
+        h.click('btn-fullscreen');
+        eq('9 the button in full screen exits (document.exitFullscreen)', [h.fs.requests.length, h.fs.exits], [1, 1]);
+        h.setWrap(WRAP[0], WRAP[1]);
+        h.exitFs();
+        eq('9 out: label', h.fsLabel(), '全画面');
+        eq('9 out: class', h.dash().has('is-fullscreen'), false);
+        eq('9 out: box back', h.size(), px(711, 400));
+    });
+    await guard('fullscreen/always fit', async () => {
+        for (const [saved, normal] of [['actual', px(1280, 720)], ['width', px(1000, 562)]]) {
+            const h = await page({ storage: makeStorage({ [VIEW_KEY]: saved }) });
+            eq('9b ' + saved + ': before', h.size(), normal);
+            h.setWrap(FULL[0], FULL[1]);
+            h.enterFs();
+            eq('9b ' + saved + ': full screen shows fit (1422x800)', h.size(), px(1422, 800));
+            eq('9b ' + saved + ': the mode buttons keep the saved mode', [h.pressed(), classesOf(h)], [MODES.map((m) => (m === saved ? 'true' : 'false')), [saved]]);
+            h.setWrap(WRAP[0], WRAP[1]);
+            h.exitFs();
+            eq('9b ' + saved + ': after full screen: the saved mode again', h.size(), normal);
+            eq('9b ' + saved + ': nothing was saved on the way', h.storage.writes, []);
+        }
+    });
+    await guard('fullscreen/resolution change inside', async () => {
+        const h = await page();
+        h.setWrap(FULL[0], FULL[1]);
+        h.enterFs();
+        await h.frame(1024, 768);
+        eq('9c a new resolution in full screen: 1066x800 (1066.7)', h.size(), px(1066, 800));
+    });
+    await guard('fullscreen/refused', async () => {
+        const h = await page();
+        const label0 = h.fsLabel();
+        h.fs.mode = 'reject';
+        h.click('btn-fullscreen');
+        await flush();
+        eq('9d rejected: asked once, the page is as before', [h.fs.requests.length, h.fsLabel() === label0, h.dash().has('is-fullscreen'), h.size()], [1, true, false, px(711, 400)]);
+        const h2 = await page();
+        h2.fs.mode = 'throw';
+        let threw = null;
+        try { h2.click('btn-fullscreen'); } catch (e) { threw = e.message; }
+        eq('9d requestFullscreen throws: the click handler does not', threw, null);
+        const h3 = await page();
+        h3.fs.mode = 'undefined'; // an old browser: no Promise
+        h3.click('btn-fullscreen');
+        eq('9d no Promise returned: fine', h3.fs.requests.length, 1);
+        // 全画面の中で exitFullscreen が拒否されても落ちない
+        const h4 = await page();
+        h4.enterFs();
+        h4.fs.mode = 'reject';
+        h4.click('btn-fullscreen');
+        await flush();
+        eq('9d exitFullscreen rejected: fine', h4.fs.exits, 1);
+    });
+    await guard('fullscreen/no API', async () => {
+        const h = await page({ noRequest: true });
+        const b = h.elements['btn-fullscreen'];
+        eq('9e no requestFullscreen: disabled with a reason', [b.disabled, typeof b.title === 'string' && b.title.length > 0], [true, true]);
+        let threw = null;
+        try { h.click('btn-fullscreen'); } catch (e) { threw = e.message; }
+        eq('9e a click does not throw', threw, null);
+        eq('9e and nothing is requested', h.fs.requests.length, 0);
+        for (const v of [false, null, 0]) {
+            const h2 = await page({ fullscreenEnabled: v });
+            const b2 = h2.elements['btn-fullscreen'];
+            eq('9e fullscreenEnabled = ' + v + ': disabled with a reason', [b2.disabled, typeof b2.title === 'string' && b2.title.length > 0], [true, true]);
+        }
+        const h3 = await page({ noFullscreenEnabled: true });
+        eq('9e no fullscreenEnabled property: disabled with a reason', [h3.elements['btn-fullscreen'].disabled, typeof h3.elements['btn-fullscreen'].title === 'string' && h3.elements['btn-fullscreen'].title.length > 0], [true, true]);
+    });
+    await guard('fullscreen/another element', async () => {
+        const h = await page();
+        h.document.fullscreenElement = h.elements['video']; // not the video area
+        h.docListeners.fullscreenchange();
+        eq('9f full screen of another element does not count', [h.dash().has('is-fullscreen'), h.size()], [false, px(711, 400)]);
+    });
+    await guard('fullscreen/leaving the dashboard', async () => {
+        const h = await page();
+        h.enterFs();
+        h.st.value = { state: 'ready', authenticated: false };
+        h.click('btn-logout');
+        await flush();
+        await flush();
+        eq('9g the session ended in full screen: the page leaves full screen', h.fs.exits >= 1, true);
+        eq('9g the login view is shown', [h.elements['view-login']._classes.has('view-hidden'), h.elements['auth-card']._classes.has('view-hidden')], [false, false]);
+    });
+
+    // 10. Esc を奪う Chromium の navigator.keyboard.lock(任意)
+    const kbEnv = (mode) => {
+        const kb = { locks: [], unlocks: 0 };
+        kb.lock = (keys) => {
+            kb.locks.push(keys);
+            if (mode === 'throw') throw new Error('not allowed');
+            if (mode === 'reject') return Promise.reject(new Error('denied'));
+            return Promise.resolve();
+        };
+        kb.unlock = () => { kb.unlocks++; };
+        return kb;
+    };
+    await guard('keyboard lock', async () => {
+        const kb = kbEnv('ok');
+        const h = await page({ globals: { navigator: { keyboard: kb } } });
+        h.enterFs();
+        eq('10a input off: no lock', [kb.locks, kb.unlocks], [[], 0]);
+        h.exitFs();
+        eq('10a input off: no unlock either', [kb.locks, kb.unlocks], [[], 0]);
+        h.click('btn-input-toggle'); // input on
+        h.enterFs();
+        eq('10b input on: Escape is locked after entering full screen', [kb.locks, kb.unlocks], [[['Escape']], 0]);
+        h.docListeners.fullscreenchange();
+        eq('10b another change event: not locked twice', kb.locks.length, 1);
+        h.exitFs();
+        eq('10b leaving full screen unlocks', [kb.locks.length, kb.unlocks], [1, 1]);
+        h.exitFs();
+        eq('10b and only once', kb.unlocks, 1);
+        // 全画面の中で入力を切り替える
+        const kb2 = kbEnv('ok');
+        const h2 = await page({ globals: { navigator: { keyboard: kb2 } } });
+        h2.enterFs();
+        h2.elements['video']._listeners.click(); // a click on the picture turns input on
+        eq('10c input turned on inside full screen: locked', [kb2.locks, kb2.unlocks], [[['Escape']], 0]);
+        h2.click('btn-input-toggle'); // off
+        eq('10c input turned off inside full screen: unlocked', [kb2.locks.length, kb2.unlocks], [1, 1]);
+        // 入力が有効でも、全画面でなければ lock しない
+        const kb3 = kbEnv('ok');
+        const h3 = await page({ globals: { navigator: { keyboard: kb3 } } });
+        h3.click('btn-input-toggle');
+        eq('10d input on, not in full screen: no lock', [kb3.locks, kb3.unlocks], [[], 0]);
+    });
+    await guard('keyboard lock failures', async () => {
+        for (const mode of ['reject', 'throw']) {
+            const kb = kbEnv(mode);
+            const h = await page({ globals: { navigator: { keyboard: kb } } });
+            h.click('btn-input-toggle');
+            h.enterFs();
+            await flush();
+            eq('10e lock ' + mode + ': tried once, the page goes on', [kb.locks.length, h.fsLabel(), h.size()], [1, '全画面を終了', px(711, 400)]);
+            h.exitFs();
+            eq('10e lock ' + mode + ': out again', [h.fsLabel(), h.dash().has('is-fullscreen')], ['全画面', false]);
+        }
+        const none = await page({ globals: { navigator: {} } });
+        none.click('btn-input-toggle');
+        none.enterFs();
+        none.exitFs();
+        eq('10f navigator without keyboard: fine', none.fsLabel(), '全画面');
+        const noLock = await page({ globals: { navigator: { keyboard: {} } } });
+        noLock.click('btn-input-toggle');
+        noLock.enterFs();
+        noLock.exitFs();
+        eq('10f keyboard without lock / unlock: fine', noLock.fsLabel(), '全画面');
+        const throwing = await page({ globals: { navigator: { keyboard: { lock() { throw new Error('x'); }, unlock() { throw new Error('y'); } } } } });
+        throwing.click('btn-input-toggle');
+        throwing.enterFs();
+        throwing.exitFs();
+        eq('10f lock and unlock that throw: fine', throwing.fsLabel(), '全画面');
+        const plain = await page();
+        plain.click('btn-input-toggle');
+        plain.enterFs();
+        plain.exitFs();
+        eq('10f no navigator at all: fine', plain.fsLabel(), '全画面');
+    });
+
+    // 11. ログイン・初期設定の画面: カードが見え、ダッシュボードは隠れている。ダッシュボードではカードが隠れる
+    await guard('layout/views', async () => {
+        const h = await page({ status: { state: 'needs_setup' } });
+        eq('11 setup: card shown, setup shown, dashboard hidden', [h.elements['auth-card']._classes.has('view-hidden'), h.elements['view-setup']._classes.has('view-hidden'), h.dash().has('view-hidden')], [false, false, true]);
+        h.st.value = { state: 'ready', authenticated: false };
+        h.elements['form-login']._listeners.submit({ preventDefault() {} });
+        await flush();
+        await flush();
+        eq('11 login: card shown, login shown, dashboard hidden', [h.elements['auth-card']._classes.has('view-hidden'), h.elements['view-login']._classes.has('view-hidden'), h.dash().has('view-hidden')], [false, false, true]);
+        h.st.value = READY_AUTH();
+        h.elements['form-login']._listeners.submit({ preventDefault() {} });
+        await flush();
+        await flush();
+        eq('11 logged in: dashboard shown, card hidden', [h.elements['auth-card']._classes.has('view-hidden'), h.dash().has('view-hidden')], [true, false]);
+        eq('11 the box is set when the dashboard appears', h.size(), px(711, 400));
+    });
+    return problems;
+}
+
+// ---- index.html と app.css の形(キャンバスの箱が正確であること、重ならないこと、ボタンの属性) ----
+function checkLayoutFiles() {
+    const problems = [];
+    const html = fs.readFileSync(INDEX_HTML, 'utf8');
+    const css = fs.readFileSync(path.join(WEB_DIR, 'app.css'), 'utf8');
+    const info = parseIndexHtml();
+    const at = (s) => html.indexOf(s);
+    // id
+    for (const id of ['auth-card', 'view-dashboard', 'video-wrap', 'video', 'video-overlay', 'video-status', 'video-trust-hint', 'btn-input-toggle', 'btn-pointer-lock', 'input-status', 'usb-status',
+        'btn-view-fit', 'btn-view-width', 'btn-view-actual', 'btn-fullscreen', 'btn-logout', 'error-message', 'view-setup', 'view-login']) {
+        if (!info[id]) problems.push('index.html lacks #' + id);
+    }
+    if (problems.length) return problems;
+    // ボタンは <button type="button">(フォームの外で submit にならない。キーボードで操作できる)
+    for (const id of ['btn-input-toggle', 'btn-pointer-lock', 'btn-view-fit', 'btn-view-width', 'btn-view-actual', 'btn-fullscreen', 'btn-logout']) {
+        if (info[id].tag !== 'button') problems.push('#' + id + ' must be a <button>');
+        if (!/\btype="button"/.test(info[id].attrs)) problems.push('#' + id + ' needs type="button"');
+        if (/tabindex="-1"/.test(info[id].attrs)) problems.push('#' + id + ' must stay reachable by keyboard');
+    }
+    // 表示サイズのグループ
+    const g = /<div\b([^>]*\brole="group"[^>]*)>([\s\S]*?)<\/div>/.exec(html);
+    if (!g) problems.push('index.html lacks the role="group" of the view modes');
+    else {
+        if (!/aria-label="表示サイズ"/.test(g[1])) problems.push('the view mode group needs aria-label="表示サイズ"');
+        const ids = (g[2].match(/id="[^"]+"/g) || []).join(' ');
+        if (ids !== 'id="btn-view-fit" id="btn-view-width" id="btn-view-actual"') problems.push('the group holds the three mode buttons in order, got: ' + ids);
+    }
+    const label = (id) => new RegExp('id="' + id + '"[^>]*>([^<]*)<').exec(html);
+    for (const [id, text] of [['btn-view-fit', 'ウィンドウに合わせる'], ['btn-view-width', '幅に合わせる'], ['btn-view-actual', '実寸 (100%)'], ['btn-fullscreen', '全画面'], ['btn-logout', 'ログアウト']]) {
+        const m = label(id);
+        if (!m || m[1] !== text) problems.push('#' + id + ' label: expected ' + text + ', got ' + (m && m[1]));
+    }
+    for (const [id, v] of [['btn-view-fit', 'true'], ['btn-view-width', 'false'], ['btn-view-actual', 'false']]) {
+        if (!new RegExp('aria-pressed="' + v + '"').test(info[id].attrs)) problems.push('#' + id + ' starts with aria-pressed="' + v + '"');
+    }
+    // 順序: 操作バー(左から)-> 映像 -> 状態と文言
+    const order = ['class="bar-title"', 'id="btn-input-toggle"', 'id="btn-pointer-lock"', 'id="input-status"', 'id="usb-status"', 'role="group"', 'id="btn-fullscreen"', 'id="btn-logout"',
+        'class="video-wrap"', '<canvas id="video"', 'id="video-overlay"', 'id="video-status"', 'id="video-trust-hint"', 'class="hint video-hint"'];
+    let last = -1;
+    for (const s of order) {
+        const i = at(s);
+        if (i < 0) { problems.push('index.html lacks ' + s); continue; }
+        if (i < last) problems.push(s + ' is out of order');
+        last = i;
+    }
+    if (!/Quad IP-KVM<\/span>/.test(html.slice(at('class="bar"')))) problems.push('the bar starts with the title');
+    // 映像の枠(.video-wrap)は、キャンバスと重ねる表示だけを持ち、状態・文言は枠の外(重ならない)
+    const wrapStart = at('class="video-wrap"');
+    // wrap の div と overlay の div(2 つの開き)が、video-status の前にすべて閉じている
+    const beforeStatus = html.slice(wrapStart - '<div '.length, at('<div class="video-info"'));
+    if ((beforeStatus.match(/<div\b/g) || []).length !== (beforeStatus.match(/<\/div>/g) || []).length) problems.push('the text under the video must be outside .video-wrap (div balance)');
+    if (!/class="video-info"[^>]*>\s*<div id="video-status"/.test(html)) problems.push('#video-status opens the .video-info block under the video');
+    // ダッシュボードはカード(.container)の外。#error-message は、どちらの外(両方で見える)
+    const cardStart = at('id="auth-card"');
+    const dashStart = at('id="view-dashboard"');
+    const cardPart = html.slice(cardStart, dashStart);
+    const opens = (cardPart.match(/<div\b/g) || []).length;
+    const closes = (cardPart.match(/<\/div>/g) || []).length;
+    if (opens !== closes) problems.push('the dashboard must be outside the card (div balance ' + opens + '/' + closes + ')');
+    if (at('id="error-message"') > cardStart) problems.push('#error-message must be outside and before the card');
+    if (!/class="[^"]*\bcontainer\b/.test(info['auth-card'].attrs)) problems.push('#auth-card keeps the .container card');
+    if (info['view-dashboard'].classes.includes('container')) problems.push('the dashboard must not be a narrow .container');
+
+    // CSS: 箱を CSS で変えない(max-width、object-fit は禁止)。ヒントの負のマージンは、フォームの中だけ。
+    const rule = (sel) => {
+        const i = css.indexOf('\n' + sel + ' {');
+        if (i < 0) return null;
+        return css.slice(i, css.indexOf('}', i));
+    };
+    if (/object-fit/.test(css)) problems.push('app.css must not use object-fit (the mouse position needs the box to be the picture)');
+    const video = rule('#video');
+    if (video === null) problems.push('app.css lacks the #video rule');
+    else {
+        if (/max-width|max-height|min-width|min-height/.test(video)) problems.push('#video must not be limited by CSS: ' + video.replace(/\s+/g, ' '));
+        if (!/display: block/.test(video)) problems.push('#video must be display: block (no inline gap)');
+        if (!/flex: none/.test(video)) problems.push('#video must not be shrunk by the flex layout');
+    }
+    const hint = rule('.hint');
+    if (hint === null) problems.push('app.css lacks the .hint rule');
+    else if (/margin:\s*-/.test(hint)) problems.push('.hint must not have a negative margin (it overlaps the line above): ' + hint.replace(/\s+/g, ' '));
+    const formHint = rule('form .hint');
+    if (formHint === null || !/margin:\s*-10px/.test(formHint)) problems.push('the negative margin belongs to "form .hint"');
+    const bar = rule('.bar');
+    if (bar === null || !/flex-wrap: wrap/.test(bar)) problems.push('.bar must wrap on a narrow window');
+    if (!/\.bar-modes button\[aria-pressed="true"\] \{[^}]*background-color/.test(css)) problems.push('the pressed mode button needs its own look');
+    if (!/\.bar-modes \{[^}]*margin-left: auto/.test(css)) problems.push('the mode buttons are at the right of the bar');
+    if (!/#view-dashboard:not\(\.view-hidden\) \{[^}]*display: flex/.test(css)) problems.push('the dashboard is a flex column (and stays hidden with .view-hidden)');
+    if (/\n#view-dashboard \{[^}]*display/.test(css)) problems.push('a plain #view-dashboard rule with display would show the hidden dashboard');
+    const fsHide = /#view-dashboard\.is-fullscreen \.bar,\s*#view-dashboard\.is-fullscreen \.video-info \{[^}]*display: none/.test(css);
+    if (!fsHide) problems.push('in full screen the bar and the text under the video are hidden');
+    if (!/#view-dashboard \.video-wrap:fullscreen \{[^}]*width: 100%;[^}]*height: 100%;[^}]*background-color: #000/.test(css)) problems.push('the full screen wrap fills the window on black');
+    if (!/\.mode-fit \.video-wrap,\s*#view-dashboard\.mode-actual \.video-wrap \{[^}]*flex: 1 1 0;[^}]*min-height: 0/.test(css)) problems.push('fit and actual: the video area takes the rest of the window height');
+    if (!/#view-dashboard\.mode-fit \.video-wrap \{[^}]*overflow: hidden/.test(css)) problems.push('fit: no scrolling');
+    if (!/#view-dashboard\.mode-actual \.video-wrap \{[^}]*overflow: auto/.test(css)) problems.push('actual: only the video area scrolls');
+    if (!/#view-dashboard\.mode-width \{[^}]*min-height: 100vh/.test(css)) problems.push('width: the page may grow taller than the window');
+    if (!/#view-dashboard\.mode-width \.video-wrap \{[^}]*flex: none/.test(css)) problems.push('width: the video area follows the picture height');
+    if (!/#view-dashboard\.mode-fit,\s*#view-dashboard\.mode-actual \{[^}]*height: 100vh/.test(css)) problems.push('fit and actual: the page is one window high');
+    if (!/\.video-wrap \{\s*position: relative;\s*display: flex;/.test(css)) problems.push('.video-wrap is a flex box (the canvas is centered by auto margins)');
+    if (!/margin: auto/.test(video || '')) problems.push('#video is centered with margin: auto');
+    // 画面は、JavaScript が状態を取得するまで、どれも隠れている(一瞬の表示を出さない)
+    for (const id of ['view-setup', 'view-login', 'view-dashboard']) {
+        if (!info[id].classes.includes('view-hidden')) problems.push('#' + id + ' must start hidden');
+    }
+    if (!/#view-dashboard \.video-wrap:fullscreen #video \{[^}]*border-width: 0/.test(css)) problems.push('in full screen the canvas has no border (nothing but the picture)');
+    // 余白は最小: ダッシュボードの body に余白なし、ダッシュボード自身の余白は 10px 以下(カードの余白は .container)
+    if (!/\nbody \{[^}]*padding: 0;/.test(css)) problems.push('body has no padding (the dashboard uses the whole window)');
+    const dp = /#view-dashboard:not\(\.view-hidden\) \{[^}]*padding: (\d+)px (\d+)px;/.exec(css);
+    if (!dp || Number(dp[1]) > 10 || Number(dp[2]) > 10) problems.push('the dashboard padding must be small (<= 10px)');
+    // 幅に合わせるモードだけがページをスクロールする: スクロールバーの分の幅を空けておく(:has() が無いブラウザでは ResizeObserver が追う)
+    if (!/html:has\(#view-dashboard\.mode-width:not\(\.is-fullscreen\)\) \{\s*scrollbar-gutter: stable;/.test(css)) problems.push('width mode keeps the scroll bar space (scrollbar-gutter: stable)');
+    // フォーカス表示を消さない: ボタンに outline: none を付けない。キーボードのフォーカスが見える。
+    if (/button[^{]*\{[^}]*outline:\s*(none|0)/.test(css)) problems.push('buttons must keep a visible focus ring');
+    if (!/button:focus-visible \{[^}]*outline: 2px solid/.test(css)) problems.push('button:focus-visible must draw a ring');
+    if (!/button:disabled \{/.test(css)) problems.push('a disabled button must look disabled');
+    // 既存の配色と枠の色
+    if (!/#video\.input-active \{[^}]*border-color: #007bff/.test(css)) problems.push('#video.input-active keeps the blue frame');
+    if (!/@media \(prefers-color-scheme: dark\)/.test(css)) problems.push('the dark mode rule stays');
+    // CSP: インラインのスタイル・スクリプトを書かない
+    if (/<style|\sstyle\s*=|\son[a-z]+\s*=/i.test(html)) problems.push('index.html must not hold inline style / script / handlers (CSP)');
+    return problems;
+}
+
 async function checkAll(source) {
     const problems = checkPure(source);
     let browserProblems;
     try { browserProblems = await checkBrowser(source); } catch (e) { browserProblems = ['browser harness threw: ' + (e && e.message)]; }
     let h264Problems;
     try { h264Problems = await checkH264Browser(source); } catch (e) { h264Problems = ['h264 harness threw: ' + (e && e.message)]; }
+    let layoutProblems;
+    try { layoutProblems = await checkLayoutBrowser(source); } catch (e) { layoutProblems = ['layout harness threw: ' + (e && e.message)]; }
     await flush();
     await flush();
     const rejected = unhandled.splice(0).map((m) => 'unhandled promise rejection: ' + m);
-    return problems.concat(browserProblems, h264Problems, rejected);
+    return problems.concat(checkLayoutPure(source), checkLayoutFiles(), browserProblems, h264Problems, layoutProblems, rejected);
 }
 
 // ---------- ミュータント(app.js の追加分を 1 か所ずつ変える) ----------
@@ -2055,6 +2853,133 @@ function mutantList() {
         M('D207', 'status: the label is dropped by the next status', '        if (h264Shown) elVideoStatus.textContent += H264_LABEL;\n', ''),
         M('D208', 'status: the label replaces the resolution', '        if (h264Shown) elVideoStatus.textContent += H264_LABEL;', '        if (h264Shown) elVideoStatus.textContent = STATUS_PLAIN + H264_LABEL;'),
         M('D209', 'status: the label is shown for a connection without H.264', '        if (h264Shown) elVideoStatus.textContent += H264_LABEL;', '        elVideoStatus.textContent += H264_LABEL;'),
+        // ---- (E) 表示モードとフルスクリーン ----
+        M('L01', 'normalizeMode: an unknown value is returned as it is', "            return 'fit';\n        },\n        validSize", "            return value;\n        },\n        validSize"),
+        M('L02', 'normalizeMode: the default is width', "            return 'fit';\n        },\n        validSize", "            return 'width';\n        },\n        validSize"),
+        M('L03', 'normalizeMode: the last mode is not accepted', 'i < this.MODES.length; i++', 'i < this.MODES.length - 1; i++'),
+        M('L04', 'normalizeMode: loose equality', 'if (value === this.MODES[i]) return value;', 'if (value == this.MODES[i]) return value;'),
+        M('L05', 'MODES: width renamed', "MODES: ['fit', 'width', 'actual'],", "MODES: ['fit', 'wide', 'actual'],"),
+        M('L06', 'validSize: null is not rejected', "v !== null && typeof v === 'object' &&", "typeof v === 'object' &&"),
+        M('L07', 'validSize: the object check is removed (undefined throws)', "v !== null && typeof v === 'object' &&", 'v !== null &&'),
+        M('L08', 'validSize: Number.isFinite -> !isNaN for w', 'Number.isFinite(v.w) &&', '!isNaN(v.w) &&'),
+        M('L09', 'validSize: Number.isFinite -> !isNaN for h', 'Number.isFinite(v.h) &&', '!isNaN(v.h) &&'),
+        M('L10', 'validSize: w >= 1 -> w > 0', 'v.w >= 1 && v.h >= 1', 'v.w > 0 && v.h >= 1'),
+        M('L11', 'validSize: h >= 1 -> h > 0', 'v.w >= 1 && v.h >= 1', 'v.w >= 1 && v.h > 0'),
+        M('L12', 'validSize: w >= 1 -> w >= 0', 'v.w >= 1 && v.h >= 1', 'v.w >= 0 && v.h >= 1'),
+        M('L13', 'validSize: h >= 1 -> h >= 0', 'v.w >= 1 && v.h >= 1', 'v.w >= 1 && v.h >= 0'),
+        M('L14', 'validSize: the lower bound of w is removed', 'v.w >= 1 && v.h >= 1', 'v.h >= 1'),
+        M('L15', 'validSize: the lower bound of h is removed', 'v.w >= 1 && v.h >= 1', 'v.w >= 1'),
+        M('L16', 'fitSize: avail.w rounded, not floored', 'const aw = Math.floor(avail.w);', 'const aw = Math.round(avail.w);'),
+        M('L17', 'fitSize: avail.h rounded, not floored', 'const ah = Math.floor(avail.h);', 'const ah = Math.round(avail.h);'),
+        M('L18', 'fitSize: video.w rounded up', 'const vw = Math.floor(video.w);', 'const vw = Math.ceil(video.w);'),
+        M('L19', 'fitSize: video.h rounded up', 'const vh = Math.floor(video.h);', 'const vh = Math.ceil(video.h);'),
+        M('L20', 'fitSize: avail is not floored at all (w)', 'const aw = Math.floor(avail.w);', 'const aw = avail.w;'),
+        M('L21', 'fitSize: actual returns avail', "if (mode === 'actual') return { w: vw, h: vh };", "if (mode === 'actual') return { w: aw, h: ah };"),
+        M('L22', 'fitSize: actual swaps w and h', "if (mode === 'actual') return { w: vw, h: vh };", "if (mode === 'actual') return { w: vh, h: vw };"),
+        M('L23', 'fitSize: width mode uses the height of the area', "if (mode === 'width') return { w: aw, h: Math.max(1, Math.floor(aw * vh / vw)) };", "if (mode === 'width') return { w: aw, h: ah };"),
+        M('L24', 'fitSize: width mode height rounded', "if (mode === 'width') return { w: aw, h: Math.max(1, Math.floor(aw * vh / vw)) };", "if (mode === 'width') return { w: aw, h: Math.max(1, Math.round(aw * vh / vw)) };"),
+        M('L25', 'fitSize: width mode height without the minimum of 1', "if (mode === 'width') return { w: aw, h: Math.max(1, Math.floor(aw * vh / vw)) };", "if (mode === 'width') return { w: aw, h: Math.floor(aw * vh / vw) };"),
+        M('L26', 'fitSize: width mode height uses the wrong ratio', "if (mode === 'width') return { w: aw, h: Math.max(1, Math.floor(aw * vh / vw)) };", "if (mode === 'width') return { w: aw, h: Math.max(1, Math.floor(aw * vw / vh)) };"),
+        M('L27', 'fitSize: fit unknown-mode branch removed (every other mode is fit)', "            if (mode === 'fit') {\n", "            {\n"),
+        M('L28', 'fitSize: fit compares with >=', 'if (aw * vh <= ah * vw) return', 'if (aw * vh >= ah * vw) return'),
+        M('L29', 'fitSize: fit compares with <', 'if (aw * vh <= ah * vw) return', 'if (aw * vh < ah * vw) return',
+            '縦横比が同じ(aw*vh == ah*vw)とき、高さで決める側でも幅は ah*vw/vh = aw になる(整数の割り算が割り切れる)ので、結果が同じ'),
+        M('L30', 'fitSize: fit width-limited height rounded', 'if (aw * vh <= ah * vw) return { w: aw, h: Math.max(1, Math.floor(aw * vh / vw)) };', 'if (aw * vh <= ah * vw) return { w: aw, h: Math.max(1, Math.round(aw * vh / vw)) };'),
+        M('L31', 'fitSize: fit width-limited height without the minimum of 1', 'if (aw * vh <= ah * vw) return { w: aw, h: Math.max(1, Math.floor(aw * vh / vw)) };', 'if (aw * vh <= ah * vw) return { w: aw, h: Math.floor(aw * vh / vw) };'),
+        M('L32', 'fitSize: fit height-limited width rounded', 'return { w: Math.max(1, Math.floor(ah * vw / vh)), h: ah };', 'return { w: Math.max(1, Math.round(ah * vw / vh)), h: ah };'),
+        M('L33', 'fitSize: fit height-limited width without the minimum of 1', 'return { w: Math.max(1, Math.floor(ah * vw / vh)), h: ah };', 'return { w: Math.floor(ah * vw / vh), h: ah };'),
+        M('L34', 'fitSize: fit height-limited width uses the wrong ratio', 'return { w: Math.max(1, Math.floor(ah * vw / vh)), h: ah };', 'return { w: Math.max(1, Math.floor(ah * vh / vw)), h: ah };'),
+        M('L35', 'fitSize: the end returns fit for an unknown mode', "                return { w: Math.max(1, Math.floor(ah * vw / vh)), h: ah };\n            }\n            return null;", "                return { w: Math.max(1, Math.floor(ah * vw / vh)), h: ah };\n            }\n            return { w: aw, h: ah };"),
+        M('L36', 'fitSize: the validity check of avail is removed', 'if (!this.validSize(avail) || !this.validSize(video)) return null;', 'if (!this.validSize(video)) return null;'),
+        M('L37', 'fitSize: the validity check of video is removed', 'if (!this.validSize(avail) || !this.validSize(video)) return null;', 'if (!this.validSize(avail)) return null;'),
+        M('L38', 'view mode: another storage key', "const VIEW_MODE_KEY = 'quadkvm.viewMode';", "const VIEW_MODE_KEY = 'quadkvm.view';"),
+        M('L39', 'loadViewMode: the saved value is not checked', 'return VideoLayout.normalizeMode(localStorage.getItem(VIEW_MODE_KEY));', 'return localStorage.getItem(VIEW_MODE_KEY);'),
+        M('L40', 'loadViewMode: an error gives actual', "        } catch (err) {\n            return 'fit';\n        }", "        } catch (err) {\n            return 'actual';\n        }"),
+        M('L41', 'loadViewMode: an error is not caught', "        } catch (err) {\n            return 'fit';\n        }", "        } catch (err) {\n            throw err;\n        }"),
+        M('L42', 'saveViewMode: an error is not caught', '            // the mode is just not kept\n', '            throw err;\n'),
+        M('L43', 'setViewMode: the mode is not saved', '        saveViewMode(viewMode);\n', ''),
+        M('L44', 'saveViewMode: always saves fit', 'localStorage.setItem(VIEW_MODE_KEY, mode);', "localStorage.setItem(VIEW_MODE_KEY, 'fit');"),
+        M('L45', 'setViewMode: no new layout', '        updateViewModeUI();\n        updateVideoLayout();\n    }', '        updateViewModeUI();\n    }'),
+        M('L46', 'setViewMode: the buttons and classes are not updated', '        saveViewMode(viewMode);\n        updateViewModeUI();\n', '        saveViewMode(viewMode);\n'),
+        M('L47', 'setViewMode: the mode is not checked again (the buttons only send valid modes)', 'viewMode = VideoLayout.normalizeMode(mode);', 'viewMode = mode;',
+            '3 つのボタンは、有効なモードしか渡さない。normalizeMode は二重の防御'),
+        M('L48', 'view mode buttons: fit and width swapped', "[['fit', btnViewFit], ['width', btnViewWidth], ['actual', btnViewActual]]", "[['width', btnViewFit], ['fit', btnViewWidth], ['actual', btnViewActual]]"),
+        M('L49', 'view mode buttons: the click listener is on the wrong button', "entry[1].addEventListener('click', () => setViewMode(entry[0]));", "entry[1].addEventListener('click', () => setViewMode('fit'));"),
+        M('L50', 'updateViewModeUI: aria-pressed inverted', "mode === viewMode ? 'true' : 'false'", "mode !== viewMode ? 'true' : 'false'"),
+        M('L51', 'updateViewModeUI: the old mode class is not removed', "            viewDashboard.classList.remove('mode-' + mode);\n", ''),
+        M('L52', 'updateViewModeUI: the mode class is not added', "        viewDashboard.classList.add('mode-' + viewMode);\n", ''),
+        M('L53', 'view mode: the buttons are not set at start', '    updateViewModeUI();\n\n    // H.264 over', '\n    // H.264 over'),
+        M('L54', 'updateVideoLayout: the picture w and h are swapped', 'const picture = { w: elVideo.width, h: elVideo.height };', 'const picture = { w: elVideo.height, h: elVideo.width };'),
+        M('L55', 'updateVideoLayout: the area width is the client height', 'w: elVideoWrap.clientWidth - borderSize', 'w: elVideoWrap.clientHeight - borderSize'),
+        M('L56', 'updateVideoLayout: the border is not taken off the width', 'elVideoWrap.clientWidth - borderSize(elVideo.offsetWidth, elVideo.clientWidth),', 'elVideoWrap.clientWidth,'),
+        M('L57', 'updateVideoLayout: the border is not taken off the height', 'elVideoWrap.clientHeight - borderSize(elVideo.offsetHeight, elVideo.clientHeight)', 'elVideoWrap.clientHeight'),
+        M('L58', 'borderSize: the sign is not checked', 'return Number.isFinite(b) && b > 0 ? b : 0;', 'return b;'),
+        M('L59', 'borderSize: 0 counts as a border', 'return Number.isFinite(b) && b > 0 ? b : 0;', 'return Number.isFinite(b) && b >= 0 ? b : 0;', '枠線が 0 のとき、引く値は 0 のまま(同じ)'),
+        M('L60', 'borderSize: a non-finite value is not checked', 'return Number.isFinite(b) && b > 0 ? b : 0;', 'return b > 0 ? b : 0;', 'NaN > 0 は偽なので 0 になる。isFinite は二重の防御'),
+        M('L61', 'updateVideoLayout: the border of the height uses the width', 'borderSize(elVideo.offsetHeight, elVideo.clientHeight)', 'borderSize(elVideo.offsetWidth, elVideo.clientWidth)'),
+        M('L62', 'updateVideoLayout: full screen does not use fit', "isFullscreen() ? 'fit' : viewMode", 'viewMode'),
+        M('L63', 'updateVideoLayout: always fit', "isFullscreen() ? 'fit' : viewMode", "'fit'"),
+        M('L64', 'updateVideoLayout: full screen test inverted', "isFullscreen() ? 'fit' : viewMode", "!isFullscreen() ? 'fit' : viewMode"),
+        M('L65', 'updateVideoLayout: no check for an unusable size', '        if (size === null) return; // no resolution yet', '        // no resolution yet'),
+        M('L66', 'updateVideoLayout: width and height swapped', "elVideo.style.width = size.w + 'px';\n        elVideo.style.height = size.h + 'px';", "elVideo.style.width = size.h + 'px';\n        elVideo.style.height = size.w + 'px';"),
+        M('L67', 'updateVideoLayout: no unit', "elVideo.style.width = size.w + 'px';", 'elVideo.style.width = size.w;'),
+        M('L68', 'updateVideoLayout: the height has no unit', "elVideo.style.height = size.h + 'px';", 'elVideo.style.height = size.h;'),
+        M('L69', 'updateVideoLayout: the size is not remembered (every frame lays out again)', '        laidOutW = picture.w;\n        laidOutH = picture.h;\n', ''),
+        M('L70', 'noteVideoSize: needs both to change', 'if (elVideo.width !== laidOutW || elVideo.height !== laidOutH)', 'if (elVideo.width !== laidOutW && elVideo.height !== laidOutH)'),
+        M('L71', 'noteVideoSize: the width is not compared', 'if (elVideo.width !== laidOutW || elVideo.height !== laidOutH)', 'if (elVideo.height !== laidOutH)'),
+        M('L72', 'noteVideoSize: the height is not compared', 'if (elVideo.width !== laidOutW || elVideo.height !== laidOutH)', 'if (elVideo.width !== laidOutW)'),
+        M('L73', 'JPEG frame: no layout for a new resolution', '                elVideo.height = bmp.height;\n                noteVideoSize();\n', '                elVideo.height = bmp.height;\n'),
+        M('L74', 'H.264 frame: no layout for a new resolution', '            if (elVideo.height !== h) elVideo.height = h;\n            noteVideoSize();\n', '            if (elVideo.height !== h) elVideo.height = h;\n'),
+        M('L75', 'isFullscreen: any element counts', 'return document.fullscreenElement === elVideoWrap;', 'return !!document.fullscreenElement;'),
+        M('L76', 'isFullscreen: inverted', 'return document.fullscreenElement === elVideoWrap;', 'return document.fullscreenElement !== elVideoWrap;'),
+        M('L77', 'fullscreenchange is not listened to', "    document.addEventListener('fullscreenchange', updateFullscreenUI);\n", ''),
+        M('L78', 'resize is not listened to', "    window.addEventListener('resize', updateVideoLayout);\n", ''),
+        M('L79', 'ResizeObserver watches the canvas, not the area', 'new ResizeObserver(updateVideoLayout).observe(elVideoWrap);', 'new ResizeObserver(updateVideoLayout).observe(elVideo);'),
+        M('L80', 'ResizeObserver: an error is not caught', '            // the resize event is enough\n', '            throw err;\n'),
+        M('L81', 'ResizeObserver: not used', "if (typeof ResizeObserver === 'function') {", 'if (false) {'),
+        M('L82', 'full screen support: fullscreenEnabled is not checked', 'return !!document.fullscreenEnabled && typeof elVideoWrap.requestFullscreen', 'return typeof elVideoWrap.requestFullscreen'),
+        M('L83', 'full screen support: requestFullscreen is not checked', "return !!document.fullscreenEnabled && typeof elVideoWrap.requestFullscreen === 'function';", 'return !!document.fullscreenEnabled;'),
+        M('L84', 'full screen support: the button stays enabled', '        btnFullscreen.disabled = true;\n', '        btnFullscreen.disabled = false;\n'),
+        M('L85', 'full screen support: no reason in the title', "        btnFullscreen.title = 'このブラウザでは全画面を使えません';\n", ''),
+        M('L86', 'full screen support: the title is empty', "btnFullscreen.title = 'このブラウザでは全画面を使えません';", "btnFullscreen.title = '';"),
+        M('L87', 'full screen support: the check is inverted', 'if (!fullscreenSupported()) {', 'if (fullscreenSupported()) {'),
+        M('L88', 'toggleFullscreen: requests when it is already in full screen', 'if (isFullscreen()) swallowRejection(document.exitFullscreen());\n            else swallowRejection(elVideoWrap.requestFullscreen());', 'if (!isFullscreen()) swallowRejection(document.exitFullscreen());\n            else swallowRejection(elVideoWrap.requestFullscreen());'),
+        M('L89', 'toggleFullscreen: always requests', 'if (isFullscreen()) swallowRejection(document.exitFullscreen());\n            else swallowRejection(elVideoWrap.requestFullscreen());', 'swallowRejection(elVideoWrap.requestFullscreen());'),
+        M('L90', 'toggleFullscreen: a refusal is not caught', '            // refused: the page stays as it is\n', '            throw err;\n'),
+        M('L91', 'swallowRejection: the rejection is not handled', "        if (p && typeof p.catch === 'function') p.catch(() => {});", '        void p;'),
+        M('L92', 'swallowRejection: no check for a missing Promise', "        if (p && typeof p.catch === 'function') p.catch(() => {});", "        if (typeof p.catch === 'function') p.catch(() => {});",
+            'p が undefined のときの TypeError は、呼び出し側(toggleFullscreen、syncKeyboardLock、showView)の try/catch が捨てる'),
+        M('L93', 'swallowRejection: no check that catch is a function', "        if (p && typeof p.catch === 'function') p.catch(() => {});", '        if (p) p.catch(() => {});',
+            'catch を持たない値は、ブラウザの API からは返らない。返っても、TypeError を呼び出し側の try/catch が捨てる'),
+        M('L94', 'toggleFullscreen: the button is not wired', "    btnFullscreen.addEventListener('click', toggleFullscreen);\n", ''),
+        M('L95', 'updateFullscreenUI: the labels are swapped', "btnFullscreen.textContent = on ? '全画面を終了' : '全画面';", "btnFullscreen.textContent = on ? '全画面' : '全画面を終了';"),
+        M('L96', 'updateFullscreenUI: the label is not changed', "        btnFullscreen.textContent = on ? '全画面を終了' : '全画面';\n", ''),
+        M('L97', 'updateFullscreenUI: the class is not added', "        if (on) viewDashboard.classList.add('is-fullscreen');\n        else viewDashboard.classList.remove('is-fullscreen');", "        if (!on) viewDashboard.classList.remove('is-fullscreen');"),
+        M('L98', 'updateFullscreenUI: the class is not removed', "        if (on) viewDashboard.classList.add('is-fullscreen');\n        else viewDashboard.classList.remove('is-fullscreen');", "        if (on) viewDashboard.classList.add('is-fullscreen');"),
+        M('L99', 'updateFullscreenUI: another class name', "viewDashboard.classList.add('is-fullscreen');", "viewDashboard.classList.add('fullscreen');"),
+        M('L100', 'updateFullscreenUI: no new layout', '        syncKeyboardLock();\n        updateVideoLayout();\n    }', '        syncKeyboardLock();\n    }'),
+        M('L101', 'updateFullscreenUI: the keyboard lock is not synced', '        syncKeyboardLock();\n        updateVideoLayout();\n    }', '        updateVideoLayout();\n    }'),
+        M('L102', 'updateInputUI: the keyboard lock is not synced', '        syncKeyboardLock();\n    }\n\n    btnInputToggle', '    }\n\n    btnInputToggle'),
+        M('L103', 'syncKeyboardLock: locks without input', 'const want = isFullscreen() && inputEnabled;', 'const want = isFullscreen();'),
+        M('L104', 'syncKeyboardLock: locks outside full screen', 'const want = isFullscreen() && inputEnabled;', 'const want = inputEnabled;'),
+        M('L105', 'syncKeyboardLock: locks every time', '        if (want === keyboardLocked) return;\n', ''),
+        M('L106', 'syncKeyboardLock: the state is not remembered', '        keyboardLocked = want;\n', ''),
+        M('L107', 'syncKeyboardLock: another key', "kb.lock(['Escape'])", "kb.lock(['Esc'])"),
+        M('L108', 'syncKeyboardLock: lock and unlock swapped', "if (typeof kb.lock === 'function') swallowRejection(kb.lock(['Escape']));\n            } else if (typeof kb.unlock === 'function') {\n                kb.unlock();", "if (typeof kb.unlock === 'function') swallowRejection(kb.unlock());\n            } else if (typeof kb.lock === 'function') {\n                kb.lock(['Escape']);"),
+        M('L109', 'syncKeyboardLock: never unlocks', '            } else if (typeof kb.unlock === \'function\') {\n                kb.unlock();\n            }', '            }'),
+        M('L110', 'syncKeyboardLock: a failure is not caught', '            // not available here\n', '            throw err;\n'),
+        M('L111', 'syncKeyboardLock: the rejection of lock is not handled', "swallowRejection(kb.lock(['Escape']));", "kb.lock(['Escape']);"),
+        M('L112', 'syncKeyboardLock: no check for a missing keyboard', '            if (!kb) return;\n', '', 'kb が無いと、次の kb.lock / kb.unlock が TypeError を投げ、すぐ外の try/catch が捨てる'),
+        M('L113', 'syncKeyboardLock: no check that lock is a function', "if (typeof kb.lock === 'function') swallowRejection(", 'if (true) swallowRejection(', 'lock が無いと TypeError を投げ、すぐ外の try/catch が捨てる'),
+        M('L114', 'syncKeyboardLock: no check that unlock is a function', "} else if (typeof kb.unlock === 'function') {", '} else {', 'unlock が無いと TypeError を投げ、すぐ外の try/catch が捨てる'),
+        M('L115', 'syncKeyboardLock: navigator is used without the typeof check', "const kb = typeof navigator !== 'undefined' ? navigator.keyboard : undefined;", 'const kb = navigator.keyboard;', 'navigator が無いと ReferenceError を投げ、すぐ外の try/catch が捨てる'),
+        M('L116', 'showView: the card is not hidden for the dashboard', "            elAuthCard.classList.add('view-hidden');\n", ''),
+        M('L117', 'showView: the card is not shown again', "            elAuthCard.classList.remove('view-hidden');\n", ''),
+        M('L118', 'showView: no layout when the dashboard appears', '            updateVideoLayout();\n        } else {', '        } else {'),
+        M('L119', 'showView: the page does not leave full screen', '            if (isFullscreen()) {', 'if (false) {'),
+        M('L120', 'showView: the dashboard branch is for every view', 'if (view === viewDashboard) {', 'if (view !== viewDashboard) {'),
+        M('L121', 'auth card id renamed', "document.getElementById('auth-card')", "document.getElementById('card')"),
+        M('L122', 'video area id renamed', "document.getElementById('video-wrap')", "document.getElementById('video-area')"),
     ];
 }
 
@@ -2064,7 +2989,7 @@ function mutantList() {
     const problems = await checkAll(source);
     problems.forEach((p) => console.log('FAIL:', p));
     if (problems.length) status = 1;
-    else console.log('video viewer ok (' + RESOLVE_CASES.length + ' resolve cases, ' + HINT_CASES.length + ' hint cases, ' + TRUST_URL_CASES.length + ' trust-url cases, ' + PARSE_CASES.length + ' status-parse cases, ' + CHANGE_CASES.length + ' resolution-change cases, ' + CLASSIFY_CASES.length + ' classify cases, ' + PARSE_H264_CASES.length + ' annex-b cases, ' + ANALYZE_CASES.length + ' key-unit cases, ' + CODEC_CASES.length + ' codec-string cases, browser scenarios)');
+    else console.log('video viewer ok (' + RESOLVE_CASES.length + ' resolve cases, ' + HINT_CASES.length + ' hint cases, ' + TRUST_URL_CASES.length + ' trust-url cases, ' + PARSE_CASES.length + ' status-parse cases, ' + CHANGE_CASES.length + ' resolution-change cases, ' + CLASSIFY_CASES.length + ' classify cases, ' + PARSE_H264_CASES.length + ' annex-b cases, ' + ANALYZE_CASES.length + ' key-unit cases, ' + CODEC_CASES.length + ' codec-string cases, ' + FIT_CASES.length + ' fit-size cases, ' + NORMALIZE_CASES.length + ' view-mode cases, browser scenarios)');
 
     if (process.argv.includes('--mutations')) {
         const only = process.argv.filter((a) => /^[A-Z][0-9]+$/.test(a)); // 例: --mutations D114 D155(指定したものだけ)

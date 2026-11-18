@@ -7,9 +7,9 @@
     <link rel="stylesheet" href="app.css">
 </head>
 <body>
-    <div class="container">
+    <div id="error-message" class="error-hidden"></div>
+    <div id="auth-card" class="container">
         <h1>Quad IP-KVM</h1>
-        <div id="error-message" class="error-hidden"></div>
         <div id="view-setup" class="view-hidden">
             <h2>初期設定</h2>
             <form id="form-setup">
@@ -29,25 +29,32 @@
                 <button type="submit">ログイン</button>
             </form>
         </div>
+    </div>
 
-        <div id="view-dashboard" class="view-hidden">
-            <h2>ログイン済み</h2>
-            <div class="controls">
-                <button id="btn-input-toggle">入力を有効にする</button>
-                <button id="btn-pointer-lock" disabled>マウス(相対)切替</button>
-                <span id="input-status">入力: 無効</span>
-                <span id="usb-status">ターゲット: 未接続</span>
+    <div id="view-dashboard" class="dashboard mode-fit view-hidden">
+        <div class="bar">
+            <span class="bar-title">Quad IP-KVM</span>
+            <button type="button" id="btn-input-toggle">入力を有効にする</button>
+            <button type="button" id="btn-pointer-lock" disabled>マウス(相対)切替</button>
+            <span id="input-status">入力: 無効</span>
+            <span id="usb-status">ターゲット: 未接続</span>
+            <div class="bar-modes" role="group" aria-label="表示サイズ">
+                <button type="button" id="btn-view-fit" aria-pressed="true">ウィンドウに合わせる</button>
+                <button type="button" id="btn-view-width" aria-pressed="false">幅に合わせる</button>
+                <button type="button" id="btn-view-actual" aria-pressed="false">実寸 (100%)</button>
             </div>
-            <div class="video-wrap">
-                <canvas id="video" width="1280" height="720" tabindex="0"></canvas>
-                <div id="video-overlay" class="video-overlay video-overlay-hidden" role="status" aria-live="polite"></div>
-            </div>
+            <button type="button" id="btn-fullscreen">全画面</button>
+            <button type="button" id="btn-logout">ログアウト</button>
+        </div>
+        <div class="video-wrap" id="video-wrap">
+            <canvas id="video" width="1280" height="720" tabindex="0"></canvas>
+            <div id="video-overlay" class="video-overlay video-overlay-hidden" role="status" aria-live="polite"></div>
+        </div>
+        <div class="video-info">
             <div id="video-status">接続中...</div>
             <p id="video-trust-hint" class="trust-hint trust-hint-hidden" role="alert">映像用の接続の証明書を、まだ受け入れていない可能性があります。<a id="video-trust-link" target="_blank" rel="noopener noreferrer"></a> を開いて証明書を受け入れてから、このページを再読み込みしてください。</p>
-            <p class="hint">入力を無効にするには Esc キーを長押しするか、ボタンを押してください。</p>
-            <button id="btn-logout">ログアウト</button>
+            <p class="hint video-hint">入力を無効にするには Esc キーを長押しするか、ボタンを押してください。全画面では、ブラウザの Esc キーで全画面を終了します（Esc を取り込める Chromium 系では、入力が有効な間は、Esc の長押しで終了します）。</p>
         </div>
-
     </div>
     <script src="app.js"></script>
 </body>
