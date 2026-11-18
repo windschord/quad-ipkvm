@@ -457,7 +457,9 @@ menu "Quad IP-KVM Configuration"
             TODO(hw-verify): with BVALID forced, the D+ pull-up is enabled even
             while the target PC is powered off. Whether voltage leaks onto D+
             of an unpowered PC is NOT measured yet (docs/HW_VERIFY.md H5).
-            Do not connect J3 to a real target PC until H5 is measured.
+            Do not connect J3 to a real target PC until H5 is measured, except
+            when USB_DEVICE_VBUS_SENSE_GPIO >= 0 (VBUS sensing governs D+ pull-up
+            according to target VBUS presence; docs/USB_VBUS_DESIGN.md).
 
     config USB_DEVICE_FORCE_FULL_SPEED
         bool "Force Full-Speed (12 Mbps) on OTG_HS UTMI PHY"
@@ -495,8 +497,13 @@ menu "Quad IP-KVM Configuration"
             even while the target PC is powered off, which does NOT satisfy USB 2.0 7.2.1.
             When >= 0, usb_hid_init() keeps USB soft-disconnected (ignores non-VBUS startup
             connect; effectively USB_DEVICE_START_DISCONNECTED=y) until VBUS is continuously
-            detected for 500 ms, and disconnects on VBUS loss (1000 ms debounce + FORCE_OFF
-            fallback within USB 2.0 7.2.1's 10 s limit).
+            detected for 500 ms, and disconnects on VBUS loss (1000 ms debounce + 500 ms
+            DISCONNECT retry window + 1000 ms stage-1 FORCE_OFF retry window; these 500 ms
+            and 1000 ms durations are fixed internal constants in usb_vbus_ctrl).
+            Stage-1 FORCE_OFF (direct DCTL.sftdiscon=1 write) is guaranteed within USB 2.0
+            7.2.1's 10 s limit; stage-2 FORCE_OFF (tinyusb_driver_uninstall() + UTMI PHY stop)
+            is a best-effort fallback whose completion time is not guaranteed, and once
+            stage-2 FORCE_OFF succeeds, USB cannot reconnect until system reboot.
 
     config USB_DEVICE_VBUS_POLL_MS
         int "Target PC VBUS polling period (ms)"

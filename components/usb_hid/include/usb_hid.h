@@ -20,6 +20,12 @@ typedef void (*usb_hid_mounted_cb_t)(void);
 /**
  * @brief Initialize TinyUSB composite HID device on ESP32-P4 OTG_HS.
  *
+ * When VBUS sensing is enabled (CONFIG_USB_DEVICE_VBUS_SENSE_GPIO >= 0), boots
+ * soft-disconnected and tracks target VBUS. If stage-2 FORCE_OFF
+ * (tinyusb_driver_uninstall() + UTMI PHY stop) succeeds after a persistent
+ * disconnect failure, the USB stack remains permanently uninstalled until
+ * system reboot (returns ESP_ERR_INVALID_STATE).
+ *
  * @param on_mounted Optional callback invoked on mount/resume events.
  * @return ESP_OK on success (or ESP_ERR_NOT_SUPPORTED if disabled via Kconfig).
  */
@@ -37,6 +43,7 @@ const hid_sink_t *usb_hid_get_sink(void);
  *
  * When VBUS sensing is active (CONFIG_USB_DEVICE_VBUS_SENSE_GPIO >= 0), connection
  * state is owned exclusively by usb_vbus_ctrl and manual calls return ESP_ERR_INVALID_STATE.
+ * After stage-2 FORCE_OFF uninstalls TinyUSB, USB cannot be reconnected until system reboot.
  */
 esp_err_t usb_hid_set_connected(bool connected);
 
