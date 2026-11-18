@@ -233,6 +233,123 @@
 
 **サービスの起動**: `kvm_service_start()` を呼ぶのは、実機のボードの HAL を実装する A-9（Antigravity）。呼ばれるまで、`status` と `select` と `power/*` は、認証と形式の検査を通ったうえで `503 not_ready` を返す。
 
+### 8. ISO の仮想メディア（`/api/v1/iso*`）
+ISO のアップロード、一覧、マウント（ターゲットの USB に仮想 CD-ROM として見せる）、取り外し、削除。設計は `docs/ISO_MOUNT_DESIGN.md`、境界は `docs/INTERFACES.md` §7。**認証が必須**。`POST` / `PUT` / `DELETE` は **Origin 必須**（Host と一致。無ければ 403）。JSON のボディは `Content-Type: application/json` のみ（それ以外は 415）で、**512 バイトまで**（超過は 413 `payload_too_large`）。`PUT` のデータ（チャンク）だけは `application/octet-stream`。`GET /api/v1/iso` は Origin を要求しない（既存の `GET` と同じ）。`{"error":"<code>"}` の形式のエラーは、`Content-Type: application/json`。
+
+`ISO_ENABLE` が無効のビルドでは、**このパスは登録しない**（404）。有効でも、SD の準備ができていない間は `503 {"error":"not_ready"}`（下記）。
+
+**基本方針**
+- **イメージは、サーバーが付ける `id`（8 桁の小文字の 16 進）で扱う**。パスにユーザーの名前を使わない。`name` は表示用（UTF-8、1〜63 バイト、制御文字と `/` と `\` を含まない、前後に空白がない。同じ名前は 409 `name_exists`）。
+- **アップロードは、チャンクごとの `PUT` + 再開**（`ISO_MOUNT_DESIGN.md` §6）。同時に 1 つだけ。
+- **マウント中のイメージは、削除できない**。**マウントできるのは `ready` だけ**。
+- イメージは、ターゲットに**読み取り専用**で見える。
+
+#### 8.1 一覧と状態 `GET /api/v1/iso`
+`200`:
+```json
+{"sd":{"state":"ready","total_bytes":31914983424,"free_bytes":22000000000},
+ "images":[
+  {"id":"a1b2c3d4","name":"ubuntu-24.04","size":6126805504,"state":"ready","sha256":"<64 桁の 16 進>","received":6126805504},
+  {"id":"0f9e8d7c","name":"win11","size":5500000000,"state":"incomplete","sha256":null,"received":2147483648}],
+ "mounted":{"id":"a1b2c3d4","name":"ubuntu-24.04"},
+ "target":{"locked":false,"ejected_by_target":false},
+ "upload":{"id":"0f9e8d7c","state":"idle","chunk_size":131072}}
+```
+| フィールド | 意味 |
+|---|---|
+| `sd.state` | `ready` / `no_card`（カードが無い、または初期化できない）/ `unsupported_fs`（FAT32 でない）/ `error`（I/O エラー） |
+| `sd.total_bytes`、`free_bytes` | カードの大きさと空き（`ready` のときだけ。それ以外は `null`） |
+| `images[].state` | `uploading`（受信中）/ `incomplete`（中断。再開できる）/ `hashing`（SHA-256 を計算中）/ `ready` / `invalid`（検査に失敗。削除だけ） |
+| `images[].received` | 受信済みのバイト数（`ready` では `size`） |
+| `images[].sha256` | `ready` のとき。**なければ `null`**（`import` で取り込んだものなど） |
+| `mounted` | マウント中のイメージ（なければ `null`） |
+| `target.locked` | ターゲットが取り外しを防止している（PREVENT ALLOW MEDIUM REMOVAL）。`mounted` が `null` のときは `false` |
+| `target.ejected_by_target` | ターゲットが取り外した（START STOP UNIT）。**1 回だけ `true` で報告し、次の `GET` で `false` に戻る** |
+| `upload` | 進行中のアップロード（なければ `null`）。`state` は `receiving` / `idle`（チャンクが来ていない）。`chunk_size` は、次の `PUT` の最大の大きさ |
+
+`sd.state` が `ready` でなくても `200`（状態そのものを返す。`images` は空）。ポーリングされるので、ログには出さない。
+
+#### 8.2 アップロードの開始 `POST /api/v1/iso`
+リクエスト: `{"name":"ubuntu-24.04","size":6126805504,"sha256":"<64 桁の 16 進>"}`（`name`、`size` は必須。`sha256` は任意）。ほかのキーは 400。`size` は、1 以上で `ISO_MAX_PARTS` × 1 GiB（16 GiB）以下の整数。
+| 結果 | 応答 |
+|---|---|
+| 受理 | `201 {"id":"a1b2c3d4","chunk_size":131072}`（`images` に `uploading` で入る） |
+| ボディ不正、`name` が規則に合わない、`size` が範囲外、`sha256` の形式が不正 | `400 {"error":"invalid_request"}` |
+| すでにアップロードが進行中 | `409 {"error":"upload_in_progress"}` |
+| 同じ名前がある | `409 {"error":"name_exists"}` |
+| イメージが上限（`ISO_MAX_IMAGES`）に達している | `409 {"error":"too_many_images"}` |
+| 空き容量が足りない（`size` + 予備 `ISO_FREE_RESERVE_MIB`） | `507 {"error":"insufficient_storage","free_bytes":N}` |
+| SD が使えない | `503 {"error":"not_ready"}`（`sd.state` が `ready` でない） |
+
+#### 8.3 チャンクの送信 `PUT /api/v1/iso/<id>`
+ヘッダー: `Content-Type: application/octet-stream`、`Content-Length: <n>`（**必須**。1 以上 `chunk_size` 以下）、`X-Upload-Offset: <u64>`（このチャンクの先頭のバイト位置。**必須**）。ボディ: n バイト。
+| 結果 | 応答 |
+|---|---|
+| 受理 | `200 {"received":N}`（N = 受信済みのバイト数。全体の大きさに達しても `ready` にはならない。`finish` が要る） |
+| `Content-Length` や `X-Upload-Offset` の欠落・不正 | `400 {"error":"invalid_request"}` |
+| `id` の形式が不正、そのイメージがない | `404 {"error":"not_found"}` |
+| `Content-Type` が違う | `415 {"error":"unsupported_media_type"}` |
+| `Content-Length` が `chunk_size` を超える | `413 {"error":"payload_too_large"}` |
+| そのイメージが受信できる状態でない（`ready`、`invalid`、`hashing`） | `409 {"error":"not_uploading"}` |
+| **`X-Upload-Offset` が `received` と違う** | `409 {"error":"offset_mismatch","received":N}`（クライアントは、この `received` から続ける。**何も書き込まない**） |
+| ほかのイメージのアップロードが進行中 | `409 {"error":"upload_in_progress"}` |
+| チャンクが `size` を超える | `400 {"error":"invalid_request"}` |
+| 書き込みに失敗（SD のエラー、空き不足） | `503 {"error":"sd_unavailable"}`（イメージは `incomplete` になる。SD が戻れば、`received`（パーツの境界まで巻き戻りうる）から再開できる） |
+
+`incomplete` のイメージに `PUT` すると、`uploading` に戻る（再開）。**アップロードが `ISO_UPLOAD_IDLE_S` 秒（既定 300）なければ、`incomplete` になる**（再開できる）。
+
+#### 8.4 アップロードの完了 `POST /api/v1/iso/<id>/finish`
+リクエスト: `{}`（ボディなし、または空のオブジェクト。ほかのキーは 400）。
+| 結果 | 応答 |
+|---|---|
+| 検査に通り、`ready` になった | `200 {"state":"ready","sha256":"<64 桁の 16 進>"}` |
+| SHA-256 の計算が必要（再起動などで途中の状態が失われた）。**計算中** | `202 {"state":"hashing"}`（クライアントは `GET /api/v1/iso` で `ready` になるのを待つ。**もう一度 `finish` を呼んでもよい**: 計算中は `202` を返す。冪等） |
+| すでに `ready` | `200 {"state":"ready","sha256":"..."}`（冪等） |
+| `received` が `size` に達していない | `409 {"error":"size_mismatch","received":N,"size":M}` |
+| 宣言した `sha256` と一致しない | `422 {"error":"checksum_mismatch"}`（イメージは `invalid`） |
+| ISO の署名（セクタ 16 の `CD001`、または UDF の `BEA01`）がない | `422 {"error":"not_iso"}`（イメージは `invalid`） |
+| `id` が不正、そのイメージがない | `404 {"error":"not_found"}` |
+| SD が使えない | `503 {"error":"sd_unavailable"}` |
+
+#### 8.5 マウント `POST /api/v1/iso/mount`
+リクエスト: `{"id":"a1b2c3d4"}`（必須。ほかのキーがあれば 400。**`"force":true` は任意**: ターゲットが取り外しを防止していても、差し替える）。
+| 結果 | 応答 |
+|---|---|
+| 受理 | `200 {"result":"mounted","id":"a1b2c3d4"}`（すでに同じイメージがマウント中なら `200 {"result":"already_mounted","id":"..."}`。何もしない） |
+| ボディ不正、`id` の形式が不正 | `400 {"error":"invalid_request"}` |
+| そのイメージがない | `404 {"error":"not_found"}` |
+| そのイメージが `ready` でない | `409 {"error":"image_not_ready"}` |
+| **別のイメージがマウント中で、ターゲットが取り外しを防止している**（`force` なし） | `409 {"error":"locked_by_target"}` |
+| SD が使えない | `503 {"error":"not_ready"}` |
+
+別のイメージがマウント中なら、**差し替える**（取り外し + マウント。ターゲットには、メディアの変更が 1 回だけ通知される）。USB が切断されていても受け付ける（メディアは、接続されたときに見える）。
+
+#### 8.6 取り外し `POST /api/v1/iso/eject`
+リクエスト: `{}`、または `{"force":true}`（ほかのキーは 400）。
+| 結果 | 応答 |
+|---|---|
+| 取り外した | `200 {"result":"ejected"}` |
+| マウントされていない | `200 {"result":"not_mounted"}`（冪等） |
+| ターゲットが取り外しを防止している（`force` なし） | `409 {"error":"locked_by_target"}` |
+
+#### 8.7 削除 `DELETE /api/v1/iso/<id>`
+どの状態のイメージも削除できる（`uploading` / `incomplete` のものは、アップロードの中止になる。進行中のアップロードを削除すると、そのアップロードは終わる）。
+| 結果 | 応答 |
+|---|---|
+| 削除した | `204` |
+| `id` が不正、そのイメージがない | `404 {"error":"not_found"}` |
+| **マウント中** | `409 {"error":"mounted"}`（先に取り外す） |
+| SD が使えない | `503 {"error":"not_ready"}` |
+
+#### 8.8 取り込み（rescan）`POST /api/v1/iso/rescan`
+リクエスト: `{}`。PC で `/iso/import/` にコピーした ISO（4 GiB 弱まで）を、イメージとして取り込む（`ISO_MOUNT_DESIGN.md` §3.3）。アップロード中は `409 {"error":"upload_in_progress"}`。応答: `200 {"imported":N,"skipped":M}`（取り込んだ数と、規則に合わずに飛ばした数）。SD が使えないときは `503 {"error":"not_ready"}`。
+
+**判定の順序**（複数当てはまるときの優先。テストで固定する）: 認証 → Origin → `Content-Type`（415）→ ボディの大きさ（413）→ 形式（400。`id` の形式を含む）→ SD が使えない（503 `not_ready`）→ そのイメージがない（404）→ 状態の矛盾（`not_uploading`、`image_not_ready`、`mounted` など 409）→ `offset_mismatch` → 空き容量（507）→ 受理。**`offset_mismatch` を、書き込みの前に判定する**（何も書かない）。
+
+**ログ**: 操作（`begin`、`finish`、`mount`、`eject`、`delete`、`rescan`）の結果と理由を、イメージの `id` と大きさだけ記録する（`ESP_LOGI`。**名前、セッション情報、データは出さない**）。`PUT` のチャンクごとのログは出さない。進捗は 5% ごと。`GET` の成功は記録しない。
+
+**サービスの起動**: `ISO_ENABLE` が有効でも、SD と USB の MSC の実装（A-13、A-14）が呼ばれるまで、`GET /api/v1/iso` は `sd.state: "no_card"` を返し、ほかは認証と形式の検査を通ったうえで `503 not_ready` を返す。
+
 ## セキュリティ上の前提
 - **ネットワーク環境**: 本システムは VPN などの安全な LAN 内で使用されることを前提としています。
 - **自己署名証明書**: 初回起動時にランダムな自己署名証明書を生成します。ブラウザで警告が出ますが、想定通りの動作です。証明書の有効期限は 2025 年から 2036 年の固定値としています（機器に時計がないため）。

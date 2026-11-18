@@ -100,8 +100,11 @@ struct video_source_t { ...既存（name, start, stop, ctx）...;
 |---|---|---|
 | `TC358743_*`、`MIPI_PHY_*`、`CSI_*`（`CSI_H264_*` を含む）、`VIDEO_SOURCE_*`、`JPEG_*` | **HDMI 担当** | `TC358743_RESET_GPIO`、`MIPI_PHY_POWER_ENABLE`、`CSI_*` |
 | `WEB_SERVER_*`、`NET_ETH_*`、`OLED_*`、`KVM_*`、`ATX_*`、`HID_*`、`FRAME_HUB_*`、`VIDEO_CODEC_*` | **Claude** | `WEB_SERVER_WS_MAX_CLIENTS`、`NET_ETH_INIT`、`VIDEO_CODEC_H264_ALLOWED` |
+| `SD_*`、`USB_MSC_*`、`USB_DEVICE_*`、`KVM_BOARD_*` | **実機担当（Antigravity）** | `SD_FREQ_KHZ`、`USB_MSC_ENABLE`、`USB_DEVICE_VBUS_SENSE_GPIO` |
+| `ISO_*` | **Claude**（ISO の仮想メディアの API とロジック。`docs/ISO_MOUNT_DESIGN.md`） | `ISO_ENABLE`、`ISO_UPLOAD_CHUNK_KB` |
 
 - 他の担当の接頭辞の項目は、**変更しない**（必要なときは、その担当に依頼する）。**例外**: Issue に「この Issue に限り変更してよい」と、範囲を明記したものだけ（例: #69 は、実機を共有しているため、Antigravity が `ws_video_core`、`web_server.c` の WS 送信まわり、`WEB_SERVER_*` の Kconfig を変更してよい。PR は Claude がレビューする）。
+- **接頭辞が重なるときは、長い方を優先する**（例: `KVM_BOARD_*` は実機担当、それ以外の `KVM_*` は Claude）。
 - `FRAME_HUB_*` は Claude 担当だが、映像の大きさに依存するので、HDMI 担当が値の変更を提案してよい（上の 1.2）。
 - 無効な Kconfig の bool は未定義になる。`main.c` で `if (CONFIG_X)` を使うときは、`#ifndef CONFIG_X / #define CONFIG_X 0 / #endif` を足す（既存の書き方に合わせる）。
 
@@ -263,3 +266,42 @@ typedef struct {
 - **`kvm_service_start(const kvm_board_hal_t *hal)`（`components/kvm_service/include/kvm_service.h`）の呼び出し元は A-9**（実機の HAL ができたら `main/main.c` から呼ぶ）。C-5b の時点では呼ばれないので、`web_server` の KVM / ATX の API は 503 `not_ready` を返す。HAL の `ctx` は起動後もずっと有効であること。パルス長・間隔・余裕・tick 周期は Kconfig（`ATX_*`、`KVM_*`）で、値はすべて `TODO(hw-verify)`。
 - **`video_sync` は実装不要**（C-6a）。`kvm_service_start` は、渡された HAL を内部にコピーして、`video_sync` だけを `video_status_get()` の `state` を返す関数（`video_status_hal_sync`）に置き換えてから `kvm_ctrl_init` に渡す。映像の状態は、映像ソースが `video_status_set_provider()` で登録する（1.3）。**`kvm_service_start` は、映像ソースの登録（`main.c` の映像ソースのブロック）より後に呼ぶ**（登録は読み手のタスクの起動前に 1 回だけ、という規則のため）。
 - それまで、ホストでは**モック HAL**（`test/host/kvm_board/`）で検証する。モックは、上の「ボード側の義務」の 2 と 4 も再現し、`kvm_ctrl` が不変条件に反した順序で呼ばないことをテストで固定する。
+
+## 7. ISO の仮想メディア: 純 C（Claude）→ SD・USB・HTTP の結合（Antigravity）
+
+設計の全体は `docs/ISO_MOUNT_DESIGN.md`、HTTP の API は `docs/WEB_API.md` §8。**純 C の部品は IDF のヘッダーに依存せず、I/O と時刻は、次の関数ポインタ（シーム）で注入する**。実機側（Antigravity）は、これらを実装して渡す。Kconfig の接頭辞は、純 C と API が `ISO_*`（Claude）、SD と USB が `SD_*`、`USB_MSC_*`（Antigravity）。
+
+### 7.1 層
+
+| 層 | 担当 | 内容 |
+|---|---|---|
+| `iso_api`、`iso_catalog`、`iso_upload`、`iso_media`、`iso_extent`、`mmc_scsi`（純 C） | Claude（C-10〜C-12） | 要求の検査、メタデータ、受信の状態機械、仮想ドライブの状態、CD のブロック → SD のセクタ、CD-ROM の SCSI コマンド |
+| `iso_blockdev_t`、`iso_fs_t`、`iso_clock_t`、`iso_sha256_t`（実装） | Antigravity（A-13、A-15） | SD の直接読み出し、FAT32 のファイル操作、時刻、SHA-256（mbedTLS） |
+| MSC クラス、`mmc_scsi` への結線 | Antigravity（A-14） | TinyUSB の MSC（または自前の BOT）、記述子、INQUIRY のデバイス種別 5 |
+| HTTP のハンドラー | Antigravity（A-15）+ Claude（C-12） | ストリーミング受信、`/api/v1/iso/*` の結線 |
+
+### 7.2 シーム（概要。**確定は C-10 / C-11 で、ヘッダーとして出す**。ここにある型の意味と義務は変えない）
+
+**`iso_blockdev_t`（SD の 512B セクタの直接アクセス。`iso_extent` の下）**
+- `uint64_t sector_count(ctx)`: セクタ数（カードなし・未初期化は 0）。セクタの大きさは 512 固定。
+- `int read_sectors(ctx, uint64_t lba, uint32_t n, uint8_t *out)`: **ブロックする**。0 = 成功、負 = エラー（タイムアウト、CRC、カードなし）。**`sd_io_lock` を内部で取る**（FatFs の diskio と同じロック。`ISO_MOUNT_DESIGN.md` §4）。呼び出し側は、ロックを意識しない。
+- **義務**: 書き込み用の関数は、このシームに**ない**（イメージはターゲットに読み取り専用）。書き込みは `iso_fs_t` だけ（FatFs 経由）。
+
+**`iso_fs_t`（FAT32 のファイル操作。`iso_catalog` と `iso_upload` が使う）**
+- `mkdir`、`remove`、`rename`、`stat`（大きさ、存在）、ディレクトリの一覧、空き容量、`open_for_write(path, size_hint, contiguous_hint)`、`write(handle, data, len)`（**順に追記だけ**）、`sync`、`close`、`open_for_read`、`read`。
+- **`get_extents(path, extent_t *out, size_t max, size_t *n)`**: ファイルの、連続した SD のセクタの区間（`{uint64_t start_sector; uint64_t sector_count;}`）の一覧を返す（IDF: `f_lseek` の `CREATE_LINKMAP` と、`fs->database` と `csize` からセクタを計算）。`max` を超えるときは、必要な数を返して失敗（`iso_catalog` が `too_fragmented` にする）。
+- **義務**: 戻り値は 0 = 成功、負 = エラー。エラーの種類（SD なし、空き不足、I/O エラー）を区別できる値を返す。`write` の失敗は、そのファイルを不完全として扱えるように、`close` を呼べる状態を保つ。
+
+**`iso_clock_t`**: `uint64_t now_ms(ctx)`（単調増加。巻き戻りは、純 C 側が「経過 0」に倒す）。**`iso_sha256_t`**: `init` / `update` / `final`（逐次）。
+
+### 7.3 MSC（USB）と `mmc_scsi`
+- TinyUSB の MSC のコールバック（または自前の BOT）は、受け取った **CDB（最大 16 バイト）を `mmc_scsi_execute(ctx, cdb, cdb_len, out, out_cap)` に渡す**。戻り値は `{status（GOOD / CHECK CONDITION）、sense{key, asc, ascq}、data_len（out に書いた応答のバイト数）、read{is_read, lba, blocks}}`。**READ(10)/READ(12) のときは、`data_len` は 0 で、`read` に範囲が入る**。グルーは、`mmc_scsi_read_blocks(ctx, lba, blocks, buf, cap)` を、MSC の転送の大きさごとに呼んで、データを送る（先読みしない）。
+- **ブロック長は 2048**。`CFG_TUD_MSC_EP_BUFSIZE` は、2048 の倍数にする（A-14）。
+- **LUN は 1 つ**。`USB_MSC_ENABLE` が無効なら、記述子に MSC を入れない（今の構成のまま）。
+- **メディアの状態は `iso_media` が持つ**（`mmc_scsi` から参照する）。Web の `mount` / `eject` は、`iso_media` に対する操作で、次のコマンドの応答と、GET EVENT STATUS NOTIFICATION に反映される。
+- INQUIRY のデバイス種別 5 にする手段は A-14 の調査（`ISO_MOUNT_DESIGN.md` §1、§5.2）。**この契約は、手段によらない**（`mmc_scsi` は、INQUIRY の応答の全体を作る。種別のバイトも含む）。
+
+### 7.4 Antigravity への依頼
+- **A-13**（SD）、**A-14**（USB MSC。**最初に INQUIRY の手段を調査し、結果を `ISO_MOUNT_DESIGN.md` §1、§5.2 に反映**）、**A-15**（HTTP）。範囲と完了条件は `ISO_MOUNT_DESIGN.md` §8、未確認の項目は同 §10 と `HW_VERIFY.md` I 章。
+- **共有ファイル**（`main/main.c`、`main/Kconfig.projbuild`、`main/CMakeLists.txt`、`test/host/CMakeLists.txt`）は、自分の接頭辞の差分だけを小さく（§3）。
+- 実機の確認（BIOS / UEFI での CD の起動、Windows の ISO）は、オーナーの物理作業を含む。Antigravity がまとめて具体的に依頼する（Issue #71 の運用ルール 1）。

@@ -102,6 +102,12 @@ A0/A1 は 3 つのデコーダ区画で共有する。
 - ボタン n を押す → 切替要求。切替中は LED n を点滅。
 - 成功したら LED n を点灯。タイムアウトしたら、エラー表示のあと、実際の LED が示すチャンネルの点灯に戻す。
 
+### 3.6 ISO の仮想メディア（オーナー決定 2026-11-18）
+
+- ブラウザから ISO を**アップロード**し、microSD に保存し、**USB 経由でターゲット PC に仮想 CD-ROM としてマウント**する。**Linux と Windows の ISO**（CD-ROM のエミュレーションが必須）、**4 GiB 超**に対応する。
+- microSD は 32GB を **FAT32 に再フォーマット**して使う。保存方式は「FAT32 に 1 GiB のパーツに分割して保存し、SD のセクタを直接読む」。**設計は `docs/ISO_MOUNT_DESIGN.md`**（契約）、API は `docs/WEB_API.md` §8、境界は `docs/INTERFACES.md` §7。
+- 回路図で、microSD は GPIO39〜44（4 ビット）、カードの電源スイッチは GPIO45 と確認済み（計画の GPIO 割り当てとは重ならない）。
+
 ## 4. 技術的な前提と注意点
 
 出典はいずれも ESP-KVM（https://github.com/espkvm/espkvm）の README とドキュメント。**数値は ESP-KVM 作者の rev v1.3 実機での計測値で、自機では未検証。**
