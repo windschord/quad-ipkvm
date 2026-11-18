@@ -22,11 +22,15 @@ typedef struct {
     int hub_client_id;
     bool is_sending;
     uint64_t last_session_check_ms;
+    /* Generation number of this connection: assigned by ws_clients_add() from a counter that only goes up, so two
+     * connections that use the same fd one after the other never have the same value. Never 0 for a used slot. */
+    uint32_t gen;
 } ws_client_t;
 
 typedef struct {
     ws_client_t clients[WS_CLIENTS_MAX];
     int max_clients;
+    uint32_t last_gen; /* the generation given to the latest connection (0 = none yet). Never decreases, except by the wrap-around. */
 } ws_clients_t;
 
 /**
@@ -57,6 +61,32 @@ int ws_clients_add(ws_clients_t *ctx, int fd, int hub_client_id, uint64_t now_ms
  * @return The slot index, or -1 if not found.
  */
 int ws_clients_find(const ws_clients_t *ctx, int fd);
+
+/**
+ * @brief Get the generation number of the connection in a slot.
+ *
+ * The generation identifies one connection, not an fd: a later connection that gets the same fd (or the same slot)
+ * has a different generation. A caller that wants to act on a connection later (for example, to close it from another
+ * task) reads the generation now, and checks it with ws_clients_find_gen() when it acts.
+ *
+ * @param ctx The ws_clients context.
+ * @param slot The slot index.
+ * @return The generation (never 0), or 0 if the slot is invalid or FREE.
+ */
+uint32_t ws_clients_slot_gen(const ws_clients_t *ctx, int slot);
+
+/**
+ * @brief Find a WebSocket client by its file descriptor, but only if it is still the connection with this generation.
+ *
+ * Like ws_clients_find(), a slot in the CLOSING state is found (the table still holds that connection). The caller
+ * decides what a CLOSING connection means for it.
+ *
+ * @param ctx The ws_clients context.
+ * @param fd The socket file descriptor to search for.
+ * @param gen The generation read earlier with ws_clients_slot_gen().
+ * @return The slot index, or -1 if there is no such connection (the slot is FREE, the fd differs, or the connection was replaced: the generation differs).
+ */
+int ws_clients_find_gen(const ws_clients_t *ctx, int fd, uint32_t gen);
 
 /**
  * @brief Remove a WebSocket client, marking it as CLOSING.

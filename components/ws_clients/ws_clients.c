@@ -32,6 +32,12 @@ int ws_clients_add(ws_clients_t *ctx, int fd, int hub_client_id, uint64_t now_ms
             ctx->clients[i].hub_client_id = hub_client_id;
             ctx->clients[i].is_sending = false;
             ctx->clients[i].last_session_check_ms = now_ms;
+            /* A new generation for every connection. The counter is never given back (a freed slot does not lower it),
+             * and 0 is skipped when it wraps around: 0 means "no connection". */
+            uint32_t gen = ctx->last_gen + 1;
+            if (gen == 0) gen = 1;
+            ctx->last_gen = gen;
+            ctx->clients[i].gen = gen;
             return i;
         }
     }
@@ -43,6 +49,22 @@ int ws_clients_find(const ws_clients_t *ctx, int fd) {
     for (int i = 0; i < ctx->max_clients; i++) {
         if (ctx->clients[i].state != WS_CLIENT_FREE && ctx->clients[i].fd == fd) {
             return i;
+        }
+    }
+    return -1;
+}
+
+uint32_t ws_clients_slot_gen(const ws_clients_t *ctx, int slot) {
+    if (!ctx || slot < 0 || slot >= ctx->max_clients) return 0;
+    if (ctx->clients[slot].state == WS_CLIENT_FREE) return 0;
+    return ctx->clients[slot].gen;
+}
+
+int ws_clients_find_gen(const ws_clients_t *ctx, int fd, uint32_t gen) {
+    if (!ctx) return -1;
+    for (int i = 0; i < ctx->max_clients; i++) {
+        if (ctx->clients[i].state != WS_CLIENT_FREE && ctx->clients[i].fd == fd) {
+            return (ctx->clients[i].gen == gen) ? i : -1;
         }
     }
     return -1;
