@@ -99,7 +99,8 @@ struct video_source_t { ...既存（name, start, stop, ctx）...;
 | 接頭辞 | 担当 | 例 |
 |---|---|---|
 | `TC358743_*`、`MIPI_PHY_*`、`CSI_*`（`CSI_H264_*` を含む）、`VIDEO_SOURCE_*`、`JPEG_*` | **HDMI 担当** | `TC358743_RESET_GPIO`、`MIPI_PHY_POWER_ENABLE`、`CSI_*` |
-| `WEB_SERVER_*`、`NET_ETH_*`、`OLED_*`、`KVM_*`、`ATX_*`、`HID_*`、`FRAME_HUB_*`、`VIDEO_CODEC_*` | **Claude** | `WEB_SERVER_WS_MAX_CLIENTS`、`NET_ETH_INIT`、`VIDEO_CODEC_H264_ALLOWED` |
+| `KVM_BOARD_*` | **Antigravity（A-9）** | `KVM_BOARD_ENABLE`、`KVM_BOARD_GPIO_*`、`KVM_BOARD_HARD_MAX_*` |
+| `WEB_SERVER_*`、`NET_ETH_*`、`OLED_*`、`KVM_*`（`KVM_BOARD_*` を除く）、`ATX_*`、`HID_*`、`FRAME_HUB_*`、`VIDEO_CODEC_*` | **Claude** | `WEB_SERVER_WS_MAX_CLIENTS`、`NET_ETH_INIT`、`VIDEO_CODEC_H264_ALLOWED` |
 
 - 他の担当の接頭辞の項目は、**変更しない**（必要なときは、その担当に依頼する）。**例外**: Issue に「この Issue に限り変更してよい」と、範囲を明記したものだけ（例: #69 は、実機を共有しているため、Antigravity が `ws_video_core`、`web_server.c` の WS 送信まわり、`WEB_SERVER_*` の Kconfig を変更してよい。PR は Claude がレビューする）。
 - `FRAME_HUB_*` は Claude 担当だが、映像の大きさに依存するので、HDMI 担当が値の変更を提案してよい（上の 1.2）。
