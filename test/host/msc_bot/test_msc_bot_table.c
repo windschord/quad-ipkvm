@@ -30,7 +30,11 @@ typedef enum {
     SU_RECOVERY,     /* 不正な CBW */
     SU_RECOVERY_CMD, /* READ の途中の IN の失敗で RECOVERY。2 つ目の READ_BLOCKS が実行中 */
     SU_RESET_WAIT,
-    SU_DETACH_WAIT
+    SU_DETACH_WAIT,
+    SU_RESET_WAIT_READ,  /* READ_BLOCKS を保留したまま Reset */
+    SU_DETACH_WAIT_READ, /* READ_BLOCKS を保留したまま切断 */
+    SU_DETACH_WAIT_ATT,  /* 切断の後、再接続（ATT）済み */
+    SU_DETACH_WAIT_ATT_RST /* 切断、再接続、Reset 済み（Reset の通知が、完了の後まで保留） */
 } setup_t;
 
 typedef enum {
@@ -61,8 +65,8 @@ static msc_bot_state_t setup_state_of(setup_t s) {
     case SU_WAIT_UNSTALL: return MSC_BOT_STATUS_WAIT_UNSTALL;
     case SU_STATUS_SEND: return MSC_BOT_STATUS_SEND;
     case SU_RECOVERY: case SU_RECOVERY_CMD: return MSC_BOT_RECOVERY;
-    case SU_RESET_WAIT: return MSC_BOT_RESET_WAIT;
-    default: return MSC_BOT_DETACH_WAIT;
+    case SU_RESET_WAIT: case SU_RESET_WAIT_READ: return MSC_BOT_RESET_WAIT;
+    default: return MSC_BOT_DETACH_WAIT; /* SU_DETACH_WAIT、_READ、_ATT、_ATT_RST */
     }
 }
 
@@ -161,11 +165,42 @@ static mb_t *make(setup_t s) {
         mb_send_tur(m, 1);
         msc_bot_detach(&m->bot);
         break;
+    case SU_DETACH_WAIT_ATT:
+        mb_start(m);
+        mb_send_tur(m, 1);
+        msc_bot_detach(&m->bot);
+        msc_bot_attach(&m->bot);
+        break;
+    case SU_DETACH_WAIT_ATT_RST:
+        mb_start(m);
+        mb_send_tur(m, 1);
+        msc_bot_detach(&m->bot);
+        msc_bot_attach(&m->bot);
+        msc_bot_reset(&m->bot);
+        break;
+    case SU_RESET_WAIT_READ:
+        mb_start(m);
+        mb_send_read10(m, 1, 0, 4, 8192);
+        mb_complete_cmd(m);
+        TEST_ASSERT_TRUE(m->cmd_pending && m->cmd.kind == MSC_BOT_CMD_READ_BLOCKS);
+        msc_bot_reset(&m->bot);
+        break;
+    case SU_DETACH_WAIT_READ:
+        mb_start(m);
+        mb_send_read10(m, 1, 0, 4, 8192);
+        mb_complete_cmd(m);
+        TEST_ASSERT_TRUE(m->cmd_pending && m->cmd.kind == MSC_BOT_CMD_READ_BLOCKS);
+        msc_bot_detach(&m->bot);
+        break;
     }
     TEST_ASSERT_EQUAL_STRING(msc_bot_state_name(setup_state_of(s)), msc_bot_state_name(msc_bot_state(&m->bot)));
     mb_assert_clean(m);
     return m;
 }
+
+/* CMDf で、実際に完了させた依頼の種類（1 = EXECUTE の CHECK CONDITION、2 = READ_BLOCKS の失敗、4 = 依頼なし）を、状態ごとに記録する。 */
+static unsigned fail_kind_seen[MSC_BOT_STATE_COUNT];
+static msc_bot_state_t cur_setup_state;
 
 static void apply(mb_t *m, event_t e) {
     msc_bot_cmd_result_t spur;
@@ -231,6 +266,7 @@ static void apply(mb_t *m, event_t e) {
         break;
     case E_CMDFAIL:
         if (m->cmd_pending) {
+            fail_kind_seen[cur_setup_state] |= (m->cmd.kind == MSC_BOT_CMD_EXECUTE) ? 1u : 2u;
             if (m->cmd.kind == MSC_BOT_CMD_EXECUTE) {
                 /* EXECUTE の失敗 = CHECK CONDITION（データなし） */
                 m->script_on = true;
@@ -241,6 +277,7 @@ static void apply(mb_t *m, event_t e) {
             }
             mb_complete_cmd(m);
         } else {
+            fail_kind_seen[cur_setup_state] |= 4u;
             spur.good = false;
             msc_bot_command_complete(&m->bot, &spur);
         }
@@ -297,7 +334,7 @@ static const row_t ROWS[] = {
     {SU_EXEC, E_OUTER, S(EXEC), "", 0, 1},
     {SU_EXEC, E_INOK, S(EXEC), "", 0, 1},
     {SU_EXEC, E_INER, S(EXEC), "", 0, 1},
-    {SU_EXEC, E_CMDOK, S(DATA_IN), "in36 done", 1, 0},                  /* ケース 6: データ IN */
+    {SU_EXEC, E_CMDOK, S(DATA_IN), "done in36", 1, 0},                  /* ケース 6: データ IN */
     {SU_EXEC, E_CMDFAIL, S(STATUS_WAIT_UNSTALL), "done stallI", 1, 0},  /* CHECK CONDITION、データなし、H=36: ケース 4 */
     /* EXEC の結果の種類ごと */
     {SU_EXEC_TUR, E_CMDOK, S(STATUS_SEND), "done in13", 1, 0},          /* ケース 1 */
@@ -387,7 +424,8 @@ static const row_t ROWS[] = {
     {SU_RESET_WAIT, E_INOK, S(RESET_WAIT), "", 0, 1},
     {SU_RESET_WAIT, E_INER, S(RESET_WAIT), "", 0, 1},
     {SU_RESET_WAIT, E_CMDOK, S(IDLE), "done out31 rdone", 1, 0},
-    {SU_RESET_WAIT, E_CMDFAIL, S(IDLE), "done out31 rdone", 1, 0},
+    {SU_RESET_WAIT_READ, E_CMDFAIL, S(IDLE), "done out31 rdone", 1, 0}, /* 保留中の READ_BLOCKS の失敗 */
+    {SU_RESET_WAIT_READ, E_CMDOK, S(IDLE), "done out31 rdone", 1, 0},
     /* ---- DETACH_WAIT ---- */
     {SU_DETACH_WAIT, E_ATT, S(DETACH_WAIT), "", 0, 0},
     {SU_DETACH_WAIT, E_DET, S(DETACH_WAIT), "", 0, 0},
@@ -399,11 +437,19 @@ static const row_t ROWS[] = {
     {SU_DETACH_WAIT, E_INOK, S(DETACH_WAIT), "", 0, 1},
     {SU_DETACH_WAIT, E_INER, S(DETACH_WAIT), "", 0, 1},
     {SU_DETACH_WAIT, E_CMDOK, S(DETACHED), "done", 1, 0},
-    {SU_DETACH_WAIT, E_CMDFAIL, S(DETACHED), "done", 1, 0},
+    {SU_DETACH_WAIT_READ, E_CMDFAIL, S(DETACHED), "done", 1, 0},       /* 保留中の READ_BLOCKS の失敗 */
+    {SU_DETACH_WAIT_READ, E_CMDOK, S(DETACHED), "done", 1, 0},
+    /* 再接続（ATT）の後の Reset は、完了の後で通知する。再度の切断で破棄する */
+    {SU_DETACH_WAIT_ATT, E_CMDOK, S(IDLE), "done out31", 1, 0},
+    {SU_DETACH_WAIT_ATT, E_RST, S(DETACH_WAIT), "", 0, 0},
+    {SU_DETACH_WAIT_ATT, E_DET, S(DETACH_WAIT), "", 0, 0},
+    {SU_DETACH_WAIT_ATT_RST, E_CMDOK, S(IDLE), "done out31 rdone", 1, 0},
+    {SU_DETACH_WAIT_ATT_RST, E_DET, S(DETACH_WAIT), "", 0, 0},
 };
 
 static void run_row(const row_t *r) {
     mb_t *m = make(r->setup);
+    cur_setup_state = setup_state_of(r->setup);
     mb_clear_log(m);
     const unsigned done0 = m->n_done;
     const uint32_t stale0 = msc_bot_stats(&m->bot).stale_events;
@@ -442,6 +488,24 @@ static void test_table_covers_every_state_event_cell(void) {
     }
 }
 
+/* CMDf の行が、依頼の種類まで検証している: 依頼が保留される状態（DATA_IN、RECOVERY、RESET_WAIT、DETACH_WAIT）では、
+ * READ_BLOCKS の失敗を、EXEC では、EXECUTE の CHECK CONDITION を、それ以外の状態では、「依頼なし」を、実際に完了させている。 */
+static void test_cmdf_rows_exercise_the_real_completion_kind(void) {
+    memset(fail_kind_seen, 0, sizeof(fail_kind_seen));
+    for (size_t i = 0; i < sizeof(ROWS) / sizeof(ROWS[0]); i++) run_row(&ROWS[i]);
+    TEST_ASSERT_TRUE_MESSAGE(fail_kind_seen[MSC_BOT_EXEC] & 1u, "EXEC: no CHECK CONDITION row");
+    TEST_ASSERT_TRUE_MESSAGE(fail_kind_seen[MSC_BOT_DATA_IN] & 2u, "DATA_IN: no READ_BLOCKS failure row");
+    TEST_ASSERT_TRUE_MESSAGE(fail_kind_seen[MSC_BOT_RECOVERY] & 2u, "RECOVERY: no READ_BLOCKS failure row");
+    TEST_ASSERT_TRUE_MESSAGE(fail_kind_seen[MSC_BOT_RESET_WAIT] & 2u, "RESET_WAIT: no READ_BLOCKS failure row");
+    TEST_ASSERT_TRUE_MESSAGE(fail_kind_seen[MSC_BOT_DETACH_WAIT] & 2u, "DETACH_WAIT: no READ_BLOCKS failure row");
+    TEST_ASSERT_FALSE_MESSAGE(fail_kind_seen[MSC_BOT_RESET_WAIT] & 1u, "RESET_WAIT: CMDf row uses an EXECUTE completion");
+    TEST_ASSERT_FALSE_MESSAGE(fail_kind_seen[MSC_BOT_DETACH_WAIT] & 1u, "DETACH_WAIT: CMDf row uses an EXECUTE completion");
+    const msc_bot_state_t no_cmd[] = {MSC_BOT_DETACHED, MSC_BOT_IDLE, MSC_BOT_DATA_OUT, MSC_BOT_STATUS_WAIT_UNSTALL, MSC_BOT_STATUS_SEND};
+    for (size_t i = 0; i < sizeof(no_cmd) / sizeof(no_cmd[0]); i++) {
+        TEST_ASSERT_EQUAL_UINT_MESSAGE(4u, fail_kind_seen[no_cmd[i]], msc_bot_state_name(no_cmd[i]));
+    }
+}
+
 /* 次の状態として、全ての状態が表に現れる（到達できる）。 */
 static void test_every_state_is_a_next_state_of_some_row(void) {
     bool seen[MSC_BOT_STATE_COUNT];
@@ -456,6 +520,7 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_every_row);
     RUN_TEST(test_table_covers_every_state_event_cell);
+    RUN_TEST(test_cmdf_rows_exercise_the_real_completion_kind);
     RUN_TEST(test_every_state_is_a_next_state_of_some_row);
     return UNITY_END();
 }

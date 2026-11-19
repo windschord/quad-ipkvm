@@ -32,6 +32,14 @@ static uint32_t rnd(void) {
     return (uint32_t)(rs >> 11);
 }
 
+/* 1 回の rnd() の結果を、n 未満に、または確率で使う。1 つの式・1 つの関数引数の中に、複数の rnd() を書かない
+ * （C は、引数の評価順を規定しない。固定シードの再現性のため、rnd() は、1 文に 1 回だけ）。 */
+static uint32_t rnd_below(uint32_t n) {
+    const uint32_t r = rnd();
+    return r % n;
+}
+static bool rnd_chance(uint32_t one_in) { return rnd_below(one_in) == 0; }
+
 static int cur_seed;
 static long cur_step;
 
@@ -173,76 +181,98 @@ static void host_send_cbw(mb_t *m) {
     if (!(m->out_pending && m->out_ptr == m->cbw)) return;
     uint8_t raw[31];
     uint32_t tag = rnd();
-    bool invalid = (rnd() % 100) < 12;
+    bool invalid = rnd_below(100) < 12;
     uint8_t cdb[16];
     memset(cdb, 0, sizeof(cdb));
     uint8_t cdb_len = 6;
     uint32_t H = 0;
-    bool in = (rnd() & 1) != 0;
-    switch (rnd() % 8) {
+    bool in = rnd_below(2) != 0;
+    const uint32_t kind = rnd_below(8);
+    uint32_t t1, t2; /* 1 文に 1 回の rnd_below の結果 */
+    switch (kind) {
     case 0: /* TUR */
         cdb[0] = 0x00;
-        H = (rnd() % 4 == 0) ? (uint32_t)(rnd() % 100) : 0;
+        t1 = rnd_below(4);
+        t2 = rnd_below(100);
+        H = (t1 == 0) ? t2 : 0;
         break;
     case 1: /* INQUIRY */
         cdb[0] = 0x12;
-        H = (rnd() % 3 == 0) ? 36u : (uint32_t)(rnd() % 200);
-        in = (rnd() % 8) != 0;
+        t1 = rnd_below(3);
+        t2 = rnd_below(200);
+        H = (t1 == 0) ? 36u : t2;
+        in = rnd_below(8) != 0;
         break;
     case 2: { /* READ(10) */
-        uint32_t blocks = rnd() % 14;
+        const uint32_t blocks = rnd_below(14);
         cdb_len = 10;
         cdb[0] = 0x28;
-        cdb[5] = (uint8_t)(rnd() % 200);
+        cdb[5] = (uint8_t)rnd_below(200);
         cdb[7] = (uint8_t)(blocks >> 8);
         cdb[8] = (uint8_t)blocks;
-        H = (rnd() % 3 == 0) ? (uint32_t)(rnd() % 30000) : blocks * 2048u;
-        in = (rnd() % 10) != 0;
+        t1 = rnd_below(3);
+        t2 = rnd_below(30000);
+        H = (t1 == 0) ? t2 : blocks * 2048u;
+        in = rnd_below(10) != 0;
         break;
     }
     case 3: { /* READ(12) */
-        uint32_t blocks = rnd() % 20;
+        const uint32_t blocks = rnd_below(20);
         cdb_len = 12;
         cdb[0] = 0xA8;
-        cdb[5] = (uint8_t)(rnd() % 200);
+        cdb[5] = (uint8_t)rnd_below(200);
         cdb[9] = (uint8_t)blocks;
-        H = (rnd() % 3 == 0) ? (uint32_t)(rnd() % 50000) : blocks * 2048u;
-        in = (rnd() % 10) != 0;
+        t1 = rnd_below(3);
+        t2 = rnd_below(50000);
+        H = (t1 == 0) ? t2 : blocks * 2048u;
+        in = rnd_below(10) != 0;
         break;
     }
     case 4: /* WRITE(10) */
         cdb_len = 10;
         cdb[0] = 0x2A;
-        H = HS[rnd() % (sizeof(HS) / sizeof(HS[0]))];
-        H = (rnd() % 2) ? H : (uint32_t)(rnd() % 20000);
-        in = (rnd() % 8) == 0;
+        t1 = rnd_below((uint32_t)(sizeof(HS) / sizeof(HS[0])));
+        t2 = rnd_below(2);
+        H = HS[t1];
+        if (t2 == 0) {
+            H = rnd_below(20000);
+        }
+        in = rnd_below(8) == 0;
         break;
     case 5: /* デバイスが OUT を受け取る予定のテスト用コマンド */
         cdb[0] = 0xF0;
-        cdb[1] = (uint8_t)((rnd() % 50) >> 0);
-        cdb[2] = (uint8_t)(rnd());
-        cdb[3] = (uint8_t)(rnd() & 1);
-        H = (rnd() % 2) ? (uint32_t)(rnd() % 12000) : 0;
+        cdb[1] = (uint8_t)rnd_below(50);
+        cdb[2] = (uint8_t)rnd_below(256);
+        cdb[3] = (uint8_t)rnd_below(2);
+        t1 = rnd_below(2);
+        t2 = rnd_below(12000);
+        H = (t1 != 0) ? t2 : 0;
         break;
     case 6: /* 未知のコマンド */
         cdb[0] = 0xFF;
-        H = (rnd() % 2) ? (uint32_t)(rnd() % 5000) : 0;
+        t1 = rnd_below(2);
+        t2 = rnd_below(5000);
+        H = (t1 != 0) ? t2 : 0;
         break;
     default: /* CDB の長さを変える */
-        cdb_len = (uint8_t)(1 + rnd() % 16);
-        cdb[0] = (rnd() & 1) ? 0x00 : 0x12;
-        H = (uint32_t)(rnd() % 100);
+        cdb_len = (uint8_t)(1 + rnd_below(16));
+        cdb[0] = rnd_chance(2) ? 0x00 : 0x12;
+        H = rnd_below(100);
         break;
     }
     mb_make_cbw(raw, tag, H, in, cdb, cdb_len);
     uint32_t alen = 31;
     if (invalid) {
-        switch (rnd() % 7) {
-        case 0: raw[rnd() % 4] ^= (uint8_t)(1u << (rnd() % 8)); break;
-        case 1: alen = (rnd() % 2) ? 30 : 32; break;
-        case 2: raw[13] = (uint8_t)(1 + rnd() % 255); break;
-        case 3: raw[14] = (rnd() % 2) ? 0 : (uint8_t)(17 + rnd() % 200); break;
-        case 4: raw[12] = (uint8_t)(raw[12] | (1u << (rnd() % 7))); break;
+        const uint32_t how = rnd_below(7);
+        const uint32_t a = rnd_below(8);
+        const uint32_t b2 = rnd_below(200);
+        const uint32_t c2 = rnd_below(2);
+        switch (how) {
+        case 0: raw[a % 4] ^= (uint8_t)(1u << a); break;
+        case 1: alen = (c2 != 0) ? 30 : 32; break;
+        case 2: raw[13] = (uint8_t)(1 + b2); break;
+        case 3: raw[14] = (c2 != 0) ? 0 : (uint8_t)(17 + b2); break;
+        case 4: raw[12] = (uint8_t)(raw[12] | (1u << (a % 7))); break;
         case 5: alen = 0; break;
         default: raw[14] = (uint8_t)(raw[14] | 0x20); break;
         }
@@ -312,22 +342,26 @@ static void host_deliver_out(mb_t *m) {
 
 static void task_complete(mb_t *m) {
     if (!m->cmd_pending) return;
-    if (m->cmd.kind == MSC_BOT_CMD_EXECUTE && (rnd() % 100) < 10) {
+    const uint32_t scripted = rnd_below(100);
+    if (m->cmd.kind == MSC_BOT_CMD_EXECUTE && scripted < 10) {
         /* 結果を、乱数で与える（契約違反の結果を含む） */
         m->script_on = true;
         memset(&m->script, 0, sizeof(m->script));
-        m->script.good = (rnd() % 3) != 0;
-        m->script.dev_dir = (msc_bot_dir_t)(rnd() % 4); /* 3 は不正な値 */
-        m->script.data_len = (rnd() % 4 == 0) ? (uint32_t)(rnd() % 12000) : (uint32_t)(rnd() % 100);
-        m->script.is_read = (rnd() % 2) != 0;
-        m->script.read_lba = rnd() % 1000;
-        m->script.read_blocks = rnd() % 12;
+        m->script.good = rnd_below(3) != 0;
+        m->script.dev_dir = (msc_bot_dir_t)rnd_below(4); /* 3 は不正な値 */
+        const uint32_t big = rnd_below(4);
+        const uint32_t len_big = rnd_below(12000);
+        const uint32_t len_small = rnd_below(100);
+        m->script.data_len = (big == 0) ? len_big : len_small;
+        m->script.is_read = rnd_below(2) != 0;
+        m->script.read_lba = rnd_below(1000);
+        m->script.read_blocks = rnd_below(12);
         FS.exec_fail_script++;
         mb_complete_cmd(m);
         m->script_on = false;
         return;
     }
-    if (m->cmd.kind == MSC_BOT_CMD_READ_BLOCKS && (rnd() % 100) < 8) {
+    if (m->cmd.kind == MSC_BOT_CMD_READ_BLOCKS && scripted < 8) {
         int saved = m->read_fail_nth;
         m->read_fail_nth = m->reads_in_cmd;
         mb_complete_cmd(m);
@@ -341,11 +375,13 @@ static void task_complete(mb_t *m) {
 static void spurious(mb_t *m) {
     msc_bot_state_t s0 = msc_bot_state(&m->bot);
     int nlog0 = m->nlog;
-    unsigned pick = rnd() % 3;
+    const unsigned pick = rnd_below(3);
+    const uint32_t xlen = rnd_below(100);
+    const bool xok = rnd_below(2) != 0;
     if (pick == 0 && !m->in_pending) {
-        msc_bot_xfer_complete(&m->bot, MSC_BOT_EP_IN, rnd() % 100, (rnd() & 1) != 0);
+        msc_bot_xfer_complete(&m->bot, MSC_BOT_EP_IN, xlen, xok);
     } else if (pick == 1 && !m->out_pending) {
-        msc_bot_xfer_complete(&m->bot, MSC_BOT_EP_OUT, rnd() % 100, (rnd() & 1) != 0);
+        msc_bot_xfer_complete(&m->bot, MSC_BOT_EP_OUT, xlen, xok);
     } else if (pick == 2) {
         msc_bot_cmd_result_t r;
         memset(&r, 0, sizeof(r));
@@ -395,11 +431,13 @@ static void one_step(mb_t *m) {
     } else if (r < 90) {
         spurious(m);
     } else if (r < 92) {
-        m->refuse_in = (rnd() % 8) == 0;
-        m->refuse_out = (rnd() % 8) == 0;
-        m->refuse_submit = (rnd() % 8) == 0;
+        m->refuse_in = rnd_chance(8);
+        m->refuse_out = rnd_chance(8);
+        m->refuse_submit = rnd_chance(8);
     } else if (r < 94) {
-        m->read_fail_nth = (rnd() % 3 == 0) ? (int)(rnd() % 4) : -1;
+        const bool fail = rnd_chance(3);
+        const uint32_t nth = rnd_below(4);
+        m->read_fail_nth = fail ? (int)nth : -1;
     } else if (r < 96) {
         m->sync = (rnd() & 1) != 0;
         m->sync_xfer = (rnd() % 4) == 0;
@@ -438,7 +476,9 @@ static void fuzz_seed(int seed, long steps) {
     if (rs == 0) rs = 1;
     for (int i = 0; i < 4; i++) (void)rnd();
     static const uint32_t sizes[3] = {2048, 4096, 8192};
-    mb_t *m = mb_init(sizes[rnd() % 3], (rnd() % 4) == 0);
+    const uint32_t size_pick = rnd_below(3);
+    const bool out_stall = rnd_chance(4);
+    mb_t *m = mb_init(sizes[size_pick], out_stall);
     m->sync = (rnd() & 1) != 0;
     m->sync_xfer = (rnd() % 4) == 0;
     m->host_out_left = 100000;
@@ -503,20 +543,27 @@ static void test_fuzz_without_faults_every_command_completes(void) {
         unsigned executed = 0;
         for (int i = 0; i < 400; i++) {
             m->rx_len = 0;
-            if (m->out_pending && m->out_ptr == m->cbw) {
-                uint8_t raw[31];
-                const uint8_t cdb[10] = {0x28, 0, 0, 0, 0, (uint8_t)(rnd() % 100), 0, 0, (uint8_t)(1 + rnd() % 9), 0};
-                uint32_t blocks = cdb[8];
-                mb_make_cbw(raw, rnd(), blocks * 2048u, true, cdb, 10);
-                mb_send_raw_cbw(m, raw, 31);
-                executed++;
-            }
+            /* 各反復の開始時に、CBW の受信が発行済みでなければならない（前のコマンドが、IDLE に戻っている） */
+            CHECK(m->out_pending && m->out_ptr == m->cbw, "CBW receive not armed at the start of an iteration");
+            uint8_t raw[31];
+            const uint32_t lba_pick = rnd_below(100);
+            const uint32_t blocks = 1 + rnd_below(9);
+            const uint32_t tag = rnd();
+            const uint8_t cdb[10] = {0x28, 0, 0, 0, 0, (uint8_t)lba_pick, 0, 0, (uint8_t)blocks, 0};
+            mb_make_cbw(raw, tag, blocks * 2048u, true, cdb, 10);
+            const unsigned csw0 = m->n_csw;
+            mb_send_raw_cbw(m, raw, 31);
+            executed++;
             mb_settle(m);
             mb_assert_clean(m);
             CHECK(msc_bot_state(&m->bot) == MSC_BOT_IDLE, "not IDLE after a command");
             CHECK(m->n_exec == executed, "EXECUTE count");
             CHECK(m->n_done == executed, "command_done count");
+            /* 今回の CSW が 1 つ届き、tag が今回のもの（前回の成功の結果で通らない） */
+            CHECK(m->n_csw == csw0 + 1, "exactly one CSW for the command");
+            CHECK(m->csw_rx.tag == tag, "CSW tag is not the tag of this command");
             CHECK(m->csw_rx.status == 0 && m->csw_rx.residue == 0, "READ CSW");
+            CHECK(m->rx_len == blocks * 2048u, "READ data length");
         }
     }
 }

@@ -66,16 +66,27 @@ def apply_edits(m, text):
 def check_only(repo, mfile):
     mutants = load_mutants(mfile)
     ids = set()
+    bad = 0
     for m in mutants:
         if m["id"] in ids:
             print("DUPLICATE ID", m["id"], file=sys.stderr)
-            sys.exit(2)
+            bad += 1
         ids.add(m["id"])
         path = os.path.join(repo, m.get("file", DEFAULT_FILE))
-        orig = open(path).read()
-        if apply_edits(m, orig) == orig:
-            print("NO-OP", m["id"], file=sys.stderr)
-            sys.exit(2)
+        text = orig = open(path).read()
+        for old, new in m["edits"]:
+            cnt = text.count(old)
+            if cnt != 1:
+                print("BAD EDIT", m["id"], cnt, repr(old[:80]), file=sys.stderr)
+                bad += 1
+                break
+            text = text.replace(old, new)
+        else:
+            if text == orig:
+                print("NO-OP", m["id"], file=sys.stderr)
+                bad += 1
+    if bad:
+        sys.exit(2)
     print(f"ok: {len(mutants)} mutants apply cleanly")
 
 
@@ -90,6 +101,12 @@ def main():
     repo, work, mfile, outp = sys.argv[1:5]
     only = set(sys.argv[5:])
     mutants = load_mutants(mfile)
+
+    # 未知のミュータント ID は、作業領域を削除する前に、エラーで終了する（タイプミスで全て空振りにしない）。
+    unknown = only - {m["id"] for m in mutants}
+    if unknown:
+        print("ERROR: unknown mutant id(s): " + ", ".join(sorted(unknown)), file=sys.stderr)
+        sys.exit(2)
 
     work = os.path.realpath(work)
     src_tree = os.path.join(work, "repo")

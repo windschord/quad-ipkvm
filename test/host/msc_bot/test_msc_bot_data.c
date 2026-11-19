@@ -74,7 +74,7 @@ static void test_double_buffer_in_first_order(void) {
     mb_assert_csw(m, 0x21, 0, 0);
     TEST_ASSERT_EQUAL_UINT32(8192, m->rx_len);
     mb_assert_rx_pattern(m, 40, 0, 8192);
-    MB_ASSERT_LOG(m, "exec read1 read1 in2048 read1 in2048 read1 in2048 in2048 done in13 out31");
+    MB_ASSERT_LOG(m, "exec read1 read1 in2048 read1 in2048 read1 in2048 done in2048 in13 out31");
 }
 
 /* 読み出しが USB の転送より先に終わる順序（バッファが READY のまま、USB の完了を待つ）。 */
@@ -128,6 +128,8 @@ static void test_tail_not_multiple_of_block(void) {
     mb_send_read10(m, 1, 3, 4, 5000);
     mb_complete_cmd(m); /* EXECUTE */
     mb_complete_cmd(m); /* 1 つ目（4096） -> in + 2 つ目の読み出し */
+    TEST_ASSERT_TRUE(m->cmd_pending && m->cmd.kind == MSC_BOT_CMD_READ_BLOCKS);
+    TEST_ASSERT_EQUAL_UINT32(1, m->cmd.blocks); /* 端数 904 バイトは、1 ブロックだけ読む */
     mb_complete_cmd(m); /* 2 つ目（端数 904）。これで、以後 mmc_scsi を呼ばない */
     TEST_ASSERT_EQUAL_UINT(1, m->n_done);   /* 送信がまだ終わっていなくても、command_done は済み */
     TEST_ASSERT_TRUE(m->in_pending);
@@ -315,10 +317,49 @@ static void test_out_short_transfer_ends_data_phase(void) {
     TEST_ASSERT_TRUE(m->out_pending);
     TEST_ASSERT_EQUAL_UINT32(512, m->out_len);
     mb_deliver_out(m, 100, true); /* 短い */
+    /* BOT 6.7.3: 宣言長（512）を受け取れなかったので、Bulk-OUT を STALL して打ち切る */
+    TEST_ASSERT_TRUE(m->hw_out_stalled);
+    TEST_ASSERT_TRUE(m->in_pending && m->in_ptr == m->csw);
     mb_deliver_in(m, true);
     mb_assert_clean(m);
     mb_assert_csw(m, 0x42, 0, 512 - 100);
     MB_ASSERT_STATE(m, MSC_BOT_IDLE);
+    TEST_ASSERT_FALSE(m->out_pending); /* OUT が STALL 中は、次の CBW を受けない */
+    mb_host_clear_halt(m, MSC_BOT_EP_OUT);
+    TEST_ASSERT_TRUE(m->out_pending && m->out_ptr == m->cbw);
+    mb_assert_clean(m);
+}
+
+/* 宣言長 4096 に対して、2048 と 511 の順で受信が完了（2559 バイト）。短い受信で打ち切るので、Bulk-OUT を STALL する。 */
+static void test_out_short_second_chunk_stalls_out(void) {
+    mb_t *m = mb_init(2048, false);
+    mb_start(m);
+    mb_clear_log(m);
+    mb_send_write10(m, 0x46, 4096);
+    mb_settle(m);
+    TEST_ASSERT_TRUE(m->out_pending && m->out_len == 2048);
+    mb_deliver_out(m, 2048, true);
+    TEST_ASSERT_FALSE(m->hw_out_stalled); /* 宣言長に達していない間は、STALL しない */
+    TEST_ASSERT_TRUE(m->out_pending);
+    mb_deliver_out(m, 511, true); /* 短い */
+    TEST_ASSERT_TRUE(m->hw_out_stalled);
+    mb_settle(m);
+    mb_assert_csw(m, 0x46, 1, 4096);
+    MB_ASSERT_LOG(m, "exec done out2048 out2048 stallO in13");
+    mb_assert_clean(m);
+}
+
+/* 宣言長を受け取ったときは、STALL しない。 */
+static void test_out_exact_length_does_not_stall_out(void) {
+    mb_t *m = mb_init(2048, false);
+    mb_start(m);
+    mb_clear_log(m);
+    m->host_out_left = 4096;
+    mb_send_write10(m, 0x47, 4096);
+    mb_settle(m);
+    TEST_ASSERT_FALSE(m->hw_out_stalled);
+    TEST_ASSERT_TRUE(strstr(mb_log_str(m), "stallO") == NULL);
+    mb_assert_clean(m);
 }
 
 static void test_out_transfer_error_goes_to_recovery(void) {
@@ -662,6 +703,8 @@ int main(void) {
     RUN_TEST(test_in_short_completion_is_error);
     RUN_TEST(test_out_discard_chunks_bounded_by_buffer);
     RUN_TEST(test_out_short_transfer_ends_data_phase);
+    RUN_TEST(test_out_short_second_chunk_stalls_out);
+    RUN_TEST(test_out_exact_length_does_not_stall_out);
     RUN_TEST(test_out_transfer_error_goes_to_recovery);
     RUN_TEST(test_out_oversized_completion_is_error);
     RUN_TEST(test_out_stall_policy_waits_for_clear_before_next_cbw);

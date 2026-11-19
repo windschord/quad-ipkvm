@@ -10,6 +10,8 @@
 void setUp(void) {}
 void tearDown(void) {}
 
+static int hook_count;
+
 /* ---- Reset と実行中のコマンド --------------------------------------------- */
 static void test_reset_while_execute_outstanding_waits_then_done_once(void) {
     mb_t *m = mb_init(2048, false);
@@ -279,13 +281,202 @@ static void test_detach_wait_then_attach_reattaches_after_completion(void) {
     msc_bot_detach(&m->bot);
     msc_bot_attach(&m->bot); /* 実行中のうちに再接続 */
     MB_ASSERT_STATE(m, MSC_BOT_DETACH_WAIT);
-    msc_bot_reset(&m->bot); /* 無視 */
+    msc_bot_reset(&m->bot); /* 再接続の後の Reset: 記録して、旧い依頼の解放と再接続の準備の後で通知する */
     MB_ASSERT_STATE(m, MSC_BOT_DETACH_WAIT);
     TEST_ASSERT_EQUAL_UINT(0, m->n_reset_done);
     mb_complete_cmd(m);
     MB_ASSERT_STATE(m, MSC_BOT_IDLE);
-    MB_ASSERT_LOG(m, "exec done out31");
+    MB_ASSERT_LOG(m, "exec done out31 rdone");
     TEST_ASSERT_EQUAL_UINT(1, m->n_done);
+    TEST_ASSERT_EQUAL_UINT(1, m->n_reset_done);
+    TEST_ASSERT_EQUAL_UINT(0, m->n_reset_failed);
+    mb_assert_clean(m);
+}
+
+/* DETACH_WAIT の間の Reset が、再接続（ATT）の前なら、破棄する（切断されている間の Reset）。 */
+static void test_reset_in_detach_wait_without_attach_is_dropped(void) {
+    mb_t *m = mb_init(2048, false);
+    m->hold_cmd = true;
+    mb_start(m);
+    mb_send_tur(m, 1);
+    msc_bot_detach(&m->bot);
+    msc_bot_reset(&m->bot);
+    mb_complete_cmd(m);
+    MB_ASSERT_STATE(m, MSC_BOT_DETACHED);
+    TEST_ASSERT_EQUAL_UINT(0, m->n_reset_done + m->n_reset_failed);
+    msc_bot_attach(&m->bot); /* 後の接続で、古い Reset が通知されない */
+    TEST_ASSERT_EQUAL_UINT(0, m->n_reset_done + m->n_reset_failed);
+    mb_assert_clean(m);
+}
+
+/* 再接続（ATT）の前に受けた Reset は、その後で再接続されても、通知しない（Reset は、前の接続のもの）。 */
+static void test_reset_before_reattach_is_not_reported_after_it(void) {
+    mb_t *m = mb_init(2048, false);
+    m->hold_cmd = true;
+    mb_start(m);
+    mb_clear_log(m);
+    mb_send_tur(m, 1);
+    msc_bot_detach(&m->bot);
+    msc_bot_reset(&m->bot);  /* 切断中の Reset */
+    msc_bot_attach(&m->bot); /* その後で、再接続 */
+    mb_complete_cmd(m);
+    MB_ASSERT_STATE(m, MSC_BOT_IDLE);
+    MB_ASSERT_LOG(m, "exec done out31");
+    TEST_ASSERT_EQUAL_UINT(0, m->n_reset_done + m->n_reset_failed);
+    mb_assert_clean(m);
+}
+
+/* 再接続の後の Reset の記録は、再度の切断で破棄する。 */
+static void test_pending_reset_is_discarded_by_detach(void) {
+    mb_t *m = mb_init(2048, false);
+    m->hold_cmd = true;
+    mb_start(m);
+    mb_send_tur(m, 1);
+    msc_bot_detach(&m->bot);
+    msc_bot_attach(&m->bot);
+    msc_bot_reset(&m->bot);
+    msc_bot_detach(&m->bot);
+    msc_bot_attach(&m->bot); /* 2 回目の接続。Reset は、この接続では受けていない */
+    mb_complete_cmd(m);
+    MB_ASSERT_STATE(m, MSC_BOT_IDLE);
+    TEST_ASSERT_EQUAL_UINT(0, m->n_reset_done + m->n_reset_failed);
+    mb_assert_clean(m);
+}
+
+/* 再接続の後の Reset が、通知の時点で CBW の受信の発行を拒否されたら、reset_failed。 */
+static void test_pending_reset_reports_failure_if_cbw_arm_refused(void) {
+    mb_t *m = mb_init(2048, false);
+    m->hold_cmd = true;
+    mb_start(m);
+    mb_send_tur(m, 1);
+    msc_bot_detach(&m->bot);
+    msc_bot_attach(&m->bot);
+    msc_bot_reset(&m->bot);
+    m->refuse_out = true;
+    mb_complete_cmd(m);
+    MB_ASSERT_STATE(m, MSC_BOT_RECOVERY);
+    TEST_ASSERT_EQUAL_UINT(0, m->n_reset_done);
+    TEST_ASSERT_EQUAL_UINT(1, m->n_reset_failed);
+    TEST_ASSERT_EQUAL_UINT(1, m->n_done);
+    mb_assert_clean(m);
+}
+
+/* ---- Reset の結果（BOT 3.1: 成功は reset_done、CBW の受信の発行の拒否は reset_failed）---- */
+static void test_reset_failed_when_cbw_arm_refused_immediate_path(void) {
+    mb_t *m = mb_init(2048, false);
+    m->hold_cmd = true;
+    mb_start(m);
+    mb_send_tur(m, 1);
+    mb_complete_cmd(m); /* CSW の送信中 */
+    mb_clear_log(m);
+    m->refuse_out = true;
+    msc_bot_reset(&m->bot);
+    MB_ASSERT_STATE(m, MSC_BOT_RECOVERY);
+    MB_ASSERT_LOG(m, "cancel out31 stallI stallO rfail");
+    TEST_ASSERT_EQUAL_UINT(0, m->n_reset_done);
+    TEST_ASSERT_EQUAL_UINT(1, m->n_reset_failed);
+    TEST_ASSERT_TRUE(m->hw_in_stalled && m->hw_out_stalled);
+    mb_assert_clean(m);
+}
+
+static void test_reset_failed_when_cbw_arm_refused_after_waiting_for_command(void) {
+    mb_t *m = mb_init(2048, false);
+    m->hold_cmd = true;
+    mb_start(m);
+    mb_clear_log(m);
+    mb_send_tur(m, 1);
+    msc_bot_reset(&m->bot);
+    m->refuse_out = true;
+    mb_complete_cmd(m);
+    MB_ASSERT_STATE(m, MSC_BOT_RECOVERY);
+    MB_ASSERT_LOG(m, "exec done out31 stallI stallO rfail");
+    TEST_ASSERT_EQUAL_UINT(0, m->n_reset_done);
+    TEST_ASSERT_EQUAL_UINT(1, m->n_reset_failed);
+    TEST_ASSERT_EQUAL_UINT(1, m->n_done);
+    mb_assert_clean(m);
+}
+
+/* 既存の halt の解除を待つ（CBW の受信を発行しない）のは、失敗ではない。 */
+static void test_reset_waiting_for_halt_clear_is_success(void) {
+    mb_t *m = mb_init(2048, false);
+    mb_start(m);
+    uint8_t raw[31] = {0};
+    mb_send_raw_cbw(m, raw, 31); /* RECOVERY */
+    mb_clear_log(m);
+    m->refuse_out = true; /* 発行はしないので、拒否されない */
+    msc_bot_reset(&m->bot);
+    MB_ASSERT_STATE(m, MSC_BOT_IDLE);
+    MB_ASSERT_LOG(m, "rdone");
+    TEST_ASSERT_EQUAL_UINT(0, m->n_reset_failed);
+    mb_assert_clean(m);
+}
+
+/* reset_failed を省略しても動く。 */
+static void test_reset_failed_is_optional(void) {
+    mb_t *m = mb_init(2048, false);
+    m->cfg.ops.reset_failed = NULL;
+    TEST_ASSERT_EQUAL_INT(MSC_BOT_OK, msc_bot_init(&m->bot, &m->cfg));
+    mb_start(m);
+    mb_send_tur(m, 1);
+    mb_settle(m);
+    mb_send_tur(m, 2);
+    m->refuse_out = true;
+    msc_bot_reset(&m->bot);
+    MB_ASSERT_STATE(m, MSC_BOT_RESET_WAIT);
+    mb_settle(m);
+    MB_ASSERT_STATE(m, MSC_BOT_RECOVERY);
+    TEST_ASSERT_EQUAL_UINT(0, m->n_reset_done + m->n_reset_failed);
+    mb_assert_clean(m);
+}
+
+/* ---- 転送の世代（取り消し前に投入された完了を、新しい転送に使わない）---- */
+static void hook_reset_in_done_once(mb_t *m, mb_act_t a) {
+    if (a == A_DONE && hook_count++ == 0) msc_bot_reset(&m->bot);
+}
+
+/* command_done の中で Reset が投入され、続く xfer_out（同期）が OUT の完了を投入する。FIFO は [Reset, OUT 完了]。
+ * Reset が次の CBW の受信を発行した後で、旧い OUT 完了が来ても、CBW の完了として使わない（直前のコマンドを再実行しない）。 */
+static void test_stale_out_completion_does_not_complete_the_new_cbw_receive(void) {
+    mb_t *m = mb_init(2048, false);
+    m->hold_cmd = true;
+    m->sync_xfer = true;
+    m->host_out_left = 512;
+    hook_count = 0;
+    mb_start(m);
+    mb_clear_log(m);
+    mb_send_write10(m, 0x61, 512);
+    m->hook = hook_reset_in_done_once;
+    mb_complete_cmd(m);
+    m->hook = NULL;
+    MB_ASSERT_STATE(m, MSC_BOT_IDLE);
+    TEST_ASSERT_TRUE(m->out_pending && m->out_ptr == m->cbw); /* 新しい CBW の受信は、有効なまま */
+    TEST_ASSERT_EQUAL_UINT(1, m->n_exec);                    /* 直前のコマンドを再実行しない */
+    TEST_ASSERT_EQUAL_UINT(1, m->n_done);
+    TEST_ASSERT_EQUAL_UINT32(1, msc_bot_stats(&m->bot).stale_events);
+    TEST_ASSERT_EQUAL_UINT(1, m->n_reset_done);
+    mb_assert_clean(m);
+    /* 新しい CBW は、普通に処理される */
+    m->hold_cmd = false;
+    mb_send_tur(m, 0x62);
+    mb_settle(m);
+    mb_assert_csw(m, 0x62, 0, 0);
+}
+
+/* 同じことが IN でも: CSW の完了が FIFO にある間に Reset が来て、新しい転送に混ざらない。 */
+static void test_stale_in_completion_after_cancel_is_dropped(void) {
+    mb_t *m = mb_init(2048, false);
+    m->hold_cmd = true;
+    mb_start(m);
+    mb_send_tur(m, 1);
+    mb_complete_cmd(m); /* CSW の送信中 */
+    TEST_ASSERT_TRUE(m->in_pending);
+    msc_bot_reset(&m->bot); /* cancel -> IDLE。CBW の受信を発行 */
+    TEST_ASSERT_TRUE(m->out_pending);
+    /* 取り消した CSW の転送の完了が、遅れて届く（ハードウェアが、取り消しと競合した） */
+    msc_bot_xfer_complete(&m->bot, MSC_BOT_EP_IN, 13, true);
+    TEST_ASSERT_EQUAL_UINT32(1, msc_bot_stats(&m->bot).stale_events); /* IN の転送は、もうない */
+    TEST_ASSERT_TRUE(m->out_pending && m->out_ptr == m->cbw);
+    MB_ASSERT_STATE(m, MSC_BOT_IDLE);
     mb_assert_clean(m);
 }
 
@@ -385,7 +576,6 @@ static void test_fully_synchronous_environment_other_commands(void) {
     mb_assert_clean(m);
 }
 
-static int hook_count;
 static void hook_reset_in_cancel(mb_t *m, mb_act_t a) {
     if (a == A_CANCEL && hook_count++ == 0) msc_bot_reset(&m->bot);
 }
@@ -650,6 +840,35 @@ static void test_init_validates_config(void) {
     TEST_ASSERT_EQUAL_INT(MSC_BOT_OK, msc_bot_init(&b, &d));
 }
 
+/* 2 つのデータバッファの範囲（buf_size バイトずつ）が重なるものは、初期化前に拒否。隣接はよい。 */
+static void test_init_rejects_overlapping_buffers(void) {
+    static uint8_t big[16384];
+    mb_t *m = mb_init(2048, false);
+    msc_bot_cfg_t c = m->cfg;
+    msc_bot_t b;
+    struct { size_t o0, o1; uint32_t size; int ok; } rows[] = {
+        {0, 2048, 2048, 1},       /* 隣接（buf[1] が直後） */
+        {2048, 0, 2048, 1},       /* 隣接（逆順） */
+        {0, 2047, 2048, 0},       /* 1 バイト重なる */
+        {2047, 0, 2048, 0},       /* 逆順で、1 バイト重なる */
+        {0, 1, 2048, 0},
+        {100, 0, 2048, 0},
+        {0, 0, 2048, 0},          /* 同じアドレス */
+        {0, 4096, 4096, 1},       /* 大きなバッファ: 隣接 */
+        {0, 4095, 4096, 0},
+        {4096, 100, 4096, 0},
+        {0, 8192, 4096, 1},       /* 離れている */
+    };
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        c.buf[0] = big + rows[i].o0;
+        c.buf[1] = big + rows[i].o1;
+        c.buf_size = rows[i].size;
+        char msg[60];
+        snprintf(msg, sizeof(msg), "overlap row %u", (unsigned)i);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(rows[i].ok ? MSC_BOT_OK : MSC_BOT_ERR_ARG, msc_bot_init(&b, &c), msg);
+    }
+}
+
 /* unstall / reset_done を省略しても動く。 */
 static void test_optional_ops_may_be_null(void) {
     mb_t *m = mb_init(2048, false);
@@ -734,6 +953,16 @@ int main(void) {
     RUN_TEST(test_detach_unstalls_halted_pipes);
     RUN_TEST(test_detach_while_waiting_for_in_unstall);
     RUN_TEST(test_detach_wait_then_attach_reattaches_after_completion);
+    RUN_TEST(test_reset_in_detach_wait_without_attach_is_dropped);
+    RUN_TEST(test_reset_before_reattach_is_not_reported_after_it);
+    RUN_TEST(test_pending_reset_is_discarded_by_detach);
+    RUN_TEST(test_pending_reset_reports_failure_if_cbw_arm_refused);
+    RUN_TEST(test_reset_failed_when_cbw_arm_refused_immediate_path);
+    RUN_TEST(test_reset_failed_when_cbw_arm_refused_after_waiting_for_command);
+    RUN_TEST(test_reset_waiting_for_halt_clear_is_success);
+    RUN_TEST(test_reset_failed_is_optional);
+    RUN_TEST(test_stale_out_completion_does_not_complete_the_new_cbw_receive);
+    RUN_TEST(test_stale_in_completion_after_cancel_is_dropped);
     RUN_TEST(test_detach_wait_attach_detach_stays_detached);
     RUN_TEST(test_reset_wait_then_detach);
     RUN_TEST(test_events_while_detached_are_ignored);
@@ -748,6 +977,7 @@ int main(void) {
     RUN_TEST(test_event_fifo_overflow_is_counted_not_fatal);
     RUN_TEST(test_command_done_exactly_once_for_every_ending);
     RUN_TEST(test_init_validates_config);
+    RUN_TEST(test_init_rejects_overlapping_buffers);
     RUN_TEST(test_optional_ops_may_be_null);
     RUN_TEST(test_state_names_are_distinct);
     RUN_TEST(test_state_names_exact);

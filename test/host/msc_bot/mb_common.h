@@ -38,7 +38,8 @@ typedef enum {
     A_SUBMIT_EXEC,
     A_SUBMIT_READ,
     A_DONE,
-    A_RESET_DONE
+    A_RESET_DONE,
+    A_RESET_FAILED
 } mb_act_t;
 
 typedef struct {
@@ -87,7 +88,7 @@ typedef struct mb {
     void (*on_csw)(struct mb *m);           /* ホストが CSW を受け取ったとき（csw_rx を設定した後）に呼ぶ（検査用。NULL 可） */
 
     /* 計数 */
-    unsigned n_exec, n_read, n_done, n_reset_done, n_cancel, n_stall_in, n_stall_out;
+    unsigned n_exec, n_read, n_done, n_reset_done, n_reset_failed, n_cancel, n_stall_in, n_stall_out;
     unsigned live;        /* EXECUTE を依頼して、command_done をまだ受けていない数 */
     unsigned viol;
     char viol_msg[160];
@@ -191,7 +192,11 @@ static inline msc_bot_cmd_result_t mb_read_result(mb_t *m, const msc_bot_cmd_t *
     r.seq = c->seq;
     r.good = true;
     if ((uint64_t)c->blocks * MSC_BOT_BLOCK_SIZE > c->cap) {
+        /* 違反を記録し、バッファに書かずに失敗を返す（モック自身が配列の境界を越えて壊れないように） */
         MB_VIOL(m, "READ_BLOCKS larger than cap");
+        r.good = false;
+        m->reads_in_cmd++;
+        return r;
     }
     if (m->read_fail_nth >= 0 && m->reads_in_cmd == m->read_fail_nth) {
         r.good = false;
@@ -309,7 +314,6 @@ static void mb_cancel(void *ctx) {
     mb_t *m = (mb_t *)ctx;
     mb_log(m, A_CANCEL, 0);
     m->n_cancel++;
-    if (!m->in_pending && !m->out_pending) MB_VIOL(m, "cancel_xfers with nothing pending");
     m->in_pending = false;
     m->out_pending = false;
     MB_HOOK(m, A_CANCEL);
@@ -358,6 +362,13 @@ static void mb_done(void *ctx) {
     MB_HOOK(m, A_DONE);
 }
 
+static void mb_reset_failed(void *ctx) {
+    mb_t *m = (mb_t *)ctx;
+    mb_log(m, A_RESET_FAILED, 0);
+    m->n_reset_failed++;
+    MB_HOOK(m, A_RESET_FAILED);
+}
+
 static void mb_reset_done(void *ctx) {
     mb_t *m = (mb_t *)ctx;
     mb_log(m, A_RESET_DONE, 0);
@@ -384,6 +395,7 @@ static inline mb_t *mb_init(uint32_t buf_size, bool out_stall) {
     m->cfg.ops.submit_command = mb_submit;
     m->cfg.ops.command_done = mb_done;
     m->cfg.ops.reset_done = mb_reset_done;
+    m->cfg.ops.reset_failed = mb_reset_failed;
     m->cfg.cbw_buf = m->cbw;
     m->cfg.csw_buf = m->csw;
     m->cfg.buf[0] = m->buf[0];
@@ -563,6 +575,7 @@ static inline const char *mb_log_str(mb_t *m) {
         case A_SUBMIT_READ: snprintf(tok, sizeof(tok), "read%u", (unsigned)m->log[i].arg); break;
         case A_DONE: snprintf(tok, sizeof(tok), "done"); break;
         case A_RESET_DONE: snprintf(tok, sizeof(tok), "rdone"); break;
+        case A_RESET_FAILED: snprintf(tok, sizeof(tok), "rfail"); break;
         default: snprintf(tok, sizeof(tok), "?"); break;
         }
         n += (size_t)snprintf(out + n, sizeof(out) - n, "%s%s", i ? " " : "", tok);

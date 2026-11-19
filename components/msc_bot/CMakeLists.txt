@@ -13,6 +13,7 @@ else()
         -std=c99
         -Wall -Wextra -Werror
         -fsanitize=address -fsanitize=undefined
+        -fno-sanitize-recover=undefined
     )
     target_link_options(msc_bot PRIVATE
         -fsanitize=address -fsanitize=undefined

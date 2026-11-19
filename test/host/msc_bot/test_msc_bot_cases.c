@@ -177,9 +177,9 @@ static const case_row_t CASES[] = {
     {"(4) Hi>Dn pass: TUR with H=36 IN", {0x00}, 6, 36, true, 0, 36, 0, 0, true, "exec done stallI in13", NULL},
     {"(4) Hi>Dn failed: WRITE(10) with H=36 IN", {0x2A, 0, 0, 0, 0, 0, 0, 0, 1, 0}, 10, 36, true, 1, 36, 0, 0, true,
      "exec done stallI in13", NULL},
-    {"(5) Hi>Di: INQUIRY H=100", {0x12, 0, 0, 0, 36, 0}, 6, 100, true, 0, 64, 36, 0, true, "exec in36 done stallI in13", NULL},
-    {"(6) Hi=Di: INQUIRY H=36", {0x12, 0, 0, 0, 36, 0}, 6, 36, true, 0, 0, 36, 0, false, "exec in36 done in13", NULL},
-    {"(7) Hi<Di: INQUIRY H=16", {0x12, 0, 0, 0, 36, 0}, 6, 16, true, 2, 0, 16, 0, false, "exec in16 done in13", NULL},
+    {"(5) Hi>Di: INQUIRY H=100", {0x12, 0, 0, 0, 36, 0}, 6, 100, true, 0, 64, 36, 0, true, "exec done in36 stallI in13", NULL},
+    {"(6) Hi=Di: INQUIRY H=36", {0x12, 0, 0, 0, 36, 0}, 6, 36, true, 0, 0, 36, 0, false, "exec done in36 in13", NULL},
+    {"(7) Hi<Di: INQUIRY H=16", {0x12, 0, 0, 0, 36, 0}, 6, 16, true, 2, 0, 16, 0, false, "exec done in16 in13", NULL},
     {"(8) Hi<>Do: device wants OUT data, H=16 IN", {0xF0, 0, 16, 1}, 6, 16, true, 2, 16, 0, 0, true,
      "exec done stallI in13", NULL},
     {"(9) Ho>Dn: WRITE(10) H=512 OUT (DATA PROTECT)", {0x2A, 0, 0, 0, 0, 0, 0, 0, 1, 0}, 10, 512, false, 1, 512, 0, 512, false,
@@ -315,7 +315,7 @@ static void test_read10_blocks1_expected2048_datalen0_completes_as_data_in(void)
         mb_assert_rx_pattern(m, 5, 0, 2048);
         mb_assert_csw(m, 0x11, 0, 0);
         TEST_ASSERT_EQUAL_UINT(1, m->n_done);
-        MB_ASSERT_LOG(m, "exec read1 in2048 done in13 out31");
+        MB_ASSERT_LOG(m, "exec read1 done in2048 in13 out31");
         TEST_ASSERT_FALSE(strstr(mb_log_str(m), "stallI") != NULL);
     }
 }
@@ -430,6 +430,29 @@ static void test_read12_huge_blocks_does_not_overflow(void) {
     TEST_ASSERT_EQUAL_UINT(1, m->n_done);
 }
 
+/* out_stall: OUT の STALL を受けた後、CSW の受信が終わる前に、ホストが Bulk-OUT の halt を解除する（BOT 6.7.3 のホスト:
+ * OUT をクリアしてから CSW を読む）。解除の時点では、次の CBW の受信を発行せず（CSW の転送中）、CSW の完了後に 1 回だけ発行する。 */
+static void test_out_stall_cleared_before_csw_completes_arms_cbw_once_after_csw(void) {
+    mb_t *m = mb_init(2048, true);
+    m->hold_cmd = true;
+    mb_start(m);
+    mb_clear_log(m);
+    mb_send_write10(m, 0x71, 512);
+    mb_complete_cmd(m); /* ケース 9: Bulk-OUT を STALL して、CSW を発行 */
+    MB_ASSERT_STATE(m, MSC_BOT_STATUS_SEND);
+    TEST_ASSERT_TRUE(m->hw_out_stalled && m->in_pending);
+    mb_host_clear_halt(m, MSC_BOT_EP_OUT); /* CSW の受信の前に、OUT をクリア */
+    MB_ASSERT_STATE(m, MSC_BOT_STATUS_SEND);
+    TEST_ASSERT_FALSE(m->out_pending); /* まだ、次の CBW の受信を発行しない */
+    MB_ASSERT_LOG(m, "exec done stallO in13");
+    mb_deliver_in(m, true); /* CSW の完了 */
+    MB_ASSERT_STATE(m, MSC_BOT_IDLE);
+    MB_ASSERT_LOG(m, "exec done stallO in13 out31"); /* 1 回だけ */
+    TEST_ASSERT_TRUE(m->out_pending && m->out_ptr == m->cbw);
+    mb_assert_csw(m, 0x71, 1, 512);
+    mb_assert_clean(m);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_pure_all_rows);
@@ -451,5 +474,6 @@ int main(void) {
     RUN_TEST(test_read_blocks0);
     RUN_TEST(test_read_execute_check_condition_no_data);
     RUN_TEST(test_read12_huge_blocks_does_not_overflow);
+    RUN_TEST(test_out_stall_cleared_before_csw_completes_arms_cbw_once_after_csw);
     return UNITY_END();
 }

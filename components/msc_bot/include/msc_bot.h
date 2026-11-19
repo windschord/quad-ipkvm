@@ -20,6 +20,10 @@
  *    いま処理中のイベントが終わってから、受け取った順に処理される（再入しない。再帰もしない）。同期的に完了する
  *    ホストテストのモックのため。1 回の ops の呼び出しが積んでよいイベントは 1 つまで（FIFO は MSC_BOT_EVQ_LEN 個。
  *    あふれたら、イベントを捨て、stats.queue_overflow を数える。これは契約違反）。
+ *  - 転送の世代: USB の転送の完了イベントは、投入（msc_bot_xfer_complete の呼び出し）の時点の「転送の世代」を持つ。
+ *    世代は、cancel_xfers を呼ぶたびに進む。FIFO で待つ間に、その転送が取り消された（世代が進んだ）完了は、旧世代として、
+ *    pending を変えずに捨てる（stats.stale_events を数える）。たとえば、Reset が次の CBW の受信を発行した後に、
+ *    取り消し前の OUT の完了が処理されても、新しい受信の完了としては使わない。
  *
  * ---- 同時に動くもの ----
  *  - 実行中のコマンド（iso_msc_task への依頼）は、同時に最大 1 つ。USB の転送は、IN と OUT で、それぞれ最大 1 つ。
@@ -54,7 +58,10 @@
  *
  * ---- 状態遷移表（状態 × イベント → 次の状態 / アクション。テスト: test_msc_bot_table.c が全行を固定）----
  * 「(stale)」= 該当する依頼がないので、無視して stats.stale_events を数える。「-」= 何もしない（状態も変わらない）。
- * 「arm」= IN / OUT の halt がどちらもなければ、Bulk-OUT に CBW（31 バイト）の受信を発行（xfer_out）。
+ * 「arm」= IN / OUT の halt がどちらもなければ、Bulk-OUT に CBW（31 バイト）の受信を発行（xfer_out）。結果は 3 通り:
+ *    発行した（または発行済み）/ halt の解除を待つ（まだ発行しない）/ xfer_out が拒否した（RECOVERY に入る）。
+ * Reset（RST）の通知: 実行中の依頼の完了を待ち終え、arm が「発行した」または「halt の解除を待つ」なら reset_done。
+ *    arm が拒否されたら reset_failed（reset_done は呼ばない）。1 回の Reset に、どちらか 1 回。
  * 「cancel」= 発行済みの USB の転送があれば cancel_xfers を 1 回呼ぶ（以後、その完了は来ない）。
  * 「unstall」= bot が STALL した方の halt を、unstall で解く。
  *
@@ -71,7 +78,8 @@
  *  STATUS_SEND     | -            | DETACH 同上                      | RESET 同上                                 | -; halt 解除
  *  RECOVERY        | -            | DETACH 同上                      | RESET 同上（IDLE になっても halt は残る）    | RECOVERY; stall_in を再度（回復の前の解除は無効）
  *  RESET_WAIT      | -            | DETACH_WAIT                      | -                                         | -; halt 解除
- *  DETACH_WAIT     | 再接続を記録  | 再接続の記録を消す                | -                                         | -
+ *  DETACH_WAIT     | 再接続を記録  | 再接続と Reset の記録を消す       | 再接続の記録があるときだけ、Reset を記録    | -
+ *                  |              |                                  | （完了の後、IDLE; arm して reset_done / reset_failed） |
  *
  *  状態 \ イベント | HOUT         | OUTok                                  | OUTer              | INok                         | INer
  *  ----------------+--------------+----------------------------------------+--------------------+------------------------------+----------------
@@ -82,7 +90,8 @@
  *  DATA_IN         | -; halt 解除 | (stale)                                | (stale)            | DATA_IN（次の転送）、または   | RECOVERY; stall_in,
  *                  |              |                                        |                    | データの終わりで STATUS_*     | stall_out
  *  DATA_OUT        | -; halt 解除 | DATA_OUT（次の受信）、または終わりで    | RECOVERY           | (stale)                      | (stale)
- *                  |              | STATUS_*                               |                    |                              |
+ *                  |              | STATUS_*。宣言長に満たない短い受信は   |                    |                              |
+ *                  |              | stall_out して STATUS_*（BOT 6.7.3）   |                    |                              |
  *  STATUS_WAIT_UNSTALL | -; halt 解除 | (stale)                            | (stale)            | (stale)                      | (stale)
  *  STATUS_SEND     | -; halt 解除 | (stale)                                | (stale)            | IDLE; arm                    | RECOVERY
  *  RECOVERY        | RECOVERY; stall_out を再度 | (stale)                  | (stale)            | (stale)                      | (stale)
@@ -94,7 +103,7 @@
  *  DETACHED        | (stale)
  *  IDLE            | (stale)
  *  EXEC            | 13 のケースの判定: データ IN → DATA_IN（READ は submit READ_BLOCKS; done は最後の READ の後。READ 以外は done して xfer_in）
- *                  |                    データ OUT → DATA_OUT（done して xfer_out）
+ *                  |                    データ OUT → DATA_OUT（done して xfer_out）。READ 以外の IN も、done して xfer_in
  *                  |                    データなし → STATUS_SEND（done して CSW）。IN の不足は stall_in して STATUS_WAIT_UNSTALL
  *                  |                    結果が契約違反（READ 以外の data_len > バッファ）→ RECOVERY（done して両 STALL）
  *  DATA_IN         | READ_BLOCKS ok: DATA_IN（バッファを READY にして、次の READ と xfer_in を進める）
@@ -104,8 +113,9 @@
  *  STATUS_WAIT_UNSTALL | (stale)
  *  STATUS_SEND     | (stale)
  *  RECOVERY        | -; done（実行中だった依頼の完了。結果は捨てる）
- *  RESET_WAIT      | IDLE; done, arm, reset_done
- *  DETACH_WAIT     | DETACHED; done。再接続の記録があれば続けて ATT（IDLE; arm）
+ *  RESET_WAIT      | IDLE; done, arm, reset_done（arm が拒否されたら reset_failed。RECOVERY）
+ *  DETACH_WAIT     | DETACHED; done。再接続の記録があれば続けて ATT（IDLE; arm）。Reset の記録もあれば、
+ *                  |                    reset_done（arm が拒否されたら reset_failed）
  *
  * ---- 13 のケース（BOT 6.7。msc_bot_decide / msc_bot_resolve。テスト: test_msc_bot_cases.c が全ケースを固定）----
  * ホストの期待（H = dCBWDataTransferLength、方向）と、デバイスの結果（D = 向きと長さ L）の組み合わせ。
@@ -243,9 +253,15 @@ typedef struct {
     int (*submit_command)(void *ctx, const msc_bot_cmd_t *cmd);
     /* mmc_scsi_command_done(ctx) を呼ぶ。EXECUTE を依頼したコマンドごとに、ちょうど 1 回。 */
     void (*command_done)(void *ctx);
-    /* 省略可（NULL）。Bulk-Only Mass Storage Reset が完了した（次の CBW を受けられる）。コントロール転送の
-     * ステータスステージを NAK し続ける（BOT 3.1）グルーは、これで ACK する。 */
+    /* 省略可（NULL）。Bulk-Only Mass Storage Reset が、成功して完了した: 実行中の依頼の完了を待ち終え、次の CBW を
+     * 受けられる（Bulk-OUT に CBW の受信を発行した、または、既存の halt の解除を待つ状態になった）。コントロール転送の
+     * ステータスステージを NAK し続ける（BOT 3.1）グルーは、これで ACK する。CBW の受信の発行を xfer_out が拒否した
+     * ときは、呼ばない（reset_failed を呼ぶ）。 */
     void (*reset_done)(void *ctx);
+    /* 省略可（NULL）。Reset の後の、CBW の受信の発行を xfer_out が拒否した（msc_bot は RECOVERY に入り、両 Bulk を
+     * STALL した）。グルーは、コントロール転送のステータスステージを STALL する（ホストは Reset Recovery をやり直す）。
+     * 1 回の Reset に対して、reset_done か reset_failed のどちらか 1 回だけが呼ばれる（切断で破棄されたときは、どちらも呼ばない）。 */
+    void (*reset_failed)(void *ctx);
 } msc_bot_ops_t;
 
 typedef struct {
@@ -301,6 +317,7 @@ typedef struct {
     uint8_t ep;
     bool ok;
     uint32_t len;
+    uint32_t gen;                 /* 転送の完了だけ: 投入したときの転送の世代 */
     msc_bot_cmd_result_t res;
 } msc_bot_event_t;
 
@@ -321,6 +338,8 @@ typedef struct {
     bool cmd_live;                /* EXECUTE を依頼して、command_done をまだ呼んでいない */
     uint32_t cmd_seq;
     bool then_attach;             /* DETACH_WAIT の間に ATT が来た */
+    bool reset_pending;           /* then_attach の間に Reset が来た（再接続の準備の後で、reset_done / reset_failed） */
+    uint32_t xfer_gen;            /* 転送の世代。cancel_xfers で進む。旧世代の完了は捨てる */
     /* CBW */
     uint32_t tag;
     uint32_t host_len;

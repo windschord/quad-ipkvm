@@ -167,6 +167,8 @@ static void cancel_xfers(msc_bot_t *b) {
     if (b->in_pending || b->out_pending) {
         b->in_pending = false;
         b->out_pending = false;
+        /* 取り消し前に投入されて、まだ FIFO にある完了は、旧世代として捨てる（新しい転送の完了と取り違えない）。 */
+        b->xfer_gen++;
         b->cfg.ops.cancel_xfers(b->cfg.ops.ctx);
     }
 }
@@ -207,16 +209,40 @@ static void enter_recovery(msc_bot_t *b) {
     finish_cmd(b);
 }
 
+/* CBW の受信の発行の結果 */
+enum { ARM_OK = 0,   /* 発行済み（今回、または前から） */
+       ARM_WAIT,     /* 既存の halt の解除を待つ（まだ発行しない） */
+       ARM_REFUSED   /* xfer_out が拒否した（RECOVERY に入った） */ };
+
 /* IDLE で、halt がなければ CBW の受信を発行する。 */
-static void arm_cbw(msc_bot_t *b) {
-    if (b->state != MSC_BOT_IDLE || b->out_pending || b->in_halted || b->out_halted) {
-        return;
+static int arm_cbw(msc_bot_t *b) {
+    if (b->state != MSC_BOT_IDLE) {
+        return ARM_WAIT;
+    }
+    if (b->out_pending) {
+        return ARM_OK;
+    }
+    if (b->in_halted || b->out_halted) {
+        return ARM_WAIT;
     }
     b->out_pending = true;
     b->out_req_len = MSC_BOT_CBW_LEN;
     if (b->cfg.ops.xfer_out(b->cfg.ops.ctx, b->cfg.cbw_buf, MSC_BOT_CBW_LEN) != 0) {
         b->out_pending = false;
         enter_recovery(b);
+        return ARM_REFUSED;
+    }
+    return ARM_OK;
+}
+
+/* Reset の結果を、グルーに伝える（成功: reset_done、CBW の受信の発行を拒否された: reset_failed）。 */
+static void notify_reset(msc_bot_t *b, int arm) {
+    if (arm == ARM_REFUSED) {
+        if (b->cfg.ops.reset_failed != NULL) {
+            b->cfg.ops.reset_failed(b->cfg.ops.ctx);
+        }
+    } else if (b->cfg.ops.reset_done != NULL) {
+        b->cfg.ops.reset_done(b->cfg.ops.ctx);
     }
 }
 
@@ -304,7 +330,12 @@ static void din_pump(msc_bot_t *b) {
         }
     }
 
-    /* (2) 埋まったバッファを、USB に送る（IN の転送が空いていれば）。 */
+    /* (2) 以後 mmc_scsi を呼ばないと確定したら、コマンドを終える（xfer_in より先。表と設計 4.1 の「done して xfer_in」）。 */
+    if (!b->cmd_outstanding && (b->din_issued == b->din_total || b->din_failed)) {
+        finish_cmd(b);
+    }
+
+    /* (3) 埋まったバッファを、USB に送る（IN の転送が空いていれば）。 */
     if (!b->din_failed && !b->in_pending && b->buf_st[b->din_send] == BUF_READY) {
         const uint32_t idx = b->din_send;
         b->buf_st[idx] = BUF_SENDING;
@@ -315,11 +346,6 @@ static void din_pump(msc_bot_t *b) {
             enter_recovery(b);
             return;
         }
-    }
-
-    /* (3) 以後 mmc_scsi を呼ばないなら、コマンドを終える。 */
-    if (!b->cmd_outstanding && (b->din_issued == b->din_total || b->din_failed)) {
-        finish_cmd(b);
     }
 
     /* (4) 終わりの判定。失敗したときは、転送中の IN が終わるのを待つ。 */
@@ -379,7 +405,11 @@ static void dout_on_done(msc_bot_t *b, uint32_t len, bool ok) {
     }
     b->dout_received += len;
     if (len < b->out_req_len) {
-        /* ホストが短いパケットで打ち切った。受け取った分で、データの段階を終える。 */
+        /* ホストが、宣言した長さに満たない量で打ち切った。BOT 6.7.3: 宣言長を受け取るか、Bulk-OUT を STALL して打ち切る。
+         * 受け取った分で、データの段階を終え、Bulk-OUT を STALL する。 */
+        if (!b->out_halted) {
+            stall_ep(b, MSC_BOT_EP_OUT);
+        }
         status_phase(b, 0, b->dout_received);
         return;
     }
@@ -489,10 +519,15 @@ static void handle_cbw(msc_bot_t *b, uint32_t len, bool ok) {
 }
 
 /* ---- イベントの処理 ------------------------------------------------------- */
+/* DETACHED -> IDLE。CBW の受信の発行の結果を返す。 */
+static int attach_now(msc_bot_t *b) {
+    b->state = MSC_BOT_IDLE;
+    return arm_cbw(b);
+}
+
 static void on_attach(msc_bot_t *b) {
     if (b->state == MSC_BOT_DETACHED) {
-        b->state = MSC_BOT_IDLE;
-        arm_cbw(b);
+        (void)attach_now(b);
     } else if (b->state == MSC_BOT_DETACH_WAIT) {
         b->then_attach = true;
     }
@@ -505,6 +540,7 @@ static void on_detach(msc_bot_t *b) {
     }
     if (b->state == MSC_BOT_DETACH_WAIT) {
         b->then_attach = false;
+        b->reset_pending = false;
         return;
     }
     cancel_xfers(b);
@@ -522,6 +558,7 @@ static void on_detach(msc_bot_t *b) {
     }
     reset_data_state(b);
     b->then_attach = false;
+    b->reset_pending = false;
     if (b->cmd_outstanding) {
         b->state = MSC_BOT_DETACH_WAIT;
     } else {
@@ -533,14 +570,17 @@ static void on_detach(msc_bot_t *b) {
 static void on_reset(msc_bot_t *b) {
     switch (b->state) {
     case MSC_BOT_DETACHED:
-    case MSC_BOT_DETACH_WAIT:
     case MSC_BOT_RESET_WAIT:
         return;
-    case MSC_BOT_IDLE:
-        /* 受信を発行済みの CBW は、そのまま有効。 */
-        if (b->cfg.ops.reset_done != NULL) {
-            b->cfg.ops.reset_done(b->cfg.ops.ctx);
+    case MSC_BOT_DETACH_WAIT:
+        /* 再接続（ATT）の後に受けた Reset は、旧い依頼の解放と再接続の準備の後で、通知する。 */
+        if (b->then_attach) {
+            b->reset_pending = true;
         }
+        return;
+    case MSC_BOT_IDLE:
+        /* 受信を発行済みの CBW は、そのまま有効（halt が残るなら、解除を待つ）。 */
+        notify_reset(b, arm_cbw(b));
         return;
     default:
         break;
@@ -554,10 +594,7 @@ static void on_reset(msc_bot_t *b) {
     }
     finish_cmd(b);
     b->state = MSC_BOT_IDLE;
-    arm_cbw(b);
-    if (b->cfg.ops.reset_done != NULL) {
-        b->cfg.ops.reset_done(b->cfg.ops.ctx);
-    }
+    notify_reset(b, arm_cbw(b));
 }
 
 static void on_halt_cleared(msc_bot_t *b, msc_bot_ep_t ep) {
@@ -637,10 +674,7 @@ static void on_cmd_done(msc_bot_t *b, const msc_bot_cmd_result_t *res) {
         b->cmd_outstanding = false;
         finish_cmd(b);
         b->state = MSC_BOT_IDLE;
-        arm_cbw(b);
-        if (b->cfg.ops.reset_done != NULL) {
-            b->cfg.ops.reset_done(b->cfg.ops.ctx);
-        }
+        notify_reset(b, arm_cbw(b));
         break;
     case MSC_BOT_DETACH_WAIT:
         b->cmd_outstanding = false;
@@ -648,8 +682,13 @@ static void on_cmd_done(msc_bot_t *b, const msc_bot_cmd_result_t *res) {
         b->state = MSC_BOT_DETACHED;
         if (b->then_attach) {
             b->then_attach = false;
-            on_attach(b);
+            const int arm = attach_now(b);
+            if (b->reset_pending) {
+                b->reset_pending = false;
+                notify_reset(b, arm);
+            }
         }
+        b->reset_pending = false;
         break;
     default:
         /* RECOVERY など。結果は捨てて、コマンドを終える。 */
@@ -674,6 +713,11 @@ static void dispatch(msc_bot_t *b, const msc_bot_event_t *e) {
         on_halt_cleared(b, (msc_bot_ep_t)e->ep);
         break;
     case EV_XFER_DONE:
+        if (e->gen != b->xfer_gen) {
+            /* 取り消す前に投入された、旧世代の完了。pending は変えない。 */
+            b->stats.stale_events++;
+            break;
+        }
         on_xfer_done(b, (msc_bot_ep_t)e->ep, e->len, e->ok);
         break;
     case EV_CMD_DONE:
@@ -695,6 +739,9 @@ static void post(msc_bot_t *b, const msc_bot_event_t *e) {
     }
     const uint32_t tail = ((uint32_t)b->evq_head + b->evq_count) % MSC_BOT_EVQ_LEN;
     b->evq[tail] = *e;
+    if (e->type == EV_XFER_DONE) {
+        b->evq[tail].gen = b->xfer_gen; /* 投入した時点の世代 */
+    }
     b->evq_count++;
     if (b->in_pump) {
         return;
@@ -719,12 +766,20 @@ int msc_bot_init(msc_bot_t *bot, const msc_bot_cfg_t *cfg) {
         o->cancel_xfers == NULL || o->submit_command == NULL || o->command_done == NULL) {
         return MSC_BOT_ERR_ARG;
     }
-    if (cfg->cbw_buf == NULL || cfg->csw_buf == NULL || cfg->buf[0] == NULL || cfg->buf[1] == NULL ||
-        cfg->buf[0] == cfg->buf[1]) {
+    if (cfg->cbw_buf == NULL || cfg->csw_buf == NULL || cfg->buf[0] == NULL || cfg->buf[1] == NULL) {
         return MSC_BOT_ERR_ARG;
     }
     if (cfg->buf_size < MSC_BOT_BLOCK_SIZE || (cfg->buf_size % MSC_BOT_BLOCK_SIZE) != 0) {
         return MSC_BOT_ERR_ARG;
+    }
+    {
+        /* 2 つのバッファの範囲（buf_size バイトずつ）が重ならない（隣接はよい）。終端を計算せず、差で比べる。 */
+        const uintptr_t a0 = (uintptr_t)cfg->buf[0];
+        const uintptr_t a1 = (uintptr_t)cfg->buf[1];
+        const uintptr_t diff = a0 > a1 ? a0 - a1 : a1 - a0;
+        if (diff < (uintptr_t)cfg->buf_size) {
+            return MSC_BOT_ERR_ARG;
+        }
     }
     memset(bot, 0, sizeof(*bot));
     bot->cfg = *cfg;
