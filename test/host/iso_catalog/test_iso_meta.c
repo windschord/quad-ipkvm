@@ -56,10 +56,17 @@ static iso_meta_t meta_a(void) {
     return m;
 }
 
+/* スタックを 0xAA で汚す(符号化の内部の一時バッファが、予約領域を 0 にしていることを見るため) */
+static void __attribute__((noinline)) dirty_stack(void) {
+    volatile uint8_t junk[4096];
+    for (size_t i = 0; i < sizeof(junk); i++) junk[i] = 0xAA;
+}
+
 void test_encode_exact_bytes_case_a(void) {
     iso_meta_t m = meta_a();
     uint8_t out[256];
     memset(out, 0xAA, sizeof(out)); /* 予約領域が 0 になることを見る */
+    dirty_stack();
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_meta_encode(&m, out));
     TEST_ASSERT_EQUAL_HEX8_ARRAY(EXPECT_A, out, 130); /* 0..129 */
     /* 130: 世代番号(リトルエンディアン) */
@@ -297,6 +304,8 @@ void test_decode_rejects_out_of_range_fields_with_valid_crc(void) {
     good(b); b[7] = 4; fix_crc(b); EXPECT_ACCEPT(b);
     good(b); b[7] = 5; fix_crc(b); EXPECT_REJECT(b); /* meta_corrupt は保存しない */
     good(b); b[7] = 6; fix_crc(b); EXPECT_REJECT(b);
+    /* size_bytes の上位バイト(@15)が非 0: 下位 7 バイトだけを読むと小さな正しい値に見えてしまう */
+    good(b); memset(b + 8, 0, 8); b[8] = 5; b[15] = 0x01; fix_crc(b); EXPECT_REJECT(b);
     /* size_bytes: 0 は拒否、16 GiB ちょうどは許す、16 GiB + 1 は拒否 */
     good(b); memset(b + 8, 0, 8); fix_crc(b); EXPECT_REJECT(b);
     good(b); memset(b + 8, 0, 8); b[12] = 0x04; fix_crc(b); EXPECT_ACCEPT(b); /* 0x4_0000_0000 */
@@ -409,6 +418,17 @@ void test_encode_rejects_out_of_range_values(void) {
     m = base; m.sha_flag = 0; TEST_ASSERT_EQUAL_INT(ISO_OK, iso_meta_encode(&m, out));
 }
 
+void test_encode_name_padding_is_zero_even_if_the_struct_has_garbage(void) {
+    iso_meta_t m = meta_a();
+    m.name_len = 5;
+    memcpy(m.name, "abcde", 5);
+    m.name[10] = 'Z'; /* 名前の長さより後ろのごみ */
+    m.name[63] = 'Y';
+    uint8_t out[256];
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_meta_encode(&m, out));
+    for (int i = 66 + 5; i < 130; i++) TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, out[i], "name padding must be 0");
+}
+
 void test_encode_name_64_byte_field_does_not_overlap_generation(void) {
     /* 63 バイトの名前でも、世代番号 (130) と CRC (252) に重ならない */
     iso_meta_t m = meta_a();
@@ -443,6 +463,7 @@ int main(void) {
     RUN_TEST(test_decode_ignores_reserved_bytes);
     RUN_TEST(test_decode_does_not_touch_out_on_failure);
     RUN_TEST(test_encode_rejects_out_of_range_values);
+    RUN_TEST(test_encode_name_padding_is_zero_even_if_the_struct_has_garbage);
     RUN_TEST(test_encode_name_64_byte_field_does_not_overlap_generation);
     return UNITY_END();
 }

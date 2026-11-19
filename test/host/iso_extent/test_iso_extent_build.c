@@ -64,6 +64,10 @@ void test_part_count_and_bytes(void) {
     TEST_ASSERT_EQUAL_UINT64(5000, iso_extent_part_bytes(5000, 3, 0)); /* 3 ブロック = 6144 >= 5000 */
     TEST_ASSERT_EQUAL_UINT64(0, iso_extent_part_bytes(0, 4, 0));
     TEST_ASSERT_EQUAL_UINT64(0, iso_extent_part_bytes(100, 0, 0));
+    /* 4 GiB のパーツ (part_blocks = 2097152。part_blocks * 2048 は 32 ビットでは 0 に戻る) */
+    TEST_ASSERT_EQUAL_UINT64(2, iso_extent_part_count(5 * GIB, 2097152));
+    TEST_ASSERT_EQUAL_UINT64(4 * GIB, iso_extent_part_bytes(5 * GIB, 2097152, 0));
+    TEST_ASSERT_EQUAL_UINT64(GIB, iso_extent_part_bytes(5 * GIB, 2097152, 1));
 }
 
 /* ---- 表の構築: 成功 ---- */
@@ -128,6 +132,7 @@ void test_build_max_image_16_parts(void) {
     TEST_ASSERT_EQUAL_UINT32(16, iso_extent_table_part_count(t));
     TEST_ASSERT_EQUAL_UINT64(8388608, iso_extent_table_capacity_blocks(t));
     TEST_ASSERT_EQUAL_UINT32(16, iso_extent_table_extent_count(t));
+    TEST_ASSERT_EQUAL_UINT64(16 * GIB, iso_extent_valid_bytes(t, 0, 8388608));
     iso_extent_table_unref(t);
 }
 
@@ -179,6 +184,25 @@ void test_build_size_and_part_blocks_limits(void) {
     iso_extent_table_unref(t);
 }
 
+void test_build_image_size_limit_is_checked_by_itself(void) {
+    /* 4 GiB のパーツなら、16 GiB + 1 でも 5 パーツ(16 以下)。大きさの上限だけが拒否する */
+    iso_extent_t e[5] = {EXT(0, 8388608), EXT(0, 8388608), EXT(0, 8388608), EXT(0, 8388608), EXT(0, 1)};
+    iso_part_input_t in[5];
+    for (int i = 0; i < 5; i++) {
+        in[i].file_bytes = (i < 4) ? 4 * GIB : 1;
+        in[i].extents = &e[i];
+        in[i].n_extents = 1;
+    }
+    iso_extent_table_t *t = NULL;
+    TEST_ASSERT_EQUAL_INT(ISO_EXT_ERR_INVALID, build(0, 16 * GIB + 1, 2097152, in, 5, &t));
+    TEST_ASSERT_NULL(t);
+    in[4].file_bytes = 0; /* 16 GiB ちょうど: 4 パーツ */
+    TEST_ASSERT_EQUAL_INT(ISO_EXT_OK, build(0, 16 * GIB, 2097152, in, 4, &t));
+    TEST_ASSERT_EQUAL_UINT64(8388608, iso_extent_table_capacity_blocks(t));
+    TEST_ASSERT_EQUAL_UINT64(16 * GIB, iso_extent_valid_bytes(t, 0, 8388608)); /* 32 ビットの積に収まらない */
+    iso_extent_table_unref(t);
+}
+
 void test_build_rejects_more_than_16_parts_but_accepts_16(void) {
     /* part_blocks = 1 (2048 B / パーツ)。size = 16 * 2048 -> 16 パーツ。size = 16 * 2048 + 1 -> 17 パーツ(INVALID) */
     iso_extent_t e[17];
@@ -207,6 +231,8 @@ void test_build_part_count_mismatch(void) {
     TEST_ASSERT_EQUAL_INT(ISO_EXT_ERR_PART_MISMATCH, build(0, 22628, 4, in, 0, &t));
     iso_part_input_t in4[4] = {in[0], in[1], in[2], {2048, &e[2], 1}};
     TEST_ASSERT_EQUAL_INT(ISO_EXT_ERR_PART_MISMATCH, build(0, 22628, 4, in4, 4, &t)); /* 1 つ多い */
+    iso_part_input_t in4z[4] = {in[0], in[1], in[2], {0, NULL, 0}}; /* 余分なパーツが空でも、数が違えば不一致 */
+    TEST_ASSERT_EQUAL_INT(ISO_EXT_ERR_PART_MISMATCH, build(0, 22628, 4, in4z, 4, &t));
     TEST_ASSERT_EQUAL_INT(ISO_EXT_OK, build(0, 22628, 4, in, 3, &t));
     iso_extent_table_unref(t);
 }
@@ -261,6 +287,8 @@ void test_build_null_extents_with_nonzero_count_is_invalid(void) {
     iso_extent_t e1[1] = {EXT(100, 16)}, e2[1] = {EXT(200, 13)};
     iso_part_input_t in[3] = {{8192, NULL, 2}, {8192, e1, 1}, {6244, e2, 1}};
     iso_extent_table_t *t = NULL;
+    TEST_ASSERT_EQUAL_INT(ISO_EXT_ERR_INVALID, build(0, 22628, 4, in, 3, &t));
+    in[0].n_extents = 1; /* 1 個でも NULL は不正 */
     TEST_ASSERT_EQUAL_INT(ISO_EXT_ERR_INVALID, build(0, 22628, 4, in, 3, &t));
 }
 
@@ -456,6 +484,7 @@ int main(void) {
     RUN_TEST(test_build_single_part_import_with_odd_part_blocks);
     RUN_TEST(test_build_invalid_args);
     RUN_TEST(test_build_size_and_part_blocks_limits);
+    RUN_TEST(test_build_image_size_limit_is_checked_by_itself);
     RUN_TEST(test_build_rejects_more_than_16_parts_but_accepts_16);
     RUN_TEST(test_build_part_count_mismatch);
     RUN_TEST(test_build_part_size_mismatch);

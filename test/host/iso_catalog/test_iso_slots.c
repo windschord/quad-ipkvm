@@ -191,6 +191,30 @@ void test_slots_read_io_error_is_not_treated_as_invalid(void) {
     TEST_ASSERT_EQUAL_INT8(0, s.adopted);
 }
 
+void test_slots_read_open_and_read_errors_are_not_treated_as_invalid(void) {
+    iso_meta_t m = mk_meta("Alpha", 100000, ISO_META_READY, 5);
+    put_slot("a1b2c3d4", 0, &m);
+    iso_slots_t s;
+    mock_fs_fail_open(&FS, "/iso/a1b2c3d4/meta.a");
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_slots_read(&IFS, "a1b2c3d4", &s));
+    mock_fs_fail_open(&FS, NULL);
+    mock_fs_fail_read(&FS, "/iso/a1b2c3d4/meta.a", 0);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_slots_read(&IFS, "a1b2c3d4", &s));
+    TEST_ASSERT_EQUAL_INT(0, FS.open_files); /* 読み出しが失敗しても、閉じる */
+    mock_fs_fail_read(&FS, NULL, 0);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_slots_read(&IFS, "a1b2c3d4", &s));
+    TEST_ASSERT_EQUAL_INT8(0, s.adopted);
+}
+
+void test_slots_read_directory_with_the_size_of_a_slot_is_invalid(void) {
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/a1b2c3d4"));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/a1b2c3d4/meta.a"));
+    TEST_ASSERT_TRUE(mock_fs_set_size(&FS, "/iso/a1b2c3d4/meta.a", 256)); /* 大きさが 256 のディレクトリ(大きさだけでは区別できない) */
+    iso_slots_t s;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_slots_read(&IFS, "a1b2c3d4", &s));
+    TEST_ASSERT_FALSE(s.valid[0]);
+}
+
 void test_slots_read_leaves_no_open_handles(void) {
     iso_meta_t m = mk_meta("Alpha", 100000, ISO_META_READY, 5);
     put_slot("a1b2c3d4", 0, &m);
@@ -212,6 +236,8 @@ int main(void) {
     RUN_TEST(test_slots_read_slot_that_is_a_directory_is_invalid);
     RUN_TEST(test_slots_read_rejects_bad_id_and_args);
     RUN_TEST(test_slots_read_io_error_is_not_treated_as_invalid);
+    RUN_TEST(test_slots_read_open_and_read_errors_are_not_treated_as_invalid);
+    RUN_TEST(test_slots_read_directory_with_the_size_of_a_slot_is_invalid);
     RUN_TEST(test_slots_read_leaves_no_open_handles);
     return UNITY_END();
 }

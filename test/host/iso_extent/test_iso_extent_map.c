@@ -73,6 +73,29 @@ void test_map_table_a(void) {
     iso_extent_table_unref(t);
 }
 
+void test_map_clips_an_extent_that_runs_past_the_part_end(void) {
+    /* パーツ 0 (16 セクタ) の最後のエクステントが、ファイルより 14 セクタ長い。パーツ 1 は SD の別の場所 */
+    iso_extent_t p0[2] = {EXT(1000, 10), EXT(2000, 20)};
+    iso_extent_t p1[1] = {EXT(5000, 16)};
+    iso_extent_t p2[1] = {EXT(9000, 13)};
+    iso_part_input_t in[3] = {{8192, p0, 2}, {8192, p1, 1}, {6244, p2, 1}};
+    iso_extent_table_t *t = NULL;
+    TEST_ASSERT_EQUAL_INT(ISO_EXT_OK, build(0, 22628, 4, in, 3, &t));
+    const map_case_t cs[] = {
+        {3, 2, 2, {EXT(2002, 4), EXT(5000, 4)}, 4096, "must not run on into SD sectors beyond part 0"},
+    };
+    check_cases(t, cs, 1);
+    iso_extent_t sp[8];
+    size_t n = 0;
+    TEST_ASSERT_EQUAL_INT(ISO_EXT_OK, iso_extent_map(t, 0, 12, sp, 8, &n));
+    TEST_ASSERT_EQUAL_UINT(4, n);
+    TEST_ASSERT_EQUAL_UINT64(2000, sp[1].start_sector);
+    TEST_ASSERT_EQUAL_UINT64(6, sp[1].sector_count); /* 20 ではなく 6 */
+    TEST_ASSERT_EQUAL_UINT64(5000, sp[2].start_sector);
+    TEST_ASSERT_EQUAL_UINT64(9000, sp[3].start_sector);
+    iso_extent_table_unref(t);
+}
+
 void test_map_range_errors(void) {
     iso_extent_table_t *t = build_table_a(); /* capacity_blocks = 12 */
     iso_extent_t sp[8];
@@ -148,6 +171,8 @@ void test_valid_bytes(void) {
     TEST_ASSERT_EQUAL_UINT64(2148, iso_extent_valid_bytes(t, 10, 2));
     TEST_ASSERT_EQUAL_UINT64(0, iso_extent_valid_bytes(t, 12, 1)); /* 範囲外 */
     TEST_ASSERT_EQUAL_UINT64(0, iso_extent_valid_bytes(t, UINT64_MAX, 1));
+    TEST_ASSERT_EQUAL_UINT64(0, iso_extent_valid_bytes(t, 1ull << 53, 1));       /* lba * 2048 が 2^64 で 0 に戻る位置 */
+    TEST_ASSERT_EQUAL_UINT64(0, iso_extent_valid_bytes(t, (1ull << 53) + 1, 1)); /* 戻った後が 2048 */
     iso_extent_table_unref(t);
 }
 
@@ -295,6 +320,7 @@ void test_map_ends_exactly_at_a_part_boundary(void) {
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_map_table_a);
+    RUN_TEST(test_map_clips_an_extent_that_runs_past_the_part_end);
     RUN_TEST(test_map_range_errors);
     RUN_TEST(test_map_zero_blocks);
     RUN_TEST(test_map_spans_full);

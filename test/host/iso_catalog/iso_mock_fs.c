@@ -250,6 +250,7 @@ static int fs_overwrite(void *ctx, const char *path, const void *data, size_t le
 static int fs_open_for_read(void *ctx, const char *path, iso_file_t **out) {
     mock_fs_t *m = (mock_fs_t *)ctx;
     if (read_fails(m, path)) return ISO_ERR_IO;
+    if (m->fail_open_set && strcmp(m->fail_open_path, path) == 0) return ISO_ERR_IO;
     int i = find_node(m, path);
     if (i < 0) return ISO_ERR_NOT_FOUND;
     if (m->nodes[i].is_dir) return ISO_ERR_INVALID;
@@ -271,6 +272,10 @@ static int fs_read(void *ctx, iso_file_t *f, void *buf, size_t len, size_t *got)
     if (m->dead) return ISO_ERR_IO;
     const mock_node_t *n = &m->nodes[h->node];
     if (m->fail_path_set && strcmp(m->fail_path, n->path) == 0) return ISO_ERR_IO;
+    if (m->fail_read_set && strcmp(m->fail_read_path, n->path) == 0) {
+        m->fail_read_calls++;
+        if (m->fail_read_nth == 0 || m->fail_read_calls == m->fail_read_nth) return ISO_ERR_IO;
+    }
     size_t k = 0;
     uint8_t *out = (uint8_t *)buf;
     while (k < len && h->pos < n->size) {
@@ -425,7 +430,7 @@ bool mock_fs_set_first_cluster(mock_fs_t *m, const char *path, uint32_t first_cl
 
 bool mock_fs_set_size(mock_fs_t *m, const char *path, uint64_t size) {
     int i = find_node(m, path);
-    if (i < 0 || m->nodes[i].is_dir) return false;
+    if (i < 0) return false;
     if (size < m->nodes[i].data_len) m->nodes[i].data_len = (size_t)size;
     m->nodes[i].size = size;
     return true;
@@ -459,6 +464,18 @@ void mock_fs_reset_counter(mock_fs_t *m) {
 void mock_fs_fail_path(mock_fs_t *m, const char *path_or_null) {
     m->fail_path_set = path_or_null != NULL;
     if (path_or_null) snprintf(m->fail_path, sizeof(m->fail_path), "%s", path_or_null);
+}
+
+void mock_fs_fail_open(mock_fs_t *m, const char *path_or_null) {
+    m->fail_open_set = path_or_null != NULL;
+    if (path_or_null) snprintf(m->fail_open_path, sizeof(m->fail_open_path), "%s", path_or_null);
+}
+
+void mock_fs_fail_read(mock_fs_t *m, const char *path_or_null, int nth) {
+    m->fail_read_set = path_or_null != NULL;
+    m->fail_read_nth = nth;
+    m->fail_read_calls = 0;
+    if (path_or_null) snprintf(m->fail_read_path, sizeof(m->fail_read_path), "%s", path_or_null);
 }
 
 void mock_fs_fail_dir_next(mock_fs_t *m, const char *dir_or_null) {

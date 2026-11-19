@@ -72,6 +72,10 @@ void test_import_extension_is_case_insensitive_and_other_entries_are_ignored(voi
     TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_file(&FS, "/iso/import/giso", "x", 1, 0));
     TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_file(&FS, "/iso/import/h.iso ", "x", 1, 0)); /* 末尾に空白: *.iso ではない */
     TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/import/dir.iso"));
+    /* 4 バイトより短い名前(拡張子の検査が、名前の手前を読まない) */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_file(&FS, "/iso/import/a", "x", 1, 0));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_file(&FS, "/iso/import/ab", "x", 1, 0));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_file(&FS, "/iso/import/abc", "x", 1, 0));
     iso_rescan_result_t r = rescan(0);
     TEST_ASSERT_EQUAL_UINT32(4, r.imported);
     TEST_ASSERT_EQUAL_UINT32(0, r.skipped); /* *.iso でないもの、ディレクトリは数えない */
@@ -447,6 +451,47 @@ void test_rescan_io_errors_are_propagated(void) {
     TEST_ASSERT_EQUAL_UINT32(1, r.imported);
 }
 
+void test_rescan_read_errors_while_checking_the_signature(void) {
+    put_iso("a.iso", 40000);
+    iso_rescan_result_t r;
+    /* 先頭から順に読む途中(1 回目 = 最初の 512 バイト)の IO エラー */
+    mock_fs_fail_read(&FS, "/iso/import/a.iso", 1);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_catalog_rescan(&CAT, 0, &r));
+    TEST_ASSERT_EQUAL_INT(0, FS.open_files); /* 失敗しても閉じる */
+    /* 署名の 6 バイトの読み出し(65 回目 = 512 バイト x 64 の後)の IO エラー */
+    mock_fs_fail_read(&FS, "/iso/import/a.iso", 65);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_catalog_rescan(&CAT, 0, &r));
+    TEST_ASSERT_EQUAL_INT(0, FS.open_files);
+    TEST_ASSERT_EQUAL_UINT(0, CAT.count);
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/import/a.iso"));
+    /* 66 回目は読まない: 失敗の注入が当たらず、取り込める */
+    mock_fs_fail_read(&FS, "/iso/import/a.iso", 66);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_rescan(&CAT, 0, &r));
+    TEST_ASSERT_EQUAL_UINT32(1, r.imported);
+    mock_fs_fail_read(&FS, NULL, 0);
+}
+
+void test_import_crosslink_is_checked_against_every_image_and_ignores_directories(void) {
+    iso_meta_t m1 = mk_meta("one", 40000, ISO_META_READY, 1);
+    iso_meta_t m2 = mk_meta("two", 40000, ISO_META_READY, 1);
+    put_slot("00000001", 0, &m1);
+    put_slot("00000002", 0, &m2);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_sparse(&FS, "/iso/00000001/p000", 40000, NULL, 0, 700));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_sparse(&FS, "/iso/00000002/p000", 40000, NULL, 0, 701));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    put_import("x.iso", 40000, "CD001", 701); /* 2 つ目のイメージと同じ先頭クラスタ */
+    iso_rescan_result_t r = rescan(0);
+    TEST_ASSERT_EQUAL_UINT32(0, r.imported);
+    TEST_ASSERT_EQUAL_UINT32(1, r.skipped);
+    /* p000 がディレクトリなら、先頭クラスタが同じでも、クロスリンクとは見なさない */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/00000002/p000"));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/00000002/p000"));
+    TEST_ASSERT_TRUE(mock_fs_set_first_cluster(&FS, "/iso/00000002/p000", 701));
+    r = rescan(0);
+    TEST_ASSERT_EQUAL_UINT32(1, r.imported);
+    TEST_ASSERT_EQUAL_UINT32(0, r.skipped);
+}
+
 void test_rescan_crosslink_stat_error_is_propagated(void) {
     iso_meta_t m = mk_meta("foo", 40000, ISO_META_READY, 1);
     put_slot("00000001", 0, &m);
@@ -548,6 +593,8 @@ int main(void) {
     RUN_TEST(test_rescan_loop_terminates_like_the_viewer);
     RUN_TEST(test_rescan_without_import_directory_does_nothing);
     RUN_TEST(test_rescan_io_errors_are_propagated);
+    RUN_TEST(test_rescan_read_errors_while_checking_the_signature);
+    RUN_TEST(test_import_crosslink_is_checked_against_every_image_and_ignores_directories);
     RUN_TEST(test_rescan_crosslink_stat_error_is_propagated);
     RUN_TEST(test_rescan_counts_before_an_error_are_kept);
     RUN_TEST(test_import_write_failures_clean_up_and_keep_the_file);

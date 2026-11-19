@@ -115,6 +115,25 @@ void test_delete_when_slot_a_is_the_older_one(void) {
     TEST_ASSERT_EQUAL_INT(5, FS.nlog);
 }
 
+void test_delete_resume_when_slot_a_holds_the_deleting_meta(void) {
+    /* 採用されているのが meta.a (deleting、世代 8)、古い meta.b (ready、世代 7)。古い方 = meta.b を先に消し、最後に meta.a */
+    iso_meta_t a = mk_meta("Img", 5000000, ISO_META_DELETING, 8);
+    iso_meta_t b = mk_meta("Img", 5000000, ISO_META_READY, 7);
+    put_slot(ID, 0, &a);
+    put_slot(ID, 1, &b);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    fx_settle();
+    iso_delete_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_delete_job_init(&job, ID));
+    iso_step_result_t r;
+    run_until_done(&job, 20, &r);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_TRUE(mock_fs_log_is(&FS, 0, "remove /iso/00000001/meta.b"));
+    TEST_ASSERT_TRUE(mock_fs_log_is(&FS, 1, "remove /iso/00000001/meta.a"));
+    TEST_ASSERT_TRUE(mock_fs_log_is(&FS, 2, "remove /iso/00000001"));
+    TEST_ASSERT_EQUAL_INT(3, FS.nlog);
+}
+
 void test_delete_with_a_single_slot(void) {
     iso_meta_t a = mk_meta("Img", 5000000, ISO_META_READY, 1);
     put_slot(ID, 0, &a);
@@ -270,6 +289,35 @@ void test_delete_error_keeps_the_phase_and_retries_the_same_operation(void) {
     TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
 }
 
+/* 6 回の書き込みのどれが失敗しても、ERROR (その書き込みのエラー)になり、同じ操作を再試行して最後まで進める */
+void test_delete_error_at_every_write_is_reported_and_retried(void) {
+    for (int n = 1; n <= 6; n++) {
+        mock_fs_free(&FS);
+        fx_setup();
+        make_image_two_slots_two_parts();
+        TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+        fx_settle();
+        mock_fs_error_at(&FS, n, ISO_ERR_NO_SPACE);
+        iso_delete_job_t job;
+        TEST_ASSERT_EQUAL_INT(ISO_OK, iso_delete_job_init(&job, ID));
+        iso_step_result_t r;
+        int steps = 0;
+        do {
+            r = iso_catalog_delete_step(&CAT, &job);
+            steps++;
+        } while (r.kind == ISO_STEP_CONTINUE && steps < 20);
+        char msg[40];
+        snprintf(msg, sizeof(msg), "error at write %d", n);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(ISO_STEP_ERROR, r.kind, msg);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(ISO_ERR_NO_SPACE, r.err, msg);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(n, steps, msg); /* 失敗したステップで止まる */
+        TEST_ASSERT_NOT_NULL_MESSAGE(iso_catalog_find(&CAT, ID), msg);
+        run_until_done(&job, 20, &r); /* 再試行(エラーの注入は 1 回だけ) */
+        TEST_ASSERT_EQUAL_INT_MESSAGE(ISO_STEP_DONE, r.kind, msg);
+        TEST_ASSERT_FALSE_MESSAGE(mock_fs_exists(&FS, "/iso/00000001"), msg);
+    }
+}
+
 void test_delete_first_step_write_failure_changes_nothing(void) {
     make_image_two_slots_two_parts();
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
@@ -380,6 +428,7 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_delete_full_sequence_and_order);
     RUN_TEST(test_delete_when_slot_a_is_the_older_one);
+    RUN_TEST(test_delete_resume_when_slot_a_holds_the_deleting_meta);
     RUN_TEST(test_delete_with_a_single_slot);
     RUN_TEST(test_delete_resume_when_meta_already_says_deleting);
     RUN_TEST(test_delete_resume_with_only_the_new_slot_left);
@@ -388,6 +437,7 @@ int main(void) {
     RUN_TEST(test_delete_one_mutation_per_step);
     RUN_TEST(test_delete_only_removes_p_entries_and_fails_on_foreign_files);
     RUN_TEST(test_delete_error_keeps_the_phase_and_retries_the_same_operation);
+    RUN_TEST(test_delete_error_at_every_write_is_reported_and_retried);
     RUN_TEST(test_delete_first_step_write_failure_changes_nothing);
     RUN_TEST(test_delete_read_errors_are_reported);
     RUN_TEST(test_delete_job_init_rejects_bad_id);

@@ -245,6 +245,14 @@ void test_begin_mkdir_error_other_than_exists_is_returned_without_retry(void) {
     TEST_ASSERT_EQUAL_INT(1, FS.nlog);
 }
 
+void test_id_generate_clears_the_output_on_a_mkdir_error(void) {
+    fx_settle();
+    mock_fs_error_at(&FS, 1, ISO_ERR_NO_SPACE);
+    char id[9] = "keepkeep";
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_NO_SPACE, iso_id_generate(&IFS, &IRND, id));
+    TEST_ASSERT_EQUAL_CHAR('\0', id[0]);
+}
+
 void test_begin_meta_write_failure_cleans_up_the_directory(void) {
     fx_settle();
     mock_fs_error_at(&FS, 2, ISO_ERR_NO_SPACE); /* 2 回目の書き込み = meta.a */
@@ -421,6 +429,35 @@ void test_apply_finalize_ok_sha_variants(void) {
     TEST_ASSERT_EQUAL_INT(0, FS.nlog);
 }
 
+void test_apply_sha_update_only_for_finalize_ok_with_set_sha(void) {
+    uint8_t decl[32];
+    memset(decl, 0x77, 32);
+    uint8_t other[32];
+    memset(other, 0x11, 32);
+    char id[9];
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_begin(&CAT, "A", 1, 100000, decl, id));
+    iso_catalog_entry_t *e = iso_catalog_find(&CAT, id);
+    iso_apply_arg_t arg;
+    memset(&arg, 0, sizeof(arg));
+    arg.set_sha = true;
+    arg.sha_flag = ISO_SHA_COMPUTED;
+    arg.sha256 = other;
+    /* idle timeout は書くが、SHA-256 は変えない(引数があっても) */
+    TEST_ASSERT_EQUAL_INT(0, iso_catalog_apply(&CAT, e, ISO_EV_IDLE_TIMEOUT, NULL, &arg));
+    TEST_ASSERT_EQUAL_UINT8(ISO_SHA_DECLARED, e->meta.sha_flag);
+    TEST_ASSERT_EQUAL_HEX8(0x77, e->meta.sha256[0]);
+    e->received = 100000;
+    TEST_ASSERT_EQUAL_INT(0, iso_catalog_apply(&CAT, e, ISO_EV_FINISH, &CTX_FREE, NULL));
+    /* finalize ok: set_sha が false なら、引数があっても SHA-256 は変えない */
+    iso_apply_arg_t none;
+    memset(&none, 0, sizeof(none));
+    none.sha_flag = ISO_SHA_NONE;
+    TEST_ASSERT_EQUAL_INT(0, iso_catalog_apply(&CAT, e, ISO_EV_FINALIZE_OK, NULL, &none));
+    TEST_ASSERT_EQUAL_UINT8(ISO_SHA_DECLARED, e->meta.sha_flag);
+    TEST_ASSERT_EQUAL_HEX8(0x77, e->meta.sha256[31]);
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_READY, e->state);
+}
+
 void test_apply_invalid_requires_a_valid_reason(void) {
     iso_catalog_entry_t *e = new_image("A", 100000);
     e->received = 100000;
@@ -499,6 +536,24 @@ void test_apply_index_events_on_ready(void) {
     TEST_ASSERT_EQUAL_INT(ISO_TR_REJECT_STATE, iso_catalog_apply(&CAT, e, ISO_EV_PUT, &CTX_FREE, NULL));
 }
 
+void test_apply_delete_clears_reason_and_resume_mark(void) {
+    iso_meta_t inv = mk_meta("I", 100000, ISO_META_INVALID, 3);
+    inv.invalid_reason = ISO_INVALID_PART_MISMATCH;
+    put_slot("00000001", 0, &inv);
+    iso_meta_t del = mk_meta("D", 100000, ISO_META_DELETING, 3);
+    put_slot("00000002", 0, &del);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    iso_catalog_entry_t *a = iso_catalog_find(&CAT, "00000001");
+    TEST_ASSERT_EQUAL_UINT8(ISO_INVALID_PART_MISMATCH, a->invalid_reason);
+    TEST_ASSERT_EQUAL_INT(0, iso_catalog_apply(&CAT, a, ISO_EV_DELETE, &CTX_FREE, NULL));
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_DELETING, a->state);
+    TEST_ASSERT_EQUAL_UINT8(0, a->invalid_reason); /* deleting の理由は 0 */
+    iso_catalog_entry_t *b = iso_catalog_find(&CAT, "00000002");
+    TEST_ASSERT_TRUE(b->resume_delete); /* スキャンが付けた「続ける」印 */
+    TEST_ASSERT_EQUAL_INT(0, iso_catalog_apply(&CAT, b, ISO_EV_DELETE, &CTX_FREE, NULL)); /* ジョブを投入したら、印を下ろす */
+    TEST_ASSERT_FALSE(b->resume_delete);
+}
+
 void test_apply_delete_and_delete_done(void) {
     iso_catalog_entry_t *e = new_image("A", 100000);
     char id[9];
@@ -563,6 +618,18 @@ void test_apply_generation_wraps_from_uint32_max_to_zero(void) {
     TEST_ASSERT_EQUAL_INT8(0, e->adopted);
 }
 
+void test_write_meta_rejects_an_invalid_meta_without_writing(void) {
+    iso_catalog_entry_t *e = new_image("A", 100000);
+    fx_settle();
+    iso_meta_t bad = e->meta;
+    bad.state = 9; /* 範囲外 */
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_catalog_write_meta(&CAT, e, &bad));
+    TEST_ASSERT_EQUAL_INT(0, FS.nlog);
+    TEST_ASSERT_EQUAL_INT8(0, e->adopted);
+    TEST_ASSERT_EQUAL_UINT32(1, e->meta.generation);
+    TEST_ASSERT_EQUAL_UINT8(ISO_META_UPLOADING, e->meta.state);
+}
+
 void test_apply_on_corrupt_entry(void) {
     TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/00000001"));
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
@@ -602,19 +669,23 @@ int main(void) {
     RUN_TEST(test_id_generate_gives_up_after_16_tries);
     RUN_TEST(test_begin_returns_id_exhausted_and_changes_nothing);
     RUN_TEST(test_begin_mkdir_error_other_than_exists_is_returned_without_retry);
+    RUN_TEST(test_id_generate_clears_the_output_on_a_mkdir_error);
     RUN_TEST(test_begin_meta_write_failure_cleans_up_the_directory);
     RUN_TEST(test_apply_idle_timeout_writes_incomplete_to_the_other_slot);
     RUN_TEST(test_apply_put_resume_writes_nothing);
     RUN_TEST(test_apply_generations_alternate_slots);
     RUN_TEST(test_apply_finish_and_finalize_ok);
     RUN_TEST(test_apply_finalize_ok_sha_variants);
+    RUN_TEST(test_apply_sha_update_only_for_finalize_ok_with_set_sha);
     RUN_TEST(test_apply_invalid_requires_a_valid_reason);
     RUN_TEST(test_apply_each_invalid_reason_is_persisted);
     RUN_TEST(test_apply_io_error_and_write_fail_go_to_incomplete);
     RUN_TEST(test_apply_index_events_on_ready);
+    RUN_TEST(test_apply_delete_clears_reason_and_resume_mark);
     RUN_TEST(test_apply_delete_and_delete_done);
     RUN_TEST(test_apply_meta_write_failure_changes_nothing_and_retry_uses_the_same_slot);
     RUN_TEST(test_apply_generation_wraps_from_uint32_max_to_zero);
+    RUN_TEST(test_write_meta_rejects_an_invalid_meta_without_writing);
     RUN_TEST(test_apply_on_corrupt_entry);
     RUN_TEST(test_apply_reboot_event_does_not_write);
     return UNITY_END();

@@ -66,8 +66,8 @@ int iso_meta_validate(const iso_meta_t *m) {
 
 int iso_meta_encode(const iso_meta_t *m, uint8_t out[ISO_META_SIZE]) {
     if (!out || iso_meta_validate(m) != ISO_OK) return ISO_ERR_INVALID;
-    uint8_t b[ISO_META_SIZE];
-    memset(b, 0, sizeof(b));
+    uint8_t *b = out; /* 検査は済んでいる(以降は失敗しない)ので、直接書く */
+    memset(b, 0, ISO_META_SIZE);
     memcpy(b + OFF_MAGIC, MAGIC, sizeof(MAGIC));
     put_le16(b + OFF_VERSION, ISO_META_VERSION);
     b[OFF_STATE] = m->state;
@@ -81,7 +81,6 @@ int iso_meta_encode(const iso_meta_t *m, uint8_t out[ISO_META_SIZE]) {
     memcpy(b + OFF_NAME, m->name, m->name_len);
     put_le32(b + OFF_GENERATION, m->generation);
     put_le32(b + OFF_CRC, iso_crc32(b, OFF_CRC));
-    memcpy(out, b, sizeof(b));
     return ISO_OK;
 }
 

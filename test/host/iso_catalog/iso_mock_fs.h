@@ -80,6 +80,12 @@ typedef struct {
     /* 読み出しの失敗の注入(完全一致のパス) */
     char fail_path[ISO_PATH_MAX];
     bool fail_path_set;
+    char fail_open_path[ISO_PATH_MAX]; /* stat は成功し、open_for_read だけが IO エラー */
+    bool fail_open_set;
+    char fail_read_path[ISO_PATH_MAX]; /* stat と open は成功し、read だけが IO エラー */
+    bool fail_read_set;
+    int fail_read_nth; /* 0 = すべての read、n = n 回目の read(そのパスの、通算) */
+    int fail_read_calls;
     char fail_dir_next_path[ISO_PATH_MAX]; /* dir_open は成功し、dir_next が IO エラー */
     bool fail_dir_next_set;
 
@@ -127,6 +133,8 @@ void mock_fs_reset_counter(mock_fs_t *m);
 /* 読み出しの失敗 */
 void mock_fs_fail_path(mock_fs_t *m, const char *path_or_null);
 void mock_fs_fail_dir_next(mock_fs_t *m, const char *dir_or_null);
+void mock_fs_fail_open(mock_fs_t *m, const char *path_or_null);
+void mock_fs_fail_read(mock_fs_t *m, const char *path_or_null, int nth);
 
 /* 記録 */
 void mock_fs_clear_log(mock_fs_t *m);

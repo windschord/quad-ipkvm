@@ -237,6 +237,62 @@ void test_scan_io_errors_are_propagated(void) {
     TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_catalog_scan(&CAT));
 }
 
+void test_find_returns_only_exact_ids(void) {
+    iso_meta_t m = mk_meta("A", 100000, ISO_META_READY, 1);
+    put_slot("00000100", 0, &m);
+    put_slot("00000200", 0, &m);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    TEST_ASSERT_EQUAL_UINT(2, CAT.count);
+    TEST_ASSERT_NULL(iso_catalog_find(&CAT, NULL));
+    TEST_ASSERT_NULL(iso_catalog_find(&CAT, "00000000")); /* 先頭より小さい */
+    TEST_ASSERT_NULL(iso_catalog_find(&CAT, "00000150")); /* 間 */
+    TEST_ASSERT_NULL(iso_catalog_find(&CAT, "00000300")); /* 末尾より大きい */
+    TEST_ASSERT_NULL(iso_catalog_find(&CAT, "0000010"));  /* 前方一致 */
+    TEST_ASSERT_EQUAL_PTR(&CAT.images[0], iso_catalog_find(&CAT, "00000100"));
+    TEST_ASSERT_EQUAL_PTR(&CAT.images[1], iso_catalog_find(&CAT, "00000200"));
+    /* 最後のエントリも見つかる(3 つ目) */
+    put_slot("00000300", 0, &m);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    TEST_ASSERT_EQUAL_PTR(&CAT.images[2], iso_catalog_find(&CAT, "00000300"));
+}
+
+void test_remove_entry_in_the_middle_and_at_the_end(void) {
+    iso_meta_t m = mk_meta("A", 100000, ISO_META_READY, 1);
+    put_slot("00000100", 0, &m);
+    put_slot("00000200", 0, &m);
+    put_slot("00000300", 0, &m);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    iso_catalog_remove(&CAT, "00000200"); /* 真ん中 */
+    TEST_ASSERT_EQUAL_UINT(2, CAT.count);
+    TEST_ASSERT_EQUAL_STRING("00000100", CAT.images[0].id);
+    TEST_ASSERT_EQUAL_STRING("00000300", CAT.images[1].id);
+    iso_catalog_remove(&CAT, "00000300"); /* 末尾 */
+    TEST_ASSERT_EQUAL_UINT(1, CAT.count);
+    TEST_ASSERT_EQUAL_STRING("00000100", CAT.images[0].id);
+    iso_catalog_remove(&CAT, "00000999"); /* ないもの */
+    TEST_ASSERT_EQUAL_UINT(1, CAT.count);
+    iso_catalog_remove(&CAT, "00000100");
+    TEST_ASSERT_EQUAL_UINT(0, CAT.count);
+}
+
+void test_ensure_dirs_reports_each_failure(void) {
+    mock_fs_free(&FS);
+    mock_fs_init(&FS);
+    IFS = mock_fs_iface(&FS);
+    iso_catalog_init(&CAT, &IFS, &IRND);
+    mock_fs_error_at(&FS, 1, ISO_ERR_NO_SPACE); /* mkdir /iso だけが失敗する(次の mkdir は成功する) */
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_NO_SPACE, iso_catalog_ensure_dirs(&CAT));
+    TEST_ASSERT_FALSE(mock_fs_exists(&FS, "/iso/import")); /* /iso が作れなければ、先へ進まない */
+    mock_fs_error_at(&FS, 1, ISO_ERR_NO_SPACE);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_NO_SPACE, iso_catalog_scan(&CAT)); /* スキャンも、作れなければ失敗 */
+    mock_fs_error_at(&FS, 2, ISO_ERR_NO_SPACE); /* mkdir /iso は成功し、/iso/import が失敗する */
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_NO_SPACE, iso_catalog_ensure_dirs(&CAT));
+    TEST_ASSERT_TRUE(mock_fs_is_dir(&FS, "/iso"));
+    mock_fs_error_at(&FS, 0, 0);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_ensure_dirs(&CAT));
+    TEST_ASSERT_TRUE(mock_fs_is_dir(&FS, "/iso/import"));
+}
+
 void test_scan_with_failed_directory_creation_returns_the_error(void) {
     mock_fs_free(&FS);
     mock_fs_init(&FS);
@@ -303,6 +359,18 @@ void test_received_part_that_is_a_directory_stops(void) {
     put_part("00000001", 0, GIB);
     TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/00000001/p001"));
     TEST_ASSERT_EQUAL_UINT64(GIB, received_for(&m, "00000001"));
+    TEST_ASSERT_TRUE(mock_fs_set_size(&FS, "/iso/00000001/p001", GIB)); /* 大きさが満杯でも、ディレクトリは数えない */
+    TEST_ASSERT_EQUAL_UINT64(GIB, received_for(&m, "00000001"));
+}
+
+void test_received_follows_part_count_of_the_meta(void) {
+    /* meta のパーツ数が 1 なら、p001 があっても数えない(meta が正) */
+    iso_meta_t m = mk_meta("X", SIZE_25G, ISO_META_INCOMPLETE, 1);
+    m.part_count = 1;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/00000001"));
+    put_part("00000001", 0, GIB);
+    put_part("00000001", 1, GIB);
+    TEST_ASSERT_EQUAL_UINT64(GIB, received_for(&m, "00000001"));
 }
 
 void test_received_single_part_import_size(void) {
@@ -338,11 +406,15 @@ int main(void) {
     RUN_TEST(test_scan_exactly_16_images_has_no_hidden);
     RUN_TEST(test_scan_resets_previous_contents);
     RUN_TEST(test_scan_io_errors_are_propagated);
+    RUN_TEST(test_find_returns_only_exact_ids);
+    RUN_TEST(test_remove_entry_in_the_middle_and_at_the_end);
+    RUN_TEST(test_ensure_dirs_reports_each_failure);
     RUN_TEST(test_scan_with_failed_directory_creation_returns_the_error);
     RUN_TEST(test_received_counts_parts_in_order_and_stops_at_a_short_part);
     RUN_TEST(test_received_full_parts_and_last_short_part);
     RUN_TEST(test_received_clamps_oversized_part_and_ignores_parts_after_a_gap);
     RUN_TEST(test_received_part_that_is_a_directory_stops);
+    RUN_TEST(test_received_follows_part_count_of_the_meta);
     RUN_TEST(test_received_single_part_import_size);
     RUN_TEST(test_received_propagates_io_error);
     return UNITY_END();
