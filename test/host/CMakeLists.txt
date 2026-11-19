@@ -191,6 +191,15 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE usb_vbus_ctrl)
     endif()
 
+    if (test_source MATCHES "/iso_media/")
+        target_link_libraries(${test_name} PRIVATE iso_media)
+    endif()
+
+    if (test_source MATCHES "/mmc_scsi/")
+        target_link_libraries(${test_name} PRIVATE mmc_scsi iso_media)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/iso_seams/include)
+    endif()
+
     if (test_source MATCHES "/kvm_api/")
         target_link_libraries(${test_name} PRIVATE kvm_api kvm_ctrl kvm_board_mock http_guard auth_logic)
     endif()
@@ -202,6 +211,12 @@ foreach(test_source ${TEST_SOURCES})
     if (test_source MATCHES "/iso_catalog/")
         target_link_libraries(${test_name} PRIVATE iso_catalog iso_mock_fs)
         target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/iso_catalog)
+    endif()
+
+    # msc_bot のテストだけ（チェックアウト先の絶対パスに /msc_bot/ が含まれても、他のテストにはリンクしない）
+    file(RELATIVE_PATH test_rel_path ${CMAKE_CURRENT_SOURCE_DIR} ${test_source})
+    if (test_rel_path MATCHES "^msc_bot/")
+        target_link_libraries(${test_name} PRIVATE msc_bot)
     endif()
 
 
@@ -277,6 +292,12 @@ target_include_directories(iso_mock_fs PUBLIC ${CMAKE_SOURCE_DIR}/iso_catalog ${
 target_compile_options(iso_mock_fs PRIVATE ${TEST_COMPILE_OPTIONS})
 target_link_options(iso_mock_fs PRIVATE ${TEST_LINK_OPTIONS})
 
+# iso_media (virtual CD-ROM media state: EMPTY/LOADED, unit attention, prevent removal; docs/ISO_MOUNT_DESIGN.md 5.5; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_media ${CMAKE_BINARY_DIR}/iso_media)
+
+# mmc_scsi (CD-ROM SCSI/MMC commands for the virtual drive; docs/ISO_MOUNT_DESIGN.md 5.4; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/mmc_scsi ${CMAKE_BINARY_DIR}/mmc_scsi)
+
 # Mock kvm_board_hal_t (reproduces the board-side obligations of docs/INTERFACES.md 6.2)
 add_library(kvm_board_mock STATIC ${CMAKE_SOURCE_DIR}/kvm_board/kvm_board_mock.c)
 target_include_directories(kvm_board_mock PUBLIC ${CMAKE_SOURCE_DIR}/kvm_board)
@@ -291,3 +312,6 @@ if(NODE_EXECUTABLE)
 else()
     message(STATUS "node not found: check_video_viewer is not registered")
 endif()
+
+# msc_bot (USB Mass Storage Bulk-Only Transport state machine, docs/MSC_BOT_TESTS.md; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/msc_bot ${CMAKE_BINARY_DIR}/msc_bot)
