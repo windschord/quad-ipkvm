@@ -37,6 +37,7 @@ static int ALLOC_FAIL_AT; /* n 回目の確保を失敗させる(0 = なし) */
 static uint32_t EPOCH;
 static iso_blockdev_t BDEV;
 static iso_upload_t UP;
+static iso_upload_t *UPP; /* put_range が使う iso_upload_t。NULL なら UP(iso_core のテストは &CORE.up を入れる) */
 static int VIEW_CALLS;
 static int TABLES_READY;
 static char TABLE_ID[ISO_ID_LEN + 1];
@@ -131,6 +132,7 @@ static inline void fx_base(void) {
     TABLE_ID[0] = '\0';
     LAST_TABLE = NULL;
     SIG = "CD001";
+    UPP = NULL;
 }
 
 static inline void fx_up_setup(uint32_t chunk, uint32_t sync) {
@@ -257,7 +259,7 @@ static inline void img_begin_pb(const char *name, uint64_t size, uint32_t pb, co
 static inline int put_range(const char *id, uint64_t from, size_t n, iso_upload_write_t *out) {
     static uint8_t buf[1024 * 1024];
     gen_fill(buf, from, n);
-    return iso_upload_write_chunk(&UP, id, from, buf, n, out);
+    return iso_upload_write_chunk(UPP ? UPP : &UP, id, from, buf, n, out);
 }
 
 /* [from, to) を chunk バイトずつ送る。すべて ISO_OK でなければ失敗 */

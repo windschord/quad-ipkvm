@@ -142,6 +142,15 @@ static bool queue_has(const iso_core_t *c, iso_job_kind_t kind, const char *id) 
     return false;
 }
 
+/* 同じ id の、待っているジョブの数(kind が NONE なら全種類) */
+static size_t queue_count(const iso_core_t *c, iso_job_kind_t kind, const char *id) {
+    size_t n = 0;
+    for (size_t i = 0; i < c->qn; i++) {
+        if ((kind == ISO_JOB_NONE || c->queue[i].kind == kind) && strcmp(c->queue[i].id, id) == 0) n++;
+    }
+    return n;
+}
+
 /* 同じ id の、待っているジョブ(kind が NONE なら全種類)を取り除く */
 static void queue_drop(iso_core_t *c, iso_job_kind_t kind, const char *id) {
     size_t i = 0;
@@ -207,7 +216,7 @@ int iso_core_submit_finish(iso_core_t *c, const char *id, uint64_t *out_received
         prev = ISO_STATE_NONE;
     }
     if (rc != ISO_RES_OK) return rc;
-    if (c->qn >= ISO_WORKER_QUEUE) {
+    if (c->qn - queue_count(c, ISO_JOB_IDLE_CLOSE, id) >= ISO_WORKER_QUEUE) { /* 待っている IDLE_CLOSE は、FINISH に置き換わる */
         if (prev != ISO_STATE_NONE) iso_upload_finish_undo(&c->up, e, prev);
         return ISO_ERR_BUSY;
     }
@@ -225,7 +234,7 @@ int iso_core_submit_delete(iso_core_t *c, const char *id) {
     tc.mounted = c->cfg.hooks.is_mounted && c->cfg.hooks.is_mounted(c->cfg.hooks.ctx, id);
     iso_state_t next;
     if (iso_state_transition(e->state, ISO_EV_DELETE, &tc, &next) == ISO_TR_REJECT_MOUNTED) return ISO_RES_MOUNTED;
-    if (c->qn >= ISO_WORKER_QUEUE) return ISO_ERR_BUSY;
+    if (c->qn - queue_count(c, ISO_JOB_NONE, id) >= ISO_WORKER_QUEUE) return ISO_ERR_BUSY; /* 待っているジョブは、DELETE に置き換わる */
 
     int rc = iso_catalog_apply(c->cfg.cat, e, ISO_EV_DELETE, &tc, NULL);
     if (rc != 0) return rc > 0 ? (int)ISO_RES_NOT_FOUND : rc;
