@@ -314,7 +314,7 @@ void test_hidden_images_are_forgotten_when_the_remount_or_the_scan_fails(void) {
     TEST_ASSERT_EQUAL_UINT32(0, VIEW_COPY.hidden);
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_core_boot(&CORE));
     TEST_ASSERT_EQUAL_UINT32(2, CAT.hidden);
-    mock_fs_fail_dir_next(&FS, "/iso");
+    mock_fs_fail_dir_next_after(&FS, "/iso", 19); /* import と 18 個のディレクトリを読んだ後で失敗(隠れた 2 個は数えた後) */
     TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_core_boot(&CORE));
     TEST_ASSERT_EQUAL_UINT32(0, CAT.hidden);
     TEST_ASSERT_EQUAL_UINT32(0, VIEW_COPY.hidden);
