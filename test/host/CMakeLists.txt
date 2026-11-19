@@ -195,6 +195,12 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE kvm_api kvm_ctrl kvm_board_mock http_guard auth_logic)
     endif()
 
+    # msc_bot のテストだけ（チェックアウト先の絶対パスに /msc_bot/ が含まれても、他のテストにはリンクしない）
+    file(RELATIVE_PATH test_rel_path ${CMAKE_CURRENT_SOURCE_DIR} ${test_source})
+    if (test_rel_path MATCHES "^msc_bot/")
+        target_link_libraries(${test_name} PRIVATE msc_bot)
+    endif()
+
 
 
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})
@@ -270,3 +276,6 @@ if(NODE_EXECUTABLE)
 else()
     message(STATUS "node not found: check_video_viewer is not registered")
 endif()
+
+# msc_bot (USB Mass Storage Bulk-Only Transport state machine, docs/MSC_BOT_TESTS.md; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/msc_bot ${CMAKE_BINARY_DIR}/msc_bot)
