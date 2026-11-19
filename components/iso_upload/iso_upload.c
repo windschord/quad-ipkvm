@@ -336,6 +336,16 @@ int iso_upload_finish_begin(iso_upload_t *u, const char *id, uint64_t *out_recei
     return ISO_OK;
 }
 
+void iso_upload_finish_undo(iso_upload_t *u, iso_catalog_entry_t *e, iso_state_t prev) {
+    e->state = prev;
+    if (prev == ISO_STATE_INCOMPLETE) {
+        iso_up_release_slot(u);
+    } else {
+        u->slot_finalizing = false;
+    }
+    iso_up_notify(u);
+}
+
 /* ---- アクティビティ、SD の再初期化 -------------------------------------------------------- */
 
 iso_upload_activity_t iso_upload_activity_from(uint64_t last_put_ms, uint64_t now) {

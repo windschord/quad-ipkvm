@@ -213,6 +213,17 @@ foreach(test_source ${TEST_SOURCES})
         target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/iso_catalog)
     endif()
 
+    # iso_upload / iso_core のテスト(相対パスで判定する)
+    file(RELATIVE_PATH test_rel_path_iso ${CMAKE_CURRENT_SOURCE_DIR} ${test_source})
+    if (test_rel_path_iso MATCHES "^iso_upload/")
+        target_link_libraries(${test_name} PRIVATE iso_upload iso_catalog iso_mock_fs iso_up_support)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/iso_catalog ${CMAKE_SOURCE_DIR}/iso_upload ${CMAKE_SOURCE_DIR}/../../components/iso_upload)
+    endif()
+    if (test_rel_path_iso MATCHES "^iso_core/")
+        target_link_libraries(${test_name} PRIVATE iso_core iso_upload iso_catalog iso_mock_fs iso_up_support)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/iso_catalog ${CMAKE_SOURCE_DIR}/iso_upload ${CMAKE_SOURCE_DIR}/../../components/iso_upload)
+    endif()
+
     # msc_bot のテストだけ（チェックアウト先の絶対パスに /msc_bot/ が含まれても、他のテストにはリンクしない）
     file(RELATIVE_PATH test_rel_path ${CMAKE_CURRENT_SOURCE_DIR} ${test_source})
     if (test_rel_path MATCHES "^msc_bot/")
@@ -291,6 +302,16 @@ add_library(iso_mock_fs STATIC ${CMAKE_SOURCE_DIR}/iso_catalog/iso_mock_fs.c)
 target_include_directories(iso_mock_fs PUBLIC ${CMAKE_SOURCE_DIR}/iso_catalog ${CMAKE_SOURCE_DIR}/../../components/iso_seams/include)
 target_compile_options(iso_mock_fs PRIVATE ${TEST_COMPILE_OPTIONS})
 target_link_options(iso_mock_fs PRIVATE ${TEST_LINK_OPTIONS})
+
+# iso_upload (P8: upload state machine, FINISH / INDEX steps; pure C) and iso_core (worker job contract, view, tick, SD reinit; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_upload ${CMAKE_BINARY_DIR}/iso_upload)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_core ${CMAKE_BINARY_DIR}/iso_core)
+
+# SHA-256 reference implementation and fixtures for the iso_upload / iso_core host tests
+add_library(iso_up_support STATIC ${CMAKE_SOURCE_DIR}/iso_upload/up_sha256.c)
+target_include_directories(iso_up_support PUBLIC ${CMAKE_SOURCE_DIR}/iso_upload ${CMAKE_SOURCE_DIR}/../../components/iso_seams/include)
+target_compile_options(iso_up_support PRIVATE ${TEST_COMPILE_OPTIONS})
+target_link_options(iso_up_support PRIVATE ${TEST_LINK_OPTIONS})
 
 # iso_media (virtual CD-ROM media state: EMPTY/LOADED, unit attention, prevent removal; docs/ISO_MOUNT_DESIGN.md 5.5; pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_media ${CMAKE_BINARY_DIR}/iso_media)

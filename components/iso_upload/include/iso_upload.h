@@ -204,6 +204,10 @@ void iso_upload_abort(iso_upload_t *u, const char *id);
  */
 int iso_upload_finish_begin(iso_upload_t *u, const char *id, uint64_t *out_received);
 
+/* iso_upload_finish_begin が ISO_RES_OK を返した後の取り消し(ワーカーのキューがあふれたとき)。prev は、finish_begin の前の状態
+ * (uploading / incomplete)。状態を戻し、incomplete だったなら枠を空ける(uploading だったなら、枠は uploading のまま)。 */
+void iso_upload_finish_undo(iso_upload_t *u, iso_catalog_entry_t *e, iso_state_t prev);
+
 /* uploading / incomplete のイメージの received を、ディスク上のパーツの大きさから決め直す(設計 3.4)。 */
 int iso_upload_reload_received(iso_upload_t *u, iso_catalog_entry_t *e);
 
