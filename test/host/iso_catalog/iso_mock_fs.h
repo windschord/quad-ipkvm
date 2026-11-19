@@ -19,6 +19,8 @@
  *     MOCK_TEAR_NONE: その書き込みは何も起きない
  *     MOCK_TEAR_HALF: overwrite は、データの前半だけを書いたファイルになる(長さ = len / 2)。他の操作は何も起きない
  *     MOCK_TEAR_FULL: その書き込みは完了している(戻り値だけ IO エラー)
+ *     MOCK_TEAR_BOTH: rename だけ。移動先のエントリが作られ、移動元も消えていない(同じ先頭クラスタを 2 つのエントリが指す。
+ *                     FatFs の f_rename の、新エントリの登録 -> 旧エントリの削除の間の電源断)。他の操作は NONE と同じ
  */
 
 #include <stdbool.h>
@@ -35,7 +37,7 @@ extern "C" {
 #define MOCK_LOG_MAX 512
 #define MOCK_LOG_LEN 340
 
-typedef enum { MOCK_TEAR_NONE = 0, MOCK_TEAR_HALF = 1, MOCK_TEAR_FULL = 2 } mock_tear_t;
+typedef enum { MOCK_TEAR_NONE = 0, MOCK_TEAR_HALF = 1, MOCK_TEAR_FULL = 2, MOCK_TEAR_BOTH = 3 } mock_tear_t;
 
 typedef struct {
     bool used;

@@ -176,7 +176,8 @@ iso_state_t iso_state_from_meta(uint8_t meta_state);
 enum {
     ISO_CAT_ERR_NAME_EXISTS = -101,   /* 409 name_exists */
     ISO_CAT_ERR_TOO_MANY = -102,      /* 409 too_many_images */
-    ISO_CAT_ERR_ID_EXHAUSTED = -103   /* <id> を ISO_ID_TRIES 回引き直しても、mkdir が EXISTS */
+    ISO_CAT_ERR_ID_EXHAUSTED = -103,  /* <id> を ISO_ID_TRIES 回引き直しても、mkdir が EXISTS */
+    ISO_CAT_ERR_CROSSLINKED = -104    /* 409 crosslinked: <id>/p000 と、import/ のファイルが、同じ先頭クラスタを指している(設計 3.3) */
 };
 
 typedef struct {
@@ -269,6 +270,16 @@ typedef struct {
     int err; /* kind == ISO_STEP_ERROR のとき iso_err_t */
 } iso_step_result_t;
 
+/*
+ * DELETE の受け付けの前の検査(設計 3.3): <id>/p000 の先頭クラスタが、/iso/import/ のどれかのファイルと同じなら
+ * ISO_CAT_ERR_CROSSLINKED (API は 409 crosslinked)。そうでなければ ISO_OK。何も変更しない。
+ * (rename の途中の電源断で、2 つのエントリが同じクラスタの連鎖を指している。p000 を unlink すると、連鎖が解放され、
+ *  import/ 側のファイルが、解放済みのクラスタを指して、次の rescan で取り込まれてしまう。)
+ * 先頭クラスタ 0、<id>/p000 がない、import/ がない、は一致なし。I/O のエラーは、そのまま返す。
+ * ハンドラーは、iso_catalog_apply(ISO_EV_DELETE) の前に呼ぶ。
+ */
+int iso_catalog_delete_precheck(const iso_catalog_t *cat, const char *id);
+
 typedef struct {
     char id[ISO_ID_LEN + 1];
     uint8_t phase;
@@ -284,6 +295,9 @@ int iso_delete_job_init(iso_delete_job_t *job, const char *id);
  *   (3) 採用していない(古い)スロット、最後に deleting を書いた方を remove。
  *   (4) ディレクトリを remove -> DONE (カタログからも消す)。
  * remove が NOT_FOUND ならすでに消えているとして進む。他のエラーは ERROR (カタログは変えない。次の機会に最初から続ける)。
+ * 最初のステップ((1) の前)で、iso_catalog_delete_precheck と同じクロスリンクの照合をする。一致したら、何も変更せず(meta も、
+ * パーツも、p000 も)ERROR(ISO_CAT_ERR_CROSSLINKED) を返す。再起動後の続き(meta がすでに deleting)でも同じ。
+ * この ERROR は、呼び出し側(グルー)が警告をログに出し、PC の chkdsk で直すまで、deleting のまま残す(再試行は同じ結果になる)。
  */
 iso_step_result_t iso_catalog_delete_step(iso_catalog_t *cat, iso_delete_job_t *job);
 

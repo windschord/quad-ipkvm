@@ -15,7 +15,8 @@ else()
         -Wall -Wextra -Werror
         -fsanitize=address -fsanitize=undefined
     )
-    target_link_options(iso_catalog PRIVATE
+    # A static library has no link step: INTERFACE passes the sanitizer runtime to the executables that use it.
+    target_link_options(iso_catalog INTERFACE
         -fsanitize=address -fsanitize=undefined
     )
 endif()

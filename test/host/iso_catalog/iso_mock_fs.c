@@ -130,6 +130,23 @@ static int fs_rename(void *ctx, const char *from, const char *to) {
     if (cut < 0) return ISO_ERR_IO;
     log_add(m, "rename", from, to, ULONG_MAX);
     if (cut == 2) return m->err_code;
+    if (cut == 1 && m->tear == MOCK_TEAR_BOTH) {
+        int si = find_node(m, from);
+        char parent_to[ISO_PATH_MAX];
+        parent_of(to, parent_to, sizeof(parent_to));
+        if (si >= 0 && !m->nodes[si].is_dir && find_node(m, to) < 0 && dir_exists(m, parent_to)) {
+            int di = alloc_node(m);
+            if (di >= 0) {
+                snprintf(m->nodes[di].path, sizeof(m->nodes[di].path), "%s", to);
+                m->nodes[di].data = (uint8_t *)malloc(m->nodes[si].data_len ? m->nodes[si].data_len : 1);
+                memcpy(m->nodes[di].data, m->nodes[si].data, m->nodes[si].data_len);
+                m->nodes[di].data_len = m->nodes[si].data_len;
+                m->nodes[di].size = m->nodes[si].size;
+                m->nodes[di].first_cluster = m->nodes[si].first_cluster;
+            }
+        }
+        return ISO_ERR_IO;
+    }
     if (cut == 1 && m->tear != MOCK_TEAR_FULL) return ISO_ERR_IO;
     int i = find_node(m, from);
     if (i < 0) return cut ? ISO_ERR_IO : ISO_ERR_NOT_FOUND;

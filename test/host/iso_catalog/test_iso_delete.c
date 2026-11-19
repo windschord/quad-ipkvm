@@ -368,6 +368,182 @@ void test_delete_read_errors_are_reported(void) {
     TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
 }
 
+/* ---- クロスリンク(設計 3.3): import/ のファイルと <id>/p000 が同じ先頭クラスタ ---- */
+
+static void make_crosslinked_image(uint32_t cluster) {
+    iso_meta_t a = mk_meta("Img", 40000, ISO_META_READY, 7);
+    a.part_count = 1;
+    a.part_blocks = 20;
+    put_slot(ID, 0, &a);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_sparse(&FS, "/iso/00000001/p000", 40000, NULL, 0, cluster));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_sparse(&FS, "/iso/import/foo.iso", 40000, NULL, 0, cluster));
+}
+
+void test_delete_precheck_refuses_when_import_has_the_same_first_cluster(void) {
+    make_crosslinked_image(777);
+    TEST_ASSERT_EQUAL_INT(ISO_CAT_ERR_CROSSLINKED, iso_catalog_delete_precheck(&CAT, ID));
+    /* 何も変更しない */
+    TEST_ASSERT_EQUAL_INT(0, FS.nlog);
+    /* 別のクラスタなら OK */
+    TEST_ASSERT_TRUE(mock_fs_set_first_cluster(&FS, "/iso/import/foo.iso", 778));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_delete_precheck(&CAT, ID));
+    /* 2 つ目以降のファイルとも照合する */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_sparse(&FS, "/iso/import/bar.iso", 40000, NULL, 0, 777));
+    TEST_ASSERT_EQUAL_INT(ISO_CAT_ERR_CROSSLINKED, iso_catalog_delete_precheck(&CAT, ID));
+    TEST_ASSERT_EQUAL_INT(0, FS.open_dirs);
+}
+
+void test_delete_precheck_non_matches(void) {
+    make_crosslinked_image(777);
+    /* 先頭クラスタ 0 は、一致と見なさない */
+    TEST_ASSERT_TRUE(mock_fs_set_first_cluster(&FS, "/iso/00000001/p000", 0));
+    TEST_ASSERT_TRUE(mock_fs_set_first_cluster(&FS, "/iso/import/foo.iso", 0));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_delete_precheck(&CAT, ID));
+    /* import/ のディレクトリは、クラスタが同じでも、ファイルではない */
+    TEST_ASSERT_TRUE(mock_fs_set_first_cluster(&FS, "/iso/00000001/p000", 777));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/import/foo.iso"));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/import/dir.iso"));
+    TEST_ASSERT_TRUE(mock_fs_set_first_cluster(&FS, "/iso/import/dir.iso", 777));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_delete_precheck(&CAT, ID));
+    /* p000 がない(まだアップロード前など)、p000 がディレクトリ */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_sparse(&FS, "/iso/import/same.iso", 40000, NULL, 0, 777));
+    TEST_ASSERT_EQUAL_INT(ISO_CAT_ERR_CROSSLINKED, iso_catalog_delete_precheck(&CAT, ID));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/00000001/p000"));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_delete_precheck(&CAT, ID));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/00000001/p000"));
+    TEST_ASSERT_TRUE(mock_fs_set_first_cluster(&FS, "/iso/00000001/p000", 777));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_delete_precheck(&CAT, ID));
+    /* import/ がない */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/00000001/p000"));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_sparse(&FS, "/iso/00000001/p000", 40000, NULL, 0, 777));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/import/same.iso"));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/import/dir.iso"));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/import"));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_delete_precheck(&CAT, ID));
+    /* 引数 */
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_catalog_delete_precheck(&CAT, "../x"));
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_catalog_delete_precheck(NULL, ID));
+}
+
+void test_delete_precheck_propagates_io_errors(void) {
+    make_crosslinked_image(777);
+    mock_fs_fail_path(&FS, "/iso/00000001/p000");
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_catalog_delete_precheck(&CAT, ID));
+    mock_fs_fail_path(&FS, "/iso/import");
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_catalog_delete_precheck(&CAT, ID));
+    mock_fs_fail_path(&FS, NULL);
+    mock_fs_fail_dir_next(&FS, "/iso/import");
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_catalog_delete_precheck(&CAT, ID));
+    mock_fs_fail_dir_next(&FS, NULL);
+    TEST_ASSERT_EQUAL_INT(ISO_CAT_ERR_CROSSLINKED, iso_catalog_delete_precheck(&CAT, ID));
+}
+
+void test_delete_step_refuses_a_crosslinked_image_without_changing_anything(void) {
+    make_crosslinked_image(777);
+    iso_meta_t b = mk_meta("Img", 40000, ISO_META_INCOMPLETE, 6);
+    b.part_count = 1;
+    b.part_blocks = 20;
+    put_slot(ID, 1, &b);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    iso_catalog_entry_t *e = iso_catalog_find(&CAT, ID);
+    fx_settle();
+    iso_delete_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_delete_job_init(&job, ID));
+    for (int i = 0; i < 3; i++) { /* 何度呼んでも、同じ結果(再試行しても進まない) */
+        iso_step_result_t r = iso_catalog_delete_step(&CAT, &job);
+        TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+        TEST_ASSERT_EQUAL_INT(ISO_CAT_ERR_CROSSLINKED, r.err);
+    }
+    TEST_ASSERT_EQUAL_INT(0, FS.mut_count); /* 書き込みなし(meta を deleting で書かない) */
+    TEST_ASSERT_EQUAL_INT(0, FS.nlog);
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/00000001/p000"));
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/import/foo.iso"));
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_READY, e->state);
+    TEST_ASSERT_EQUAL_INT8(0, e->adopted);
+    TEST_ASSERT_EQUAL_UINT32(7, e->meta.generation);
+    TEST_ASSERT_NOT_NULL(iso_catalog_find(&CAT, ID));
+    /* PC で直した後(import/ のファイルがなくなった)は、削除できる */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/import/foo.iso"));
+    iso_step_result_t r;
+    run_until_done(&job, 20, &r);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_FALSE(mock_fs_exists(&FS, "/iso/00000001"));
+}
+
+void test_delete_resume_with_crosslink_keeps_p000_and_everything_else(void) {
+    /* meta はすでに deleting (a: 世代 8 を採用、b: 世代 7)。p000 は import/ のファイルと同じクラスタ、p001 もある */
+    iso_meta_t a = mk_meta("Img", 40000, ISO_META_DELETING, 8);
+    iso_meta_t b = mk_meta("Img", 40000, ISO_META_READY, 7);
+    a.part_count = b.part_count = 1;
+    a.part_blocks = b.part_blocks = 20;
+    put_slot(ID, 0, &a);
+    put_slot(ID, 1, &b);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_sparse(&FS, "/iso/00000001/p000", 40000, NULL, 0, 555));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_sparse(&FS, "/iso/00000001/p001", 100, NULL, 0, 556));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_sparse(&FS, "/iso/import/foo.iso", 40000, NULL, 0, 555));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    TEST_ASSERT_TRUE(CAT.images[0].resume_delete);
+    fx_settle();
+    iso_delete_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_delete_job_init(&job, ID));
+    iso_step_result_t r = iso_catalog_delete_step(&CAT, &job);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_CAT_ERR_CROSSLINKED, r.err);
+    TEST_ASSERT_EQUAL_INT(0, FS.mut_count); /* p000 も、p001 も、meta も、消さない */
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/00000001/p000"));
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/00000001/p001"));
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/00000001/meta.a"));
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/00000001/meta.b"));
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/import/foo.iso"));
+    TEST_ASSERT_NOT_NULL(iso_catalog_find(&CAT, ID));
+    /* 再起動して、スキャンし直しても、deleting のまま残る */
+    iso_catalog_t c2;
+    iso_catalog_init(&c2, &IFS, &IRND);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&c2));
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_DELETING, c2.images[0].state);
+    TEST_ASSERT_TRUE(c2.images[0].resume_delete);
+}
+
+void test_delete_step_reports_io_errors_of_the_crosslink_check_without_changing_anything(void) {
+    make_crosslinked_image(777);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_set_first_cluster(&FS, "/iso/import/foo.iso", 778) ? ISO_OK : ISO_ERR_INVALID);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    fx_settle();
+    iso_delete_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_delete_job_init(&job, ID));
+    mock_fs_fail_path(&FS, "/iso/00000001/p000"); /* p000 の stat が失敗 */
+    iso_step_result_t r = iso_catalog_delete_step(&CAT, &job);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, r.err);
+    mock_fs_fail_path(&FS, "/iso/import"); /* import/ が開けない */
+    r = iso_catalog_delete_step(&CAT, &job);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, r.err);
+    mock_fs_fail_path(&FS, NULL);
+    mock_fs_fail_dir_next(&FS, "/iso/import"); /* 一覧の読み出しが失敗 */
+    r = iso_catalog_delete_step(&CAT, &job);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, r.err);
+    mock_fs_fail_dir_next(&FS, NULL);
+    TEST_ASSERT_EQUAL_INT(0, FS.mut_count); /* どれも、何も書いていない */
+    r = iso_catalog_delete_step(&CAT, &job);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_CONTINUE, r.kind); /* 失敗が消えれば進む(クロスリンクではない) */
+}
+
+void test_delete_step_ignores_p_directories_and_stops_at_rmdir(void) {
+    make_image_two_slots_two_parts();
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/00000001/p-notes")); /* p で始まるディレクトリ(外来) */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    iso_delete_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_delete_job_init(&job, ID));
+    iso_step_result_t r;
+    run_until_done(&job, 20, &r);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_TRUE(mock_fs_is_dir(&FS, "/iso/00000001/p-notes")); /* ディレクトリは消さない(rmdir が失敗する) */
+    TEST_ASSERT_FALSE(mock_fs_exists(&FS, "/iso/00000001/p000"));
+    TEST_ASSERT_FALSE(mock_fs_exists(&FS, "/iso/00000001/p001"));
+}
+
 void test_delete_job_init_rejects_bad_id(void) {
     iso_delete_job_t job;
     TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_delete_job_init(&job, "../etc"));
@@ -440,6 +616,13 @@ int main(void) {
     RUN_TEST(test_delete_error_at_every_write_is_reported_and_retried);
     RUN_TEST(test_delete_first_step_write_failure_changes_nothing);
     RUN_TEST(test_delete_read_errors_are_reported);
+    RUN_TEST(test_delete_precheck_refuses_when_import_has_the_same_first_cluster);
+    RUN_TEST(test_delete_precheck_non_matches);
+    RUN_TEST(test_delete_precheck_propagates_io_errors);
+    RUN_TEST(test_delete_step_refuses_a_crosslinked_image_without_changing_anything);
+    RUN_TEST(test_delete_resume_with_crosslink_keeps_p000_and_everything_else);
+    RUN_TEST(test_delete_step_reports_io_errors_of_the_crosslink_check_without_changing_anything);
+    RUN_TEST(test_delete_step_ignores_p_directories_and_stops_at_rmdir);
     RUN_TEST(test_delete_job_init_rejects_bad_id);
     RUN_TEST(test_delete_of_one_image_leaves_others_untouched);
     RUN_TEST(test_delete_never_resurrects_ready_after_step_1);

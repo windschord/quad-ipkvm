@@ -353,6 +353,17 @@ void test_received_clamps_oversized_part_and_ignores_parts_after_a_gap(void) {
     TEST_ASSERT_EQUAL_UINT64(GIB, received_for(&m, "00000001"));
 }
 
+void test_received_does_not_look_at_parts_beyond_the_expected_count(void) {
+    /* 1 GiB (既定のパーツ = 1 パーツ)だが、meta のパーツ数が 2。2 つ目の期待する大きさは 0 なので、p001 は調べない */
+    iso_meta_t m = mk_meta("X", GIB, ISO_META_INCOMPLETE, 1);
+    m.part_count = 2;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/00000001"));
+    put_part("00000001", 0, GIB);
+    mock_fs_fail_path(&FS, "/iso/00000001/p001");
+    TEST_ASSERT_EQUAL_UINT64(GIB, received_for(&m, "00000001"));
+    mock_fs_fail_path(&FS, NULL);
+}
+
 void test_received_part_that_is_a_directory_stops(void) {
     iso_meta_t m = mk_meta("X", SIZE_25G, ISO_META_INCOMPLETE, 1);
     TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/00000001"));
@@ -413,6 +424,7 @@ int main(void) {
     RUN_TEST(test_received_counts_parts_in_order_and_stops_at_a_short_part);
     RUN_TEST(test_received_full_parts_and_last_short_part);
     RUN_TEST(test_received_clamps_oversized_part_and_ignores_parts_after_a_gap);
+    RUN_TEST(test_received_does_not_look_at_parts_beyond_the_expected_count);
     RUN_TEST(test_received_part_that_is_a_directory_stops);
     RUN_TEST(test_received_follows_part_count_of_the_meta);
     RUN_TEST(test_received_single_part_import_size);

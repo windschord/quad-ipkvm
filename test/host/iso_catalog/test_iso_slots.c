@@ -215,6 +215,21 @@ void test_slots_read_directory_with_the_size_of_a_slot_is_invalid(void) {
     TEST_ASSERT_FALSE(s.valid[0]);
 }
 
+void test_slots_read_short_slot_is_not_opened(void) {
+    /* 128 バイト(書き込み途中)の meta.a は、開かずに無効とする(open が失敗する状態でも、meta.b が採用される) */
+    iso_meta_t a = mk_meta("A", 100000, ISO_META_READY, 5);
+    iso_meta_t b = mk_meta("B", 100000, ISO_META_INCOMPLETE, 4);
+    put_slot("a1b2c3d4", 0, &a);
+    put_slot("a1b2c3d4", 1, &b);
+    TEST_ASSERT_TRUE(mock_fs_set_size(&FS, "/iso/a1b2c3d4/meta.a", 128));
+    mock_fs_fail_open(&FS, "/iso/a1b2c3d4/meta.a");
+    iso_slots_t s;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_slots_read(&IFS, "a1b2c3d4", &s));
+    TEST_ASSERT_FALSE(s.valid[0]);
+    TEST_ASSERT_EQUAL_INT8(1, s.adopted);
+    mock_fs_fail_open(&FS, NULL);
+}
+
 void test_slots_read_leaves_no_open_handles(void) {
     iso_meta_t m = mk_meta("Alpha", 100000, ISO_META_READY, 5);
     put_slot("a1b2c3d4", 0, &m);
@@ -238,6 +253,7 @@ int main(void) {
     RUN_TEST(test_slots_read_io_error_is_not_treated_as_invalid);
     RUN_TEST(test_slots_read_open_and_read_errors_are_not_treated_as_invalid);
     RUN_TEST(test_slots_read_directory_with_the_size_of_a_slot_is_invalid);
+    RUN_TEST(test_slots_read_short_slot_is_not_opened);
     RUN_TEST(test_slots_read_leaves_no_open_handles);
     return UNITY_END();
 }

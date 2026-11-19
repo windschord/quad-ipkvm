@@ -48,6 +48,11 @@ static const cell_t TABLE[7][14] = {
 };
 
 void test_transition_table_every_cell(void) {
+    /* 走査の前に、表の列数が iso_event_t と一致していること(イベントを足して表を直し忘れると、範囲外を読む) */
+    TEST_ASSERT_EQUAL_UINT(ISO_EV_COUNT, sizeof(EV_NAME) / sizeof(EV_NAME[0]));
+    TEST_ASSERT_EQUAL_UINT(ISO_EV_COUNT, sizeof(TABLE[0]) / sizeof(TABLE[0][0]));
+    TEST_ASSERT_EQUAL_UINT(7, sizeof(TABLE) / sizeof(TABLE[0]));
+    TEST_ASSERT_EQUAL_UINT(7, sizeof(STATE_NAME) / sizeof(STATE_NAME[0]));
     const iso_trans_ctx_t ctx = {true, true, false};
     unsigned ok_cells = 0, reject_cells = 0;
     for (int s = 0; s < 7; s++) {

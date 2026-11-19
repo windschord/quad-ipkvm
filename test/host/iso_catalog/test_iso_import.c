@@ -560,8 +560,8 @@ void test_import_id_collision_retries(void) {
 }
 
 void test_import_result_is_cleared_on_each_call(void) {
-    iso_rescan_result_t r;
-    memset(&r, 0xFF, sizeof(r));
+    /* 有効な(bool が true の)非 0 の値で埋める。初期化を省くと、アサーションで見つかる(不正な bool を読まない) */
+    iso_rescan_result_t r = {.imported = 7, .skipped = 9, .has_next = true, .next_cursor = 5};
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_rescan(&CAT, 0, &r));
     TEST_ASSERT_EQUAL_UINT32(0, r.imported);
     TEST_ASSERT_EQUAL_UINT32(0, r.skipped);
