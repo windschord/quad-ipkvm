@@ -658,29 +658,18 @@ static bool has_iso_ext(const char *name, size_t len) {
     return e[0] == '.' && (e[1] == 'i' || e[1] == 'I') && (e[2] == 's' || e[2] == 'S') && (e[3] == 'o' || e[3] == 'O');
 }
 
-/* セクタ 16 (CD のブロック 16) のバイト 1〜5 が CD001 または BEA01 か。読み出しは先頭から順(seam に seek がない)。 */
+/* セクタ 16 (CD のブロック 16) のバイト 1〜5 が CD001 または BEA01 か。read_at で 1 回(セクタ 16 の先頭から 6 バイト)。 */
 static int check_signature(const iso_fs_t *fs, const char *path, bool *ok) {
     *ok = false;
     iso_file_t *f = NULL;
     int rc = fs->open_for_read(fs->ctx, path, &f);
     if (rc < 0) return rc;
-    uint8_t buf[512];
-    size_t remaining = SIG_OFFSET;
-    while (remaining > 0) {
-        size_t want = remaining < sizeof(buf) ? remaining : sizeof(buf);
-        size_t got = 0;
-        rc = fs->read(fs->ctx, f, buf, want, &got);
-        if (rc < 0 || got != want) {
-            fs->close(fs->ctx, f);
-            return rc < 0 ? rc : ISO_OK; /* 短い = ISO ではない */
-        }
-        remaining -= want;
-    }
+    uint8_t buf[6];
     size_t got = 0;
-    rc = fs->read(fs->ctx, f, buf, 6, &got);
+    rc = fs->read_at(fs->ctx, f, SIG_OFFSET, buf, sizeof(buf), &got);
     fs->close(fs->ctx, f);
     if (rc < 0) return rc;
-    if (got == 6 && (memcmp(buf + 1, "CD001", 5) == 0 || memcmp(buf + 1, "BEA01", 5) == 0)) *ok = true;
+    if (got == sizeof(buf) && (memcmp(buf + 1, "CD001", 5) == 0 || memcmp(buf + 1, "BEA01", 5) == 0)) *ok = true;
     return ISO_OK;
 }
 

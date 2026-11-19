@@ -78,6 +78,25 @@ static int begin_mutation(mock_fs_t *m) {
     return 0;
 }
 
+static void lose_unsynced(mock_fs_t *m) {
+    for (int i = 0; i < MOCK_MAX_NODES; i++) {
+        mock_node_t *n = &m->nodes[i];
+        if (!n->used || !n->unsynced) continue;
+        n->size = n->synced_size;
+        if (n->data_len > n->size) n->data_len = (size_t)n->size;
+        n->unsynced = false;
+    }
+}
+
+void mock_fs_settle(mock_fs_t *m) {
+    if (!m->dead || m->settled) return;
+    lose_unsynced(m);
+    m->settled = true;
+}
+
+/* ディレクトリ上の(同期済みの)大きさ。stat と dir_next が返す値 */
+static uint64_t dir_size(const mock_node_t *n) { return n->unsynced ? n->synced_size : n->size; }
+
 static bool read_fails(const mock_fs_t *m, const char *path) {
     return m->dead || (m->fail_path_set && strcmp(m->fail_path, path) == 0);
 }
@@ -85,10 +104,14 @@ static bool read_fails(const mock_fs_t *m, const char *path) {
 /* ---- iso_fs_t ------------------------------------------------------------ */
 
 static int fs_mount_info(void *ctx, iso_mount_info_t *out) {
-    (void)ctx;
+    mock_fs_t *m = (mock_fs_t *)ctx;
+    if (m->dead) return ISO_ERR_IO;
+    if (m->mi_err) return m->mi_err;
     memset(out, 0, sizeof(*out));
     out->fat32 = true;
-    out->cluster_bytes = 4096;
+    out->cluster_bytes = m->mi_cluster ? m->mi_cluster : 4096;
+    out->total_bytes = m->mi_total;
+    out->free_bytes = m->mi_free;
     return ISO_OK;
 }
 
@@ -119,6 +142,7 @@ static int fs_remove(void *ctx, const char *path) {
     if (cut == 1 && m->tear != MOCK_TEAR_FULL) return ISO_ERR_IO;
     int i = find_node(m, path);
     if (i < 0) return cut ? ISO_ERR_IO : ISO_ERR_NOT_FOUND;
+    if (m->nodes[i].writers > 0) return cut ? ISO_ERR_IO : ISO_ERR_BUSY;
     if (m->nodes[i].is_dir && mock_fs_child_count(m, path) > 0) return cut ? ISO_ERR_IO : ISO_ERR_INVALID;
     free_node(m, i);
     return cut ? ISO_ERR_IO : ISO_OK;
@@ -154,7 +178,7 @@ static int fs_stat(void *ctx, const char *path, iso_stat_t *out) {
     int i = find_node(m, path);
     if (i < 0) return ISO_ERR_NOT_FOUND;
     out->is_dir = m->nodes[i].is_dir;
-    out->size = m->nodes[i].size;
+    out->size = dir_size(&m->nodes[i]);
     out->first_cluster = m->nodes[i].first_cluster;
     return ISO_OK;
 }
@@ -204,7 +228,7 @@ static int fs_dir_next(void *ctx, iso_dir_t *dir, char *name, iso_stat_t *st) {
     snprintf(name, ISO_NAME_MAX + 1, "%s", base_of(n->path));
     memset(st, 0, sizeof(*st));
     st->is_dir = n->is_dir;
-    st->size = n->size;
+    st->size = dir_size(n);
     st->first_cluster = n->first_cluster;
     return ISO_OK;
 }
@@ -254,9 +278,11 @@ static int fs_open_for_read(void *ctx, const char *path, iso_file_t **out) {
     int i = find_node(m, path);
     if (i < 0) return ISO_ERR_NOT_FOUND;
     if (m->nodes[i].is_dir) return ISO_ERR_INVALID;
+    if (m->nodes[i].writers > 0) return ISO_ERR_BUSY; /* FatFs のファイルの排他: 書き込み中のファイルは、読み取りで開けない */
     for (int h = 0; h < MOCK_MAX_HANDLES; h++) {
         if (m->files[h].used) continue;
         m->files[h].used = true;
+        m->files[h].write = false;
         m->files[h].node = i;
         m->files[h].pos = 0;
         m->open_files++;
@@ -266,16 +292,23 @@ static int fs_open_for_read(void *ctx, const char *path, iso_file_t **out) {
     return ISO_ERR_NO_SPACE;
 }
 
-static int fs_read(void *ctx, iso_file_t *f, void *buf, size_t len, size_t *got) {
-    mock_fs_t *m = (mock_fs_t *)ctx;
-    mock_file_t *h = (mock_file_t *)(void *)f;
+static int read_inject(mock_fs_t *m, const mock_node_t *n) {
     if (m->dead) return ISO_ERR_IO;
-    const mock_node_t *n = &m->nodes[h->node];
     if (m->fail_path_set && strcmp(m->fail_path, n->path) == 0) return ISO_ERR_IO;
     if (m->fail_read_set && strcmp(m->fail_read_path, n->path) == 0) {
         m->fail_read_calls++;
         if (m->fail_read_nth == 0 || m->fail_read_calls == m->fail_read_nth) return ISO_ERR_IO;
     }
+    return ISO_OK;
+}
+
+static int fs_read(void *ctx, iso_file_t *f, void *buf, size_t len, size_t *got) {
+    mock_fs_t *m = (mock_fs_t *)ctx;
+    mock_file_t *h = (mock_file_t *)(void *)f;
+    m->n_read++;
+    const mock_node_t *n = &m->nodes[h->node];
+    int rc = read_inject(m, n);
+    if (rc < 0) return rc;
     size_t k = 0;
     uint8_t *out = (uint8_t *)buf;
     while (k < len && h->pos < n->size) {
@@ -287,19 +320,204 @@ static int fs_read(void *ctx, iso_file_t *f, void *buf, size_t len, size_t *got)
     return ISO_OK;
 }
 
+static int fs_read_at(void *ctx, iso_file_t *f, uint64_t offset, void *buf, size_t len, size_t *got) {
+    mock_fs_t *m = (mock_fs_t *)ctx;
+    mock_file_t *h = (mock_file_t *)(void *)f;
+    m->n_read_at++;
+    m->last_read_at_offset = offset;
+    const mock_node_t *n = &m->nodes[h->node];
+    int rc = read_inject(m, n);
+    if (rc < 0) return rc;
+    size_t k = 0;
+    uint8_t *out = (uint8_t *)buf;
+    uint64_t pos = offset;
+    while (k < len && pos < n->size) {
+        out[k] = (pos < n->data_len) ? n->data[pos] : 0;
+        k++;
+        pos++;
+    }
+    *got = k;
+    return ISO_OK;
+}
+
+static int fs_open_for_write(void *ctx, const char *path, bool append, iso_file_t **out) {
+    mock_fs_t *m = (mock_fs_t *)ctx;
+    int cut = begin_mutation(m);
+    if (cut < 0) return ISO_ERR_IO;
+    m->n_open_w++;
+    log_add(m, append ? "open_a" : "open_w", path, NULL, ULONG_MAX);
+    if (cut == 2) return m->err_code;
+    char parent[ISO_PATH_MAX];
+    parent_of(path, parent, sizeof(parent));
+    if (!dir_exists(m, parent)) return cut ? ISO_ERR_IO : ISO_ERR_NOT_FOUND;
+    int i = find_node(m, path);
+    if (i >= 0) {
+        if (m->nodes[i].is_dir) return cut ? ISO_ERR_IO : ISO_ERR_INVALID;
+        if (!append) return cut ? ISO_ERR_IO : ISO_ERR_EXISTS;
+        if (m->nodes[i].writers > 0) return cut ? ISO_ERR_IO : ISO_ERR_BUSY;
+    }
+    if (cut == 1 && m->tear == MOCK_TEAR_NONE) return ISO_ERR_IO;
+    if (i < 0) {
+        i = alloc_node(m);
+        if (i < 0) return ISO_ERR_NO_SPACE;
+        snprintf(m->nodes[i].path, sizeof(m->nodes[i].path), "%s", path);
+        m->nodes[i].first_cluster = ++m->next_cluster;
+    }
+    if (cut == 1) return ISO_ERR_IO; /* 作成だけが済んだ */
+    for (int h = 0; h < MOCK_MAX_HANDLES; h++) {
+        if (m->files[h].used) continue;
+        m->files[h].used = true;
+        m->files[h].write = true;
+        m->files[h].node = i;
+        m->files[h].pos = m->nodes[i].size;
+        m->nodes[i].writers = 1;
+        m->open_files++;
+        *out = (iso_file_t *)(void *)&m->files[h];
+        return ISO_OK;
+    }
+    return ISO_ERR_NO_SPACE;
+}
+
+static void node_append(mock_fs_t *m, mock_node_t *n, const void *data, size_t len) {
+    if (len == 0) return;
+    if (!n->unsynced) {
+        n->unsynced = true;
+        n->synced_size = n->size;
+    }
+    if (!m->discard) {
+        size_t cur = (size_t)n->size;
+        uint8_t *buf = (uint8_t *)realloc(n->data, cur + len);
+        if (n->data_len < cur) memset(buf + n->data_len, 0, cur - n->data_len);
+        memcpy(buf + cur, data, len);
+        n->data = buf;
+        n->data_len = cur + len;
+    }
+    n->size += len;
+}
+
+static int fs_write(void *ctx, iso_file_t *f, const void *data, size_t len) {
+    mock_fs_t *m = (mock_fs_t *)ctx;
+    mock_file_t *h = (mock_file_t *)(void *)f;
+    int cut = begin_mutation(m);
+    if (cut < 0) return ISO_ERR_IO;
+    m->n_write++;
+    mock_node_t *n = &m->nodes[h->node];
+    log_add(m, "write", n->path, NULL, (unsigned long)len);
+    if (!h->write) return ISO_ERR_INVALID;
+    if (cut == 2) return m->err_code;
+    if (cut == 1) return ISO_ERR_IO; /* 未同期の分は、どのみち失われる */
+    size_t k = len;
+    int rc = ISO_OK;
+    if (m->wf_at > 0 && m->n_write == m->wf_at) {
+        k = m->wf_keep < len ? m->wf_keep : len;
+        rc = m->wf_err;
+    }
+    node_append(m, n, data, k);
+    return rc;
+}
+
+static int fs_sync(void *ctx, iso_file_t *f) {
+    mock_fs_t *m = (mock_fs_t *)ctx;
+    mock_file_t *h = (mock_file_t *)(void *)f;
+    int cut = begin_mutation(m);
+    if (cut < 0) return ISO_ERR_IO;
+    m->n_sync++;
+    mock_node_t *n = &m->nodes[h->node];
+    log_add(m, "sync", n->path, NULL, ULONG_MAX);
+    if (cut == 2) return m->err_code;
+    if (cut == 1 && m->tear != MOCK_TEAR_FULL) return ISO_ERR_IO;
+    n->unsynced = false;
+    return cut ? ISO_ERR_IO : ISO_OK;
+}
+
+static int fs_truncate(void *ctx, const char *path, uint64_t size) {
+    mock_fs_t *m = (mock_fs_t *)ctx;
+    int cut = begin_mutation(m);
+    if (cut < 0) return ISO_ERR_IO;
+    m->n_truncate++;
+    log_add(m, "truncate", path, NULL, (unsigned long)size);
+    if (cut == 2) return m->err_code;
+    if (cut == 1 && m->tear != MOCK_TEAR_FULL) return ISO_ERR_IO;
+    int i = find_node(m, path);
+    if (i < 0) return cut ? ISO_ERR_IO : ISO_ERR_NOT_FOUND;
+    mock_node_t *n = &m->nodes[i];
+    if (n->is_dir) return cut ? ISO_ERR_IO : ISO_ERR_INVALID;
+    if (n->writers > 0) return cut ? ISO_ERR_IO : ISO_ERR_BUSY;
+    if (dir_size(n) < size) return cut ? ISO_ERR_IO : ISO_ERR_INVALID; /* f_lseek がファイルを伸ばしてしまうので、拒否する(設計 3.1) */
+    n->size = size;
+    if (n->data_len > size) n->data_len = (size_t)size;
+    n->unsynced = false;
+    return cut ? ISO_ERR_IO : ISO_OK;
+}
+
+static int fs_get_extents(void *ctx, const char *path, iso_extent_t *out, size_t max, size_t *n_out) {
+    mock_fs_t *m = (mock_fs_t *)ctx;
+    if (read_fails(m, path)) return ISO_ERR_IO;
+    int i = find_node(m, path);
+    if (i < 0) return ISO_ERR_NOT_FOUND;
+    const mock_node_t *n = &m->nodes[i];
+    if (n->is_dir) return ISO_ERR_INVALID;
+    if (n->writers > 0) return ISO_ERR_BUSY;
+    if (n->ext_err) return n->ext_err;
+    iso_extent_t tmp[MOCK_MAX_EXTENTS];
+    int cnt = 0;
+    if (n->ext_set) {
+        if (n->ext_n) memcpy(tmp, n->ext, sizeof(iso_extent_t) * (size_t)n->ext_n);
+        cnt = n->ext_n;
+    } else {
+        uint64_t sectors = (dir_size(n) + 511) / 512;
+        uint64_t base = 2048ull + (uint64_t)i * 0x400000ull;
+        int frag = n->fragments > 0 ? n->fragments : 1;
+        if ((uint64_t)frag > sectors) frag = (int)sectors;
+        if (frag > MOCK_MAX_EXTENTS) frag = MOCK_MAX_EXTENTS;
+        for (int k = 0; k < frag; k++) {
+            uint64_t each = sectors / (uint64_t)frag;
+            tmp[k].start_sector = base + (uint64_t)k * (sectors + 16);
+            tmp[k].sector_count = (k == frag - 1) ? sectors - each * (uint64_t)(frag - 1) : each;
+        }
+        cnt = (sectors == 0) ? 0 : frag;
+    }
+    *n_out = (size_t)cnt;
+    if ((size_t)cnt > max) return ISO_ERR_TOO_FRAGMENTED;
+    if (cnt) memcpy(out, tmp, sizeof(iso_extent_t) * (size_t)cnt);
+    return ISO_OK;
+}
+
 static int fs_close(void *ctx, iso_file_t *f) {
     mock_fs_t *m = (mock_fs_t *)ctx;
     mock_file_t *h = (mock_file_t *)(void *)f;
-    if (h->used) {
-        h->used = false;
-        m->open_files--;
+    int rc = ISO_OK;
+    if (!h->used) return ISO_OK;
+    mock_node_t *n = &m->nodes[h->node];
+    if (h->write) {
+        if (n->unsynced) {
+            int cut = begin_mutation(m); /* close は sync する */
+            if (cut < 0) {
+                rc = ISO_ERR_IO;
+            } else {
+                log_add(m, "close", n->path, NULL, ULONG_MAX);
+                if (cut == 2) {
+                    rc = m->err_code;
+                } else if (cut == 1) {
+                    if (m->tear == MOCK_TEAR_FULL) n->unsynced = false;
+                    rc = ISO_ERR_IO;
+                } else {
+                    n->unsynced = false;
+                }
+            }
+        }
+        n->writers = 0;
     }
-    return ISO_OK;
+    h->used = false;
+    h->write = false;
+    m->open_files--;
+    return rc;
 }
 
 void mock_fs_init(mock_fs_t *m) {
     memset(m, 0, sizeof(*m));
     m->next_cluster = 1000;
+    m->mi_cluster = 4096;
 }
 
 void mock_fs_free(mock_fs_t *m) {
@@ -322,7 +540,13 @@ iso_fs_t mock_fs_iface(mock_fs_t *m) {
     f.overwrite = fs_overwrite;
     f.open_for_read = fs_open_for_read;
     f.read = fs_read;
+    f.read_at = fs_read_at;
     f.close = fs_close;
+    f.open_for_write = fs_open_for_write;
+    f.write = fs_write;
+    f.sync = fs_sync;
+    f.truncate = fs_truncate;
+    f.get_extents = fs_get_extents;
     return f;
 }
 
@@ -357,7 +581,10 @@ int mock_fs_add_file(mock_fs_t *m, const char *path, const void *data, size_t le
 
 /* ---- 検査 ---------------------------------------------------------------- */
 
-bool mock_fs_exists(const mock_fs_t *m, const char *path) { return find_node(m, path) >= 0; }
+bool mock_fs_exists(const mock_fs_t *m, const char *path) {
+    mock_fs_settle((mock_fs_t *)(void *)m);
+    return find_node(m, path) >= 0;
+}
 
 bool mock_fs_is_dir(const mock_fs_t *m, const char *path) {
     int i = find_node(m, path);
@@ -365,11 +592,13 @@ bool mock_fs_is_dir(const mock_fs_t *m, const char *path) {
 }
 
 int64_t mock_fs_size(const mock_fs_t *m, const char *path) {
+    mock_fs_settle((mock_fs_t *)(void *)m);
     int i = find_node(m, path);
-    return i < 0 ? -1 : (int64_t)m->nodes[i].size;
+    return i < 0 ? -1 : (int64_t)dir_size(&m->nodes[i]);
 }
 
 const uint8_t *mock_fs_data(const mock_fs_t *m, const char *path, size_t *len) {
+    mock_fs_settle((mock_fs_t *)(void *)m);
     int i = find_node(m, path);
     if (i < 0) return NULL;
     if (len) *len = m->nodes[i].data_len;
@@ -443,6 +672,7 @@ void mock_fs_cut_at(mock_fs_t *m, int n, mock_tear_t tear) {
     m->cut_at = n;
     m->tear = tear;
     m->dead = false;
+    m->settled = false;
 }
 
 void mock_fs_error_at(mock_fs_t *m, int n, int err_code) {
@@ -451,7 +681,21 @@ void mock_fs_error_at(mock_fs_t *m, int n, int err_code) {
     m->err_code = err_code;
 }
 
+void mock_fs_drop_handles(mock_fs_t *m) {
+    for (int h = 0; h < MOCK_MAX_HANDLES; h++) {
+        memset(&m->files[h], 0, sizeof(m->files[h]));
+        memset(&m->dirs[h], 0, sizeof(m->dirs[h]));
+    }
+    for (int i = 0; i < MOCK_MAX_NODES; i++) m->nodes[i].writers = 0;
+    m->open_files = 0;
+    m->open_dirs = 0;
+}
+
 void mock_fs_power_on(mock_fs_t *m) {
+    if (m->dead) {
+        mock_fs_settle(m);
+        mock_fs_drop_handles(m); /* 電源が落ちたので、ハンドルは全部なくなる */
+    }
     m->dead = false;
     m->cut_at = 0;
 }
@@ -481,6 +725,47 @@ void mock_fs_fail_read(mock_fs_t *m, const char *path_or_null, int nth) {
 void mock_fs_fail_dir_next(mock_fs_t *m, const char *dir_or_null) {
     m->fail_dir_next_set = dir_or_null != NULL;
     if (dir_or_null) snprintf(m->fail_dir_next_path, sizeof(m->fail_dir_next_path), "%s", dir_or_null);
+}
+
+void mock_fs_fail_write(mock_fs_t *m, int nth, size_t keep, int err) {
+    m->wf_at = nth;
+    m->wf_keep = keep;
+    m->wf_err = err;
+    m->n_write = 0;
+}
+
+void mock_fs_set_discard(mock_fs_t *m, bool discard) { m->discard = discard; }
+
+void mock_fs_set_mount_info(mock_fs_t *m, uint64_t total, uint64_t free_bytes, uint32_t cluster) {
+    m->mi_total = total;
+    m->mi_free = free_bytes;
+    m->mi_cluster = cluster;
+}
+
+void mock_fs_fail_mount_info(mock_fs_t *m, int err) { m->mi_err = err; }
+
+bool mock_fs_set_extents(mock_fs_t *m, const char *path, const iso_extent_t *ext, int n) {
+    int i = find_node(m, path);
+    if (i < 0 || n < 0 || n > MOCK_MAX_EXTENTS) return false;
+    if (n) memcpy(m->nodes[i].ext, ext, sizeof(iso_extent_t) * (size_t)n);
+    m->nodes[i].ext_n = n;
+    m->nodes[i].ext_set = true;
+    return true;
+}
+
+bool mock_fs_set_fragments(mock_fs_t *m, const char *path, int n) {
+    int i = find_node(m, path);
+    if (i < 0) return false;
+    m->nodes[i].fragments = n;
+    m->nodes[i].ext_set = false;
+    return true;
+}
+
+bool mock_fs_fail_extents(mock_fs_t *m, const char *path, int err) {
+    int i = find_node(m, path);
+    if (i < 0) return false;
+    m->nodes[i].ext_err = err;
+    return true;
 }
 
 void mock_fs_clear_log(mock_fs_t *m) { m->nlog = 0; }

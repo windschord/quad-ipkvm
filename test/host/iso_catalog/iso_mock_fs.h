@@ -19,6 +19,18 @@
  *     MOCK_TEAR_NONE: その書き込みは何も起きない
  *     MOCK_TEAR_HALF: overwrite は、データの前半だけを書いたファイルになる(長さ = len / 2)。他の操作は何も起きない
  *     MOCK_TEAR_FULL: その書き込みは完了している(戻り値だけ IO エラー)
+ *
+ * 書き込みの API(open_for_write / write / sync / truncate / close。P8 C-10b の iso_upload 用):
+ *   - 書き込み用のハンドルが開いているファイルを、open_for_read / get_extents / remove / truncate / 別の open_for_write で開くと
+ *     ISO_ERR_BUSY (FatFs のファイルの排他。呼び出し側が、先に close することを確かめる)。
+ *   - write は末尾への追記だけ。**未同期の分は、電源断で失われる**: ノードは「同期済みの大きさ」(synced_size)を持ち、
+ *     write は未同期にし、sync(と、未同期のハンドルの close)は同期済みにする。電源が落ちると(settle)、未同期のファイルは
+ *     同期済みの大きさに戻る(ディレクトリ上の大きさは、sync / close のときだけ更新される、という FatFs の動き)。
+ *   - 書き込み・sync・truncate・open_for_write(作成も追記も)・未同期のハンドルの close は、書き込みとして数える(電源断・エラーの注入の対象)。
+ *   - 書き込みの失敗の注入: mock_fs_fail_write(nth, keep, err): 通算 nth 回目の write が、先頭の keep バイトだけ追記して err を返す
+ *     (FatFs が空きなしのとき bw < btw で返す形。keep = 0 なら何も書かない)。
+ *   - get_extents: 既定は、ファイルの大きさ(セクタ数に切り上げ)の 1 本のエクステント。mock_fs_set_extents / set_fragments で変える。
+ *   - mock_fs_set_discard(true): write は大きさだけを増やし、中身を持たない(読み出しは 0。1 GiB のパーツの境界のテスト用)。
  */
 
 #include <stdbool.h>
@@ -37,6 +49,8 @@ extern "C" {
 
 typedef enum { MOCK_TEAR_NONE = 0, MOCK_TEAR_HALF = 1, MOCK_TEAR_FULL = 2 } mock_tear_t;
 
+#define MOCK_MAX_EXTENTS 64
+
 typedef struct {
     bool used;
     bool is_dir;
@@ -46,10 +60,21 @@ typedef struct {
     uint64_t size;
     uint32_t first_cluster;
     uint64_t seq;
+    /* 書き込み(未同期の分は電源断で失われる) */
+    bool unsynced;
+    uint64_t synced_size; /* unsynced のとき、ディレクトリ上の(同期済みの)大きさ */
+    int writers;          /* 書き込み用のハンドルの数(0 または 1) */
+    /* get_extents */
+    bool ext_set;
+    iso_extent_t ext[MOCK_MAX_EXTENTS];
+    int ext_n;
+    int fragments; /* ext_set でないとき、0 = 1 本、n = n 本に分ける */
+    int ext_err;   /* 0 でなければ、get_extents がこのエラーで失敗する */
 } mock_node_t;
 
 typedef struct {
     bool used;
+    bool write;
     int node;
     uint64_t pos;
 } mock_file_t;
@@ -76,6 +101,23 @@ typedef struct {
     bool dead;
     int err_at;    /* 0 = なし。n 回目の書き込みだけ、err_code で失敗する(何も起きない。電源は落ちない) */
     int err_code;
+    bool settled;  /* 電源断のときの「未同期の分を失う」処理を済ませたか */
+
+    /* write の失敗の注入(通算の write の回数。mock_fs_fail_write) */
+    int wf_at;     /* 0 = なし */
+    size_t wf_keep;
+    int wf_err;
+    bool discard;  /* write は大きさだけを増やす */
+
+    /* マウント情報(mount_info) */
+    uint64_t mi_total;
+    uint64_t mi_free;
+    uint32_t mi_cluster;
+    int mi_err;    /* 0 でなければ mount_info がこのエラーで失敗する */
+
+    /* 呼び出しの数 */
+    int n_write, n_sync, n_truncate, n_open_w, n_read, n_read_at;
+    uint64_t last_read_at_offset;
 
     /* 読み出しの失敗の注入(完全一致のパス) */
     char fail_path[ISO_PATH_MAX];
@@ -129,6 +171,19 @@ void mock_fs_cut_at(mock_fs_t *m, int n, mock_tear_t tear);
 void mock_fs_error_at(mock_fs_t *m, int n, int err_code);
 void mock_fs_power_on(mock_fs_t *m); /* dead と cut_at を解除する(内容は、そのまま) */
 void mock_fs_reset_counter(mock_fs_t *m);
+/* 書き込み用のハンドルを、同期しないで全部捨てる(電源断の後の「再起動」。mock_fs_power_on もこれを行う) */
+void mock_fs_drop_handles(mock_fs_t *m);
+/* 電源が落ちた後の、未同期の分の消失を、いま適用する(検査用の関数も、必要なら自動で行う。冪等) */
+void mock_fs_settle(mock_fs_t *m);
+
+/* 書き込みの API の注入 */
+void mock_fs_fail_write(mock_fs_t *m, int nth, size_t keep, int err); /* nth = 0 で解除 */
+void mock_fs_set_discard(mock_fs_t *m, bool discard);
+void mock_fs_set_mount_info(mock_fs_t *m, uint64_t total, uint64_t free_bytes, uint32_t cluster);
+void mock_fs_fail_mount_info(mock_fs_t *m, int err);
+bool mock_fs_set_extents(mock_fs_t *m, const char *path, const iso_extent_t *ext, int n);
+bool mock_fs_set_fragments(mock_fs_t *m, const char *path, int n);
+bool mock_fs_fail_extents(mock_fs_t *m, const char *path, int err);
 
 /* 読み出しの失敗 */
 void mock_fs_fail_path(mock_fs_t *m, const char *path_or_null);

@@ -116,7 +116,8 @@ typedef struct {
      * ISO_ERR_NO_SPACE を返す。 */
     int (*write)(void *ctx, iso_file_t *f, const void *data, size_t len);
     int (*sync)(void *ctx, iso_file_t *f);
-    /* 失敗した write の後でも呼べる。 */
+    /* 失敗した write の後でも呼べる。**読み取り用に開いたハンドル（open_for_read）も、これで閉じる**。
+     * 書き込み用のハンドルは f_sync してから閉じる。失敗しても、ハンドルは解放する。 */
     int (*close)(void *ctx, iso_file_t *f);
     /* close → 開き直し → f_lseek(size) → f_truncate。ハンドル版はない（失敗した write のハンドルでは
      * f_truncate が即エラーになるため）。実ファイルが size より小さければ ISO_ERR_INVALID（f_lseek がファイルを
@@ -128,6 +129,9 @@ typedef struct {
     int (*open_for_read)(void *ctx, const char *path, iso_file_t **out);
     /* 読んだバイト数を *got に入れる。EOF は *got < len。 */
     int (*read)(void *ctx, iso_file_t *f, void *buf, size_t len, size_t *got);
+    /* 位置を指定した読み出し（f_lseek + f_read。open_for_read のハンドルで使う。順次読みの位置は変えない）。
+     * 読んだバイト数を *got に入れる。EOF は *got < len（offset が EOF 以降なら *got = 0）。 */
+    int (*read_at)(void *ctx, iso_file_t *f, uint64_t offset, void *buf, size_t len, size_t *got);
 
     /* ファイルを読み取りモードで開き、CLMT から連続した SD セクタの区間の一覧を作る。
      * 配列（cltbl）の確保と解放は、この関数の中。out は呼び出し側の配列（max 個）。
