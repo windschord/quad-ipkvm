@@ -134,6 +134,7 @@ typedef struct {
     int fail_read_calls;
     char fail_dir_next_path[ISO_PATH_MAX]; /* dir_open は成功し、dir_next が IO エラー */
     bool fail_dir_next_set;
+    int fail_dir_next_skip; /* dir_next が、この回数だけ成功してから IO エラーになる(mock_fs_fail_dir_next_after。既定 0) */
 
     /* 書き込みの記録 */
     char log[MOCK_LOG_MAX][MOCK_LOG_LEN];
@@ -198,6 +199,8 @@ bool mock_fs_fail_extents(mock_fs_t *m, const char *path, int err);
 /* 読み出しの失敗 */
 void mock_fs_fail_path(mock_fs_t *m, const char *path_or_null);
 void mock_fs_fail_dir_next(mock_fs_t *m, const char *dir_or_null);
+/* dir_next が、skip 個のエントリを返した後で、IO エラーを返す */
+void mock_fs_fail_dir_next_after(mock_fs_t *m, const char *dir, int skip);
 void mock_fs_fail_open(mock_fs_t *m, const char *path_or_null);
 void mock_fs_fail_read(mock_fs_t *m, const char *path_or_null, int nth);
 

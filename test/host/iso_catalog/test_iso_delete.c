@@ -600,6 +600,31 @@ void test_delete_never_resurrects_ready_after_step_1(void) {
     TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
 }
 
+void test_delete_precheck_stops_at_the_first_match_and_does_not_read_further(void) {
+    make_crosslinked_image(777); /* foo.iso(一致)が先頭 */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_sparse(&FS, "/iso/import/bar.iso", 40000, NULL, 0, 999));
+    /* 一致の次の dir_next が IO エラーでも、一致した結果(crosslinked)を返す。IO エラーにしない */
+    mock_fs_fail_dir_next_after(&FS, "/iso/import", 1);
+    TEST_ASSERT_EQUAL_INT(ISO_CAT_ERR_CROSSLINKED, iso_catalog_delete_precheck(&CAT, ID));
+    TEST_ASSERT_EQUAL_INT(0, FS.open_dirs);
+    iso_delete_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_delete_job_init(&job, ID));
+    mock_fs_fail_dir_next_after(&FS, "/iso/import", 1);
+    fx_settle();
+    iso_step_result_t r = iso_catalog_delete_step(&CAT, &job);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_CAT_ERR_CROSSLINKED, r.err);
+    TEST_ASSERT_EQUAL_INT(0, FS.nlog); /* 何も変更しない */
+    TEST_ASSERT_EQUAL_INT(0, FS.open_dirs);
+    /* 一致が 2 番目なら、先頭を読んだ後の IO エラーは、IO エラー(一致を見つける前) */
+    mock_fs_fail_dir_next(&FS, NULL);
+    TEST_ASSERT_TRUE(mock_fs_set_first_cluster(&FS, "/iso/import/foo.iso", 778));
+    TEST_ASSERT_TRUE(mock_fs_set_first_cluster(&FS, "/iso/import/bar.iso", 777));
+    mock_fs_fail_dir_next_after(&FS, "/iso/import", 1);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_catalog_delete_precheck(&CAT, ID));
+    mock_fs_fail_dir_next(&FS, NULL);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_delete_full_sequence_and_order);
@@ -618,6 +643,7 @@ int main(void) {
     RUN_TEST(test_delete_read_errors_are_reported);
     RUN_TEST(test_delete_precheck_refuses_when_import_has_the_same_first_cluster);
     RUN_TEST(test_delete_precheck_non_matches);
+    RUN_TEST(test_delete_precheck_stops_at_the_first_match_and_does_not_read_further);
     RUN_TEST(test_delete_precheck_propagates_io_errors);
     RUN_TEST(test_delete_step_refuses_a_crosslinked_image_without_changing_anything);
     RUN_TEST(test_delete_resume_with_crosslink_keeps_p000_and_everything_else);

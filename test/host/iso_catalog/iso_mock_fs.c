@@ -240,7 +240,7 @@ static int fs_dir_open(void *ctx, const char *path, iso_dir_t **out) {
 static int fs_dir_next(void *ctx, iso_dir_t *dir, char *name, iso_stat_t *st) {
     mock_fs_t *m = (mock_fs_t *)ctx;
     mock_dir_t *d = (mock_dir_t *)(void *)dir;
-    if (m->dead || d->fail_next) return ISO_ERR_IO;
+    if (m->dead || (d->fail_next && d->pos >= m->fail_dir_next_skip)) return ISO_ERR_IO;
     if (d->pos >= d->n) return 1;
     const mock_node_t *n = &m->nodes[d->idx[d->pos++]];
     snprintf(name, ISO_NAME_MAX + 1, "%s", base_of(n->path));
@@ -767,7 +767,13 @@ void mock_fs_fail_read(mock_fs_t *m, const char *path_or_null, int nth) {
     if (path_or_null) snprintf(m->fail_read_path, sizeof(m->fail_read_path), "%s", path_or_null);
 }
 
+void mock_fs_fail_dir_next_after(mock_fs_t *m, const char *dir, int skip) {
+    mock_fs_fail_dir_next(m, dir);
+    m->fail_dir_next_skip = skip;
+}
+
 void mock_fs_fail_dir_next(mock_fs_t *m, const char *dir_or_null) {
+    m->fail_dir_next_skip = 0;
     m->fail_dir_next_set = dir_or_null != NULL;
     if (dir_or_null) snprintf(m->fail_dir_next_path, sizeof(m->fail_dir_next_path), "%s", dir_or_null);
 }
