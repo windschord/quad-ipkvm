@@ -175,13 +175,143 @@ int iso_sd_clmt_to_extents(const uint32_t *cltbl, size_t cltbl_cap,
     return ISO_ERR_INVALID;
 }
 
-void iso_sd_state_init(iso_sd_ctrl_state_t *st) {
+static int emit_fat32_run(uint64_t database_sector,
+                          uint32_t sectors_per_cluster,
+                          uint32_t run_start,
+                          uint64_t run_clusters,
+                          iso_extent_t *out,
+                          size_t max_out,
+                          size_t *count,
+                          bool *overflow) {
+    if (run_start < 2u || run_clusters == 0u || sectors_per_cluster == 0u) {
+        return ISO_ERR_IO;
+    }
+    const uint64_t start_offset_clusters = (uint64_t)(run_start - 2u);
+    if (start_offset_clusters > (UINT64_MAX - database_sector) / sectors_per_cluster) {
+        return ISO_ERR_IO;
+    }
+    if (run_clusters > UINT64_MAX / sectors_per_cluster) {
+        return ISO_ERR_IO;
+    }
+    uint64_t lba = database_sector + start_offset_clusters * (uint64_t)sectors_per_cluster;
+    uint64_t rem = run_clusters * (uint64_t)sectors_per_cluster;
+    while (rem > 0u) {
+        const uint32_t chunk = (rem > (uint64_t)UINT32_MAX) ? UINT32_MAX : (uint32_t)rem;
+        if (*count < max_out && out != NULL) {
+            out[*count].start_sector = lba;
+            out[*count].sector_count = chunk;
+        } else {
+            *overflow = true;
+        }
+        (*count)++;
+        lba += (uint64_t)chunk;
+        rem -= (uint64_t)chunk;
+    }
+    return ISO_OK;
+}
+
+int iso_sd_walk_fat32_extents(uint32_t start_cluster,
+                              uint32_t n_fatent,
+                              uint64_t database_sector,
+                              uint32_t sectors_per_cluster,
+                              iso_sd_fat32_read_entry_fn read_entry,
+                              void *read_ctx,
+                              iso_extent_t *out,
+                              size_t max_out,
+                              size_t *out_n) {
+    if (!out_n || (max_out > 0u && !out) || !read_entry ||
+        sectors_per_cluster == 0u || n_fatent < 3u) {
+        return ISO_ERR_INVALID;
+    }
+    *out_n = 0u;
+    if (start_cluster == 0u) {
+        return ISO_OK;
+    }
+    if (start_cluster < 2u || start_cluster >= n_fatent) {
+        return ISO_ERR_IO;
+    }
+
+    const uint32_t max_clusters = n_fatent - 2u;
+    uint32_t cur = start_cluster;
+    uint32_t run_start = start_cluster;
+    uint64_t run_len = 1u;
+    uint32_t tortoise = start_cluster;
+    uint32_t power = 1u;
+    uint32_t lam = 0u;
+    uint32_t visited = 1u;
+    size_t count = 0u;
+    bool overflow = false;
+
+    for (;;) {
+        uint32_t raw_next = 0u;
+        int rc = read_entry(read_ctx, cur, &raw_next);
+        if (rc != ISO_OK) {
+            *out_n = 0u;
+            return rc;
+        }
+        const uint32_t next = raw_next & 0x0FFFFFFFu;
+        if (next >= 0x0FFFFFF8u) {
+            rc = emit_fat32_run(database_sector, sectors_per_cluster, run_start, run_len,
+                                out, max_out, &count, &overflow);
+            if (rc != ISO_OK) {
+                *out_n = 0u;
+                return rc;
+            }
+            break;
+        }
+        if (next < 2u || next >= n_fatent) {
+            *out_n = 0u;
+            return ISO_ERR_IO;
+        }
+        if (next == tortoise || visited >= max_clusters) {
+            *out_n = 0u;
+            return ISO_ERR_IO;
+        }
+
+        visited++;
+        lam++;
+        if (lam == power) {
+            tortoise = next;
+            if (power <= (UINT32_MAX >> 1)) {
+                power <<= 1;
+            }
+            lam = 0u;
+        }
+
+        if (next == cur + 1u) {
+            run_len++;
+        } else {
+            rc = emit_fat32_run(database_sector, sectors_per_cluster, run_start, run_len,
+                                out, max_out, &count, &overflow);
+            if (rc != ISO_OK) {
+                *out_n = 0u;
+                return rc;
+            }
+            if (overflow) {
+                *out_n = count;
+                return ISO_ERR_TOO_FRAGMENTED;
+            }
+            run_start = next;
+            run_len = 1u;
+        }
+        cur = next;
+    }
+
+    *out_n = count;
+    return overflow ? ISO_ERR_TOO_FRAGMENTED : ISO_OK;
+}
+
+void iso_sd_state_init_with_epoch(iso_sd_ctrl_state_t *st, uint32_t initial_epoch) {
     if (!st) {
         return;
     }
-    atomic_init(&st->epoch, 1u);
+    atomic_init(&st->epoch, (initial_epoch == 0u) ? 1u : initial_epoch);
     atomic_init(&st->sd_state, (int)ISO_SD_NO_CARD);
     atomic_init(&st->io_fault, false);
+}
+
+void iso_sd_state_init(iso_sd_ctrl_state_t *st) {
+    iso_sd_state_init_with_epoch(st, 1u);
 }
 
 uint32_t iso_sd_state_epoch(const iso_sd_ctrl_state_t *st) {

@@ -158,6 +158,120 @@ void test_fresult_mapping_and_atomic_state(void) {
     TEST_ASSERT_FALSE(iso_sd_state_take_io_fault(&st));
 }
 
+typedef struct {
+    const uint32_t *fat;
+    size_t n_fatent;
+    int inject_err_at_call;
+    int inject_err;
+    uint32_t calls;
+} mock_fat_t;
+
+static int mock_read_fat_entry(void *ctx, uint32_t cluster, uint32_t *out_entry) {
+    mock_fat_t *mf = (mock_fat_t *)ctx;
+    if (mf->inject_err_at_call >= 0 && mf->calls == (uint32_t)mf->inject_err_at_call) {
+        return mf->inject_err;
+    }
+    mf->calls++;
+    if (cluster >= mf->n_fatent) {
+        return ISO_ERR_IO;
+    }
+    *out_entry = mf->fat[cluster];
+    return ISO_OK;
+}
+
+void test_walk_fat32_extents_and_cycle_guard(void) {
+    iso_extent_t out[4];
+    size_t n = 99u;
+
+    /* Valid 2-run chain spanning all 6 data clusters: 2 -> 3 -> 4, then 7 -> 6 -> 5 -> EOC */
+    uint32_t fat[10] = {
+        [0] = 0x0FFFFFF8u,
+        [1] = 0x0FFFFFFFu,
+        [2] = 3u,
+        [3] = 4u,
+        [4] = 7u,
+        [5] = 0x0FFFFFFFu,
+        [6] = 5u,
+        [7] = 6u,
+        [8] = 0u,
+        [9] = 0u,
+    };
+    mock_fat_t mf = {.fat = fat, .n_fatent = 10u, .inject_err_at_call = -1};
+
+    /* Empty file */
+    TEST_ASSERT_EQUAL_INT(
+        ISO_OK, iso_sd_walk_fat32_extents(0u, 10u, 8192u, 8u, mock_read_fat_entry, &mf, out, 4u, &n));
+    TEST_ASSERT_EQUAL_UINT(0u, n);
+    TEST_ASSERT_EQUAL_UINT32(0u, mf.calls);
+
+    /* Non-contiguous: 2->3->4 (3 clusters), 7 (1), 6 (1), 5 (1) => 4 extents */
+    TEST_ASSERT_EQUAL_INT(
+        ISO_OK, iso_sd_walk_fat32_extents(2u, 10u, 8192u, 8u, mock_read_fat_entry, &mf, out, 4u, &n));
+    TEST_ASSERT_EQUAL_UINT(4u, n);
+    TEST_ASSERT_EQUAL_UINT64(8192u, out[0].start_sector);
+    TEST_ASSERT_EQUAL_UINT32(24u, out[0].sector_count);
+    TEST_ASSERT_EQUAL_UINT64(8192u + 5u * 8u, out[1].start_sector);
+    TEST_ASSERT_EQUAL_UINT32(8u, out[1].sector_count);
+    TEST_ASSERT_EQUAL_UINT64(8192u + 4u * 8u, out[2].start_sector);
+    TEST_ASSERT_EQUAL_UINT32(8u, out[2].sector_count);
+    TEST_ASSERT_EQUAL_UINT64(8192u + 3u * 8u, out[3].start_sector);
+    TEST_ASSERT_EQUAL_UINT32(8u, out[3].sector_count);
+
+    /* Too fragmented when max_out < needed runs */
+    TEST_ASSERT_EQUAL_INT(
+        ISO_ERR_TOO_FRAGMENTED,
+        iso_sd_walk_fat32_extents(2u, 10u, 8192u, 8u, mock_read_fat_entry, &mf, out, 2u, &n));
+
+    /* Self-loop cycle: 5 -> 5 */
+    fat[5] = 0x10000005u; /* high 4 reserved bits must be masked cleanly */
+    mf.calls = 0u;
+    TEST_ASSERT_EQUAL_INT(
+        ISO_ERR_IO,
+        iso_sd_walk_fat32_extents(5u, 10u, 8192u, 8u, mock_read_fat_entry, &mf, out, 4u, &n));
+    TEST_ASSERT_EQUAL_UINT(0u, n);
+    TEST_ASSERT_EQUAL_UINT32(1u, mf.calls);
+
+    /* Lollipop cycle: 2 -> 3 -> 4 -> 5 -> 3 */
+    fat[2] = 3u;
+    fat[3] = 4u;
+    fat[4] = 5u;
+    fat[5] = 3u;
+    mf.calls = 0u;
+    TEST_ASSERT_EQUAL_INT(
+        ISO_ERR_IO,
+        iso_sd_walk_fat32_extents(2u, 10u, 8192u, 8u, mock_read_fat_entry, &mf, out, 4u, &n));
+    TEST_ASSERT_TRUE(mf.calls <= 8u);
+
+    /* Bad cluster marker 0x0FFFFFF7 and free cluster 0 rejected as ISO_ERR_IO */
+    fat[2] = 0x0FFFFFF7u;
+    TEST_ASSERT_EQUAL_INT(
+        ISO_ERR_IO,
+        iso_sd_walk_fat32_extents(2u, 10u, 8192u, 8u, mock_read_fat_entry, &mf, out, 4u, &n));
+    fat[2] = 0u;
+    TEST_ASSERT_EQUAL_INT(
+        ISO_ERR_IO,
+        iso_sd_walk_fat32_extents(2u, 10u, 8192u, 8u, mock_read_fat_entry, &mf, out, 4u, &n));
+
+    /* Propagate epoch error from block reader */
+    fat[2] = 3u;
+    mf.calls = 0u;
+    mf.inject_err_at_call = 0;
+    mf.inject_err = ISO_ERR_EPOCH;
+    TEST_ASSERT_EQUAL_INT(
+        ISO_ERR_EPOCH,
+        iso_sd_walk_fat32_extents(2u, 10u, 8192u, 8u, mock_read_fat_entry, &mf, out, 4u, &n));
+}
+
+void test_init_with_epoch_seed(void) {
+    iso_sd_ctrl_state_t st;
+    iso_sd_state_init_with_epoch(&st, 42u);
+    TEST_ASSERT_EQUAL_UINT32(42u, iso_sd_state_epoch(&st));
+    TEST_ASSERT_EQUAL_UINT32(43u, iso_sd_state_epoch_bump(&st));
+
+    iso_sd_state_init_with_epoch(&st, 0u);
+    TEST_ASSERT_EQUAL_UINT32(1u, iso_sd_state_epoch(&st));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_format_fatfs_path_and_utf8_boundaries);
@@ -165,5 +279,7 @@ int main(void) {
     RUN_TEST(test_validate_mount_policy);
     RUN_TEST(test_clmt_to_extents_conversion_and_limits);
     RUN_TEST(test_fresult_mapping_and_atomic_state);
+    RUN_TEST(test_walk_fat32_extents_and_cycle_guard);
+    RUN_TEST(test_init_with_epoch_seed);
     return UNITY_END();
 }

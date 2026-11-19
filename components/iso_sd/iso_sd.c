@@ -73,20 +73,29 @@ _Static_assert((int)FR_OK == (int)ISO_SD_FR_OK &&
 
 static const char *TAG = "iso_sd";
 
+/* Monotonic process-lifetime epoch: survives iso_sd_deinit() / re-init() so stale handles never match a later mount. */
+static _Atomic uint32_t s_global_epoch = 0u;
+
 struct iso_file {
     FIL fil;
+    uint32_t open_epoch;
 };
 
 struct iso_dir {
     FF_DIR dir;
     char base_path[ISO_PATH_MAX];
+    uint32_t open_epoch;
 };
 
 typedef struct {
     bool initialized;
-    bool shutdown_req;
-    SemaphoreHandle_t meta_lock; /* Order: meta_lock -> io_lock -> fs calls */
-    SemaphoreHandle_t io_lock;   /* Serializes diskio + blockdev.read_sectors + SDMMC HW */
+    _Atomic bool shutdown_req;
+    SemaphoreHandle_t meta_lock;     /* Order: meta_lock -> fs_state_lock / io_lock */
+    SemaphoreHandle_t io_lock;       /* Serializes diskio + blockdev.read_sectors + SDMMC HW */
+    SemaphoreHandle_t fs_state_lock; /* Leaf mutex guarding fs_accepting / fs_active_ops / fs_mount_epoch */
+    SemaphoreHandle_t fs_drain_sem;  /* Signaled when fs_active_ops drops to 0 while !fs_accepting */
+    SemaphoreHandle_t mon_wake_sem;  /* Wakes sd_monitor_task immediately on shutdown */
+    SemaphoreHandle_t mon_done_sem;  /* Signaled by sd_monitor_task right before vTaskDelete(NULL) */
     TaskHandle_t mon_task;
 
     iso_sd_ctrl_state_t ctrl;
@@ -98,7 +107,11 @@ typedef struct {
     bool host_inited;
     bool slot_inited;
     bool card_present;
-    bool fat_mounted;
+    bool fat_registered; /* True whenever f_mount(&s_sd.fatfs, ...) registered a work area */
+    bool fat_mounted;    /* True only after full validation + /iso dir verification */
+    bool fs_accepting;
+    uint32_t fs_active_ops;
+    uint32_t fs_mount_epoch;
     BYTE pdrv;
     char drv_root[4]; /* "0:" + NUL */
     FATFS fatfs;
@@ -110,6 +123,27 @@ typedef struct {
 static iso_sd_ctx_t s_sd = {
     .pdrv = FF_DRV_NOT_USED,
 };
+
+static uint32_t sd_next_global_epoch(void) {
+    uint32_t cur = atomic_load_explicit(&s_global_epoch, memory_order_relaxed);
+    for (;;) {
+        uint32_t next = cur + 1u;
+        if (next == 0u) {
+            next = 1u;
+        }
+        if (atomic_compare_exchange_weak_explicit(&s_global_epoch, &cur, next,
+                                                  memory_order_acq_rel,
+                                                  memory_order_relaxed)) {
+            return next;
+        }
+    }
+}
+
+static uint32_t sd_advance_epoch(void) {
+    uint32_t next = sd_next_global_epoch();
+    atomic_store_explicit(&s_sd.ctrl.epoch, next, memory_order_release);
+    return next;
+}
 
 static void *sd_alloc_buf(size_t size) {
     void *p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -289,11 +323,33 @@ static DRESULT sd_diskio_ioctl(BYTE pdrv, BYTE cmd, void *buff) {
     return res;
 }
 
+static void fs_wait_drain_and_disable(void) {
+    if (!s_sd.fs_state_lock) {
+        s_sd.fs_accepting = false;
+        return;
+    }
+    xSemaphoreTake(s_sd.fs_state_lock, portMAX_DELAY);
+    s_sd.fs_accepting = false;
+    while (s_sd.fs_active_ops > 0u) {
+        xSemaphoreGive(s_sd.fs_state_lock);
+        if (s_sd.fs_drain_sem) {
+            (void)xSemaphoreTake(s_sd.fs_drain_sem, pdMS_TO_TICKS(50));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        xSemaphoreTake(s_sd.fs_state_lock, portMAX_DELAY);
+    }
+    s_sd.fat_mounted = false;
+    xSemaphoreGive(s_sd.fs_state_lock);
+}
+
 static void sd_unmount_hw_locked(void) {
-    /* Assumes s_sd.meta_lock held. Takes s_sd.io_lock when tearing down card/host. */
-    if (s_sd.fat_mounted) {
+    /* Assumes s_sd.meta_lock held. Drain in-flight FatFs ops BEFORE calling f_mount(NULL, ...), without holding io_lock. */
+    fs_wait_drain_and_disable();
+
+    if (s_sd.fat_registered) {
         (void)f_mount(NULL, s_sd.drv_root, 0);
-        s_sd.fat_mounted = false;
+        s_sd.fat_registered = false;
     }
     if (s_sd.pdrv != FF_DRV_NOT_USED) {
         ff_diskio_unregister(s_sd.pdrv);
@@ -414,6 +470,8 @@ static esp_err_t sd_mount_hw_locked(void) {
     s_sd.drv_root[1] = ':';
     s_sd.drv_root[2] = '\0';
 
+    /* f_mount(..., 1) registers the FatFs work area + volume mutex even on FR_NO_FILESYSTEM. */
+    s_sd.fat_registered = true;
     FRESULT fr = f_mount(&s_sd.fatfs, s_sd.drv_root, 1);
     if (fr != FR_OK) {
         ESP_LOGW(TAG, "f_mount(%s) failed: fr=%d", s_sd.drv_root, (int)fr);
@@ -422,7 +480,6 @@ static esp_err_t sd_mount_hw_locked(void) {
         sd_unmount_hw_locked();
         return (fr == FR_NO_FILESYSTEM) ? ESP_ERR_NOT_SUPPORTED : ESP_FAIL;
     }
-    s_sd.fat_mounted = true;
 
     uint32_t cluster_bytes = 0u;
     int vrc = iso_sd_validate_mount(s_sd.fatfs.fs_type == FS_FAT32,
@@ -448,19 +505,35 @@ static esp_err_t sd_mount_hw_locked(void) {
         return ESP_FAIL;
     }
 
+    /* Require /iso to exist as a directory before publishing ISO_SD_READY. */
+    char iso_dir[ISO_PATH_MAX + 4u];
+    bool iso_dir_ok = false;
+    if (iso_sd_format_fatfs_path(s_sd.drv_root[0], ISO_SD_ROOT_DIR, iso_dir, sizeof(iso_dir)) == ISO_OK) {
+        FRESULT mk = f_mkdir(iso_dir);
+        if (mk == FR_OK) {
+            iso_dir_ok = true;
+        } else if (mk == FR_EXIST) {
+            FILINFO iso_fno;
+            memset(&iso_fno, 0, sizeof(iso_fno));
+            if (f_stat(iso_dir, &iso_fno) == FR_OK && (iso_fno.fattrib & AM_DIR) != 0) {
+                iso_dir_ok = true;
+            } else {
+                ESP_LOGE(TAG, "%s exists but is not a directory", iso_dir);
+            }
+        } else {
+            ESP_LOGE(TAG, "f_mkdir(%s) failed: fr=%d", iso_dir, (int)mk);
+        }
+    }
+    if (!iso_dir_ok) {
+        iso_sd_state_set(&s_sd.ctrl, ISO_SD_ERROR);
+        sd_unmount_hw_locked();
+        return ESP_FAIL;
+    }
+
     uint64_t total_clusters = (s_sd.fatfs.n_fatent >= 2u) ? (uint64_t)(s_sd.fatfs.n_fatent - 2u) : 0ULL;
     s_sd.cluster_bytes = cluster_bytes;
     s_sd.total_bytes = total_clusters * (uint64_t)cluster_bytes;
     s_sd.cached_free_bytes = (uint64_t)fre_clust * (uint64_t)cluster_bytes;
-
-    /* Ensure /iso root exists so iso_catalog / self-test never see missing root. */
-    char iso_dir[ISO_PATH_MAX + 4u];
-    if (iso_sd_format_fatfs_path(s_sd.drv_root[0], ISO_SD_ROOT_DIR, iso_dir, sizeof(iso_dir)) == ISO_OK) {
-        FRESULT mk = f_mkdir(iso_dir);
-        if (mk != FR_OK && mk != FR_EXIST) {
-            ESP_LOGW(TAG, "f_mkdir(%s) failed: fr=%d", iso_dir, (int)mk);
-        }
-    }
 
     uint32_t real_khz = s_sd.card.real_freq_khz;
     if (host.get_real_freq) {
@@ -470,10 +543,22 @@ static esp_err_t sd_mount_hw_locked(void) {
         }
     }
 
+    uint32_t mount_epoch = sd_advance_epoch();
+    if (s_sd.fs_state_lock) {
+        xSemaphoreTake(s_sd.fs_state_lock, portMAX_DELAY);
+    }
+    s_sd.fs_mount_epoch = mount_epoch;
+    s_sd.fat_mounted = true;
+    s_sd.fs_accepting = true;
+    if (s_sd.fs_state_lock) {
+        xSemaphoreGive(s_sd.fs_state_lock);
+    }
+
     iso_sd_state_set(&s_sd.ctrl, ISO_SD_READY);
     ESP_LOGI(TAG,
-             "microSD mounted (FAT32, cluster=%" PRIu32 "B, clk=%" PRIu32 "kHz, bus=%s, "
+             "microSD mounted (FAT32, epoch=%" PRIu32 ", cluster=%" PRIu32 "B, clk=%" PRIu32 "kHz, bus=%s, "
              "sectors=%" PRIu64 ", total=%" PRIu64 " MiB, free=%" PRIu64 " MiB)",
+             mount_epoch,
              s_sd.cluster_bytes,
              real_khz,
              (s_sd.card.is_ddr ? "4-bit DDR" : "4-bit"),
@@ -491,9 +576,13 @@ static void sd_monitor_task(void *arg) {
                                       ? pdMS_TO_TICKS(CONFIG_SD_MONITOR_POLL_MS)
                                       : 1;
 
-    while (!s_sd.shutdown_req) {
-        vTaskDelay(poll_ticks);
-        if (s_sd.shutdown_req) {
+    while (!atomic_load_explicit(&s_sd.shutdown_req, memory_order_acquire)) {
+        if (s_sd.mon_wake_sem) {
+            (void)xSemaphoreTake(s_sd.mon_wake_sem, poll_ticks);
+        } else {
+            vTaskDelay(poll_ticks);
+        }
+        if (atomic_load_explicit(&s_sd.shutdown_req, memory_order_acquire)) {
             break;
         }
 
@@ -509,11 +598,19 @@ static void sd_monitor_task(void *arg) {
             }
             if (unhealthy) {
                 ESP_LOGW(TAG, "microSD fault/removal detected; force-ejecting media and unmounting");
-                /* Bump epoch and notify force_eject BEFORE taking meta_lock/tearing down HW. */
-                (void)iso_sd_state_epoch_bump(&s_sd.ctrl);
+                /* Reject new FS ops & bump epoch BEFORE callbacks and unmount drain. */
+                if (s_sd.fs_state_lock) {
+                    xSemaphoreTake(s_sd.fs_state_lock, portMAX_DELAY);
+                    s_sd.fs_accepting = false;
+                    xSemaphoreGive(s_sd.fs_state_lock);
+                }
+                (void)sd_advance_epoch();
                 iso_sd_state_set(&s_sd.ctrl, ISO_SD_NO_CARD);
                 if (s_sd.cfg.on_force_eject) {
                     s_sd.cfg.on_force_eject(s_sd.cfg.on_force_eject_ctx);
+                }
+                if (atomic_load_explicit(&s_sd.shutdown_req, memory_order_acquire)) {
+                    break;
                 }
                 xSemaphoreTake(s_sd.meta_lock, portMAX_DELAY);
                 sd_unmount_hw_locked();
@@ -522,8 +619,13 @@ static void sd_monitor_task(void *arg) {
         } else {
             /* Try re-probing (handles hot-inserted card or transient init error). */
             xSemaphoreTake(s_sd.meta_lock, portMAX_DELAY);
-            esp_err_t m_err = sd_mount_hw_locked();
+            esp_err_t m_err = atomic_load_explicit(&s_sd.shutdown_req, memory_order_acquire)
+                                  ? ESP_ERR_INVALID_STATE
+                                  : sd_mount_hw_locked();
             xSemaphoreGive(s_sd.meta_lock);
+            if (atomic_load_explicit(&s_sd.shutdown_req, memory_order_acquire)) {
+                break;
+            }
             if (m_err == ESP_OK && s_sd.cfg.on_ready) {
                 s_sd.cfg.on_ready(s_sd.cfg.on_ready_ctx);
             }
@@ -531,6 +633,9 @@ static void sd_monitor_task(void *arg) {
     }
 
     s_sd.mon_task = NULL;
+    if (s_sd.mon_done_sem) {
+        xSemaphoreGive(s_sd.mon_done_sem);
+    }
     vTaskDelete(NULL);
 }
 
@@ -551,13 +656,16 @@ static uint32_t blk_epoch(void *ctx) {
 
 static void blk_epoch_bump(void *ctx) {
     (void)ctx;
-    (void)iso_sd_state_epoch_bump(&s_sd.ctrl);
+    (void)sd_advance_epoch();
 }
 
 static int blk_read_sectors(void *ctx, uint32_t epoch, uint64_t lba, uint32_t n, uint8_t *out) {
     (void)ctx;
     if (!out && n > 0u) {
         return ISO_ERR_INVALID;
+    }
+    if (iso_sd_state_epoch(&s_sd.ctrl) != epoch) {
+        return ISO_ERR_EPOCH;
     }
     if (!s_sd.io_lock) {
         return ISO_ERR_NO_CARD;
@@ -604,12 +712,91 @@ static const iso_blockdev_t s_blockdev = {
 
 /* ---- iso_fs_t ------------------------------------------------------------ */
 
-static int fs_prepare_path(const char *path, char *out_drv_path, size_t out_cap) {
-    if (iso_sd_state_get(&s_sd.ctrl) != ISO_SD_READY || !s_sd.fat_mounted ||
-        s_sd.pdrv == FF_DRV_NOT_USED) {
+static int fs_op_begin(uint32_t *out_epoch, char *out_drv_char) {
+    if (!s_sd.fs_state_lock) {
         return ISO_ERR_NO_CARD;
     }
-    return iso_sd_format_fatfs_path((char)('0' + s_sd.pdrv), path, out_drv_path, out_cap);
+    xSemaphoreTake(s_sd.fs_state_lock, portMAX_DELAY);
+    if (!s_sd.fs_accepting || !s_sd.fat_mounted || s_sd.pdrv == FF_DRV_NOT_USED ||
+        iso_sd_state_get(&s_sd.ctrl) != ISO_SD_READY) {
+        xSemaphoreGive(s_sd.fs_state_lock);
+        return ISO_ERR_NO_CARD;
+    }
+    s_sd.fs_active_ops++;
+    if (out_epoch) {
+        *out_epoch = s_sd.fs_mount_epoch;
+    }
+    if (out_drv_char) {
+        *out_drv_char = (char)('0' + s_sd.pdrv);
+    }
+    xSemaphoreGive(s_sd.fs_state_lock);
+    return ISO_OK;
+}
+
+static int fs_op_begin_epoch(uint32_t req_epoch, char *out_drv_char) {
+    if (!s_sd.fs_state_lock) {
+        return ISO_ERR_NO_CARD;
+    }
+    xSemaphoreTake(s_sd.fs_state_lock, portMAX_DELAY);
+    if (!s_sd.fs_accepting || !s_sd.fat_mounted || s_sd.pdrv == FF_DRV_NOT_USED) {
+        xSemaphoreGive(s_sd.fs_state_lock);
+        return ISO_ERR_NO_CARD;
+    }
+    if (req_epoch == 0u || s_sd.fs_mount_epoch != req_epoch) {
+        xSemaphoreGive(s_sd.fs_state_lock);
+        return ISO_ERR_EPOCH;
+    }
+    s_sd.fs_active_ops++;
+    if (out_drv_char) {
+        *out_drv_char = (char)('0' + s_sd.pdrv);
+    }
+    xSemaphoreGive(s_sd.fs_state_lock);
+    return ISO_OK;
+}
+
+static void fs_op_end(void) {
+    if (!s_sd.fs_state_lock) {
+        return;
+    }
+    bool wake = false;
+    xSemaphoreTake(s_sd.fs_state_lock, portMAX_DELAY);
+    if (s_sd.fs_active_ops > 0u) {
+        s_sd.fs_active_ops--;
+    }
+    if (s_sd.fs_active_ops == 0u && !s_sd.fs_accepting && s_sd.fs_drain_sem != NULL) {
+        wake = true;
+    }
+    xSemaphoreGive(s_sd.fs_state_lock);
+    if (wake) {
+        (void)xSemaphoreGive(s_sd.fs_drain_sem);
+    }
+}
+
+static int fs_prepare_path_begin(const char *path,
+                                 bool pin_epoch,
+                                 uint32_t pinned_epoch,
+                                 char *out_drv_path,
+                                 size_t out_cap,
+                                 uint32_t *out_epoch,
+                                 char *out_drv_char) {
+    uint32_t ep = pinned_epoch;
+    char drv_char = '0';
+    int rc = pin_epoch ? fs_op_begin_epoch(pinned_epoch, &drv_char) : fs_op_begin(&ep, &drv_char);
+    if (rc != ISO_OK) {
+        return rc;
+    }
+    rc = iso_sd_format_fatfs_path(drv_char, path, out_drv_path, out_cap);
+    if (rc != ISO_OK) {
+        fs_op_end();
+        return rc;
+    }
+    if (out_epoch) {
+        *out_epoch = ep;
+    }
+    if (out_drv_char) {
+        *out_drv_char = drv_char;
+    }
+    return ISO_OK;
 }
 
 static int fs_read_first_cluster(const char *drv_path, uint32_t *out_cluster) {
@@ -629,60 +816,81 @@ static int fs_mount_info(void *ctx, iso_mount_info_t *out) {
     if (!out) {
         return ISO_ERR_INVALID;
     }
-    iso_sd_state_t st = iso_sd_state_get(&s_sd.ctrl);
-    if (st == ISO_SD_UNSUPPORTED_FS) {
+    if (iso_sd_state_get(&s_sd.ctrl) == ISO_SD_UNSUPPORTED_FS) {
         return ISO_ERR_UNSUPPORTED_FS;
     }
-    if (st != ISO_SD_READY || !s_sd.fat_mounted) {
-        return ISO_ERR_NO_CARD;
+    uint32_t ep = 0u;
+    int rc = fs_op_begin(&ep, NULL);
+    if (rc != ISO_OK) {
+        return (iso_sd_state_get(&s_sd.ctrl) == ISO_SD_UNSUPPORTED_FS) ? ISO_ERR_UNSUPPORTED_FS : rc;
     }
+
     DWORD fre_clust = 0u;
     FATFS *fs_out = NULL;
     FRESULT fr = f_getfree(s_sd.drv_root, &fre_clust, &fs_out);
     if (fr != FR_OK) {
+        fs_op_end();
         return iso_sd_fresult_to_err((int)fr);
     }
-    s_sd.cached_free_bytes = (uint64_t)fre_clust * (uint64_t)s_sd.cluster_bytes;
+
+    const uint64_t free_bytes = (uint64_t)fre_clust * (uint64_t)s_sd.cluster_bytes;
+    xSemaphoreTake(s_sd.fs_state_lock, portMAX_DELAY);
+    s_sd.cached_free_bytes = free_bytes;
+    xSemaphoreGive(s_sd.fs_state_lock);
+
     out->fat32 = (s_sd.fatfs.fs_type == FS_FAT32);
     out->cluster_bytes = s_sd.cluster_bytes;
     out->total_bytes = s_sd.total_bytes;
-    out->free_bytes = s_sd.cached_free_bytes;
+    out->free_bytes = free_bytes;
+    fs_op_end();
     return ISO_OK;
 }
 
 static int fs_mkdir(void *ctx, const char *path) {
     (void)ctx;
     char dpath[ISO_PATH_MAX + 4u];
-    int rc = fs_prepare_path(path, dpath, sizeof(dpath));
+    int rc = fs_prepare_path_begin(path, false, 0u, dpath, sizeof(dpath), NULL, NULL);
     if (rc != ISO_OK) {
         return rc;
     }
-    return iso_sd_fresult_to_err((int)f_mkdir(dpath));
+    FRESULT fr = f_mkdir(dpath);
+    fs_op_end();
+    return iso_sd_fresult_to_err((int)fr);
 }
 
 static int fs_remove(void *ctx, const char *path) {
     (void)ctx;
     char dpath[ISO_PATH_MAX + 4u];
-    int rc = fs_prepare_path(path, dpath, sizeof(dpath));
+    int rc = fs_prepare_path_begin(path, false, 0u, dpath, sizeof(dpath), NULL, NULL);
     if (rc != ISO_OK) {
         return rc;
     }
-    return iso_sd_fresult_to_err((int)f_unlink(dpath));
+    FRESULT fr = f_unlink(dpath);
+    fs_op_end();
+    return iso_sd_fresult_to_err((int)fr);
 }
 
 static int fs_rename(void *ctx, const char *from, const char *to) {
     (void)ctx;
+    uint32_t ep = 0u;
+    char drv_char = '0';
+    int rc = fs_op_begin(&ep, &drv_char);
+    if (rc != ISO_OK) {
+        return rc;
+    }
     char dfrom[ISO_PATH_MAX + 4u];
     char dto[ISO_PATH_MAX + 4u];
-    int rc = fs_prepare_path(from, dfrom, sizeof(dfrom));
+    rc = iso_sd_format_fatfs_path(drv_char, from, dfrom, sizeof(dfrom));
+    if (rc == ISO_OK) {
+        rc = iso_sd_format_fatfs_path(drv_char, to, dto, sizeof(dto));
+    }
     if (rc != ISO_OK) {
+        fs_op_end();
         return rc;
     }
-    rc = fs_prepare_path(to, dto, sizeof(dto));
-    if (rc != ISO_OK) {
-        return rc;
-    }
-    return iso_sd_fresult_to_err((int)f_rename(dfrom, dto));
+    FRESULT fr = f_rename(dfrom, dto);
+    fs_op_end();
+    return iso_sd_fresult_to_err((int)fr);
 }
 
 static int fs_stat(void *ctx, const char *path, iso_stat_t *out) {
@@ -691,7 +899,7 @@ static int fs_stat(void *ctx, const char *path, iso_stat_t *out) {
         return ISO_ERR_INVALID;
     }
     char dpath[ISO_PATH_MAX + 4u];
-    int rc = fs_prepare_path(path, dpath, sizeof(dpath));
+    int rc = fs_prepare_path_begin(path, false, 0u, dpath, sizeof(dpath), NULL, NULL);
     if (rc != ISO_OK) {
         return rc;
     }
@@ -699,6 +907,7 @@ static int fs_stat(void *ctx, const char *path, iso_stat_t *out) {
     memset(&fno, 0, sizeof(fno));
     FRESULT fr = f_stat(dpath, &fno);
     if (fr != FR_OK) {
+        fs_op_end();
         return iso_sd_fresult_to_err((int)fr);
     }
     out->is_dir = (fno.fattrib & AM_DIR) != 0;
@@ -706,10 +915,10 @@ static int fs_stat(void *ctx, const char *path, iso_stat_t *out) {
     out->first_cluster = 0u;
     if (!out->is_dir && fno.fsize > 0u) {
         rc = fs_read_first_cluster(dpath, &out->first_cluster);
-        if (rc != ISO_OK) {
-            return rc;
-        }
+        fs_op_end();
+        return rc;
     }
+    fs_op_end();
     return ISO_OK;
 }
 
@@ -719,19 +928,23 @@ static int fs_dir_open(void *ctx, const char *path, iso_dir_t **out) {
         return ISO_ERR_INVALID;
     }
     *out = NULL;
+    uint32_t ep = 0u;
     char dpath[ISO_PATH_MAX + 4u];
-    int rc = fs_prepare_path(path, dpath, sizeof(dpath));
+    int rc = fs_prepare_path_begin(path, false, 0u, dpath, sizeof(dpath), &ep, NULL);
     if (rc != ISO_OK) {
         return rc;
     }
     iso_dir_t *d = (iso_dir_t *)calloc(1u, sizeof(iso_dir_t));
     if (!d) {
+        fs_op_end();
         return ISO_ERR_NOMEM;
     }
     size_t plen = strlen(path);
     memcpy(d->base_path, path, plen + 1u);
+    d->open_epoch = ep;
 
     FRESULT fr = f_opendir(&d->dir, dpath);
+    fs_op_end();
     if (fr != FR_OK) {
         free(d);
         return iso_sd_fresult_to_err((int)fr);
@@ -745,9 +958,10 @@ static int fs_dir_next(void *ctx, iso_dir_t *dir, char *name, iso_stat_t *st) {
     if (!dir || !name || !st) {
         return ISO_ERR_INVALID;
     }
-    if (iso_sd_state_get(&s_sd.ctrl) != ISO_SD_READY || !s_sd.fat_mounted ||
-        s_sd.pdrv == FF_DRV_NOT_USED) {
-        return ISO_ERR_NO_CARD;
+    char drv_char = '0';
+    int rc = fs_op_begin_epoch(dir->open_epoch, &drv_char);
+    if (rc != ISO_OK) {
+        return rc;
     }
 
     for (;;) {
@@ -755,9 +969,11 @@ static int fs_dir_next(void *ctx, iso_dir_t *dir, char *name, iso_stat_t *st) {
         memset(&fno, 0, sizeof(fno));
         FRESULT fr = f_readdir(&dir->dir, &fno);
         if (fr != FR_OK) {
+            fs_op_end();
             return iso_sd_fresult_to_err((int)fr);
         }
         if (fno.fname[0] == '\0') {
+            fs_op_end();
             return 1;
         }
         if (strcmp(fno.fname, ".") == 0 || strcmp(fno.fname, "..") == 0) {
@@ -765,6 +981,7 @@ static int fs_dir_next(void *ctx, iso_dir_t *dir, char *name, iso_stat_t *st) {
         }
         size_t nlen = strlen(fno.fname);
         if (nlen == 0u || nlen > ISO_NAME_MAX) {
+            fs_op_end();
             return ISO_ERR_INVALID;
         }
         memcpy(name, fno.fname, nlen + 1u);
@@ -775,13 +992,15 @@ static int fs_dir_next(void *ctx, iso_dir_t *dir, char *name, iso_stat_t *st) {
             char full_path[ISO_PATH_MAX];
             char full_dpath[ISO_PATH_MAX + 4u];
             if (iso_sd_join_path(dir->base_path, fno.fname, full_path, sizeof(full_path)) == ISO_OK &&
-                iso_sd_format_fatfs_path((char)('0' + s_sd.pdrv), full_path, full_dpath, sizeof(full_dpath)) == ISO_OK) {
+                iso_sd_format_fatfs_path(drv_char, full_path, full_dpath, sizeof(full_dpath)) == ISO_OK) {
                 int crc = fs_read_first_cluster(full_dpath, &st->first_cluster);
                 if (crc != ISO_OK) {
+                    fs_op_end();
                     return crc;
                 }
             }
         }
+        fs_op_end();
         return ISO_OK;
     }
 }
@@ -791,7 +1010,10 @@ static void fs_dir_close(void *ctx, iso_dir_t *dir) {
     if (!dir) {
         return;
     }
-    (void)f_closedir(&dir->dir);
+    if (fs_op_begin_epoch(dir->open_epoch, NULL) == ISO_OK) {
+        (void)f_closedir(&dir->dir);
+        fs_op_end();
+    }
     free(dir);
 }
 
@@ -801,17 +1023,21 @@ static int fs_open_for_write(void *ctx, const char *path, bool append, iso_file_
         return ISO_ERR_INVALID;
     }
     *out = NULL;
+    uint32_t ep = 0u;
     char dpath[ISO_PATH_MAX + 4u];
-    int rc = fs_prepare_path(path, dpath, sizeof(dpath));
+    int rc = fs_prepare_path_begin(path, false, 0u, dpath, sizeof(dpath), &ep, NULL);
     if (rc != ISO_OK) {
         return rc;
     }
     iso_file_t *f = (iso_file_t *)calloc(1u, sizeof(iso_file_t));
     if (!f) {
+        fs_op_end();
         return ISO_ERR_NOMEM;
     }
+    f->open_epoch = ep;
     BYTE mode = append ? (BYTE)(FA_WRITE | FA_OPEN_APPEND) : (BYTE)(FA_WRITE | FA_CREATE_NEW);
     FRESULT fr = f_open(&f->fil, dpath, mode);
+    fs_op_end();
     if (fr != FR_OK) {
         free(f);
         return iso_sd_fresult_to_err((int)fr);
@@ -825,6 +1051,10 @@ static int fs_write(void *ctx, iso_file_t *f, const void *data, size_t len) {
     if (!f || (!data && len > 0u)) {
         return ISO_ERR_INVALID;
     }
+    int rc = fs_op_begin_epoch(f->open_epoch, NULL);
+    if (rc != ISO_OK) {
+        return rc;
+    }
     const uint8_t *p = (const uint8_t *)data;
     size_t off = 0u;
     while (off < len) {
@@ -833,14 +1063,17 @@ static int fs_write(void *ctx, iso_file_t *f, const void *data, size_t len) {
         UINT bw = 0u;
         FRESULT fr = f_write(&f->fil, p + off, chunk, &bw);
         if (fr != FR_OK) {
+            fs_op_end();
             return iso_sd_fresult_to_err((int)fr);
         }
         if (bw < chunk) {
             /* FatFs signals full volume via FR_OK and bw < btw. */
+            fs_op_end();
             return ISO_ERR_NO_SPACE;
         }
         off += (size_t)bw;
     }
+    fs_op_end();
     return ISO_OK;
 }
 
@@ -849,7 +1082,13 @@ static int fs_sync(void *ctx, iso_file_t *f) {
     if (!f) {
         return ISO_ERR_INVALID;
     }
-    return iso_sd_fresult_to_err((int)f_sync(&f->fil));
+    int rc = fs_op_begin_epoch(f->open_epoch, NULL);
+    if (rc != ISO_OK) {
+        return rc;
+    }
+    FRESULT fr = f_sync(&f->fil);
+    fs_op_end();
+    return iso_sd_fresult_to_err((int)fr);
 }
 
 static int fs_close(void *ctx, iso_file_t *f) {
@@ -857,15 +1096,21 @@ static int fs_close(void *ctx, iso_file_t *f) {
     if (!f) {
         return ISO_OK;
     }
-    FRESULT fr = f_close(&f->fil);
+    int rc = fs_op_begin_epoch(f->open_epoch, NULL);
+    if (rc == ISO_OK) {
+        FRESULT fr = f_close(&f->fil);
+        fs_op_end();
+        free(f);
+        return iso_sd_fresult_to_err((int)fr);
+    }
     free(f);
-    return iso_sd_fresult_to_err((int)fr);
+    return rc;
 }
 
 static int fs_truncate(void *ctx, const char *path, uint64_t size) {
     (void)ctx;
     char dpath[ISO_PATH_MAX + 4u];
-    int rc = fs_prepare_path(path, dpath, sizeof(dpath));
+    int rc = fs_prepare_path_begin(path, false, 0u, dpath, sizeof(dpath), NULL, NULL);
     if (rc != ISO_OK) {
         return rc;
     }
@@ -873,19 +1118,23 @@ static int fs_truncate(void *ctx, const char *path, uint64_t size) {
     memset(&fno, 0, sizeof(fno));
     FRESULT fr = f_stat(dpath, &fno);
     if (fr != FR_OK) {
+        fs_op_end();
         return iso_sd_fresult_to_err((int)fr);
     }
     if ((fno.fattrib & AM_DIR) != 0 || (uint64_t)fno.fsize < size || size > (uint64_t)UINT32_MAX) {
         /* Reject size > fsize so f_lseek never extends the file in write mode. */
+        fs_op_end();
         return ISO_ERR_INVALID;
     }
     if ((uint64_t)fno.fsize == size) {
+        fs_op_end();
         return ISO_OK;
     }
     FIL fil;
     memset(&fil, 0, sizeof(fil));
     fr = f_open(&fil, dpath, FA_WRITE | FA_OPEN_EXISTING);
     if (fr != FR_OK) {
+        fs_op_end();
         return iso_sd_fresult_to_err((int)fr);
     }
     fr = f_lseek(&fil, (FSIZE_t)size);
@@ -896,6 +1145,7 @@ static int fs_truncate(void *ctx, const char *path, uint64_t size) {
         fr = f_sync(&fil);
     }
     FRESULT cfr = f_close(&fil);
+    fs_op_end();
     if (fr != FR_OK) {
         return iso_sd_fresult_to_err((int)fr);
     }
@@ -908,7 +1158,7 @@ static int fs_overwrite(void *ctx, const char *path, const void *data, size_t le
         return ISO_ERR_INVALID;
     }
     char dpath[ISO_PATH_MAX + 4u];
-    int rc = fs_prepare_path(path, dpath, sizeof(dpath));
+    int rc = fs_prepare_path_begin(path, false, 0u, dpath, sizeof(dpath), NULL, NULL);
     if (rc != ISO_OK) {
         return rc;
     }
@@ -916,6 +1166,7 @@ static int fs_overwrite(void *ctx, const char *path, const void *data, size_t le
     memset(&fil, 0, sizeof(fil));
     FRESULT fr = f_open(&fil, dpath, FA_WRITE | FA_CREATE_ALWAYS);
     if (fr != FR_OK) {
+        fs_op_end();
         return iso_sd_fresult_to_err((int)fr);
     }
     const uint8_t *p = (const uint8_t *)data;
@@ -943,6 +1194,7 @@ static int fs_overwrite(void *ctx, const char *path, const void *data, size_t le
         }
     }
     FRESULT cfr = f_close(&fil);
+    fs_op_end();
     return (err != ISO_OK) ? err : iso_sd_fresult_to_err((int)cfr);
 }
 
@@ -952,16 +1204,20 @@ static int fs_open_for_read(void *ctx, const char *path, iso_file_t **out) {
         return ISO_ERR_INVALID;
     }
     *out = NULL;
+    uint32_t ep = 0u;
     char dpath[ISO_PATH_MAX + 4u];
-    int rc = fs_prepare_path(path, dpath, sizeof(dpath));
+    int rc = fs_prepare_path_begin(path, false, 0u, dpath, sizeof(dpath), &ep, NULL);
     if (rc != ISO_OK) {
         return rc;
     }
     iso_file_t *f = (iso_file_t *)calloc(1u, sizeof(iso_file_t));
     if (!f) {
+        fs_op_end();
         return ISO_ERR_NOMEM;
     }
+    f->open_epoch = ep;
     FRESULT fr = f_open(&f->fil, dpath, FA_READ);
+    fs_op_end();
     if (fr != FR_OK) {
         free(f);
         return iso_sd_fresult_to_err((int)fr);
@@ -976,6 +1232,10 @@ static int fs_read(void *ctx, iso_file_t *f, void *buf, size_t len, size_t *got)
         return ISO_ERR_INVALID;
     }
     *got = 0u;
+    int rc = fs_op_begin_epoch(f->open_epoch, NULL);
+    if (rc != ISO_OK) {
+        return rc;
+    }
     uint8_t *p = (uint8_t *)buf;
     while (*got < len) {
         size_t rem = len - *got;
@@ -983,6 +1243,7 @@ static int fs_read(void *ctx, iso_file_t *f, void *buf, size_t len, size_t *got)
         UINT br = 0u;
         FRESULT fr = f_read(&f->fil, p + *got, chunk, &br);
         if (fr != FR_OK) {
+            fs_op_end();
             return iso_sd_fresult_to_err((int)fr);
         }
         *got += (size_t)br;
@@ -990,27 +1251,76 @@ static int fs_read(void *ctx, iso_file_t *f, void *buf, size_t len, size_t *got)
             break; /* EOF */
         }
     }
+    fs_op_end();
     return ISO_OK;
 }
 
-static int fs_get_extents(void *ctx, const char *path, iso_extent_t *out, size_t max, size_t *n) {
-    (void)ctx;
+#define SD_FAT32_READAHEAD_SECTORS 8u
+
+typedef struct {
+    uint32_t epoch;
+    uint32_t fatbase;
+    uint64_t cached_lba;
+    uint32_t cached_sectors;
+    uint8_t *buf;
+} sd_fat32_reader_t;
+
+static int sd_fat32_read_entry(void *ctx, uint32_t cluster, uint32_t *out_entry) {
+    sd_fat32_reader_t *r = (sd_fat32_reader_t *)ctx;
+    const uint64_t byte_off = (uint64_t)cluster * 4ULL;
+    const uint64_t fat_lba = (uint64_t)r->fatbase + (byte_off / ISO_SD_SECTOR_BYTES);
+    const size_t sec_off = (size_t)(byte_off % ISO_SD_SECTOR_BYTES);
+
+    if (r->cached_sectors == 0u || fat_lba < r->cached_lba ||
+        fat_lba >= r->cached_lba + (uint64_t)r->cached_sectors) {
+        uint64_t cap = atomic_load_explicit(&s_sd.total_sectors, memory_order_acquire);
+        if (fat_lba >= cap) {
+            return ISO_ERR_IO;
+        }
+        uint64_t rem = cap - fat_lba;
+        uint32_t cnt = (rem > SD_FAT32_READAHEAD_SECTORS) ? SD_FAT32_READAHEAD_SECTORS : (uint32_t)rem;
+        int rc = blk_read_sectors(NULL, r->epoch, fat_lba, cnt, r->buf);
+        if (rc != ISO_OK) {
+            r->cached_sectors = 0u;
+            return rc;
+        }
+        r->cached_lba = fat_lba;
+        r->cached_sectors = cnt;
+    }
+
+    const uint8_t *p = r->buf + (size_t)(fat_lba - r->cached_lba) * ISO_SD_SECTOR_BYTES + sec_off;
+    *out_entry = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                 ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    return ISO_OK;
+}
+
+static int fs_get_extents_impl(const char *path,
+                               bool pin_epoch,
+                               uint32_t pinned_epoch,
+                               iso_extent_t *out,
+                               size_t max,
+                               size_t *n) {
     if (!n || (max > 0u && !out)) {
         return ISO_ERR_INVALID;
     }
     *n = 0u;
+
+    uint32_t ep = pinned_epoch;
     char dpath[ISO_PATH_MAX + 4u];
-    int rc = fs_prepare_path(path, dpath, sizeof(dpath));
+    int rc = fs_prepare_path_begin(path, pin_epoch, pinned_epoch, dpath, sizeof(dpath), &ep, NULL);
     if (rc != ISO_OK) {
         return rc;
     }
+
     FILINFO fno;
     memset(&fno, 0, sizeof(fno));
     FRESULT fr = f_stat(dpath, &fno);
     if (fr != FR_OK) {
+        fs_op_end();
         return iso_sd_fresult_to_err((int)fr);
     }
     if ((fno.fattrib & AM_DIR) != 0) {
+        fs_op_end();
         return ISO_ERR_INVALID;
     }
 
@@ -1018,43 +1328,48 @@ static int fs_get_extents(void *ctx, const char *path, iso_extent_t *out, size_t
     memset(&fil, 0, sizeof(fil));
     fr = f_open(&fil, dpath, FA_READ);
     if (fr != FR_OK) {
+        fs_op_end();
         return iso_sd_fresult_to_err((int)fr);
     }
-    if (fil.obj.sclust == 0u || !fil.obj.fs) {
-        (void)f_close(&fil);
+
+    const uint32_t sclust = (uint32_t)fil.obj.sclust;
+    const FATFS *fs = fil.obj.fs;
+    const uint8_t fs_type = fs ? fs->fs_type : 0u;
+    const uint32_t n_fatent = fs ? (uint32_t)fs->n_fatent : 0u;
+    const uint32_t fatbase = fs ? (uint32_t)fs->fatbase : 0u;
+    const uint64_t db = fs ? (uint64_t)fs->database : 0ULL;
+    const uint32_t csize = fs ? (uint32_t)fs->csize : 0u;
+    (void)f_close(&fil);
+    fs_op_end();
+
+    if (sclust == 0u) {
         *n = 0u;
         return ISO_OK;
     }
+    if (fs_type != FS_FAT32 || n_fatent < 3u || csize == 0u) {
+        return ISO_ERR_UNSUPPORTED_FS;
+    }
 
-    size_t cap_frags = (max > (SIZE_MAX - 2u) / 2u) ? 4096u : max;
-    size_t cltbl_words = (cap_frags == 0u) ? 4u : (cap_frags * 2u + 2u);
-    DWORD *cltbl = (DWORD *)sd_alloc_buf(cltbl_words * sizeof(DWORD));
-    if (!cltbl) {
-        (void)f_close(&fil);
+    uint8_t *fat_buf = (uint8_t *)sd_alloc_buf(SD_FAT32_READAHEAD_SECTORS * ISO_SD_SECTOR_BYTES);
+    if (!fat_buf) {
         return ISO_ERR_NOMEM;
     }
-    cltbl[0] = (DWORD)cltbl_words;
-    fil.cltbl = cltbl;
-
-    fr = f_lseek(&fil, CREATE_LINKMAP);
-    uint64_t db = (uint64_t)fil.obj.fs->database;
-    uint32_t csize = (uint32_t)fil.obj.fs->csize;
-    (void)f_close(&fil);
-
-    if (fr == FR_NOT_ENOUGH_CORE) {
-        uint32_t ulen = (uint32_t)cltbl[0];
-        *n = (ulen >= 2u) ? (size_t)((ulen - 2u) / 2u) : 0u;
-        free(cltbl);
-        return ISO_ERR_TOO_FRAGMENTED;
-    }
-    if (fr != FR_OK) {
-        free(cltbl);
-        return iso_sd_fresult_to_err((int)fr);
-    }
-
-    rc = iso_sd_clmt_to_extents((const uint32_t *)cltbl, cltbl_words, db, csize, out, max, n);
-    free(cltbl);
+    sd_fat32_reader_t reader = {
+        .epoch = ep,
+        .fatbase = fatbase,
+        .cached_lba = 0u,
+        .cached_sectors = 0u,
+        .buf = fat_buf,
+    };
+    rc = iso_sd_walk_fat32_extents(sclust, n_fatent, db, csize,
+                                   sd_fat32_read_entry, &reader, out, max, n);
+    free(fat_buf);
     return rc;
+}
+
+static int fs_get_extents(void *ctx, const char *path, iso_extent_t *out, size_t max, size_t *n) {
+    (void)ctx;
+    return fs_get_extents_impl(path, false, 0u, out, max, n);
 }
 
 static const iso_fs_t s_fs = {
@@ -1108,21 +1423,27 @@ esp_err_t iso_sd_init(const iso_sd_config_t *cfg) {
         return ESP_ERR_INVALID_STATE;
     }
 
+    ESP_RETURN_ON_ERROR(sd_config_power_gpio(), TAG, "GPIO45 power switch config failed");
+
     memset(&s_sd, 0, sizeof(s_sd));
     s_sd.pdrv = FF_DRV_NOT_USED;
-    iso_sd_state_init(&s_sd.ctrl);
+    iso_sd_state_init_with_epoch(&s_sd.ctrl, sd_next_global_epoch());
+    atomic_store_explicit(&s_sd.shutdown_req, false, memory_order_release);
     if (cfg) {
         s_sd.cfg = *cfg;
     }
 
     s_sd.meta_lock = xSemaphoreCreateMutex();
     s_sd.io_lock = xSemaphoreCreateMutex();
-    if (!s_sd.meta_lock || !s_sd.io_lock) {
+    s_sd.fs_state_lock = xSemaphoreCreateMutex();
+    s_sd.fs_drain_sem = xSemaphoreCreateBinary();
+    s_sd.mon_wake_sem = xSemaphoreCreateBinary();
+    s_sd.mon_done_sem = xSemaphoreCreateBinary();
+    if (!s_sd.meta_lock || !s_sd.io_lock || !s_sd.fs_state_lock ||
+        !s_sd.fs_drain_sem || !s_sd.mon_wake_sem || !s_sd.mon_done_sem) {
         iso_sd_deinit();
         return ESP_ERR_NO_MEM;
     }
-
-    ESP_RETURN_ON_ERROR(sd_config_power_gpio(), TAG, "GPIO45 power switch config failed");
 
     xSemaphoreTake(s_sd.meta_lock, portMAX_DELAY);
     esp_err_t mount_err = sd_mount_hw_locked();
@@ -1131,9 +1452,9 @@ esp_err_t iso_sd_init(const iso_sd_config_t *cfg) {
         s_sd.cfg.on_ready(s_sd.cfg.on_ready_ctx);
     }
 
-    s_sd.shutdown_req = false;
     if (xTaskCreate(sd_monitor_task, "iso_sd_mon", ISO_SD_MON_STACK_SIZE, NULL,
                     ISO_SD_MON_TASK_PRIO, &s_sd.mon_task) != pdPASS) {
+        s_sd.mon_task = NULL;
         iso_sd_deinit();
         return ESP_ERR_NO_MEM;
     }
@@ -1145,10 +1466,21 @@ esp_err_t iso_sd_init(const iso_sd_config_t *cfg) {
 }
 
 void iso_sd_deinit(void) {
-    s_sd.shutdown_req = true;
-    for (int i = 0; i < 50 && s_sd.mon_task != NULL; i++) {
-        vTaskDelay(pdMS_TO_TICKS(50));
+    atomic_store_explicit(&s_sd.shutdown_req, true, memory_order_release);
+    if (s_sd.mon_task != NULL) {
+        if (s_sd.mon_wake_sem) {
+            (void)xSemaphoreGive(s_sd.mon_wake_sem);
+        }
+        if (s_sd.mon_done_sem) {
+            (void)xSemaphoreTake(s_sd.mon_done_sem, portMAX_DELAY);
+        }
+        s_sd.mon_task = NULL;
     }
+
+    /* Publish non-READY and bump epoch before draining & tearing down FatFs/HW. */
+    (void)sd_advance_epoch();
+    iso_sd_state_set(&s_sd.ctrl, ISO_SD_NO_CARD);
+
     if (s_sd.meta_lock) {
         xSemaphoreTake(s_sd.meta_lock, portMAX_DELAY);
         sd_unmount_hw_locked();
@@ -1161,6 +1493,22 @@ void iso_sd_deinit(void) {
     if (s_sd.io_lock) {
         vSemaphoreDelete(s_sd.io_lock);
         s_sd.io_lock = NULL;
+    }
+    if (s_sd.fs_state_lock) {
+        vSemaphoreDelete(s_sd.fs_state_lock);
+        s_sd.fs_state_lock = NULL;
+    }
+    if (s_sd.fs_drain_sem) {
+        vSemaphoreDelete(s_sd.fs_drain_sem);
+        s_sd.fs_drain_sem = NULL;
+    }
+    if (s_sd.mon_wake_sem) {
+        vSemaphoreDelete(s_sd.mon_wake_sem);
+        s_sd.mon_wake_sem = NULL;
+    }
+    if (s_sd.mon_done_sem) {
+        vSemaphoreDelete(s_sd.mon_done_sem);
+        s_sd.mon_done_sem = NULL;
     }
     s_sd.initialized = false;
 }
@@ -1187,7 +1535,7 @@ esp_err_t iso_sd_run_self_test(void) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    static const char k_path[] = "/iso/_selftest.tmp";
+    const uint32_t test_epoch = s_blockdev.epoch(NULL);
     const size_t test_bytes = 65536u;
     const size_t sector_bytes = ISO_SD_SECTOR_BYTES;
     uint8_t *wr = (uint8_t *)sd_alloc_buf(test_bytes);
@@ -1203,46 +1551,118 @@ esp_err_t iso_sd_run_self_test(void) {
         wr[i] = (uint8_t)(((i * 131u) ^ (i >> 9)) & 0xFFu);
     }
 
-    (void)s_fs.remove(NULL, k_path);
-    iso_file_t *wf = NULL;
-    int64_t t0 = esp_timer_get_time();
-    int rc = s_fs.open_for_write(NULL, k_path, false, &wf);
+    char rel_path[ISO_PATH_MAX];
+    char dpath[ISO_PATH_MAX + 4u];
+    bool created = false;
+    int rc = ISO_OK;
+    int64_t wr_us = 0;
+
+    char drv_char = '0';
+    rc = fs_op_begin_epoch(test_epoch, &drv_char);
     if (rc == ISO_OK) {
-        rc = s_fs.write(NULL, wf, wr, test_bytes);
-        if (rc == ISO_OK) {
-            rc = s_fs.sync(NULL, wf);
+        FIL wf;
+        bool open_ok = false;
+        int64_t t0 = 0;
+        for (uint32_t attempt = 0u; attempt < 16u; attempt++) {
+            int n = snprintf(rel_path, sizeof(rel_path), "/iso/_st_%08" PRIx32 "_%u.tmp",
+                             test_epoch, (unsigned)attempt);
+            if (n <= 0 || (size_t)n >= sizeof(rel_path) ||
+                iso_sd_format_fatfs_path(drv_char, rel_path, dpath, sizeof(dpath)) != ISO_OK) {
+                rc = ISO_ERR_INVALID;
+                break;
+            }
+            memset(&wf, 0, sizeof(wf));
+            t0 = esp_timer_get_time();
+            FRESULT fr = f_open(&wf, dpath, FA_WRITE | FA_CREATE_NEW);
+            if (fr == FR_OK) {
+                created = true;
+                open_ok = true;
+                break;
+            }
+            if (fr != FR_EXIST) {
+                rc = iso_sd_fresult_to_err((int)fr);
+                break;
+            }
         }
-        int crc = s_fs.close(NULL, wf);
-        if (rc == ISO_OK) {
-            rc = crc;
+        if (rc == ISO_OK && !open_ok) {
+            rc = ISO_ERR_EXISTS;
         }
+        if (open_ok) {
+            size_t off = 0u;
+            while (off < test_bytes) {
+                UINT bw = 0u;
+                FRESULT wfr = f_write(&wf, wr + off, (UINT)(test_bytes - off), &bw);
+                if (wfr != FR_OK) {
+                    rc = iso_sd_fresult_to_err((int)wfr);
+                    break;
+                }
+                if (bw == 0u) {
+                    rc = ISO_ERR_NO_SPACE;
+                    break;
+                }
+                off += (size_t)bw;
+            }
+            if (rc == ISO_OK) {
+                FRESULT sfr = f_sync(&wf);
+                if (sfr != FR_OK) {
+                    rc = iso_sd_fresult_to_err((int)sfr);
+                }
+            }
+            FRESULT cfr = f_close(&wf);
+            if (rc == ISO_OK) {
+                rc = iso_sd_fresult_to_err((int)cfr);
+            }
+            wr_us = esp_timer_get_time() - t0;
+        }
+        fs_op_end();
     }
-    int64_t wr_us = esp_timer_get_time() - t0;
 
     iso_extent_t ext[64];
     size_t ext_n = 0u;
-    int64_t clmt_us = 0;
+    int64_t ext_us = 0;
     if (rc == ISO_OK) {
         int64_t t1 = esp_timer_get_time();
-        rc = s_fs.get_extents(NULL, k_path, ext, 64u, &ext_n);
-        clmt_us = esp_timer_get_time() - t1;
+        rc = fs_get_extents_impl(rel_path, true, test_epoch, ext, 64u, &ext_n);
+        ext_us = esp_timer_get_time() - t1;
     }
 
-    int64_t raw_us = 0;
-    uint32_t epoch = s_blockdev.epoch(NULL);
     if (rc == ISO_OK) {
-        iso_file_t *rf = NULL;
-        rc = s_fs.open_for_read(NULL, k_path, &rf);
+        char rdrv = '0';
+        rc = fs_op_begin_epoch(test_epoch, &rdrv);
         if (rc == ISO_OK) {
-            size_t got = 0u;
-            rc = s_fs.read(NULL, rf, rd_fs, test_bytes, &got);
-            (void)s_fs.close(NULL, rf);
-            if (rc == ISO_OK && got != test_bytes) {
-                rc = ISO_ERR_IO;
+            if (iso_sd_format_fatfs_path(rdrv, rel_path, dpath, sizeof(dpath)) != ISO_OK) {
+                rc = ISO_ERR_INVALID;
+            } else {
+                FIL rf;
+                memset(&rf, 0, sizeof(rf));
+                FRESULT rfr = f_open(&rf, dpath, FA_READ);
+                if (rfr != FR_OK) {
+                    rc = iso_sd_fresult_to_err((int)rfr);
+                } else {
+                    size_t got = 0u;
+                    while (got < test_bytes) {
+                        UINT br = 0u;
+                        rfr = f_read(&rf, rd_fs + got, (UINT)(test_bytes - got), &br);
+                        if (rfr != FR_OK) {
+                            rc = iso_sd_fresult_to_err((int)rfr);
+                            break;
+                        }
+                        got += (size_t)br;
+                        if (br == 0u) {
+                            break;
+                        }
+                    }
+                    (void)f_close(&rf);
+                    if (rc == ISO_OK && got != test_bytes) {
+                        rc = ISO_ERR_IO;
+                    }
+                }
             }
+            fs_op_end();
         }
     }
 
+    int64_t raw_us = 0;
     if (rc == ISO_OK) {
         size_t need_sectors = test_bytes / sector_bytes;
         size_t done_sectors = 0u;
@@ -1252,7 +1672,7 @@ esp_err_t iso_sd_run_self_test(void) {
             if (done_sectors + take > need_sectors) {
                 take = (uint64_t)(need_sectors - done_sectors);
             }
-            rc = s_blockdev.read_sectors(NULL, epoch, ext[i].start_sector, (uint32_t)take,
+            rc = s_blockdev.read_sectors(NULL, test_epoch, ext[i].start_sector, (uint32_t)take,
                                          rd_raw + done_sectors * sector_bytes);
             if (rc != ISO_OK) {
                 break;
@@ -1267,18 +1687,27 @@ esp_err_t iso_sd_run_self_test(void) {
 
     bool fs_match = (rc == ISO_OK) && (memcmp(wr, rd_fs, test_bytes) == 0);
     bool raw_match = (rc == ISO_OK) && (memcmp(rd_fs, rd_raw, test_bytes) == 0);
-    int epoch_rc = s_blockdev.read_sectors(NULL, epoch + 1u, 0u, 1u, rd_raw);
+    int epoch_rc = s_blockdev.read_sectors(NULL, test_epoch + 1u, 0u, 1u, rd_raw);
 
-    (void)s_fs.remove(NULL, k_path);
+    if (created) {
+        char udrv = '0';
+        if (fs_op_begin_epoch(test_epoch, &udrv) == ISO_OK) {
+            if (iso_sd_format_fatfs_path(udrv, rel_path, dpath, sizeof(dpath)) == ISO_OK) {
+                (void)f_unlink(dpath);
+            }
+            fs_op_end();
+        }
+    }
+
     free(wr);
     free(rd_fs);
     free(rd_raw);
 
     ESP_LOGI(TAG,
              "SD self-test: rc=%d fs_match=%d raw_match=%d extents=%u "
-             "wr=%" PRId64 "us clmt=%" PRId64 "us raw_rd=%" PRId64 "us epoch_guard=%d",
+             "wr=%" PRId64 "us ext_walk=%" PRId64 "us raw_rd=%" PRId64 "us epoch_guard=%d",
              rc, fs_match ? 1 : 0, raw_match ? 1 : 0, (unsigned)ext_n,
-             wr_us, clmt_us, raw_us, epoch_rc);
+             wr_us, ext_us, raw_us, epoch_rc);
     return (rc == ISO_OK && fs_match && raw_match && epoch_rc == ISO_ERR_EPOCH) ? ESP_OK : ESP_FAIL;
 }
 

@@ -78,8 +78,26 @@ int iso_sd_clmt_to_extents(const uint32_t *cltbl, size_t cltbl_cap,
                            uint64_t database_sector, uint32_t sectors_per_cluster,
                            iso_extent_t *out, size_t max_out, size_t *out_n);
 
+/* Callback that reads one 32-bit raw FAT32 entry for @p cluster (lower 28 bits are cluster value). */
+typedef int (*iso_sd_fat32_read_entry_fn)(void *ctx, uint32_t cluster, uint32_t *out_entry);
+
+/* Walk a FAT32 cluster chain with cycle detection (Brent's algorithm) and cluster bound checks.
+ * Rejects cycles, bad clusters (0x0FFFFFF7), and out-of-range entries with ISO_ERR_IO instead of spinning. */
+int iso_sd_walk_fat32_extents(uint32_t start_cluster,
+                              uint32_t n_fatent,
+                              uint64_t database_sector,
+                              uint32_t sectors_per_cluster,
+                              iso_sd_fat32_read_entry_fn read_entry,
+                              void *read_ctx,
+                              iso_extent_t *out,
+                              size_t max_out,
+                              size_t *out_n);
+
 /* Initialize atomic SD control state (epoch=1, sd_state=ISO_SD_NO_CARD, io_fault=false). */
 void iso_sd_state_init(iso_sd_ctrl_state_t *st);
+
+/* Initialize atomic SD control state with an explicit non-zero initial epoch. */
+void iso_sd_state_init_with_epoch(iso_sd_ctrl_state_t *st, uint32_t initial_epoch);
 
 uint32_t iso_sd_state_epoch(const iso_sd_ctrl_state_t *st);
 uint32_t iso_sd_state_epoch_bump(iso_sd_ctrl_state_t *st);
