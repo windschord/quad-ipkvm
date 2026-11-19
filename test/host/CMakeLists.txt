@@ -204,8 +204,19 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE kvm_api kvm_ctrl kvm_board_mock http_guard auth_logic)
     endif()
 
-    # msc_bot のテストだけ（チェックアウト先の絶対パスに /msc_bot/ が含まれても、他のテストにはリンクしない）
+    # ホストテストのディレクトリからの相対パスで選ぶ（チェックアウト先の絶対パスに /msc_bot/ や /iso_catalog/ が含まれても、他のテストにはリンクしない）
     file(RELATIVE_PATH test_rel_path ${CMAKE_CURRENT_SOURCE_DIR} ${test_source})
+
+    if (test_rel_path MATCHES "^iso_extent/")
+        target_link_libraries(${test_name} PRIVATE iso_extent pthread)
+    endif()
+
+    if (test_rel_path MATCHES "^iso_catalog/")
+        target_link_libraries(${test_name} PRIVATE iso_catalog iso_mock_fs)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/iso_catalog)
+    endif()
+
+    # msc_bot のテストだけ
     if (test_rel_path MATCHES "^msc_bot/")
         target_link_libraries(${test_name} PRIVATE msc_bot)
     endif()
@@ -270,6 +281,18 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/usb_vbus_ctrl ${CMAKE_BINA
 
 # kvm_api (HTTP API of KVM/ATX: strict body parser, JSON, result -> HTTP mapping, pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_api ${CMAKE_BINARY_DIR}/kvm_api)
+
+# iso_extent (P8: CD block -> SD sector spans, extent table with refcount; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_extent ${CMAKE_BINARY_DIR}/iso_extent)
+
+# iso_catalog (P8: meta codec, 2 slots, name rule, scan, import, delete steps; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_catalog ${CMAKE_BINARY_DIR}/iso_catalog)
+
+# In-memory iso_fs_t with power-cut injection (for the iso_catalog host tests)
+add_library(iso_mock_fs STATIC ${CMAKE_SOURCE_DIR}/iso_catalog/iso_mock_fs.c)
+target_include_directories(iso_mock_fs PUBLIC ${CMAKE_SOURCE_DIR}/iso_catalog ${CMAKE_SOURCE_DIR}/../../components/iso_seams/include)
+target_compile_options(iso_mock_fs PRIVATE ${TEST_COMPILE_OPTIONS})
+target_link_options(iso_mock_fs PRIVATE ${TEST_LINK_OPTIONS})
 
 # iso_media (virtual CD-ROM media state: EMPTY/LOADED, unit attention, prevent removal; docs/ISO_MOUNT_DESIGN.md 5.5; pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_media ${CMAKE_BINARY_DIR}/iso_media)
