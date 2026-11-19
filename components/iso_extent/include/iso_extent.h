@@ -24,7 +24,9 @@
  *     iso_extent_valid_bytes() バイト目以降を 0 にする。ファイルの最後のセクタの、EOF より後ろのバイトは 0 とは限らない。
  *   - 表は、作成時のカードの epoch を持つ。参照カウント(ref / unref)を持ち、0 になったら解放する(遅延解放)。
  *   - メモリの確保は、アロケータを関数ポインタで注入する(ホストテストでは malloc、IDF では PSRAM)。
- *   - スレッドセーフではない(呼び出し側が iso_state_mutex などで守る。設計 4.1)。
+ *   - 表の参照カウント (ref / unref / refs) は原子的で、どのタスクからも呼べる (C11 atomic。mmc_scsi の遅延した release は、
+ *     iso_msc_task から呼ばれうる)。表の中身は作成後に変わらないので、参照を持つ間は、ロックなしで iso_extent_map できる。
+ *     表の作成 (build) は、呼び出し側が iso_op_mutex などで守る。
  */
 
 #include <stdbool.h>

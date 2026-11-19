@@ -236,3 +236,11 @@ python3 tools/test/mutate_iso_extent.py <repo> <スクラッチ> tools/test/iso_
 | E207 | valid_bytes: takes the larger | `test_iso_extent_map:crash/rc=1` |
 | E208 | valid_bytes: remainder off by one | `test_iso_extent_map:crash/rc=1` |
 | E209 | valid_bytes: always len | `test_iso_extent_map:crash/rc=1` |
+
+
+## 追記: 参照カウントを原子的にした（PR #151 のレビューを受けて）
+
+`mmc_scsi` の遅延した `backend.release()` は、`iso_msc_task`（`read_blocks` を呼んだタスク）から、`iso_state_mutex` の外で呼ばれうる。そのため、`iso_extent_table_ref` / `unref` / `refs` を C11 の atomic にした（`iso_extent.c`。ビルドは `-std=c11`）。表の中身は作成後に変わらないので、参照を持つ間は、ロックなしで `iso_extent_map` できる。
+
+- テスト: `test_refcount_is_atomic_across_threads`（4 スレッド × 20000 回の `ref` / `unref` の後、参照数が 1 に戻り、解放が 1 回も起きない）。
+- 変異テスト: 参照の E078〜E079、E100〜E111、E120 を、新しいコードに合わせて書き直した。15 件を再実行し、**killed 14、survived 1（E109。`old == 0` の検査を外すもの。0 になった表は解放済みで、二重の `unref` は、使用後の解放になり、テストできない。同値）**。

@@ -1,5 +1,6 @@
 #include "iso_extent.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
 typedef struct {
@@ -9,7 +10,7 @@ typedef struct {
 
 struct iso_extent_table {
     iso_allocator_t alloc;
-    uint32_t refs;
+    _Atomic uint32_t refs; /* 参照カウント。ref / unref は、どのタスクからも呼べる（原子的）。表の中身は作成後に変わらない */
     uint32_t epoch;
     uint64_t size_bytes;
     uint32_t part_blocks;
@@ -106,7 +107,7 @@ int iso_extent_table_build(const iso_allocator_t *alloc, uint32_t epoch, uint64_
     iso_extent_table_t *t = (iso_extent_table_t *)(void *)base;
     memset(t, 0, sizeof(*t));
     t->alloc = *alloc;
-    t->refs = 1;
+    atomic_init(&t->refs, 1u);
     t->epoch = epoch;
     t->size_bytes = size_bytes;
     t->part_blocks = part_blocks;
@@ -130,13 +131,20 @@ int iso_extent_table_build(const iso_allocator_t *alloc, uint32_t epoch, uint64_
 }
 
 void iso_extent_table_ref(iso_extent_table_t *t) {
-    if (t) t->refs++;
+    if (t) atomic_fetch_add_explicit(&t->refs, 1u, memory_order_relaxed);
 }
 
 uint32_t iso_extent_table_unref(iso_extent_table_t *t) {
-    if (!t || t->refs == 0) return 0;
-    t->refs--;
-    uint32_t left = t->refs;
+    if (!t) return 0;
+    uint32_t old = atomic_load_explicit(&t->refs, memory_order_relaxed);
+    for (;;) {
+        if (old == 0) return 0; /* 0 のものは、すでに解放済み（二重の unref）。何もしない */
+        if (atomic_compare_exchange_weak_explicit(&t->refs, &old, old - 1u, memory_order_acq_rel,
+                                                  memory_order_relaxed)) {
+            break;
+        }
+    }
+    const uint32_t left = old - 1u;
     if (left == 0) {
         iso_allocator_t a = t->alloc;
         a.free(a.ctx, t);
@@ -145,7 +153,7 @@ uint32_t iso_extent_table_unref(iso_extent_table_t *t) {
 }
 
 uint32_t iso_extent_table_refs(const iso_extent_table_t *t) {
-    return t ? t->refs : 0;
+    return t ? atomic_load_explicit(&((iso_extent_table_t *)t)->refs, memory_order_acquire) : 0;
 }
 
 uint32_t iso_extent_table_epoch(const iso_extent_table_t *t) {

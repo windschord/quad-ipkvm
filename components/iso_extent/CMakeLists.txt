@@ -8,9 +8,9 @@ else()
     add_library(iso_extent STATIC iso_extent.c)
     target_include_directories(iso_extent PUBLIC include ${CMAKE_CURRENT_LIST_DIR}/../iso_seams/include)
 
-    # Enforce C99, ASan, UBSan, and warnings
+    # Enforce C11 (stdatomic), ASan, UBSan, and warnings
     target_compile_options(iso_extent PRIVATE
-        -std=c99
+        -std=c11
         -Wall -Wextra -Werror
         -fsanitize=address -fsanitize=undefined
     )

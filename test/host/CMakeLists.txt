@@ -196,7 +196,7 @@ foreach(test_source ${TEST_SOURCES})
     endif()
 
     if (test_source MATCHES "/iso_extent/")
-        target_link_libraries(${test_name} PRIVATE iso_extent)
+        target_link_libraries(${test_name} PRIVATE iso_extent pthread)
     endif()
 
     if (test_source MATCHES "/iso_catalog/")

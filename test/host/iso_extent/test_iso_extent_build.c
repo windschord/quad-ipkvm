@@ -1,7 +1,9 @@
+#define _POSIX_C_SOURCE 200809L
 /*
  * iso_extent: 純粋な計算、表の構築と検証、参照カウント。期待値はすべて手書き(実装から計算しない)。
  * 変換 (iso_extent_map) は test_iso_extent_map.c。
  */
+#include <pthread.h>
 #include "ie_common.h"
 
 void setUp(void) { memset(&H, 0, sizeof(H)); }
@@ -472,6 +474,34 @@ void test_unref_frees_with_the_same_pointer_and_context(void) {
     TEST_ASSERT_NULL(H.last); /* ie_free が同じポインタで呼ばれた */
 }
 
+#define STRESS_THREADS 4
+#define STRESS_ITERS 20000
+
+static void *ref_unref_worker(void *arg) {
+    iso_extent_table_t *t = (iso_extent_table_t *)arg;
+    for (int i = 0; i < STRESS_ITERS; i++) {
+        iso_extent_table_ref(t);
+        (void)iso_extent_table_unref(t);
+    }
+    return NULL;
+}
+
+/* 参照カウントは原子的: 別のタスク(iso_msc_task の遅延した release など)から、同時に ref / unref してもずれない。 */
+void test_refcount_is_atomic_across_threads(void) {
+    iso_extent_table_t *t = build_table_a();
+    pthread_t th[STRESS_THREADS];
+    for (int i = 0; i < STRESS_THREADS; i++) {
+        TEST_ASSERT_EQUAL_INT(0, pthread_create(&th[i], NULL, ref_unref_worker, t));
+    }
+    for (int i = 0; i < STRESS_THREADS; i++) {
+        TEST_ASSERT_EQUAL_INT(0, pthread_join(th[i], NULL));
+    }
+    TEST_ASSERT_EQUAL_UINT32(1, iso_extent_table_refs(t)); /* 作成時の 1 だけが残る */
+    TEST_ASSERT_EQUAL_INT(0, H.frees);
+    TEST_ASSERT_EQUAL_UINT32(0, iso_extent_table_unref(t));
+    TEST_ASSERT_EQUAL_INT(1, H.frees);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_capacity_blocks_rounds_up);
@@ -499,6 +529,7 @@ int main(void) {
     RUN_TEST(test_build_checks_parts_in_order);
     RUN_TEST(test_build_nomem);
     RUN_TEST(test_refcount);
+    RUN_TEST(test_refcount_is_atomic_across_threads);
     RUN_TEST(test_unref_frees_with_the_same_pointer_and_context);
     return UNITY_END();
 }
