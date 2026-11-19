@@ -16,14 +16,14 @@
 
 | ファイル | 内容 | 件数(Unity のテストケース) |
 |---|---|---|
-| `test/host/iso_core/test_core_queue.c` | 優先順位(`DELETE`、`FINISH`、`IDLE_CLOSE`、`INDEX`。同じ種類は入れた順)、後から入れた高い優先順位が先に動く、動いているジョブは `pick` が返し続ける、`INDEX` はキューに積まない(入れた順に 1 つずつ)、**キューは 8 でいっぱい、9 つ目は `ISO_ERR_BUSY`**(`DELETE` / `FINISH` は状態を変えずに取り消す。待っているジョブを置き換える分は数えない)、同じイメージの重複する投入の合流、`FINISH` と待っている `IDLE_CLOSE`、**`DELETE` が動いている `FINISH` / `INDEX` に中止の印**を立てて枠を空ける(別のイメージには立てない)、待っているジョブの取り消し、アップロード中の `DELETE`(ファイルを閉じ、SHA-256 を捨て、枠を空ける)、マウント中は拒否(何も変えない)、`meta_corrupt` の削除 | 31 |
-| `test/host/iso_core/test_core_jobs.c` | 各ジョブのステップ: `FINISH`(完了、I/O エラーで `incomplete` + 再試行、署名の誤りは DONE で `invalid`)、`INDEX`(表の公開、`part_mismatch` で `invalid` と古い表の解放(READ の参照は残る)、I/O エラーは `ready` の表なし、`meta` 書き込みの失敗)、`IDLE_CLOSE`、**`DELETE`**(`free_bytes` の更新、表なしは待たない、**参照待ち: 待つ間は何も消さない、30 秒(29999 ms / 30000 ms)で `ERROR(ISO_ERR_BUSY)` で `deleting` のまま、時刻の巻き戻りは経過 0**、I/O エラーと続き)、ビューの内容(状態の表示: `ready` で表がなければ `finalizing`、`sha256`、`hidden`、`meta_corrupt`、`sd_state`)、フックなしでも動く | 25 |
-| `test/host/iso_core/test_core_reinit.c` | **SD の再初期化の順序**: remount の時点で、キュー・INDEX の集合・動いているジョブ・表・ファイルハンドル・枠・SHA-256 の状態が片づいていて、カタログは古いまま、`uploading` は `incomplete`、READ の参照は残る(遅延解放)。その後、カタログを作り直し、`ready` は INDEX の集合へ、`deleting` は `DELETE` へ、`free_bytes` を採り直し、ビューを更新する。remount / scan の失敗(空のカタログ)、二度の呼び出し、動いている `FINISH` / `DELETE` の取り消し。起動(`uploading` → `incomplete`、`deleting` の再開は最大 8 つ、前の状態を捨てる) | 12 |
+| `test/host/iso_core/test_core_queue.c` | 優先順位(`DELETE`、`FINISH`、`IDLE_CLOSE`、`INDEX`。同じ種類は入れた順)、後から入れた高い優先順位が先に動く、動いているジョブは `pick` が返し続ける、`INDEX` はキューに積まない(入れた順に 1 つずつ)、**キューは 8 でいっぱい、9 つ目は `ISO_ERR_BUSY`**(`DELETE` / `FINISH` は状態を変えずに取り消す。待っているジョブを置き換える分は数えない)、同じイメージの重複する投入の合流、`FINISH` と待っている `IDLE_CLOSE`、**`DELETE` が動いている `FINISH` / `INDEX` に中止の印**を立てて枠を空ける(別のイメージには立てない)、待っているジョブの取り消し、アップロード中の `DELETE`(ファイルを閉じ、SHA-256 を捨て、枠を空ける)、マウント中は拒否(何も変えない)、`meta_corrupt` の削除 | 34 |
+| `test/host/iso_core/test_core_jobs.c` | 各ジョブのステップ: `FINISH`(完了、I/O エラーで `incomplete` + 再試行、署名の誤りは DONE で `invalid`)、`INDEX`(表の公開、`part_mismatch` で `invalid` と古い表の解放(READ の参照は残る)、I/O エラーは `ready` の表なし、`meta` 書き込みの失敗)、`IDLE_CLOSE`、**`DELETE`**(`free_bytes` の更新、表なしは待たない、**参照待ち: 待つ間は何も消さない、30 秒(29999 ms / 30000 ms)で `ERROR(ISO_ERR_BUSY)` で `deleting` のまま、時刻の巻き戻りは経過 0**、I/O エラーと続き)、ビューの内容(状態の表示: `ready` で表がなければ `finalizing`、`sha256`、`hidden`、`meta_corrupt`、`sd_state`)、フックなしでも動く | 28 |
+| `test/host/iso_core/test_core_reinit.c` | **SD の再初期化の順序**: remount の時点で、キュー・INDEX の集合・動いているジョブ・表・ファイルハンドル・枠・SHA-256 の状態が片づいていて、カタログは古いまま、`uploading` は `incomplete`、READ の参照は残る(遅延解放)。その後、カタログを作り直し、`ready` は INDEX の集合へ、`deleting` は `DELETE` へ、`free_bytes` を採り直し、ビューを更新する。remount / scan の失敗(空のカタログ)、二度の呼び出し、動いている `FINISH` / `DELETE` の取り消し。起動(`uploading` → `incomplete`、`deleting` の再開は最大 8 つ、前の状態を捨てる) | 13 |
 | `test/host/iso_core/test_core_tick.c` | `iso_upload_tick`: **経過 299999 ms は積まず、300000 ms で `IDLE_CLOSE`**、重複しない、最後の `PUT` から数える、`finalizing` はタイムアウトしない、**時刻の巻き戻りは経過 0 で基準を引き直す**、キューがあふれたら次の `tick` で再試行、`receiving` → `idle` の境(5000 ms ちょうどは receiving、5001 ms で idle。変わったときだけビューを更新) | 11 |
 | `test/host/iso_core/test_core_fuzz.c` | **固定シードのファズ**(下記) | 1 |
 | `test/host/iso_core/core_common.h` | 共通の部品(`iso_core` の設定、フック、ワーカーのループの代わりの `drive()` / `run_job()`) | - |
 
-合計 80 件(`test/host/CMakeLists.txt` の既存の自動発見で、ctest の実行ファイルが 5 個増える)。期待値は手書き。
+合計 87 件(`test/host/CMakeLists.txt` の既存の自動発見で、ctest の実行ファイルが 5 個増える)。期待値は手書き。
 
 ### ファズ(`test_core_fuzz.c`。固定シード、ASan / UBSan)
 
