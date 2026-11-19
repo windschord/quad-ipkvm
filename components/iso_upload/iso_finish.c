@@ -23,9 +23,14 @@ void iso_finish_job_release(iso_upload_t *u, iso_finish_job_t *job) { iso_index_
 
 /* ---- SHA-256 の再計算 ---------------------------------------------------------------- */
 
-static iso_step_result_t hash_fail(iso_finish_job_t *job, iso_outcome_t kind, uint8_t reason, int err) {
-    job->fail = kind;
+static iso_step_result_t hash_invalid(iso_finish_job_t *job, uint8_t reason) {
+    job->fail = ISO_OUTCOME_INVALID;
     job->fail_reason = reason;
+    return step_res(ISO_STEP_DONE, ISO_OK);
+}
+
+static iso_step_result_t hash_ioerr(iso_finish_job_t *job, int err) {
+    job->fail = ISO_OUTCOME_IOERR;
     job->fail_err = err;
     return step_res(ISO_STEP_DONE, ISO_OK);
 }
@@ -34,7 +39,7 @@ iso_step_result_t iso_upload_hash_step(iso_upload_t *u, iso_finish_job_t *job, u
     const iso_fs_t *fs = iso_up_fs(u);
     const iso_sha256_t *sha = u->cfg.sha;
     iso_catalog_entry_t *e = iso_catalog_find(u->cfg.cat, job->id);
-    if (!e || !e->meta_valid) return hash_fail(job, ISO_OUTCOME_IOERR, 0, ISO_ERR_NOT_FOUND);
+    if (!e || !e->meta_valid) return hash_ioerr(job, ISO_ERR_NOT_FOUND);
     const iso_meta_t *m = &e->meta;
 
     if (!job->hash_started) {
@@ -46,11 +51,11 @@ iso_step_result_t iso_upload_hash_step(iso_upload_t *u, iso_finish_job_t *job, u
     const uint64_t expected = iso_extent_part_bytes(m->size_bytes, m->part_blocks, job->hash_part);
     char path[ISO_PATH_MAX];
     int rc = iso_up_part_path(path, sizeof(path), job->id, job->hash_part);
-    if (rc < 0) return hash_fail(job, ISO_OUTCOME_IOERR, 0, rc);
+    if (rc < 0) return hash_ioerr(job, rc);
     iso_file_t *f = NULL;
     rc = fs->open_for_read(fs->ctx, path, &f);
-    if (rc == ISO_ERR_NOT_FOUND) return hash_fail(job, ISO_OUTCOME_INVALID, ISO_INVALID_PART_MISMATCH, 0);
-    if (rc < 0) return hash_fail(job, ISO_OUTCOME_IOERR, 0, rc);
+    if (rc == ISO_ERR_NOT_FOUND) return hash_invalid(job, ISO_INVALID_PART_MISMATCH);
+    if (rc < 0) return hash_ioerr(job, rc);
 
     const uint64_t limit = budget_bytes ? budget_bytes : u->cfg.io_buf_size;
     uint64_t spent = 0;
@@ -62,11 +67,11 @@ iso_step_result_t iso_upload_hash_step(iso_upload_t *u, iso_finish_job_t *job, u
         rc = fs->read_at(fs->ctx, f, job->hash_off, u->cfg.io_buf, (size_t)n, &got);
         if (rc < 0) {
             (void)fs->close(fs->ctx, f);
-            return hash_fail(job, ISO_OUTCOME_IOERR, 0, rc);
+            return hash_ioerr(job, rc);
         }
         if (got != n) { /* パーツが、meta の期待より短い */
             (void)fs->close(fs->ctx, f);
-            return hash_fail(job, ISO_OUTCOME_INVALID, ISO_INVALID_PART_MISMATCH, 0);
+            return hash_invalid(job, ISO_INVALID_PART_MISMATCH);
         }
         sha->update(u->cfg.sha_state, u->cfg.io_buf, (size_t)n);
         job->hash_off += n;
@@ -112,9 +117,7 @@ static int check_signature(iso_upload_t *u, const iso_catalog_entry_t *e, bool *
 
 /* 検査に失敗: invalid(理由を meta に保存)。枠を空け、SHA-256 の状態を捨てる。meta の書き込みが失敗したら ERROR(メモリ上は invalid) */
 static iso_step_result_t end_invalid(iso_upload_t *u, iso_finish_job_t *job, iso_catalog_entry_t *e, uint8_t reason) {
-    iso_apply_arg_t arg;
-    memset(&arg, 0, sizeof(arg));
-    arg.invalid_reason = reason;
+    iso_apply_arg_t arg = {.invalid_reason = reason};
     int rc = iso_catalog_apply(u->cfg.cat, e, ISO_EV_FINALIZE_FAIL, NULL, &arg);
     if (rc != 0) {
         e->state = ISO_STATE_INVALID;
@@ -217,11 +220,7 @@ iso_step_result_t iso_upload_finish_step(iso_upload_t *u, iso_finish_job_t *job,
 
     case FP_META:
     default: {
-        iso_apply_arg_t arg;
-        memset(&arg, 0, sizeof(arg));
-        arg.set_sha = true;
-        arg.sha_flag = ISO_SHA_COMPUTED;
-        arg.sha256 = job->digest;
+        iso_apply_arg_t arg = {.set_sha = true, .sha_flag = ISO_SHA_COMPUTED, .sha256 = job->digest};
         int rc = iso_catalog_apply(u->cfg.cat, e, ISO_EV_FINALIZE_OK, NULL, &arg);
         if (rc != 0) return end_ioerr(u, job, e, rc < 0 ? rc : ISO_ERR_INVALID);
         /* 表を引き渡す(所有権が移る)。NULL のフックなら、受け取らずに放す */

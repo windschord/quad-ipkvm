@@ -1018,6 +1018,62 @@ void test_undo_and_acceptance_notify_the_view(void) {
     TEST_ASSERT_EQUAL_INT(v + 2, VIEW_CALLS);
 }
 
+/* 古いジョブの判定: どの条件が欠けても、何もせずに DONE(資源は解放) */
+static void stale_case_setup(iso_finish_job_t *job) {
+    upload_all(SZ, PB_SMALL);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_upload_finish_begin(&UP, ID, NULL));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_finish_job_init(job, ID));
+    fx_settle();
+}
+
+static void expect_stale(iso_finish_job_t *job) {
+    iso_step_result_t r = iso_upload_finish_step(&UP, job, 0, false);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_EQUAL_INT(0, FS.nlog);
+    TEST_ASSERT_EQUAL_INT(0, TABLES_READY);
+}
+
+void test_stale_job_when_the_image_left_the_catalog(void) {
+    iso_finish_job_t job;
+    stale_case_setup(&job);
+    iso_upload_abort(&UP, ID);
+    iso_catalog_remove(&CAT, ID);
+    fx_settle();
+    expect_stale(&job);
+}
+
+void test_stale_job_when_the_state_changed_but_the_slot_is_still_held(void) {
+    iso_finish_job_t job;
+    stale_case_setup(&job);
+    entry()->state = ISO_STATE_INVALID; /* 枠は、finalizing のまま */
+    expect_stale(&job);
+    entry()->state = ISO_STATE_FINALIZING;
+}
+
+void test_stale_job_when_the_slot_is_not_finalizing(void) {
+    iso_finish_job_t job;
+    stale_case_setup(&job);
+    UP.slot_finalizing = false;
+    expect_stale(&job);
+    UP.slot_finalizing = true;
+}
+
+void test_stale_job_when_the_slot_belongs_to_another_image(void) {
+    iso_finish_job_t job;
+    stale_case_setup(&job);
+    snprintf(UP.slot_id, sizeof(UP.slot_id), "deadbeef");
+    expect_stale(&job);
+    snprintf(UP.slot_id, sizeof(UP.slot_id), "%s", ID);
+}
+
+void test_stale_job_when_the_meta_is_invalid(void) {
+    iso_finish_job_t job;
+    stale_case_setup(&job);
+    entry()->meta_valid = false;
+    expect_stale(&job);
+    entry()->meta_valid = true;
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_finish_begin_complete_upload_becomes_finalizing_and_keeps_the_slot);
@@ -1087,5 +1143,10 @@ int main(void) {
     RUN_TEST(test_hash_step_discards_the_streamed_state_it_overwrites);
     RUN_TEST(test_stale_job_after_the_work_area_was_allocated_frees_it);
     RUN_TEST(test_undo_and_acceptance_notify_the_view);
+    RUN_TEST(test_stale_job_when_the_image_left_the_catalog);
+    RUN_TEST(test_stale_job_when_the_state_changed_but_the_slot_is_still_held);
+    RUN_TEST(test_stale_job_when_the_slot_is_not_finalizing);
+    RUN_TEST(test_stale_job_when_the_slot_belongs_to_another_image);
+    RUN_TEST(test_stale_job_when_the_meta_is_invalid);
     return UNITY_END();
 }

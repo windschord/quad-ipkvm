@@ -397,9 +397,11 @@ void test_step_after_an_invalid_or_error_outcome_stays_done_and_allocates_nothin
     iso_step_result_t r = run(&job, NULL);
     TEST_ASSERT_EQUAL_INT(ISO_OUTCOME_INVALID, job.outcome);
     ALLOC_CALLS = 0;
+    FS.n_stat = 0;
     r = iso_index_step(&UP, &job); /* invalid で終わった後は、何もしない */
     TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
     TEST_ASSERT_EQUAL_INT(0, ALLOC_CALLS);
+    TEST_ASSERT_EQUAL_INT(0, FS.n_stat);
     TEST_ASSERT_EQUAL_INT(ISO_OUTCOME_INVALID, job.outcome);
     /* I/O エラーで終わった後も */
     TEST_ASSERT_TRUE(mock_fs_fail_extents(&FS, "/iso/" ID "/p002", ISO_ERR_IO));
@@ -408,9 +410,11 @@ void test_step_after_an_invalid_or_error_outcome_stays_done_and_allocates_nothin
     r = run(&job, NULL);
     TEST_ASSERT_EQUAL_INT(ISO_OUTCOME_IOERR, job.outcome);
     ALLOC_CALLS = 0;
+    FS.n_stat = 0;
     r = iso_index_step(&UP, &job);
     TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
     TEST_ASSERT_EQUAL_INT(0, ALLOC_CALLS);
+    TEST_ASSERT_EQUAL_INT(0, FS.n_stat);
     TEST_ASSERT_EQUAL_INT(ISO_OUTCOME_IOERR, job.outcome);
 }
 

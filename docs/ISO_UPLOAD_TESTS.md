@@ -69,3 +69,21 @@ python3 tools/test/mutate_iso_upload.py <repo> <スクラッチ> tools/test/iso_
 ```
 
 RESULTS_PLACEHOLDER
+
+## 4. 設計に書かれていないこと、設計と違うことを、実装で決めた箇所(レビューで確認してほしい)
+
+テストで固定してあるが、`ISO_MOUNT_DESIGN.md` に明示がない、または設計の記述と違うので、設計の文書への反映(または変更)を提案する。
+
+1. **`FINISH` の順序**: 設計 3.4 の本文は「SHA-256 → 署名 → 全パーツを sync + close → エクステント」だが、実装は **先にファイルを sync + close する**(FatFs のファイルの排他: 書き込みで開いたままのファイルは、読み取りで開けない(`FR_LOCKED`)。モックも `ISO_ERR_BUSY` にする)。結果は同じ。
+2. **逐次の SHA-256 の状態の寿命**: 検査の途中(確定(`final`)の後)の I/O エラーで `incomplete` になると、状態は使い切っているので、**再試行(`finish`)は、全パーツを読み直す**。確定の前(ファイルの `close` の失敗)なら、状態は残り、読み直さない。
+3. **`received` の決め直し**: 再開(`incomplete` の最初の `PUT`)と、`incomplete` の `finish` の受付は、**ディスク上のパーツの大きさから `received` を決め直す**(メモリの値は、取り消せなかった書き込みなどで、小さいことがある)。`uploading` の進行中は、メモリの値を信じる。`truncate` も大きさの読み出しも失敗したときは、書く前の値のまま(古いが小さい側)で、再開の最初の `PUT` が決め直し、`offset_mismatch` で正しい値を返す。
+4. **書き込み・`sync` の失敗は、チャンク全体を取り消す**: パーツをまたいだチャンクの、最初のパーツの分も `truncate` で書く前の大きさに戻す(新しく作ったパーツは 0)。次の再開で、空のパーツが残っていれば、`open(新規)` が `EXISTS` で失敗するので、0 に `truncate` してから追記で開く。部分書き込みつきの `ISO_ERR_NO_SPACE` は、取り消した上で `ISO_RES_INSUFFICIENT_STORAGE`(507 相当)を返す。
+5. **`consumed_since` は、成功したチャンクの分だけ足す**(失敗して取り消した分は、解放されるので足さない)。キャッシュを一度も採取していない(マウント前)ときは、`begin` は空きなしとして拒否する。
+6. **`begin` の検査の順序**: 名前・`size`(400)→ 枠 → 同名 → 上限 → 空き容量(`size` が `total_bytes` 超を含む)。`iso_catalog_begin` の検査(名前、`size`、同名、上限)を、空き容量の検査のために、先に行う(二重になるが、`iso_catalog_begin` も同じ検査を持つ)。
+7. **`meta` の書き込みが失敗しても、メモリ上の状態は進める**: `uploading` → `incomplete`(アイドル、書き込み失敗)、`finalizing` → `incomplete` / `invalid`(`FINISH` の失敗)は、`meta` の書き込みが失敗しても、メモリ上は遷移し、枠を空ける(ディスク上の `meta` は `uploading` のまま = 再起動で `incomplete`)。エラーは返す。
+8. **`part_count` の照合**: `INDEX` は、`meta.part_count` が、`size_bytes` と `part_blocks` から計算した値と違えば `part_mismatch`、パーツが 16 個を超えても `part_mismatch`。
+9. **エクステントの作業領域**: `ISO_MAX_EXTENTS + ISO_MAX_PARTS`(4112)本。`get_extents` の `max` は、残りの本数。**孤児の末尾のエクステントがパーツごとに 1 本ありうる**ので、16 本の余裕を持たせた。残りが足りない(`ISO_ERR_TOO_FRAGMENTED`)ときは `too_fragmented`。
+10. **`iso_upload_hash_step` の失敗の返し方**: `DONE` を返し、`job->fail`(`INVALID` + 理由、または `IOERR` + エラー)に入れる。`ERROR` ではない(`iso_step_result_t` に、理由を持たせるのを避けた)。
+11. **`receiving` / `idle` の境**: 経過 <= 5000 ms が `receiving`(「5 秒以内」)、アイドルのタイムアウトは経過 >= 300000 ms。時刻の巻き戻りは経過 0(`receiving`)。
+12. **SHA-256 の状態は、イメージごとではなく 1 つ**(`state_size` の領域を呼び出し側が 1 つ渡す)。別のイメージの `begin` で、前のイメージの状態は上書きされる(前のイメージは、`finish` で読み直す)。
+13. **既定の 1 GiB のパーツの境界のテストは、中身を捨てるモード**で行う(1 GiB を持てない)。パーツの境界の分割は、17 ブロックのパーツで網羅し、既定の大きさは、1 GiB ちょうどの 1 バイト手前、境界をまたぐチャンクだけ。

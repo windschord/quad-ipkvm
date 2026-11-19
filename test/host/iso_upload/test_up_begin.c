@@ -74,6 +74,13 @@ void test_begin_rejects_bad_names_and_arguments(void) {
     TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_upload_begin(NULL, "a", 1, SZ, NULL, id));
 }
 
+void test_begin_with_a_null_output_is_invalid_even_when_the_slot_is_busy(void) {
+    char id[ISO_ID_LEN + 1];
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_begin(&UP, "one", 3, SZ, NULL, id));
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_upload_begin(&UP, "two", 3, SZ, NULL, NULL)); /* 検査の最初(枠より前) */
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_upload_begin(&UP, NULL, 3, SZ, NULL, id));
+}
+
 void test_begin_order_slot_then_name_then_count_then_storage(void) {
     char id[ISO_ID_LEN + 1];
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_begin(&UP, "one", 3, SZ, NULL, id));
@@ -240,6 +247,23 @@ void test_init_validates_the_config(void) {
     TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_upload_init(&u, &bad));
     TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_upload_init(NULL, &cfg));
     TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_upload_init(&u, NULL));
+    /* 必須の欄を 1 つずつ欠く */
+    iso_clock_t no_now = CLK;
+    no_now.now_ms = NULL;
+    bad = cfg;
+    bad.clock = &no_now;
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_upload_init(&u, &bad));
+    bad = cfg;
+    bad.sha = NULL;
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_upload_init(&u, &bad));
+    bad = cfg;
+    bad.io_buf = NULL;
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_upload_init(&u, &bad));
+    iso_catalog_t cat2 = CAT;
+    cat2.fs = NULL;
+    bad = cfg;
+    bad.cat = &cat2;
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_upload_init(&u, &bad));
 }
 
 int main(void) {
@@ -248,6 +272,7 @@ int main(void) {
     RUN_TEST(test_begin_with_a_declared_sha_is_stored_as_flag_1);
     RUN_TEST(test_begin_size_boundaries);
     RUN_TEST(test_begin_rejects_bad_names_and_arguments);
+    RUN_TEST(test_begin_with_a_null_output_is_invalid_even_when_the_slot_is_busy);
     RUN_TEST(test_begin_order_slot_then_name_then_count_then_storage);
     RUN_TEST(test_storage_boundary_is_size_plus_64_mib);
     RUN_TEST(test_size_over_total_bytes_is_507_even_with_enough_free);

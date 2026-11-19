@@ -388,6 +388,28 @@ void test_the_end_of_a_part_reports_a_failing_close(void) {
     TEST_ASSERT_EQUAL_INT64(34000, mock_fs_size(&FS, P0));
 }
 
+void test_resume_reports_an_error_when_the_part_sizes_cannot_be_read(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 2000, 2000);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
+    fx_settle();
+    mock_fs_fail_path(&FS, P0);
+    iso_upload_write_t w;
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, put_range(ID, 2000, 100, &w)); /* 何も変えない */
+    mock_fs_fail_path(&FS, NULL);
+    TEST_ASSERT_EQUAL_INT(0, FS.nlog);
+    expect_incomplete_and_free(2000);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(ID, 2000, 100, &w));
+}
+
+void test_a_good_idle_close_does_not_read_the_sizes_again(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 2000, 2000);
+    FS.n_stat = 0;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
+    TEST_ASSERT_EQUAL_INT(0, FS.n_stat);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_first_write_failure_is_rolled_back_and_the_upload_becomes_incomplete);
@@ -411,5 +433,7 @@ int main(void) {
     RUN_TEST(test_idle_close_when_sync_and_close_both_fail_takes_received_from_the_disk);
     RUN_TEST(test_idle_close_reports_a_failing_close_after_a_good_sync);
     RUN_TEST(test_the_end_of_a_part_reports_a_failing_close);
+    RUN_TEST(test_resume_reports_an_error_when_the_part_sizes_cannot_be_read);
+    RUN_TEST(test_a_good_idle_close_does_not_read_the_sizes_again);
     return UNITY_END();
 }

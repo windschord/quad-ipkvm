@@ -47,3 +47,16 @@ python3 tools/test/mutate_iso_core.py <repo> <スクラッチ> tools/test/iso_co
 ```
 
 RESULTS_PLACEHOLDER
+
+## 4. 設計に書かれていないこと、設計と違うことを、実装で決めた箇所(レビューで確認してほしい)
+
+1. **`DELETE` の「動いているジョブに中止の印」は、同じイメージのジョブだけ**。別のイメージの `FINISH` / `INDEX` を中止しない(設計の文面は、どのジョブとも読める)。同じイメージの待っている `FINISH` / `IDLE_CLOSE` / `INDEX` は取り消す。
+2. **ジョブは最後まで動く(横取りしない)**: 数分かかる `INDEX`(16 パーツで十数秒)が動いている間に `FINISH` が入っても、`INDEX` が終わるまで待つ(パーツごとのステップの間で、`pick` は同じジョブを返し続ける)。横取りが必要なら、`INDEX` を集合に戻す形に変える(提案)。
+3. **キューのあふれの数え方**: 同じイメージの待っているジョブを置き換える `DELETE` / `FINISH` は、その分を引いて数える。**あふれたら、状態を変えない**(`FINISH` は受付を取り消す(`iso_upload_finish_undo`))。
+4. **`iso_upload_tick`(INTERFACES 7.5 の名前)は `iso_core.h` にあり、`iso_core_t` を取る**。時刻は引数 `now_ms`(注入の時計ではなく、呼び出し側が渡す)。**時刻の巻き戻りは、基準(最後の `PUT` の時刻)を `now_ms` に引き直す**(巻き戻った分だけ、タイムアウトが延びるのを避ける)。`DELETE` の参照待ちの基準も同じ。
+5. **`iso_core_sd_reinit` は、`remount` のコールバックを引数に取る**(設計 3.4 の ⑤ `f_mount` が、④ と ⑥ の間にあるため)。① はグルーの仕事で、`iso_core` は触らない。remount か scan が失敗したら、カタログは空、ジョブなしで返る(グルーが `sd.state` を `error` にして、後でもう一度呼ぶ)。
+6. **起動時の `deleting` の再開は、最大 `ISO_WORKER_QUEUE`(8)個**。あふれた分は `deleting` のまま残り、再度の `DELETE` か次の起動で続ける(自動の再試行は、ワーカーが `ERROR` のイメージを際限なく試すのを避けるため、しない)。
+7. **ビューに、マウント中のイメージ(`iso_media`)は含まない**(`iso_media` が持つ。`GET` は、両方を `iso_state_mutex` の下で組み立てる)。`ready` でエクステントの表がないイメージは、`finalizing` と表示する(`INDEX` 待ち・中。枠は使わない)。ビューの `images[].table` は、コールバックの間だけ有効。
+8. **ビューの更新のタイミング**: 状態が変わったとき(`submit`、`iso_upload` の遷移、ジョブの終わり、`boot` / `sd_reinit` の終わり、`tick` で `receiving` ↔ `idle` が変わったとき)。ジョブの途中のステップ(`CONTINUE`)では更新しない。`PUT` のたびに(`received` が進むので)更新する。
+9. **`DELETE` の完了と `FINISH` の完了で、`free_bytes` のキャッシュを採り直す**(`mount_info`。失敗したら、古い値のまま)。**`INDEX` の完了では採り直さない**。
+10. **未実装**: `DELETE` の前の `crosslinked` の照合(`import/` の同じ先頭クラスタ。設計 3.3)は、`iso_catalog_delete_precheck`(C-10a)が持つ。**`iso_core_submit_delete` は呼ばない**(C-12 の `iso_api` が、`iso_core_submit_delete` の前に呼ぶ。呼ばなくても、削除のステップの最初が、同じ照合をして `ERROR(crosslinked)` で止まる)。`rescan` の呼び出しと、その後の `iso_core_mark_unindexed` は、C-12。
