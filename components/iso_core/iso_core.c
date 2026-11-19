@@ -431,7 +431,6 @@ static iso_step_result_t step_delete(iso_core_t *c, iso_job_t *job) {
                 return end_job(c, sres(ISO_STEP_ERROR, ISO_ERR_BUSY)); /* deleting のまま。次の機会に続ける */
             }
             job->waiting = true;
-            iso_core_publish(c);
             return sres(ISO_STEP_CONTINUE, ISO_OK);
         }
         job->waiting = false;
@@ -439,10 +438,7 @@ static iso_step_result_t step_delete(iso_core_t *c, iso_job_t *job) {
         job->del.phase = 1;
     }
     iso_step_result_t r = iso_catalog_delete_step(c->cfg.cat, &job->del.dj);
-    if (r.kind == ISO_STEP_CONTINUE) {
-        iso_core_publish(c);
-        return r;
-    }
+    if (r.kind == ISO_STEP_CONTINUE) return r;
     if (r.kind == ISO_STEP_DONE) (void)iso_upload_refresh_free(&c->up);
     return end_job(c, r);
 }
@@ -456,10 +452,7 @@ iso_step_result_t iso_job_step(iso_core_t *c, iso_job_t *job, uint32_t budget_by
     }
     case ISO_JOB_FINISH: {
         iso_step_result_t r = iso_upload_finish_step(&c->up, &job->fin, budget_bytes, job->aborted);
-        if (r.kind == ISO_STEP_CONTINUE) {
-            iso_core_publish(c);
-            return r;
-        }
+        if (r.kind == ISO_STEP_CONTINUE) return r;
         return end_job(c, r);
     }
     case ISO_JOB_INDEX:

@@ -203,7 +203,7 @@ iso_job_t *iso_core_pick(iso_core_t *c);
  *   DONE: 完了(中止されたもの、対象がなくなったものを含む)。
  *   ERROR(err): FINISH = incomplete(I/O エラー。received は実ファイルから)、INDEX = I/O エラーなら表なしの ready のまま / meta の書き込み失敗、
  *     DELETE = deleting のまま(I/O エラー、または参照の待ちが ISO_DELETE_REF_WAIT_S を超えた = ISO_ERR_BUSY)、IDLE_CLOSE = incomplete(meta の書き込みなどの失敗)。
- * 中止の印は、ステップの先頭で見る。ステップのたびに、ビューを更新する。DONE / ERROR で、ジョブは終わる(次の pick は別のジョブ)。
+ * 中止の印は、ステップの先頭で見る。DONE / ERROR で、ジョブは終わる(次の pick は別のジョブ)。ビューは、状態が変わったとき(iso_upload の遷移、submit、ジョブの終わり)に更新する。
  */
 iso_step_result_t iso_job_step(iso_core_t *c, iso_job_t *job, uint32_t budget_bytes);
 bool iso_job_waiting(const iso_job_t *job);
