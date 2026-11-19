@@ -153,7 +153,8 @@ int mock_fs_add_sparse(mock_fs_t *m, const char *path, uint64_t size, const void
 /* 検査 */
 bool mock_fs_exists(const mock_fs_t *m, const char *path);
 bool mock_fs_is_dir(const mock_fs_t *m, const char *path);
-int64_t mock_fs_size(const mock_fs_t *m, const char *path); /* 無ければ -1 */
+int64_t mock_fs_size(const mock_fs_t *m, const char *path); /* 無ければ -1。ディレクトリ上の(同期済みの)大きさ */
+int64_t mock_fs_mem_size(const mock_fs_t *m, const char *path); /* 無ければ -1。メモリ上の(未同期を含む)大きさ */
 const uint8_t *mock_fs_data(const mock_fs_t *m, const char *path, size_t *len); /* 無ければ NULL */
 uint32_t mock_fs_first_cluster(const mock_fs_t *m, const char *path);
 int mock_fs_child_count(const mock_fs_t *m, const char *dir);
@@ -171,6 +172,8 @@ void mock_fs_cut_at(mock_fs_t *m, int n, mock_tear_t tear);
 void mock_fs_error_at(mock_fs_t *m, int n, int err_code);
 void mock_fs_power_on(mock_fs_t *m); /* dead と cut_at を解除する(内容は、そのまま) */
 void mock_fs_reset_counter(mock_fs_t *m);
+/* いま電源が落ちた: 未同期の分を失い、ハンドルを全部捨てて、電源を戻す(書き込みの数え方・注入は変えない) */
+void mock_fs_crash(mock_fs_t *m);
 /* 書き込み用のハンドルを、同期しないで全部捨てる(電源断の後の「再起動」。mock_fs_power_on もこれを行う) */
 void mock_fs_drop_handles(mock_fs_t *m);
 /* 電源が落ちた後の、未同期の分の消失を、いま適用する(検査用の関数も、必要なら自動で行う。冪等) */

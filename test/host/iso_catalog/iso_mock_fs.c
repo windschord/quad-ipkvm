@@ -597,6 +597,12 @@ int64_t mock_fs_size(const mock_fs_t *m, const char *path) {
     return i < 0 ? -1 : (int64_t)dir_size(&m->nodes[i]);
 }
 
+int64_t mock_fs_mem_size(const mock_fs_t *m, const char *path) {
+    mock_fs_settle((mock_fs_t *)(void *)m);
+    int i = find_node(m, path);
+    return i < 0 ? -1 : (int64_t)m->nodes[i].size;
+}
+
 const uint8_t *mock_fs_data(const mock_fs_t *m, const char *path, size_t *len) {
     mock_fs_settle((mock_fs_t *)(void *)m);
     int i = find_node(m, path);
@@ -689,6 +695,15 @@ void mock_fs_drop_handles(mock_fs_t *m) {
     for (int i = 0; i < MOCK_MAX_NODES; i++) m->nodes[i].writers = 0;
     m->open_files = 0;
     m->open_dirs = 0;
+}
+
+void mock_fs_crash(mock_fs_t *m) {
+    m->dead = true;
+    m->settled = false;
+    mock_fs_settle(m);
+    mock_fs_drop_handles(m);
+    m->dead = false;
+    m->cut_at = 0;
 }
 
 void mock_fs_power_on(mock_fs_t *m) {
