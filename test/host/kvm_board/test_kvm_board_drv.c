@@ -43,6 +43,7 @@ typedef struct {
     int fail_set_lvl_on_call;
     int set_lvl_calls;
     int fail_set_lvl_value; /* if >= 0, fail when setting that level */
+    int fail_set_lvl_pin;   /* if >= 0, fail when writing that GPIO */
     int fail_cfg_out_on_call;
     int cfg_out_calls;
     int fail_cfg_in_on_call;
@@ -81,6 +82,9 @@ static int fake_gpio_set_level(void *ctx, int gpio, int level)
         return -1;
     }
     if (f->fail_set_lvl_value >= 0 && level == f->fail_set_lvl_value) {
+        return -1;
+    }
+    if (f->fail_set_lvl_pin >= 0 && gpio == f->fail_set_lvl_pin) {
         return -1;
     }
     f->gpio_level[gpio] = level;
@@ -258,6 +262,7 @@ static void fake_hw_init(fake_hw_t *f)
 {
     memset(f, 0, sizeof(*f));
     f->fail_set_lvl_value = -1;
+    f->fail_set_lvl_pin = -1;
     f->get_lvl_fail_pin = -1;
     f->timer_count_us = 1000u;
 }
@@ -442,17 +447,36 @@ static void test_drv_assert_arms_timer_before_driving_low_and_handles_failures(v
     f.timer_count_us = 2000u;
     TEST_ASSERT_EQUAL_INT(0, hal->assert_line(hal->ctx, KVM_BOARD_LINE_POWER, 200u));
 
-    int idx_stop = find_event(&f, EV_TMR_STOP, -1, 0);
+    /* M-3: timer was idle before first assert, so timer_stop is skipped. */
+    TEST_ASSERT_EQUAL_INT(-1, find_event(&f, EV_TMR_STOP, -1, 0));
     int idx_get = find_event(&f, EV_TMR_GET, -1, 0);
     int idx_alm = find_event(&f, EV_TMR_SET_ALM, -1, 0);
     int idx_start = find_event(&f, EV_TMR_START, -1, 0);
     int idx_low = find_event(&f, EV_SET_LVL, cfg.pins.e_power, 0);
+    TEST_ASSERT_TRUE(idx_get >= 0);
+    TEST_ASSERT_TRUE(idx_alm > idx_get);
+    TEST_ASSERT_TRUE(idx_start > idx_alm);
+    TEST_ASSERT_TRUE(idx_low > idx_start);
+    TEST_ASSERT_EQUAL_INT(0, f.events[idx_low].level);
+    TEST_ASSERT_EQUAL_INT(0, hal->release_line(hal->ctx, KVM_BOARD_LINE_POWER));
+
+    /* M-3: after auto-release ISR, timer is still coasting so next assert stops timer BEFORE get_count. */
+    f.timer_count_us = 3000u;
+    TEST_ASSERT_EQUAL_INT(0, hal->assert_line(hal->ctx, KVM_BOARD_LINE_POWER, 200u));
+    TEST_ASSERT_TRUE(kvm_board_drv_on_alarm(&f.drv, f.timer_alarm_us, f.timer_alarm_us));
+    reset_trace(&f);
+    f.timer_count_us = 500000u;
+    TEST_ASSERT_EQUAL_INT(0, hal->assert_line(hal->ctx, KVM_BOARD_LINE_POWER, 200u));
+    int idx_stop = find_event(&f, EV_TMR_STOP, -1, 0);
+    idx_get = find_event(&f, EV_TMR_GET, -1, 0);
+    idx_alm = find_event(&f, EV_TMR_SET_ALM, -1, 0);
+    idx_start = find_event(&f, EV_TMR_START, -1, 0);
+    idx_low = find_event(&f, EV_SET_LVL, cfg.pins.e_power, 0);
     TEST_ASSERT_TRUE(idx_stop >= 0);
     TEST_ASSERT_TRUE(idx_get > idx_stop);
     TEST_ASSERT_TRUE(idx_alm > idx_get);
     TEST_ASSERT_TRUE(idx_start > idx_alm);
     TEST_ASSERT_TRUE(idx_low > idx_start);
-    TEST_ASSERT_EQUAL_INT(0, f.events[idx_low].level);
     TEST_ASSERT_EQUAL_INT(0, hal->release_line(hal->ctx, KVM_BOARD_LINE_POWER));
 
     /* Failures during timer_get / set_count / set_alarm / start never drive E pin Low. */
@@ -630,6 +654,59 @@ static void test_drv_set_addr_release_all_leds_and_deinit(void)
     TEST_ASSERT_EQUAL_INT(0, f.irq_balance);
 }
 
+static void test_drv_set_addr_partial_failure_rollback_and_idle_timer_stop(void)
+{
+    fake_hw_t f;
+    fake_hw_init(&f);
+    kvm_board_logic_config_t cfg = make_cfg();
+    kvm_board_io_t io = make_io(&f);
+
+    TEST_ASSERT_EQUAL_INT(0, kvm_board_drv_init(&f.drv, &cfg, &io));
+    const kvm_board_hal_t *hal = kvm_board_drv_hal(&f.drv);
+
+    /* Switch to CH2 (A0=1, A1=0) cleanly. */
+    TEST_ASSERT_EQUAL_INT(0, hal->set_addr(hal->ctx, 2u));
+    TEST_ASSERT_EQUAL_UINT8(2u, f.drv.logic.current_channel);
+    TEST_ASSERT_EQUAL_INT(1, f.gpio_level[cfg.pins.a0]);
+    TEST_ASSERT_EQUAL_INT(0, f.gpio_level[cfg.pins.a1]);
+
+    /* M-4: A0 failure when switching to CH3 leaves channel=2 and never touches A1. */
+    reset_trace(&f);
+    f.fail_set_lvl_pin = cfg.pins.a0;
+    TEST_ASSERT_EQUAL_INT(-1, hal->set_addr(hal->ctx, 3u));
+    f.fail_set_lvl_pin = -1;
+    TEST_ASSERT_EQUAL_UINT8(2u, f.drv.logic.current_channel);
+    TEST_ASSERT_EQUAL_INT(1, f.gpio_level[cfg.pins.a0]);
+    TEST_ASSERT_EQUAL_INT(0, f.gpio_level[cfg.pins.a1]);
+    TEST_ASSERT_EQUAL_INT(-1, find_event(&f, EV_SET_LVL, cfg.pins.a1, 0));
+
+    /* M-4: A1 failure when switching CH2 (A0=1,A1=0) -> CH3 (A0=0,A1=1) rolls back both channel and A0. */
+    reset_trace(&f);
+    f.fail_set_lvl_pin = cfg.pins.a1;
+    TEST_ASSERT_EQUAL_INT(-1, hal->set_addr(hal->ctx, 3u));
+    f.fail_set_lvl_pin = -1;
+    TEST_ASSERT_EQUAL_UINT8(2u, f.drv.logic.current_channel);
+    TEST_ASSERT_EQUAL_INT(1, f.gpio_level[cfg.pins.a0]);
+    TEST_ASSERT_EQUAL_INT(0, f.gpio_level[cfg.pins.a1]);
+
+    /* Verify subsequent valid switch to CH4 (A0=1, A1=1) still works cleanly. */
+    TEST_ASSERT_EQUAL_INT(0, hal->set_addr(hal->ctx, 4u));
+    TEST_ASSERT_EQUAL_UINT8(4u, f.drv.logic.current_channel);
+    TEST_ASSERT_EQUAL_INT(1, f.gpio_level[cfg.pins.a0]);
+    TEST_ASSERT_EQUAL_INT(1, f.gpio_level[cfg.pins.a1]);
+
+    /* M-3: release_all while timer is already stopped skips redundant timer_stop. */
+    reset_trace(&f);
+    TEST_ASSERT_FALSE(f.timer_running);
+    TEST_ASSERT_EQUAL_INT(0, hal->release_all(hal->ctx));
+    TEST_ASSERT_EQUAL_INT(-1, find_event(&f, EV_TMR_STOP, -1, 0));
+    TEST_ASSERT_TRUE(find_event(&f, EV_TMR_DISARM, -1, 0) >= 0);
+
+    kvm_board_drv_deinit(&f.drv);
+    TEST_ASSERT_EQUAL_INT(0, f.mutex_balance);
+    TEST_ASSERT_EQUAL_INT(0, f.irq_balance);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -640,5 +717,6 @@ int main(void)
     RUN_TEST(test_drv_assert_race_alarm_before_low_never_drives_low);
     RUN_TEST(test_drv_delayed_old_isr_rejected_by_count_vs_alarm);
     RUN_TEST(test_drv_set_addr_release_all_leds_and_deinit);
+    RUN_TEST(test_drv_set_addr_partial_failure_rollback_and_idle_timer_stop);
     return UNITY_END();
 }

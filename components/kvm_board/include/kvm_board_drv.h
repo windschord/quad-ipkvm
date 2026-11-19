@@ -44,7 +44,37 @@ typedef struct {
     kvm_board_io_t io;
     kvm_board_hal_t hal;
     bool ready;
+    bool timer_running;
 } kvm_board_drv_t;
+
+#if defined(__GNUC__) || defined(__clang__)
+#define KVM_BOARD_ALWAYS_INLINE static inline __attribute__((always_inline))
+#else
+#define KVM_BOARD_ALWAYS_INLINE static inline
+#endif
+
+/**
+ * @brief Evaluate a timer alarm event under the caller's ISR spinlock.
+ *
+ * Always inlined so IRAM timer ISRs execute no flash calls.
+ */
+KVM_BOARD_ALWAYS_INLINE bool kvm_board_drv_eval_alarm(kvm_board_drv_t *drv,
+                                                      uint64_t count_value,
+                                                      uint64_t alarm_value,
+                                                      int *out_release_gpio)
+{
+    if (!drv || !out_release_gpio || count_value < alarm_value) {
+        return false;
+    }
+    int gpio = -1;
+    if (!drv->ready ||
+        !kvm_board_logic_on_timer_alarm(&drv->logic, alarm_value, &gpio) ||
+        gpio < 0) {
+        return false;
+    }
+    *out_release_gpio = gpio;
+    return true;
+}
 
 int kvm_board_drv_init(kvm_board_drv_t *drv,
                        const kvm_board_logic_config_t *cfg,
