@@ -221,6 +221,10 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE msc_bot)
     endif()
 
+    if (test_rel_path MATCHES "^iso_sd/")
+        target_link_libraries(${test_name} PRIVATE iso_sd_logic)
+    endif()
+
 
 
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})
@@ -317,3 +321,6 @@ endif()
 
 # msc_bot (USB Mass Storage Bulk-Only Transport state machine, docs/MSC_BOT_TESTS.md; pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/msc_bot ${CMAKE_BINARY_DIR}/msc_bot)
+
+# iso_sd_logic (A-13: microSD path validation, FAT32 mount policy, CLMT->extents, atomic state; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_sd ${CMAKE_BINARY_DIR}/iso_sd)

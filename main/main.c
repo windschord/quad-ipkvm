@@ -69,6 +69,9 @@
 #endif
 #include "kvm_board_hw.h"
 #include "kvm_service.h"
+#if defined(CONFIG_SD_ENABLE) && CONFIG_SD_ENABLE
+#include "iso_sd.h"
+#endif
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -446,6 +449,16 @@ void app_main(void)
         }
     } else {
         ESP_LOGE(TAG, "KVM board HAL init failed; KVM/ATX API remains not_ready (503)");
+    }
+#endif
+
+#if defined(CONFIG_SD_ENABLE) && CONFIG_SD_ENABLE
+    if (iso_sd_init(NULL) == ESP_OK) {
+#if defined(CONFIG_SD_SELF_TEST_ON_BOOT) && CONFIG_SD_SELF_TEST_ON_BOOT
+        (void)iso_sd_run_self_test();
+#endif
+    } else {
+        ESP_LOGE(TAG, "iso_sd_init failed");
     }
 #endif
 }
