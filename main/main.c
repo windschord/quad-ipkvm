@@ -66,6 +66,9 @@
 #endif
 #if CONFIG_USB_DEVICE_ENABLE
 #include "usb_hid.h"
+#if defined(CONFIG_USB_MSC_ENABLE) && CONFIG_USB_MSC_ENABLE
+#include "iso_usb_msc.h"
+#endif
 #endif
 #include "kvm_board_hw.h"
 #include "kvm_service.h"
@@ -320,6 +323,12 @@ void app_main(void)
 #endif
 #if CONFIG_USB_DEVICE_ENABLE
         {
+#if defined(CONFIG_USB_MSC_ENABLE) && CONFIG_USB_MSC_ENABLE
+            esp_err_t msc_err = iso_usb_msc_init(NULL);
+            if (msc_err != ESP_OK) {
+                ESP_LOGE(TAG, "USB MSC init failed: %s", esp_err_to_name(msc_err));
+            }
+#endif
 #if CONFIG_WEB_SERVER_ENABLE
             usb_hid_mounted_cb_t on_mounted = web_server_notify_usb_mounted;
 #else

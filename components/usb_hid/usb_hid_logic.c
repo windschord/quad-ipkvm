@@ -140,6 +140,24 @@ _Static_assert(sizeof(s_rel_report_desc) == USB_HID_REL_REPORT_DESC_LEN, "rel de
     7u, USB_DESC_TYPE_EP, (uint8_t)(ep_in), 0x03u, \
         (uint8_t)(HID_DESC_EP_MAX_PACKET & 0xFFu), 0x00u, (uint8_t)(ep_interval)
 
+#define USB_CLASS_MSC_VAL     0x08u
+#define USB_SUBCLASS_SCSI_VAL 0x06u
+#define USB_PROTO_BOT_VAL     0x50u
+#define USB_EP_ATTR_BULK_VAL  0x02u
+#define USB_MSC_MPS_FS        64u
+#define USB_MSC_MPS_HS        512u
+
+#define MSC_ITF_DESC_BLOCK(itf_num, str_idx, ep_out, ep_in, mps) \
+    /* Interface Descriptor (9B): Mass Storage, SCSI transparent command set, Bulk-Only Transport */ \
+    9u, USB_DESC_TYPE_ITF, (uint8_t)(itf_num), 0u, 2u, USB_CLASS_MSC_VAL, \
+        USB_SUBCLASS_SCSI_VAL, USB_PROTO_BOT_VAL, (uint8_t)(str_idx), \
+    /* Bulk OUT Endpoint Descriptor (7B) */ \
+    7u, USB_DESC_TYPE_EP, (uint8_t)(ep_out), USB_EP_ATTR_BULK_VAL, \
+        (uint8_t)((mps) & 0xFFu), (uint8_t)(((mps) >> 8) & 0xFFu), 0u, \
+    /* Bulk IN Endpoint Descriptor (7B) */ \
+    7u, USB_DESC_TYPE_EP, (uint8_t)(ep_in), USB_EP_ATTR_BULK_VAL, \
+        (uint8_t)((mps) & 0xFFu), (uint8_t)(((mps) >> 8) & 0xFFu), 0u
+
 #define COMPOSITE_CONFIG_DESC(ep_interval) { \
     /* Configuration Descriptor (9B) */ \
     /* TODO(hw-verify): bmAttributes=0xC0 (self-powered) / bMaxPower=0 (0 mA) matches 3-wire J3 without VBUS; verify BIOS/host compatibility */ \
@@ -158,8 +176,34 @@ _Static_assert(sizeof(s_rel_report_desc) == USB_HID_REL_REPORT_DESC_LEN, "rel de
                        USB_HID_REL_REPORT_DESC_LEN, USB_HID_EP_REL_MOUSE, (ep_interval)) \
 }
 
+#define COMPOSITE_CONFIG_DESC_WITH_MSC(ep_interval, msc_mps) { \
+    /* Configuration Descriptor (9B): HID x3 + MSC (Virtual CD-ROM) */ \
+    9u, USB_DESC_TYPE_CONF, \
+    (uint8_t)(USB_HID_MSC_CONFIG_DESC_LEN & 0xFFu), \
+    (uint8_t)((USB_HID_MSC_CONFIG_DESC_LEN >> 8) & 0xFFu), \
+    USB_HID_MSC_ITF_COUNT, 1u, 0u, 0xC0u, 0u, \
+    /* Interface 0: Boot Keyboard */ \
+    HID_ITF_DESC_BLOCK(USB_HID_ITF_KEYBOARD, 4u, USB_SUBCLASS_BOOT_VAL, USB_PROTO_KBD_VAL, \
+                       USB_HID_KBD_REPORT_DESC_LEN, USB_HID_EP_KEYBOARD, (ep_interval)), \
+    /* Interface 1: Absolute Pointer (SubClass=0, Protocol=0) */ \
+    HID_ITF_DESC_BLOCK(USB_HID_ITF_ABS_MOUSE, 5u, USB_SUBCLASS_NONE_VAL, USB_PROTO_NONE_VAL, \
+                       USB_HID_ABS_REPORT_DESC_LEN, USB_HID_EP_ABS_MOUSE, (ep_interval)), \
+    /* Interface 2: Relative Boot Mouse (SubClass=1, Protocol=2) */ \
+    HID_ITF_DESC_BLOCK(USB_HID_ITF_REL_MOUSE, 6u, USB_SUBCLASS_BOOT_VAL, USB_PROTO_MOUSE_VAL, \
+                       USB_HID_REL_REPORT_DESC_LEN, USB_HID_EP_REL_MOUSE, (ep_interval)), \
+    /* Interface 3: USB Mass Storage (Virtual CD-ROM) */ \
+    MSC_ITF_DESC_BLOCK(USB_MSC_ITF_NUM, USB_MSC_STR_IDX, USB_MSC_EP_OUT, USB_MSC_EP_IN, (msc_mps)) \
+}
+
 static const uint8_t s_fs_config_desc[USB_HID_CONFIG_DESC_LEN] = COMPOSITE_CONFIG_DESC(HID_INTERVAL_FS);
 static const uint8_t s_hs_config_desc[USB_HID_CONFIG_DESC_LEN] = COMPOSITE_CONFIG_DESC(HID_INTERVAL_HS);
+static const uint8_t s_fs_config_desc_msc[USB_HID_MSC_CONFIG_DESC_LEN] =
+    COMPOSITE_CONFIG_DESC_WITH_MSC(HID_INTERVAL_FS, USB_MSC_MPS_FS);
+static const uint8_t s_hs_config_desc_msc[USB_HID_MSC_CONFIG_DESC_LEN] =
+    COMPOSITE_CONFIG_DESC_WITH_MSC(HID_INTERVAL_HS, USB_MSC_MPS_HS);
+
+_Static_assert(sizeof(s_fs_config_desc_msc) == 107u, "fs msc desc len");
+_Static_assert(sizeof(s_hs_config_desc_msc) == 107u, "hs msc desc len");
 
 static int8_t clamp_i8_sym(int8_t v) {
     return (v == -128) ? -127 : v;
@@ -211,6 +255,20 @@ const uint8_t *usb_hid_get_hs_config_desc(size_t *out_len) {
         *out_len = sizeof(s_hs_config_desc);
     }
     return s_hs_config_desc;
+}
+
+const uint8_t *usb_hid_get_fs_config_desc_with_msc(size_t *out_len) {
+    if (out_len) {
+        *out_len = sizeof(s_fs_config_desc_msc);
+    }
+    return s_fs_config_desc_msc;
+}
+
+const uint8_t *usb_hid_get_hs_config_desc_with_msc(size_t *out_len) {
+    if (out_len) {
+        *out_len = sizeof(s_hs_config_desc_msc);
+    }
+    return s_hs_config_desc_msc;
 }
 
 bool usb_hid_pack_keyboard(const hid_kbd_report_t *in,

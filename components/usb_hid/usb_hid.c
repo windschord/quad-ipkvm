@@ -100,6 +100,9 @@ static const char *s_string_desc[] = {
     "Quad-IPKVM Boot Keyboard",
     "Quad-IPKVM Absolute Pointer",
     "Quad-IPKVM Relative Mouse",
+#if defined(CONFIG_USB_MSC_ENABLE) && CONFIG_USB_MSC_ENABLE
+    "Quad-IPKVM Virtual CD-ROM",
+#endif
 };
 
 #ifndef CONFIG_USB_DEVICE_START_DISCONNECTED
@@ -455,10 +458,17 @@ esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
 
     size_t fs_len = 0;
     size_t hs_len = 0;
+#if defined(CONFIG_USB_MSC_ENABLE) && CONFIG_USB_MSC_ENABLE
+    const size_t expected_cfg_len = USB_HID_MSC_CONFIG_DESC_LEN;
+    const uint8_t *fs_cfg = usb_hid_get_fs_config_desc_with_msc(&fs_len);
+    const uint8_t *hs_cfg = usb_hid_get_hs_config_desc_with_msc(&hs_len);
+#else
+    const size_t expected_cfg_len = USB_HID_CONFIG_DESC_LEN;
     const uint8_t *fs_cfg = usb_hid_get_fs_config_desc(&fs_len);
     const uint8_t *hs_cfg = usb_hid_get_hs_config_desc(&hs_len);
-    ESP_RETURN_ON_FALSE(fs_cfg && hs_cfg && fs_len == USB_HID_CONFIG_DESC_LEN &&
-                        hs_len == USB_HID_CONFIG_DESC_LEN,
+#endif
+    ESP_RETURN_ON_FALSE(fs_cfg && hs_cfg && fs_len == expected_cfg_len &&
+                        hs_len == expected_cfg_len,
                         ESP_ERR_INVALID_SIZE, TAG, "Invalid config descriptor");
 
     tinyusb_config_t tusb_cfg = TINYUSB_CONFIG_HIGH_SPEED(usb_hid_event_cb, NULL);

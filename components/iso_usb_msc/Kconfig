@@ -1,0 +1,33 @@
+menu "Quad-IPKVM USB Virtual CD-ROM (MSC)"
+
+    config USB_MSC_ENABLE
+        bool "Enable USB Mass Storage (Virtual CD-ROM) interface"
+        depends on USB_DEVICE_ENABLE
+        default n
+        help
+            Expose USB interface 3 as a Mass Storage Bulk-Only Transport (BOT)
+            virtual CD-ROM using a custom TinyUSB class driver via
+            usbd_app_driver_get_cb(). Requires CONFIG_TINYUSB_MSC_ENABLED=n.
+
+    config USB_MSC_BUF_BLOCKS
+        int "Double-buffer chunk size in 2048-byte CD blocks"
+        depends on USB_MSC_ENABLE
+        range 1 16
+        default 4
+        help
+            Number of 2048-byte CD blocks per ping-pong DMA transfer buffer
+            (2 buffers total; default 4 blocks = 8 KiB x 2 = 16 KiB).
+
+    config USB_MSC_TASK_STACK_SIZE
+        int "iso_msc_task stack size (bytes)"
+        depends on USB_MSC_ENABLE
+        range 2048 16384
+        default 4096
+
+    config USB_MSC_TASK_PRIO
+        int "iso_msc_task FreeRTOS priority"
+        depends on USB_MSC_ENABLE
+        range 1 10
+        default 4
+
+endmenu

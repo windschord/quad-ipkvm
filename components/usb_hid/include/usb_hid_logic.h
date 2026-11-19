@@ -35,6 +35,15 @@ extern "C" {
 /** @brief Composite configuration descriptor total length: 9B config + 3 * 25B HID. */
 #define USB_HID_CONFIG_DESC_LEN 84u
 
+/** @brief Optional USB Mass Storage (Virtual CD-ROM, Bulk-Only Transport) interface & endpoints. */
+#define USB_MSC_ITF_NUM             3u
+#define USB_MSC_EP_OUT              0x04u
+#define USB_MSC_EP_IN               0x84u
+#define USB_MSC_ITF_DESC_LEN        23u /* 9B Interface + 7B Bulk OUT + 7B Bulk IN */
+#define USB_MSC_STR_IDX             7u
+#define USB_HID_MSC_ITF_COUNT       4u
+#define USB_HID_MSC_CONFIG_DESC_LEN (USB_HID_CONFIG_DESC_LEN + USB_MSC_ITF_DESC_LEN) /* 107B */
+
 /**
  * @brief Hardware operations bound into the non-blocking @ref hid_sink_t adapter.
  */
@@ -71,6 +80,16 @@ const uint8_t *usb_hid_get_fs_config_desc(size_t *out_len);
  * @brief Return the High-Speed (480 Mbps) Configuration Descriptor (84 bytes).
  */
 const uint8_t *usb_hid_get_hs_config_desc(size_t *out_len);
+
+/**
+ * @brief Return the Full-Speed (12 Mbps) Configuration Descriptor with MSC (107 bytes).
+ */
+const uint8_t *usb_hid_get_fs_config_desc_with_msc(size_t *out_len);
+
+/**
+ * @brief Return the High-Speed (480 Mbps) Configuration Descriptor with MSC (107 bytes).
+ */
+const uint8_t *usb_hid_get_hs_config_desc_with_msc(size_t *out_len);
 
 /**
  * @brief Pack a 6KRO Boot Keyboard report (8 bytes, no Report ID).
