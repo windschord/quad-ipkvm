@@ -181,18 +181,30 @@ PRAGMAS = '''
 
 
 def render(items):
+    """ミュータントの行。-Werror の警告を無効にする #pragma(PRAGMAS)と、それを足す先の #include(INC)は、出力の先頭に 1 回だけ書く(各行では参照する)。"""
     lines = []
     for id_, desc, old, new, f, inc in items:
-        lines.append("    M(%r, %r, (%r, %r), (%r, %r), file=%s)," % (id_, desc, old, new, inc, inc + PRAGMAS, f))
+        lines.append("    M(%r, %r, (%r, %r), (INC, INC + PRAGMAS), file=%s)," % (id_, desc, old, new, f))
     return "\n".join(lines)
 
 
+def pragma_header(inc):
+    return "INC = %r\nPRAGMAS = %r\n" % (inc, PRAGMAS)
+
+
+USAGE = "usage: gen_iso_mutants.py {upload|core} <repo-root>   (標準出力に、ミュータントの Python ソースを書く)\n"
+
+
 if __name__ == "__main__":
+    if len(sys.argv) != 3 or sys.argv[1] not in ("upload", "core"):
+        sys.stderr.write(USAGE)
+        sys.exit(2)
     mode = sys.argv[1]
     root = sys.argv[2]
     if mode == "upload":
         files = [("components/iso_upload/iso_upload.c", "U", "UP", '#include "iso_upload_priv.h"'), ("components/iso_upload/iso_finish.c", "F", "FN", '#include "iso_upload_priv.h"'),
                  ("components/iso_upload/iso_index.c", "X", "IX", '#include "iso_upload_priv.h"')]
+        inc_line = '#include "iso_upload_priv.h"'
         header = '''# iso_upload.c / iso_finish.c / iso_index.c のミュータント。tools/test/gen_iso_mutants.py(演算子の置換、if 条件の否定、文の削除、定数 ±1、真偽値の反転)が
 # ソースから機械的に作ったもの。old がソースの中で 1 回だけ現れるよう、前後の行を足してある。ソースを変えたら、gen_iso_mutants.py で作り直す。
 UP = "components/iso_upload/iso_upload.c"
@@ -208,6 +220,7 @@ MUTANTS = [
 '''
     else:
         files = [("components/iso_core/iso_core.c", "K", "CO", '#include "iso_core.h"')]
+        inc_line = '#include "iso_core.h"'
         header = '''# iso_core.c のミュータント。tools/test/gen_iso_mutants.py が、ソースから機械的に作ったもの(iso_upload_mutants.py と同じ方法)。
 CO = "components/iso_core/iso_core.c"
 
@@ -221,5 +234,7 @@ MUTANTS = [
     items = []
     for path, prefix, const, inc in files:
         items += gen(root + "/" + path, prefix, const, inc)
-    sys.stdout.write(header + render(items) + "\n]\n")
+    assert all(it[5] == inc_line for it in items)  # #include は、モードごとに 1 つ
+    i = header.index("\n\ndef M(")
+    sys.stdout.write(header[:i] + "\n" + pragma_header(inc_line) + header[i:] + render(items) + "\n]\n")
     sys.stderr.write("%d mutants\n" % len(items))

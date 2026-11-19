@@ -99,6 +99,14 @@ const iso_view_t *iso_core_view(const iso_core_t *c) { return &c->view; }
 
 static void on_view_changed(void *ctx) { iso_core_publish((iso_core_t *)ctx); }
 
+/* チャンクを受理した: IDLE_CLOSE を積んだ後、実行の前に PUT が成功したなら、閉じない(待っているものは取り消し、選ばれた後のものは中止の印) */
+static void queue_drop(iso_core_t *c, iso_job_kind_t kind, const char *id);
+static void on_chunk_accepted(void *ctx, const char *id) {
+    iso_core_t *c = (iso_core_t *)ctx;
+    queue_drop(c, ISO_JOB_IDLE_CLOSE, id);
+    if (c->cur_active && c->cur.kind == ISO_JOB_IDLE_CLOSE && strcmp(c->cur.id, id) == 0) c->cur.aborted = true;
+}
+
 /* ---- 初期化 --------------------------------------------------------------------------- */
 
 int iso_core_init(iso_core_t *c, const iso_core_cfg_t *cfg) {
@@ -120,6 +128,7 @@ int iso_core_init(iso_core_t *c, const iso_core_cfg_t *cfg) {
     uc.hooks.ctx = c;
     uc.hooks.view_changed = on_view_changed;
     uc.hooks.table_ready = on_table_ready;
+    uc.hooks.chunk_accepted = on_chunk_accepted;
     return iso_upload_init(&c->up, &uc);
 }
 
@@ -441,6 +450,7 @@ iso_step_result_t iso_job_step(iso_core_t *c, iso_job_t *job, uint32_t budget_by
     if (!c || !job || !c->cur_active || job != &c->cur) return sres(ISO_STEP_ERROR, ISO_ERR_INVALID);
     switch (job->kind) {
     case ISO_JOB_IDLE_CLOSE: {
+        if (job->aborted) return end_job(c, sres(ISO_STEP_DONE, ISO_OK)); /* 選ばれた後に、PUT が成功した */
         int rc = iso_upload_idle_close(&c->up, job->id);
         return end_job(c, sres(rc < 0 ? ISO_STEP_ERROR : ISO_STEP_DONE, rc < 0 ? rc : ISO_OK));
     }

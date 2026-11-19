@@ -36,7 +36,8 @@ static void restart(void) {
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
 }
 
-static void delete_to_the_end(iso_catalog_entry_t *e) {
+/* deleting のイメージの削除を、最後まで行う。エラーで deleting が残るのは、電源断(FS.dead)のときだけ。戻り値は、削除できたか */
+static bool delete_to_the_end(iso_catalog_entry_t *e) {
     iso_delete_job_t dj;
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_delete_job_init(&dj, e->id));
     iso_step_result_t r;
@@ -45,6 +46,8 @@ static void delete_to_the_end(iso_catalog_entry_t *e) {
         r = iso_catalog_delete_step(&CAT, &dj);
         TEST_ASSERT_TRUE(++guard < 1000);
     } while (r.kind == ISO_STEP_CONTINUE);
+    if (r.kind == ISO_STEP_ERROR) TEST_ASSERT_TRUE_MESSAGE(FS.dead, "a delete failed without a power cut and left the image deleting");
+    return r.kind == ISO_STEP_DONE;
 }
 
 /* 電源断の後(または即時の電源断の後)の再起動。deleting のイメージの削除は、続きを行う */
@@ -56,9 +59,7 @@ static void reboot(void) {
     for (size_t i = 0; i < CAT.count;) {
         iso_catalog_entry_t *e = &CAT.images[i];
         if (e->state == ISO_STATE_DELETING) {
-            char id[9];
-            memcpy(id, e->id, 9);
-            delete_to_the_end(e);
+            if (!delete_to_the_end(e)) return; /* 電源断。呼び出し側が、もう一度再起動する */
             st_deleted++;
             continue; /* 配列が詰まる */
         }
@@ -76,12 +77,16 @@ typedef struct {
 static chain_t check_chain(const iso_catalog_entry_t *e) {
     const uint64_t pbytes = (uint64_t)e->meta.part_blocks * 2048ull;
     chain_t c = {0, 0};
-    bool prev_full = true, prev_full_dir = true;
+    bool prev_full = true, prev_full_dir = true, missing = false;
     for (unsigned i = 0; i < ISO_MAX_PARTS; i++) {
         char path[ISO_PATH_MAX];
         part_path(path, sizeof(path), e->id, i);
         int64_t ms = mock_fs_mem_size(&FS, path);
-        if (ms < 0) break;
+        if (ms < 0) {
+            missing = true;
+            continue; /* 後ろのパーツが空でないのは、抜けがあるということ */
+        }
+        TEST_ASSERT_TRUE_MESSAGE(!missing || ms == 0, "a non-empty part follows a missing part");
         int64_t ds = mock_fs_size(&FS, path);
         TEST_ASSERT_TRUE((uint64_t)ms <= pbytes);
         TEST_ASSERT_TRUE(ds <= ms);
@@ -163,7 +168,10 @@ static void inject_for_next_op(void) {
     armed_injection = 0;
     uint32_t r = rnd(&R, 100);
     if (r < 8) {
-        mock_fs_fail_write(&FS, 1 + (int)rnd(&R, 3), rnd(&R, 6000), rnd(&R, 2) ? ISO_ERR_IO : ISO_ERR_NO_SPACE);
+        int nth = 1 + (int)rnd(&R, 3);
+        uint32_t limit = rnd(&R, 6000);
+        int err = rnd(&R, 2) ? ISO_ERR_IO : ISO_ERR_NO_SPACE;
+        mock_fs_fail_write(&FS, nth, limit, err);
         armed_injection = 1;
     } else if (r < 14) {
         mock_fs_error_at(&FS, 1 + (int)rnd(&R, 6), ISO_ERR_IO);
@@ -191,7 +199,9 @@ static void op_begin(void) {
         decl = sha;
     } else if (d == 1) {
         gen_sha(size, sha);
-        sha[rnd(&R, 32)] ^= (uint8_t)(1u << rnd(&R, 8));
+        uint32_t byte = rnd(&R, 32);
+        uint32_t bit = rnd(&R, 8);
+        sha[byte] ^= (uint8_t)(1u << bit);
         decl = sha;
     }
     char id[9];
@@ -373,7 +383,7 @@ static void finish_pending_deletes(void) {
     for (size_t i = 0; i < CAT.count;) {
         iso_catalog_entry_t *e = &CAT.images[i];
         if (e->state == ISO_STATE_DELETING && !FS.dead) {
-            delete_to_the_end(e);
+            if (!delete_to_the_end(e)) return; /* 電源断 */
             st_deleted++;
             continue;
         }
@@ -408,7 +418,9 @@ static void one_seed(uint32_t seed) {
             op_delete();
         } else if (r < 84) {
             /* 電源断の予約 */
-            mock_fs_cut_at(&FS, 1 + (int)rnd(&R, 8), (mock_tear_t)rnd(&R, 3));
+            int at = 1 + (int)rnd(&R, 8);
+            mock_tear_t tear = (mock_tear_t)rnd(&R, 3);
+            mock_fs_cut_at(&FS, at, tear);
             st_cuts++;
         } else if (r < 88) {
             mock_fs_crash(&FS); /* いま電源が落ちた */

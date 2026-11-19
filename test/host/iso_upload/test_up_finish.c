@@ -275,7 +275,8 @@ void test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps(void) {
     TEST_ASSERT_TRUE(steps > 26);
 }
 
-void test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps(void) {
+/* 再起動の後の finish(SHA-256 の読み直し)を、1 ステップの予算 budget で最後まで進めたときのステップ数 */
+static int finish_steps_after_a_reboot(uint32_t budget) {
     upload_all(SZ, PB_SMALL);
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
     reboot();
@@ -283,11 +284,23 @@ void test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps(void) {
     TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_upload_finish_begin(&UP, ID, NULL));
     iso_finish_job_t job;
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_finish_job_init(&job, ID));
-    iso_step_result_t r = run_finish(&job, 10000, NULL);
+    int steps = 0;
+    iso_step_result_t r = run_finish(&job, budget, &steps);
     TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
     expect_ready(SHA_100000, 3);
+    return steps;
+}
+
+void test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps(void) {
+    int steps_10000 = finish_steps_after_a_reboot(10000);
     /* 1 ステップ 10000 バイト(4096 + 4096 + 1808): p000 11 回、p001 11 回、p002 10 回、署名 1 回 */
     TEST_ASSERT_EQUAL_INT(33, FS.n_read_at);
+    TEST_ASSERT_TRUE(steps_10000 > 10); /* 100000 / 10000 */
+    fx_up_teardown();
+    fx_up_setup(0, 0);
+    int steps_4096 = finish_steps_after_a_reboot(4096);
+    TEST_ASSERT_TRUE(steps_4096 > 26);
+    TEST_ASSERT_TRUE_MESSAGE(steps_10000 < steps_4096, "a larger budget must need fewer steps");
 }
 
 void test_hash_step_budget_zero_still_progresses(void) {
@@ -353,7 +366,7 @@ void test_finish_after_a_failed_and_rolled_back_chunk_still_streams(void) {
     TEST_ASSERT_EQUAL_INT(1, FS.n_read_at); /* truncate で取り消したので、received と SHA-256 の状態は合っている */
 }
 
-void test_finish_after_an_unrolled_partial_write_recomputes_the_sha(void) {
+void test_finish_after_a_reboot_with_stray_bytes_from_an_unrolled_write_recomputes_the_sha(void) {
     img_begin_pb("img", SZ, PB_SMALL, NULL, ID);
     put_all(ID, 0, 20000, 20000);
     fx_settle();
@@ -363,12 +376,14 @@ void test_finish_after_an_unrolled_partial_write_recomputes_the_sha(void) {
     TEST_ASSERT_EQUAL_INT(ISO_RES_INSUFFICIENT_STORAGE, put_range(ID, 20000, 20000, &w));
     mock_fs_fail_write(&FS, 0, 0, 0);
     mock_fs_reset_counter(&FS);
-    TEST_ASSERT_EQUAL_UINT64(20100, w.received);
+    TEST_ASSERT_EQUAL_UINT64(20000, w.received); /* 確認済みの値 */
+    reboot(); /* 再起動すると、保留の truncate は忘れる。ディスクには、取り消せなかった 100 バイトが残っていて、received はそれを数える */
+    TEST_ASSERT_EQUAL_UINT64(20100, entry()->received);
     put_all(ID, 20100, SZ, 20000);
     FS.n_read_at = 0;
     iso_step_result_t r = finish_all(0);
     TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
-    expect_ready(SHA_100000, 3); /* 取り消せなかった 100 バイトを含むデータの、正しい SHA-256 */
+    expect_ready(SHA_100000, 3); /* その 100 バイトは、クライアントが送ったデータの続き。SHA-256 は、読み直して、正しい値 */
     TEST_ASSERT_TRUE(FS.n_read_at > 20); /* 読み直した */
 }
 
@@ -845,19 +860,41 @@ void test_stale_job_when_the_slot_belongs_to_nobody(void) {
     TEST_ASSERT_EQUAL_INT(ISO_STATE_INCOMPLETE, entry()->state);
 }
 
-void test_table_epoch_is_read_when_the_indexing_starts(void) {
+/* カードが途中で替わった(epoch が進んだ)ら、ready を書かず、incomplete にする(FINISH の epoch の検査) */
+static void run_finish_with_a_card_change_after(int stop_phase_pool) {
     upload_all(SZ, PB_SMALL);
     TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_upload_finish_begin(&UP, ID, NULL));
     iso_finish_job_t job;
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_finish_job_init(&job, ID));
-    iso_step_result_t r;
-    do {
-        r = iso_upload_finish_step(&UP, &job, 0, false);
-    } while (r.kind == ISO_STEP_CONTINUE && job.idx.pool == NULL);
-    EPOCH = 99; /* 途中でカードが替わった */
+    iso_step_result_t r = iso_upload_finish_step(&UP, &job, 0, false); /* 開始: epoch を記録する */
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_CONTINUE, r.kind);
+    if (stop_phase_pool) {
+        while (r.kind == ISO_STEP_CONTINUE && job.idx.pool == NULL) r = iso_upload_finish_step(&UP, &job, 0, false);
+        TEST_ASSERT_EQUAL_INT(1, ALLOC_LIVE);
+    }
+    BDEV.epoch_bump(NULL); /* SD の再初期化(グルーが epoch_bump を呼ぶ) */
     while (r.kind == ISO_STEP_CONTINUE) r = iso_upload_finish_step(&UP, &job, 0, false);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_EPOCH, r.err);
+    expect_incomplete_after_ioerr(); /* 表は引き渡さず、作業領域も表も放す */
+    expect_meta(ISO_META_INCOMPLETE, 0); /* ready は書かない */
+    TEST_ASSERT_EQUAL_UINT64(SZ, entry()->received);
+}
+
+void test_card_change_after_the_indexing_started_makes_the_finish_incomplete(void) { run_finish_with_a_card_change_after(1); }
+
+void test_card_change_before_the_indexing_started_makes_the_finish_incomplete(void) {
+    /* 開始(epoch の記録)の後、INDEX の開始の前に替わった: 表は新しい epoch を記録するが、ready にしない */
+    run_finish_with_a_card_change_after(0);
+}
+
+void test_finish_started_after_the_card_change_is_not_affected(void) {
+    BDEV.epoch_bump(NULL);
+    upload_all(SZ, PB_SMALL);
+    iso_step_result_t r = finish_all(0);
     TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
-    TEST_ASSERT_EQUAL_UINT32(7, iso_extent_table_epoch(LAST_TABLE)); /* 開始時の値(古いカードの表になる) */
+    TEST_ASSERT_EQUAL_UINT32(EPOCH, iso_extent_table_epoch(LAST_TABLE)); /* 表の epoch は、INDEX の開始のときの値 */
+    TEST_ASSERT_EQUAL_UINT32(8, EPOCH);
 }
 
 void test_table_hook_may_be_absent(void) {
@@ -1094,7 +1131,7 @@ int main(void) {
     RUN_TEST(test_hash_step_runs_to_the_digest_across_parts);
     RUN_TEST(test_resumed_upload_after_idle_still_streams_the_sha);
     RUN_TEST(test_finish_after_a_failed_and_rolled_back_chunk_still_streams);
-    RUN_TEST(test_finish_after_an_unrolled_partial_write_recomputes_the_sha);
+    RUN_TEST(test_finish_after_a_reboot_with_stray_bytes_from_an_unrolled_write_recomputes_the_sha);
     RUN_TEST(test_minimal_image_34816_bytes_one_part);
     RUN_TEST(test_finish_step_sequence_closes_before_reading);
     RUN_TEST(test_signature_bea01_is_accepted);
@@ -1131,7 +1168,9 @@ int main(void) {
     RUN_TEST(test_aborted_job_frees_its_work_area_and_changes_nothing);
     RUN_TEST(test_stale_job_whose_image_is_no_longer_finalizing_is_done_without_effects);
     RUN_TEST(test_stale_job_when_the_slot_belongs_to_nobody);
-    RUN_TEST(test_table_epoch_is_read_when_the_indexing_starts);
+    RUN_TEST(test_card_change_after_the_indexing_started_makes_the_finish_incomplete);
+    RUN_TEST(test_card_change_before_the_indexing_started_makes_the_finish_incomplete);
+    RUN_TEST(test_finish_started_after_the_card_change_is_not_affected);
     RUN_TEST(test_table_hook_may_be_absent);
     RUN_TEST(test_a_new_upload_after_an_incomplete_one_starts_a_fresh_sha_state);
     RUN_TEST(test_finish_notifies_the_view_at_the_acceptance_and_at_the_end_only);

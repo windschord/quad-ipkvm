@@ -48,12 +48,16 @@ typedef struct {
 static chain_t check_chain(const iso_catalog_entry_t *e) {
     const uint64_t pbytes = (uint64_t)e->meta.part_blocks * 2048ull;
     chain_t c = {0, 0};
-    bool prev_full = true;
+    bool prev_full = true, missing = false;
     for (unsigned i = 0; i < ISO_MAX_PARTS; i++) {
         char path[ISO_PATH_MAX];
         part_path(path, sizeof(path), e->id, i);
         int64_t ms = mock_fs_mem_size(&FS, path);
-        if (ms < 0) break;
+        if (ms < 0) {
+            missing = true;
+            continue; /* 後ろのパーツが空でないのは、抜けがあるということ */
+        }
+        TEST_ASSERT_TRUE_MESSAGE(!missing || ms == 0, "a non-empty part follows a missing part");
         int64_t ds = mock_fs_size(&FS, path);
         TEST_ASSERT_TRUE((uint64_t)ms <= pbytes);
         TEST_ASSERT_TRUE(ds <= ms);
@@ -197,7 +201,10 @@ static void inject_for_next_op(void) {
     g_inject = false;
     uint32_t r = rnd(&R, 100);
     if (r < 10) {
-        mock_fs_fail_write(&FS, 1 + (int)rnd(&R, 3), rnd(&R, 6000), rnd(&R, 2) ? ISO_ERR_IO : ISO_ERR_NO_SPACE);
+        int nth = 1 + (int)rnd(&R, 3);
+        uint32_t limit = rnd(&R, 6000);
+        int err = rnd(&R, 2) ? ISO_ERR_IO : ISO_ERR_NO_SPACE;
+        mock_fs_fail_write(&FS, nth, limit, err);
         g_inject = true;
     } else if (r < 18) {
         mock_fs_error_at(&FS, 1 + (int)rnd(&R, 6), ISO_ERR_IO);
@@ -231,7 +238,9 @@ static void op_begin(void) {
         decl = sha;
     } else if (d == 1) {
         gen_sha(size, sha);
-        sha[rnd(&R, 32)] ^= (uint8_t)(1u << rnd(&R, 8));
+        uint32_t byte = rnd(&R, 32);
+        uint32_t bit = rnd(&R, 8);
+        sha[byte] ^= (uint8_t)(1u << bit);
         decl = sha;
     }
     char id[9];
@@ -497,7 +506,9 @@ static void one_seed(uint32_t seed) {
         } else if (r < 86) {
             op_reader();
         } else if (r < 88) {
-            mock_fs_cut_at(&FS, 1 + (int)rnd(&R, 8), (mock_tear_t)rnd(&R, 3));
+            int at = 1 + (int)rnd(&R, 8);
+            mock_tear_t tear = (mock_tear_t)rnd(&R, 3);
+            mock_fs_cut_at(&FS, at, tear);
             st_cuts++;
         } else if (r < 89) {
             mock_fs_crash(&FS);

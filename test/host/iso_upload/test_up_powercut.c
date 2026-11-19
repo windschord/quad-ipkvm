@@ -29,6 +29,7 @@ static model_t M;
 
 static char ID[ISO_ID_LEN + 1];
 static int n_none, n_corrupt, n_incomplete, n_ready, n_lost, n_full; /* 掃引で、どの場合に当たったか */
+static int n_cut_after_idle_sync, n_cut_after_finish_sync; /* sync が成功した後の meta の書き込みで落ちた回数(下限の検査が強くなる場合) */
 
 static void model_chunk(uint64_t from, uint64_t len) {
     uint64_t pos = from, rem = len;
@@ -70,8 +71,17 @@ static int workload(void) {
         model_chunk(off, n);
         off += n;
     }
+    /* アイドルの閉じ: 書き込みは、sync、meta の 2 つ(この順)。sync の前(または sync の最中)に落ちたなら、同期済みは保証されない。
+     * sync が成功した後(meta の書き込みの最中)に落ちたなら、ここまでのデータは、すべて同期済みで、残る(下限は 50000) */
+    int sync_index = FS.mut_count + 1;
     rc = iso_upload_idle_close(&UP, ID);
-    if (rc != 0) return rc;
+    if (rc != 0) {
+        if (FS.cut_at > sync_index) {
+            M.durable = M.acked;
+            n_cut_after_idle_sync++;
+        }
+        return rc;
+    }
     M.durable = M.acked;
     M.since = 0;
     for (uint64_t off = PHASE1_END; off < SZ;) {
@@ -88,11 +98,17 @@ static int workload(void) {
     iso_finish_job_t job;
     rc = iso_finish_job_init(&job, ID);
     if (rc != 0) return rc;
+    /* finish の書き込みは、閉じる前の sync、ready の meta の 2 つ(この順)。meta の最中に落ちたなら、全データは同期済み */
+    int fin_sync_index = FS.mut_count + 1;
     iso_step_result_t r;
     do {
         r = iso_upload_finish_step(&UP, &job, 0, false);
     } while (r.kind == ISO_STEP_CONTINUE);
     iso_finish_job_release(&UP, &job);
+    if (r.kind == ISO_STEP_ERROR && FS.cut_at > fin_sync_index) {
+        M.durable = M.acked;
+        n_cut_after_finish_sync++;
+    }
     return r.kind == ISO_STEP_ERROR ? (r.err ? r.err : -1) : 0;
 }
 
@@ -224,6 +240,7 @@ static void run_one(uint32_t sync, int k, mock_tear_t tear) {
 
 static void sweep(uint32_t sync, bool expect_loss) {
     n_none = n_corrupt = n_incomplete = n_ready = n_lost = n_full = 0;
+    n_cut_after_idle_sync = n_cut_after_finish_sync = 0;
     run_one(sync, 0, MOCK_TEAR_NONE); /* 電源断なし: 書き込みの総数を数える */
     int total = g_total;
     TEST_ASSERT_TRUE(total > 20);
@@ -235,6 +252,8 @@ static void sweep(uint32_t sync, bool expect_loss) {
     TEST_ASSERT_TRUE(n_corrupt > 0);
     TEST_ASSERT_TRUE(n_incomplete > 20);
     TEST_ASSERT_TRUE(n_ready > 0);
+    TEST_ASSERT_EQUAL_INT(3, n_cut_after_idle_sync);    /* アイドルの meta の書き込みで落ちる 3 通り(NONE / HALF / FULL) */
+    TEST_ASSERT_EQUAL_INT(3, n_cut_after_finish_sync);  /* finish の ready の meta の書き込みで落ちる 3 通り */
     TEST_ASSERT_EQUAL_INT(expect_loss, n_lost > 0); /* 毎回 sync するなら、失われる分はない */
     TEST_ASSERT_EQUAL_INT(total * 3, n_none + n_corrupt + n_incomplete + n_ready);
 }

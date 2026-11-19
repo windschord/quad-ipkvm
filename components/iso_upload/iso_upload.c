@@ -178,25 +178,63 @@ static int open_part(iso_upload_t *u, const char *id, uint32_t part, uint64_t of
 typedef struct {
     uint32_t part;
     uint64_t before; /* このチャンクを書く前の、パーツの中の大きさ */
+    uint64_t seg;    /* このパーツに書こうとしたバイト数(取り消せなかったときの、空き容量の計上の上限) */
 } touched_t;
 
-/* 失敗の後始末: ファイルを閉じ、触ったパーツを書く前の大きさに戻す(新規は 0)。truncate が失敗したら received はディスクから決める。
+/* ---- 取り消せなかった truncate(設計 3.1。次の操作で、もう一度行う) --------------------------------- */
+
+static void pend_add(iso_upload_t *u, const char *id, uint32_t part, uint64_t size) {
+    if (u->pend_n >= ISO_MAX_PARTS) return; /* 1 つのチャンクが触るパーツは 16 以下で、再開のたびに片づけるので、溢れない */
+    memcpy(u->pend[u->pend_n].id, id, ISO_ID_LEN + 1);
+    u->pend[u->pend_n].part = part;
+    u->pend[u->pend_n].size = size;
+    u->pend_n++;
+}
+
+static void pend_drop(iso_upload_t *u, const char *id) {
+    size_t k = 0;
+    for (size_t i = 0; i < u->pend_n; i++) {
+        if (strcmp(u->pend[i].id, id) != 0) u->pend[k++] = u->pend[i];
+    }
+    u->pend_n = k;
+}
+
+/* id のイメージの、取り消せなかった truncate を、すべて行う。すでに小さい(INVALID)・ファイルがない(NOT_FOUND)は、済んだものとする。
+ * 失敗したら、そのエラーを返す(残りは、次の機会に)。 */
+static int pend_settle(iso_upload_t *u, const char *id) {
+    const iso_fs_t *fs = iso_up_fs(u);
+    size_t i = 0;
+    while (i < u->pend_n) {
+        if (strcmp(u->pend[i].id, id) != 0) {
+            i++;
+            continue;
+        }
+        char path[ISO_PATH_MAX];
+        int rc = iso_up_part_path(path, sizeof(path), id, u->pend[i].part);
+        if (rc == ISO_OK) rc = fs->truncate(fs->ctx, path, u->pend[i].size);
+        if (rc < 0 && rc != ISO_ERR_INVALID && rc != ISO_ERR_NOT_FOUND) return rc;
+        for (size_t k = i + 1; k < u->pend_n; k++) u->pend[k - 1] = u->pend[k];
+        u->pend_n--;
+    }
+    return ISO_OK;
+}
+
+/* 失敗の後始末: ファイルを閉じ、触ったパーツを書く前の大きさに戻す(新規は 0)。truncate が失敗したら、保留にして、次の操作(再開、finish の受付)で行う。
  * incomplete にして、枠を空ける(SHA-256 の状態は、received と合っていれば残る)。 */
-static int fail_write(iso_upload_t *u, iso_catalog_entry_t *e, const touched_t *t, size_t nt, int err, iso_upload_write_t *out) {
+static int fail_write(iso_upload_t *u, iso_catalog_entry_t *e, const touched_t *t, size_t nt, int err) {
     const iso_fs_t *fs = iso_up_fs(u);
     (void)iso_up_close_file(u, false); /* 失敗した write の後でも閉じられる。close の結果は見ない */
-    bool trunc_failed = false;
     for (size_t k = nt; k > 0; k--) {
         char path[ISO_PATH_MAX];
-        if (iso_up_part_path(path, sizeof(path), e->id, t[k - 1].part) < 0 ||
-            fs->truncate(fs->ctx, path, t[k - 1].before) < 0)
-            trunc_failed = true;
+        if (iso_up_part_path(path, sizeof(path), e->id, t[k - 1].part) < 0 || fs->truncate(fs->ctx, path, t[k - 1].before) < 0) {
+            /* 取り消せなかった: ディスクには、クライアントがまだ確認していないバイトが残りうる。received は、確認済みの値(書く前)のままにし、
+             * 次の操作(再開、finish の受付)の最初に、もう一度 truncate する。残りうるバイトの分は、空き容量の計上に足す(上限) */
+            pend_add(u, e->id, t[k - 1].part, t[k - 1].before);
+            u->consumed_since += t[k - 1].seg;
+        }
     }
-    /* e->received は、成功したときだけ進めるので、書く前の値のまま。取り消せなかったときだけ、ディスクの大きさに合わせる(失敗したら、書く前の値のまま。再開のときに、決め直す) */
-    if (trunc_failed) (void)iso_upload_reload_received(u, e);
     (void)iso_up_force_incomplete(u, e, ISO_EV_WRITE_FAIL);
     iso_up_release_slot(u);
-    if (out) out->received = e->received;
     iso_up_notify(u);
     return err == ISO_ERR_NO_SPACE ? (int)ISO_RES_INSUFFICIENT_STORAGE : err;
 }
@@ -217,15 +255,29 @@ int iso_upload_write_chunk(iso_upload_t *u, const char *id, uint64_t offset, con
         return ISO_RES_NOT_UPLOADING;
     }
     /* 再開(incomplete)のときは、ディスク上のパーツの大きさから決め直す(取り消せなかった書き込みや、再起動の後のメモリの値は信用しない) */
+    bool corrected = false; /* ディスクの大きさで、received を訂正した(拒否するときも、ビューを更新する) */
     if (resume) {
-        int rc = iso_upload_reload_received(u, e);
+        int rc = pend_settle(u, id); /* 取り消せなかった書き込みの残りを、先に片づける */
         if (rc < 0) return rc;
+        uint64_t prev = e->received;
+        rc = iso_upload_reload_received(u, e);
+        if (rc < 0) return rc;
+        corrected = (e->received != prev);
     }
     if (out) out->received = e->received;
-    if (offset != e->received) return ISO_RES_OFFSET_MISMATCH;
-    if (len > e->meta.size_bytes - offset) return ISO_RES_EXCEEDS_SIZE;
+    if (offset != e->received) {
+        if (corrected) iso_up_notify(u);
+        return ISO_RES_OFFSET_MISMATCH;
+    }
+    if (len > e->meta.size_bytes - offset) {
+        if (corrected) iso_up_notify(u);
+        return ISO_RES_EXCEEDS_SIZE;
+    }
     if (resume) {
-        if (!have_space(u, e->meta.size_bytes - e->received, e)) return ISO_RES_INSUFFICIENT_STORAGE;
+        if (!have_space(u, e->meta.size_bytes - e->received, e)) {
+            if (corrected) iso_up_notify(u);
+            return ISO_RES_INSUFFICIENT_STORAGE;
+        }
         iso_trans_ctx_t tc = {.slot_free = true};
         int rc = iso_catalog_apply(cat, e, ISO_EV_PUT, &tc, NULL); /* incomplete -> uploading。meta は書かない */
         if (rc != 0) return rc;
@@ -249,22 +301,23 @@ int iso_upload_write_chunk(iso_upload_t *u, const char *id, uint64_t offset, con
         int rc = ISO_OK;
         if (!u->f) {
             rc = open_part(u, id, part, off);
-            if (rc < 0) return fail_write(u, e, touched, nt, rc, out);
+            if (rc < 0) return fail_write(u, e, touched, nt, rc);
         }
         touched[nt].part = part; /* 1 つのチャンクの中で、同じパーツを 2 回通ることはない */
         touched[nt].before = off;
+        touched[nt].seg = seg;
         nt++;
         rc = fs->write(fs->ctx, u->f, p + done, (size_t)seg);
-        if (rc < 0) return fail_write(u, e, touched, nt, rc, out);
+        if (rc < 0) return fail_write(u, e, touched, nt, rc);
         pos += seg;
         done += (size_t)seg;
         u->since_sync += seg;
         if (off + seg == part_bytes) {
             rc = iso_up_close_file(u, true); /* パーツの終わり: sync して閉じる(次のパーツは新規作成) */
-            if (rc < 0) return fail_write(u, e, touched, nt, rc, out);
+            if (rc < 0) return fail_write(u, e, touched, nt, rc);
         } else if (u->since_sync >= u->cfg.sync_bytes) {
             rc = fs->sync(fs->ctx, u->f);
-            if (rc < 0) return fail_write(u, e, touched, nt, rc, out);
+            if (rc < 0) return fail_write(u, e, touched, nt, rc);
             u->since_sync = 0;
         }
     }
@@ -277,6 +330,7 @@ int iso_upload_write_chunk(iso_upload_t *u, const char *id, uint64_t offset, con
     u->consumed_since += len;
     u->last_put_ms = now_ms(u);
     if (out) out->received = e->received;
+    if (u->cfg.hooks.chunk_accepted) u->cfg.hooks.chunk_accepted(u->cfg.hooks.ctx, id); /* 待っている IDLE_CLOSE は、もう要らない */
     iso_up_notify(u);
     return ISO_OK;
 }
@@ -297,6 +351,7 @@ int iso_upload_idle_close(iso_upload_t *u, const char *id) {
 }
 
 void iso_upload_abort(iso_upload_t *u, const char *id) {
+    pend_drop(u, id); /* 消すイメージの、保留の truncate は要らない */
     if (!u->slot_active || strcmp(u->slot_id, id) != 0) return;
     (void)iso_up_close_file(u, false);
     if (strcmp(u->sha_id, id) == 0) iso_up_discard_sha(u);
@@ -315,7 +370,9 @@ int iso_upload_finish_begin(iso_upload_t *u, const char *id, uint64_t *out_recei
     default: break;
     }
     if (e->state == ISO_STATE_INCOMPLETE) {
-        int rc = iso_upload_reload_received(u, e);
+        int rc = pend_settle(u, id);
+        if (rc < 0) return rc;
+        rc = iso_upload_reload_received(u, e);
         if (rc < 0) return rc;
     }
     if (out_received) *out_received = e->received;
@@ -360,6 +417,7 @@ void iso_upload_reinit(iso_upload_t *u) {
         u->f = NULL;
     }
     u->since_sync = 0;
+    u->pend_n = 0;
     iso_up_discard_sha(u);
     iso_up_release_slot(u);
     iso_catalog_t *cat = u->cfg.cat;

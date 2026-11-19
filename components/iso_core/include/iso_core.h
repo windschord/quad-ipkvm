@@ -3,7 +3,7 @@
 
 /*
  * iso_core: ワーカーのジョブの契約(キュー、優先順位、合流、ステップ)、公開ビューの更新、アイドルのタイムアウト、SD の再初期化。
- * 純 C、IDF 非依存。**ロックを持たない、スレッドを作らない、ブロックしない**。
+ * 純 C、IDF 非依存。**ロックを持たない、スレッドを作らない。待たない(イベント・時間・ロックを待たない)が、シームの I/O(`write` / `sync` / `read` など)が終わるまでは、呼び出し側が待つ**(ステップ 1 回の長さは、FatFs の 1 回の呼び出し程度。設計 4.2)。
  * 契約: docs/ISO_MOUNT_DESIGN.md 3.4(状態の遷移、SD の再初期化の手順)、4.1(ロック)、4.2(ワーカー)、docs/INTERFACES.md 7.5。
  *
  * ---- グルー(A-13 の iso_worker、A-15 の HTTP ハンドラー)が守ること -----------------------------------------
@@ -22,7 +22,7 @@
  *               if (waiting) delay(短く); } while (r.kind == ISO_STEP_CONTINUE);
  *          // ERROR(r.err): ログを出す。状態の遷移は iso_job_step が済ませている(FINISH → incomplete、DELETE → deleting のまま、INDEX → 表なしの ready)
  *      }
- *    iso_core_tick(1 秒ごと、iso_op_mutex の下)がアイドルのタイムアウトで IDLE_CLOSE を積む。
+ *    iso_upload_tick(1 秒ごと、iso_op_mutex の下)がアイドルのタイムアウトで IDLE_CLOSE を積む(積んだ後、実行の前に PUT が成功すると、取り消される)。
  *  SD の再初期化(設計 3.4 末尾の ①〜⑦。**呼び出し順の契約**):
  *    ① グルーが **iso_state_mutex だけを取り、1 つの区間で**、(a) sd.state を ready 以外にして公開、(b) iso_media_force_eject()、
  *       (c) iso_blockdev_t.epoch_bump() を行う。放してから、

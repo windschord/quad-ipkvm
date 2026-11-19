@@ -1,6 +1,7 @@
 /*
  * iso_upload_write_chunk / idle_close の失敗(設計 3.1、3.4、WEB_API 8.3): 書き込み・sync・open の失敗は、チャンク全体を truncate で取り消して
- * incomplete にする。truncate 自体の失敗では、received は実ファイルの大きさから決める。空きなし(ISO_ERR_NO_SPACE)は 507 相当。
+ * incomplete にする。truncate 自体の失敗では、received は確認済みの値のまま、取り消せなかった分は保留して、次の再開と finish の受付の前に、もう一度 truncate する。
+ * 空きなし(ISO_ERR_NO_SPACE)は 507 相当。
  * 失敗の注入は、モックの write の失敗(mock_fs_fail_write)と、書き込みの通し番号によるエラー(mock_fs_error_at)。期待値は手書き。
  * 電源断は test_up_powercut.c。
  */
@@ -200,7 +201,7 @@ void test_open_failure_on_the_first_chunk(void) {
 
 /* ---- truncate の失敗 ------------------------------------------------------------------------ */
 
-void test_truncate_failure_takes_received_from_the_file_size(void) {
+void test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume(void) {
     begin_small(SZ);
     put_all(ID, 0, 2000, 2000);
     fx_settle();
@@ -208,38 +209,70 @@ void test_truncate_failure_takes_received_from_the_file_size(void) {
     mock_fs_error_at(&FS, 3, ISO_ERR_IO); /* write(1)、close(2)、truncate(3) */
     iso_upload_write_t w;
     TEST_ASSERT_EQUAL_INT(ISO_RES_INSUFFICIENT_STORAGE, put_range(ID, 2000, 1000, &w));
-    /* 取り消せなかった: ディスク上のファイルは 2300 バイト。received はそれ */
-    TEST_ASSERT_EQUAL_UINT64(2300, w.received);
-    expect_incomplete_and_free(2300);
+    /* 取り消せなかった: ディスクには、確認していない 300 バイトが残る。received は、確認済みの 2000 のまま */
+    TEST_ASSERT_EQUAL_UINT64(2000, w.received);
+    expect_incomplete_and_free(2000);
     TEST_ASSERT_EQUAL_INT64(2300, mock_fs_size(&FS, P0));
-    /* SHA-256 の状態は、2000 バイトまで。received と合わないので、使わない */
-    TEST_ASSERT_EQUAL_UINT64(2000, UP.sha_bytes);
-    /* 再開: 追記の先頭バイトは、ソースの 2300 バイト目(書けた 300 バイトは、ソースの先頭の続き) */
+    TEST_ASSERT_EQUAL_UINT(1, UP.pend_n); /* 次の操作で、もう一度 truncate する */
+    /* 残りうる分(書こうとした 1000)を、空き容量の計上に足す: 2000(成功分)+ 1000 */
+    TEST_ASSERT_EQUAL_UINT64(3000, UP.consumed_since);
+    TEST_ASSERT_EQUAL_UINT64(2000, UP.sha_bytes); /* received と合っているので、SHA-256 は続けられる */
+    /* 再開: 最初の PUT が、先に truncate し直す(2300 → 2000)。そのあと、2000 から追記 */
     fx_settle();
     iso_upload_write_t w2;
-    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(ID, 2300, 500, &w2));
-    TEST_ASSERT_EQUAL_UINT64(2800, w2.received);
-    TEST_ASSERT_FALSE(UP.sha_valid); /* 欠けた区間があるので、以後は逐次の計算を続けない */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(ID, 2000, 500, &w2));
+    TEST_ASSERT_EQUAL_UINT64(2500, w2.received);
+    TEST_ASSERT_EQUAL_UINT(0, UP.pend_n);
+    TEST_ASSERT_TRUE(mock_fs_log_is(&FS, 0, "truncate /iso/11110001/p000 len=2000"));
+    TEST_ASSERT_TRUE(UP.sha_valid);
+    TEST_ASSERT_EQUAL_UINT64(2500, UP.sha_bytes);
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
-    expect_disk_prefix(ID, PB_SMALL, 2800);
+    expect_disk_prefix(ID, PB_SMALL, 2500);
 }
 
-void test_truncate_and_stat_failures_keep_the_old_received_until_the_resume(void) {
+void test_a_pending_truncate_that_fails_again_refuses_the_resume_and_changes_nothing(void) {
     begin_small(SZ);
     put_all(ID, 0, 2000, 2000);
     fx_settle();
     mock_fs_fail_write(&FS, 1, 300, ISO_ERR_NO_SPACE);
     mock_fs_error_at(&FS, 3, ISO_ERR_IO);
-    mock_fs_fail_path(&FS, P0); /* 大きさも読めない */
     iso_upload_write_t w;
     TEST_ASSERT_EQUAL_INT(ISO_RES_INSUFFICIENT_STORAGE, put_range(ID, 2000, 1000, &w));
-    TEST_ASSERT_EQUAL_UINT64(2000, w.received); /* 分からないので、書く前の値のまま */
+    mock_fs_reset_counter(&FS);
+    mock_fs_error_at(&FS, 1, ISO_ERR_IO); /* 再開の最初の truncate も失敗 */
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, put_range(ID, 2000, 100, &w));
     expect_incomplete_and_free(2000);
-    mock_fs_fail_path(&FS, NULL);
-    /* 再開の最初の PUT が、ディスクから決め直す: 実際は 2300 */
-    TEST_ASSERT_EQUAL_INT(ISO_RES_OFFSET_MISMATCH, put_range(ID, 2000, 100, &w));
-    TEST_ASSERT_EQUAL_UINT64(2300, w.received);
-    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(ID, 2300, 100, &w));
+    TEST_ASSERT_EQUAL_UINT(1, UP.pend_n); /* 残る。次の機会に */
+    TEST_ASSERT_EQUAL_INT64(2300, mock_fs_size(&FS, P0));
+    mock_fs_reset_counter(&FS);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(ID, 2000, 100, &w));
+    TEST_ASSERT_EQUAL_UINT(0, UP.pend_n);
+}
+
+void test_stray_bytes_after_a_failed_cross_part_rollback_are_not_counted_for_finish(void) {
+    /* 35816 バイトのイメージ、パーツ 34816 バイト。2 つ目のパーツを含むチャンクが失敗し、両方のパーツの truncate も失敗する */
+    reconf(0, 0);
+    begin_small(35816);
+    put_all(ID, 0, 34000, 34000);
+    fx_settle();
+    mock_fs_fail_write(&FS, 2, 1000, ISO_ERR_IO); /* p000 への 816 バイトは成功、p001 への 1000 バイトは書けたが、エラー */
+    mock_fs_error_range(&FS, 6, 7, ISO_ERR_IO);   /* write(1)、sync(2)、open(3)、write(4 = 失敗)、close の同期(5)、truncate p001(6)と p000(7)が、どちらも失敗 */
+    iso_upload_write_t w;
+    int rc = put_range(ID, 34000, 1816, &w);
+    TEST_ASSERT_TRUE(rc == ISO_ERR_IO);
+    TEST_ASSERT_EQUAL_UINT64(34000, w.received);
+    mock_fs_reset_counter(&FS);
+    /* ここで、ディスクには 34816 + 1000 = 35816(size と同じ)が残っているかもしれない。finish は、受け取っていない分を数えない */
+    uint64_t rec = 0;
+    int fb = iso_upload_finish_begin(&UP, ID, &rec);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_SIZE_MISMATCH, fb);
+    TEST_ASSERT_EQUAL_UINT64(34000, rec);
+    TEST_ASSERT_EQUAL_UINT(0, UP.pend_n);
+    TEST_ASSERT_EQUAL_INT64(34000, mock_fs_size(&FS, P0)); /* 保留の truncate を、先に済ませた */
+    TEST_ASSERT_TRUE(mock_fs_size(&FS, P1) <= 0);
+    /* 続きを送って完了できる */
+    put_all(ID, 34000, 35816, 1816);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_upload_finish_begin(&UP, ID, &rec));
 }
 
 void test_meta_write_failure_after_the_rollback_still_makes_the_upload_incomplete_in_memory(void) {
@@ -335,7 +368,7 @@ void test_a_clean_rollback_does_not_read_the_disk_again(void) {
     TEST_ASSERT_EQUAL_UINT64(2000, w.received);
 }
 
-void test_a_failed_rollback_reads_the_file_size(void) {
+void test_a_failed_rollback_does_not_read_the_disk_and_is_kept_pending(void) {
     begin_small(SZ);
     put_all(ID, 0, 2000, 2000);
     fx_settle();
@@ -344,7 +377,108 @@ void test_a_failed_rollback_reads_the_file_size(void) {
     mock_fs_error_at(&FS, 3, ISO_ERR_IO);
     iso_upload_write_t w;
     TEST_ASSERT_EQUAL_INT(ISO_RES_INSUFFICIENT_STORAGE, put_range(ID, 2000, 1000, &w));
-    TEST_ASSERT_TRUE(FS.n_stat > 0);
+    TEST_ASSERT_EQUAL_INT(0, FS.n_stat); /* 大きさは読まない(確認済みの received を使う) */
+    TEST_ASSERT_EQUAL_UINT(1, UP.pend_n);
+}
+
+void test_abort_and_reinit_forget_the_pending_truncates(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 2000, 2000);
+    mock_fs_fail_write(&FS, 1, 300, ISO_ERR_NO_SPACE);
+    mock_fs_error_at(&FS, 3, ISO_ERR_IO);
+    iso_upload_write_t w;
+    TEST_ASSERT_EQUAL_INT(ISO_RES_INSUFFICIENT_STORAGE, put_range(ID, 2000, 1000, &w));
+    mock_fs_reset_counter(&FS);
+    TEST_ASSERT_EQUAL_UINT(1, UP.pend_n);
+    iso_upload_abort(&UP, "deadbeef"); /* ほかのイメージ: 触らない */
+    TEST_ASSERT_EQUAL_UINT(1, UP.pend_n);
+    iso_upload_abort(&UP, ID); /* 枠を持たなくても、保留は捨てる */
+    TEST_ASSERT_EQUAL_UINT(0, UP.pend_n);
+    /* 保留を捨てたので、次の再開は、ディスクの 2300(取り消せなかった 300 バイトを含む)を received にする */
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OFFSET_MISMATCH, put_range(ID, 2000, 1000, &w));
+    TEST_ASSERT_EQUAL_UINT64(2300, w.received);
+    fx_settle();
+    mock_fs_reset_counter(&FS);
+    mock_fs_fail_write(&FS, 1, 300, ISO_ERR_NO_SPACE);
+    mock_fs_error_at(&FS, 4, ISO_ERR_IO); /* open(1)、write(2)、close(3)、truncate(4) */
+    TEST_ASSERT_EQUAL_INT(ISO_RES_INSUFFICIENT_STORAGE, put_range(ID, 2300, 1000, &w));
+    mock_fs_reset_counter(&FS);
+    TEST_ASSERT_EQUAL_UINT(1, UP.pend_n);
+    iso_upload_reinit(&UP);
+    TEST_ASSERT_EQUAL_UINT(0, UP.pend_n);
+}
+
+/* 1 つの PUT を、書き込みが 300 バイトで失敗し、その取り消し(truncate)も失敗するように、仕掛けて実行する(枠を持つイメージの 2000 バイト目から) */
+static void failed_put_with_a_failed_rollback(const char *id) {
+    mock_fs_reset_counter(&FS);
+    mock_fs_fail_write(&FS, 1, 300, ISO_ERR_NO_SPACE);
+    mock_fs_error_at(&FS, 3, ISO_ERR_IO); /* write(1)、close(2)、truncate(3) */
+    iso_upload_write_t w;
+    TEST_ASSERT_EQUAL_INT(ISO_RES_INSUFFICIENT_STORAGE, put_range(id, 2000, 1000, &w));
+    mock_fs_reset_counter(&FS);
+}
+
+void test_pending_truncates_of_two_images_are_kept_apart(void) {
+    begin_small(SZ); /* 11110001 */
+    put_all(ID, 0, 2000, 2000);
+    failed_put_with_a_failed_rollback(ID);
+    TEST_ASSERT_EQUAL_UINT(1, UP.pend_n);
+    char id2[ISO_ID_LEN + 1];
+    img_begin_pb("img2", SZ, PB_SMALL, NULL, id2); /* 枠は空いている */
+    TEST_ASSERT_EQUAL_STRING("11110002", id2);
+    put_all(id2, 0, 2000, 2000);
+    failed_put_with_a_failed_rollback(id2);
+    TEST_ASSERT_EQUAL_UINT(2, UP.pend_n);
+    /* 2 つ目のイメージの再開は、1 つ目の保留を飛ばして、自分の分だけを行う */
+    iso_upload_write_t w;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(id2, 2000, 500, &w));
+    TEST_ASSERT_EQUAL_UINT(1, UP.pend_n);
+    TEST_ASSERT_EQUAL_STRING(ID, UP.pend[0].id);
+    TEST_ASSERT_EQUAL_INT64(2300, mock_fs_size(&FS, P0)); /* 1 つ目は、まだ取り消していない */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, id2));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(ID, 2000, 500, &w));
+    TEST_ASSERT_EQUAL_UINT(0, UP.pend_n);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
+    TEST_ASSERT_EQUAL_INT64(2500, mock_fs_size(&FS, P0)); /* 2000 に戻してから、500 バイト追記 */
+}
+
+void test_the_pending_list_does_not_overflow(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 2000, 2000);
+    /* 別のイメージの保留が、満杯(ISO_MAX_PARTS)になっている */
+    for (size_t i = 0; i < ISO_MAX_PARTS; i++) {
+        memcpy(UP.pend[i].id, "deadbeef", 9);
+        UP.pend[i].part = (uint32_t)i;
+        UP.pend[i].size = 0;
+    }
+    UP.pend_n = ISO_MAX_PARTS;
+    failed_put_with_a_failed_rollback(ID);
+    TEST_ASSERT_EQUAL_UINT(ISO_MAX_PARTS, UP.pend_n); /* 溢れる分は、覚えない(次の再開が、ディスクの大きさから決める) */
+    for (size_t i = 0; i < UP.pend_n; i++) TEST_ASSERT_EQUAL_STRING("deadbeef", UP.pend[i].id);
+    expect_incomplete_and_free(2000);
+    TEST_ASSERT_EQUAL_UINT64(3000, UP.consumed_since); /* 空き容量の計上には、足す */
+    /* 覚えていないので、再開は、ディスクの 2300 から続ける */
+    iso_upload_write_t w;
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OFFSET_MISMATCH, put_range(ID, 2000, 100, &w));
+    TEST_ASSERT_EQUAL_UINT64(2300, w.received);
+    UP.pend_n = 0;
+}
+
+void test_finish_begin_settles_the_pending_truncates_first_and_stops_when_that_fails(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 2000, 2000);
+    failed_put_with_a_failed_rollback(ID);
+    TEST_ASSERT_EQUAL_UINT(1, UP.pend_n);
+    mock_fs_error_at(&FS, 1, ISO_ERR_IO); /* 保留の truncate が、また失敗する */
+    uint64_t rec = 12345;
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_upload_finish_begin(&UP, ID, &rec));
+    TEST_ASSERT_EQUAL_UINT64(12345, rec); /* 何も決めない */
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_INCOMPLETE, entry()->state);
+    TEST_ASSERT_EQUAL_UINT(1, UP.pend_n);
+    mock_fs_reset_counter(&FS);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_SIZE_MISMATCH, iso_upload_finish_begin(&UP, ID, &rec)); /* 今度は済む */
+    TEST_ASSERT_EQUAL_UINT64(2000, rec);
+    TEST_ASSERT_EQUAL_UINT(0, UP.pend_n);
 }
 
 void test_idle_close_when_sync_and_close_both_fail_takes_received_from_the_disk(void) {
@@ -362,6 +496,7 @@ void test_idle_close_when_sync_and_close_both_fail_takes_received_from_the_disk(
     TEST_ASSERT_EQUAL_INT(ISO_RES_OFFSET_MISMATCH, put_range(ID, 3000, 10, &w));
     TEST_ASSERT_EQUAL_UINT64(0, w.received);
     put_all(ID, 0, 3000, 1000);
+    TEST_ASSERT_FALSE(UP.sha_valid); /* 受け取った分と合わなくなった SHA-256 の状態は、捨てる(finish が読み直す) */
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
     expect_disk_prefix(ID, PB_SMALL, 3000);
 }
@@ -421,15 +556,20 @@ int main(void) {
     RUN_TEST(test_sync_failure_at_the_end_of_a_part_rolls_back);
     RUN_TEST(test_open_failure_of_the_next_part_rolls_back_the_first_part);
     RUN_TEST(test_open_failure_on_the_first_chunk);
-    RUN_TEST(test_truncate_failure_takes_received_from_the_file_size);
-    RUN_TEST(test_truncate_and_stat_failures_keep_the_old_received_until_the_resume);
+    RUN_TEST(test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume);
+    RUN_TEST(test_a_pending_truncate_that_fails_again_refuses_the_resume_and_changes_nothing);
+    RUN_TEST(test_stray_bytes_after_a_failed_cross_part_rollback_are_not_counted_for_finish);
     RUN_TEST(test_meta_write_failure_after_the_rollback_still_makes_the_upload_incomplete_in_memory);
     RUN_TEST(test_failure_on_a_resumed_upload_leaves_it_incomplete_and_the_slot_free);
     RUN_TEST(test_idle_close_sync_failure_still_ends_incomplete);
     RUN_TEST(test_idle_close_meta_failure_still_frees_the_slot);
     RUN_TEST(test_resume_after_a_failed_idle_close_works);
     RUN_TEST(test_a_clean_rollback_does_not_read_the_disk_again);
-    RUN_TEST(test_a_failed_rollback_reads_the_file_size);
+    RUN_TEST(test_a_failed_rollback_does_not_read_the_disk_and_is_kept_pending);
+    RUN_TEST(test_abort_and_reinit_forget_the_pending_truncates);
+    RUN_TEST(test_pending_truncates_of_two_images_are_kept_apart);
+    RUN_TEST(test_the_pending_list_does_not_overflow);
+    RUN_TEST(test_finish_begin_settles_the_pending_truncates_first_and_stops_when_that_fails);
     RUN_TEST(test_idle_close_when_sync_and_close_both_fail_takes_received_from_the_disk);
     RUN_TEST(test_idle_close_reports_a_failing_close_after_a_good_sync);
     RUN_TEST(test_the_end_of_a_part_reports_a_failing_close);

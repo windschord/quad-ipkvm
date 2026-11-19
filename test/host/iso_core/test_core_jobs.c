@@ -167,6 +167,22 @@ void test_ready_image_without_a_table_is_shown_as_finalizing_until_indexed(void)
     TEST_ASSERT_EQUAL_UINT32(EPOCH, iso_extent_table_epoch(view_of("000000a1")->table));
 }
 
+/* 受理された PUT は、動いている(選ばれた)INDEX には触らない(中止の印は、同じイメージの IDLE_CLOSE だけ) */
+void test_a_put_does_not_abort_a_picked_index_job(void) {
+    make_image("000000a1", "imp", SZ, PB_SMALL, ISO_META_READY, SZ);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_core_boot(&CORE));
+    iso_job_t *job = iso_core_pick(&CORE);
+    TEST_ASSERT_NOT_NULL(job);
+    TEST_ASSERT_EQUAL_INT(ISO_JOB_INDEX, job->kind);
+    char id[9];
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_begin(up(), "live", 4, SZ, NULL, id));
+    put_all(id, 0, 3000, 3000); /* INDEX は枠を使わない。PUT は受理される */
+    iso_step_result_t r = run_job(job, 0, 1000, 1000, NULL);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_NOT_NULL(iso_core_table(&CORE, "000000a1")); /* 表は作られている(中止されていない) */
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_UPLOADING, find(id)->state);
+}
+
 void test_index_job_part_mismatch_makes_the_image_invalid_and_drops_the_old_table(void) {
     make_image("000000a1", "x1", SZ, PB_SMALL, ISO_META_READY, SZ);
     scan();
@@ -265,6 +281,57 @@ void test_idle_close_job_error(void) {
     TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, JOBS[0].err);
     TEST_ASSERT_EQUAL_INT(ISO_STATE_INCOMPLETE, find(id)->state);
     TEST_ASSERT_FALSE(iso_upload_slot_busy(up()));
+}
+
+/* IDLE_CLOSE を積んだ後、実行の前に PUT が成功したら、閉じない */
+void test_a_put_after_the_idle_close_was_queued_cancels_it(void) {
+    char id[9];
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_begin(up(), "live", 4, SZ, NULL, id));
+    put_all(id, 0, 5000, 5000);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit(&CORE, ISO_JOB_IDLE_CLOSE, id));
+    TEST_ASSERT_EQUAL_UINT(1, iso_core_queue_len(&CORE));
+    put_all(id, 5000, 7000, 2000); /* 成功した PUT: 待っている IDLE_CLOSE は取り除く */
+    TEST_ASSERT_EQUAL_UINT(0, iso_core_queue_len(&CORE));
+    TEST_ASSERT_EQUAL_INT(0, drive(0, 1000));
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_UPLOADING, find(id)->state);
+    TEST_ASSERT_TRUE(iso_upload_slot_busy(up()));
+    TEST_ASSERT_EQUAL_INT(1, FS.open_files); /* ファイルは開いたまま */
+}
+
+void test_a_put_after_the_idle_close_was_picked_aborts_it(void) {
+    char id[9];
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_begin(up(), "live", 4, SZ, NULL, id));
+    put_all(id, 0, 5000, 5000);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit(&CORE, ISO_JOB_IDLE_CLOSE, id));
+    iso_job_t *job = iso_core_pick(&CORE);
+    TEST_ASSERT_NOT_NULL(job);
+    TEST_ASSERT_EQUAL_INT(ISO_JOB_IDLE_CLOSE, job->kind);
+    put_all(id, 5000, 7000, 2000); /* 選ばれた後、実行の前に PUT が成功した */
+    int syncs = FS.n_sync;
+    iso_step_result_t r = run_job(job, 0, 1000, 10, NULL);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_EQUAL_INT(syncs, FS.n_sync); /* 何もしない */
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_UPLOADING, find(id)->state);
+    TEST_ASSERT_TRUE(iso_upload_slot_busy(up()));
+    TEST_ASSERT_EQUAL_INT(1, FS.open_files);
+    TEST_ASSERT_NULL(iso_core_pick(&CORE));
+    /* 次の無通信で、あらためて積まれれば、閉じる */
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit(&CORE, ISO_JOB_IDLE_CLOSE, id));
+    TEST_ASSERT_EQUAL_INT(1, drive(0, 1000));
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_INCOMPLETE, find(id)->state);
+    TEST_ASSERT_EQUAL_UINT64(7000, find(id)->received);
+}
+
+void test_a_rejected_put_does_not_cancel_the_queued_idle_close(void) {
+    char id[9];
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_begin(up(), "live", 4, SZ, NULL, id));
+    put_all(id, 0, 5000, 5000);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit(&CORE, ISO_JOB_IDLE_CLOSE, id));
+    iso_upload_write_t w;
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OFFSET_MISMATCH, put_range(id, 4000, 100, &w)); /* 受理されない PUT */
+    TEST_ASSERT_EQUAL_UINT(1, iso_core_queue_len(&CORE));
+    TEST_ASSERT_EQUAL_INT(1, drive(0, 1000));
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_INCOMPLETE, find(id)->state);
 }
 
 void test_idle_close_job_for_an_image_that_is_not_uploading_is_a_noop(void) {
@@ -587,12 +654,16 @@ int main(void) {
     RUN_TEST(test_finish_of_a_ready_image_is_idempotent);
     RUN_TEST(test_finish_size_mismatch_reports_received);
     RUN_TEST(test_ready_image_without_a_table_is_shown_as_finalizing_until_indexed);
+    RUN_TEST(test_a_put_does_not_abort_a_picked_index_job);
     RUN_TEST(test_index_job_part_mismatch_makes_the_image_invalid_and_drops_the_old_table);
     RUN_TEST(test_index_job_too_fragmented);
     RUN_TEST(test_index_job_io_error_keeps_ready_without_a_table_and_can_be_retried);
     RUN_TEST(test_index_job_meta_write_failure_for_an_invalid_image_is_an_error_but_the_state_is_invalid);
     RUN_TEST(test_idle_close_job_makes_the_upload_incomplete);
     RUN_TEST(test_idle_close_job_error);
+    RUN_TEST(test_a_put_after_the_idle_close_was_queued_cancels_it);
+    RUN_TEST(test_a_put_after_the_idle_close_was_picked_aborts_it);
+    RUN_TEST(test_a_rejected_put_does_not_cancel_the_queued_idle_close);
     RUN_TEST(test_idle_close_job_for_an_image_that_is_not_uploading_is_a_noop);
     RUN_TEST(test_delete_job_removes_the_image_and_refreshes_the_free_space);
     RUN_TEST(test_delete_job_without_a_table_does_not_wait);

@@ -14,7 +14,7 @@
  *                 meta を ready で書く)
  *   iso_index.c   INDEX のステップ(iso_index_step。FINISH と INDEX ジョブが共有)
  *
- * スレッド: スレッドセーフではない。呼び出し側(グルー)が iso_op_mutex で守る(設計 4.1)。ブロックしない、スレッドを作らない。
+ * スレッド: スレッドセーフではない。呼び出し側(グルー)が iso_op_mutex で守る(設計 4.1)。スレッドを作らない。イベント・時間・ロックを待たない。ただし、シームの I/O(`write` / `sync` / `read` / `truncate` など)が終わるまでは、呼び出し側が待つ(長い処理は、ステップに分けてある)。
  * ビューの更新: 操作の最後に hooks.view_changed を呼ぶ(グルーが iso_state_mutex の下で、公開ビューを更新する。短く、I/O なし)。
  *
  * 戻り値の規則(iso_catalog_apply と同じ): 0 = 受理、正 = iso_res_t(拒否・結果。API のステータスの元)、負 = iso_err_t(I/O などのエラー)。
@@ -80,6 +80,9 @@ typedef struct {
     /* エクステントの表を引き渡す(NULL なら、受け取らず、すぐ unref する)。**所有権(参照 1)が移る**。
      * 同じ id の以前の表があれば、受け取った側が unref する(ここでは触らない)。 */
     void (*table_ready)(void *ctx, const char *id, iso_extent_table_t *table);
+    /* チャンクを受理した(NULL でよい)。iso_core が、待っている IDLE_CLOSE を取り消す(積んだ後、実行の前に PUT が成功したとき、閉じないため)。
+     * この中から iso_upload を呼ばない。 */
+    void (*chunk_accepted)(void *ctx, const char *id);
 } iso_upload_hooks_t;
 
 typedef struct {
@@ -114,7 +117,14 @@ typedef struct iso_upload {
     bool free_known;
     uint64_t total_bytes;
     uint64_t free_bytes;
-    uint64_t consumed_since;          /* キャッシュの採取後に、アップロードが書いたバイト数 */
+    uint64_t consumed_since;          /* キャッシュの採取後に、アップロードが書いたバイト数(取り消せなかった分は、書こうとした分の上限を足す) */
+    /* 取り消せなかった truncate(設計 3.1)。次の再開・finish の受付の最初に、もう一度行う(メモリ上だけ。再起動すると、ディスクの大きさから決める) */
+    struct {
+        char id[ISO_ID_LEN + 1];
+        uint32_t part;
+        uint64_t size;
+    } pend[ISO_MAX_PARTS];
+    size_t pend_n;
 } iso_upload_t;
 
 /* cfg を検査してコピーする。NULL / io_buf_size 0 / sha_state が必要なのに NULL などは ISO_ERR_INVALID。 */
@@ -276,6 +286,7 @@ typedef struct {
     uint64_t hash_off;             /* hash_part の中の位置 */
     uint8_t digest[ISO_SHA256_LEN];
     bool have_digest;              /* digest が確定した */
+    uint32_t epoch0;               /* FINISH の開始(最初のステップ)のときの、カードの epoch。ready を書く前に、変わっていないことを確かめる */
     /* iso_upload_hash_step の失敗(DONE を返し、ここに入れる): fail == NONE なら、全パーツを読み終えて digest が確定した */
     iso_outcome_t fail;
     uint8_t fail_reason;
@@ -294,7 +305,9 @@ int iso_finish_job_init(iso_finish_job_t *job, const char *id);
  * aborted が真なら、何もせず(資源を解放して)DONE を返す(DELETE が割り込んだ。枠は iso_upload_abort が空けている)。
  */
 iso_step_result_t iso_upload_finish_step(iso_upload_t *u, iso_finish_job_t *job, uint32_t budget_bytes, bool aborted);
-/* SHA-256 の再計算の 1 ステップ(finish_step が使う。単体でも呼べる)。budget_bytes ごとに CONTINUE。全パーツを読み終えると
+/* SHA-256 の再計算の 1 ステップ(finish_step が使う。単体でも呼べる)。**逐次の SHA-256 と同じ `cfg.sha_state` を使う**(開始で、逐次の状態を捨てる)ので、
+ * 同じ iso_upload_t では、再計算の開始から完了まで(DONE まで)、SHA-256 を使うほかの操作(begin、write_chunk、別イメージの finish)を、交互に進められない。
+ * budget_bytes ごとに CONTINUE。全パーツを読み終えると
  * job->digest / have_digest に入れて DONE。失敗(パーツが短い・ない = INVALID part_mismatch、I/O = IOERR)は、job->fail に入れて DONE。 */
 iso_step_result_t iso_upload_hash_step(iso_upload_t *u, iso_finish_job_t *job, uint32_t budget_bytes);
 void iso_finish_job_release(iso_upload_t *u, iso_finish_job_t *job);

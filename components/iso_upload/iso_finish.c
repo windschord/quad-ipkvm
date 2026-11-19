@@ -6,6 +6,9 @@ enum { FP_START = 0, FP_CLOSE, FP_HASH, FP_VERIFY, FP_SIG, FP_INDEX, FP_META, FP
 
 #define SIG_OFFSET (16u * ISO_CD_BLOCK_BYTES) /* セクタ 16 (CD のブロック 16) */
 
+/* カードの世代(epoch)。bdev がなければ 0 */
+static uint32_t cur_epoch(const iso_upload_t *u) { return u->cfg.bdev ? u->cfg.bdev->epoch(u->cfg.bdev->ctx) : 0; }
+
 static iso_step_result_t step_res(iso_step_t kind, int err) {
     iso_step_result_t r = {kind, err};
     return r;
@@ -167,6 +170,7 @@ iso_step_result_t iso_upload_finish_step(iso_upload_t *u, iso_finish_job_t *job,
 
     switch (job->phase) {
     case FP_START:
+        job->epoch0 = cur_epoch(u); /* ready を書く前に、カードが替わっていないことを確かめる(FP_META) */
         job->phase = FP_CLOSE;
         return step_res(ISO_STEP_CONTINUE, ISO_OK);
 
@@ -220,6 +224,9 @@ iso_step_result_t iso_upload_finish_step(iso_upload_t *u, iso_finish_job_t *job,
 
     case FP_META:
     default: {
+        /* SHA-256 と署名は、開始のときのカードを読んだ結果。途中でカードが替わった(SD の再初期化。epoch が進んだ)なら、
+         * ready にせず、incomplete にする(表の epoch は、INDEX の開始のときの値なので、新しいカードのものになりうる) */
+        if (cur_epoch(u) != job->epoch0) return end_ioerr(u, job, e, ISO_ERR_EPOCH);
         iso_apply_arg_t arg = {.set_sha = true, .sha_flag = ISO_SHA_COMPUTED, .sha256 = job->digest};
         int rc = iso_catalog_apply(u->cfg.cat, e, ISO_EV_FINALIZE_OK, NULL, &arg);
         if (rc != 0) return end_ioerr(u, job, e, rc < 0 ? rc : ISO_ERR_INVALID);

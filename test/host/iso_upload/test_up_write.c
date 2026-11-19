@@ -453,7 +453,7 @@ void test_abort_closes_the_file_drops_sha_and_frees_the_slot(void) {
     TEST_ASSERT_EQUAL_INT(0, FS.open_files);
     TEST_ASSERT_FALSE(iso_upload_slot_busy(&UP));
     TEST_ASSERT_FALSE(UP.sha_valid);
-    TEST_ASSERT_EQUAL_INT(0, FS.n_sync); /* 同期しない(消すデータ) */
+    TEST_ASSERT_EQUAL_INT(0, FS.n_sync); /* 明示的な `fs->sync` は呼ばない(消すデータ) */
 }
 
 void test_activity_boundaries(void) {
@@ -542,6 +542,70 @@ void test_resume_recomputes_received_from_the_disk(void) {
     TEST_ASSERT_EQUAL_INT(ISO_STATE_INCOMPLETE, entry()->state); /* 拒否したら、状態は変わらない */
     TEST_ASSERT_FALSE(iso_upload_slot_busy(&UP));
     TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(ID, 3000, 10, &w));
+}
+
+/* 再開の PUT が、ディスクの大きさで received を訂正したときは、拒否しても、ビューを更新する(受理の場合は、1 回だけ) */
+void test_a_corrected_received_notifies_the_view_even_when_the_put_is_rejected(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 3000, 1000);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
+    entry()->received = 123;
+    iso_upload_write_t w;
+    int v = VIEW_CALLS;
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OFFSET_MISMATCH, put_range(ID, 123, 10, &w));
+    TEST_ASSERT_EQUAL_INT(v + 1, VIEW_CALLS); /* 3000 に訂正した */
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OFFSET_MISMATCH, put_range(ID, 123, 10, &w));
+    TEST_ASSERT_EQUAL_INT(v + 1, VIEW_CALLS); /* 訂正がなければ、更新しない */
+    entry()->received = 123;
+    TEST_ASSERT_EQUAL_INT(ISO_RES_EXCEEDS_SIZE, put_range(ID, 3000, (size_t)SZ, &w));
+    TEST_ASSERT_EQUAL_INT(v + 2, VIEW_CALLS);
+    entry()->received = 123;
+    v = VIEW_CALLS;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(ID, 3000, 10, &w));
+    TEST_ASSERT_EQUAL_INT(v + 1, VIEW_CALLS); /* 受理: 枠を取って、1 回だけ */
+}
+
+void test_a_corrected_received_notifies_the_view_when_the_storage_check_rejects(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 3000, 1000);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
+    entry()->received = 123;
+    iso_upload_set_free(&UP, 64 * GIB, SZ - 3000 + 64 * MIB - 1); /* 訂正後の残り(SZ - 3000)+ 予備に、1 バイト足りない */
+    iso_upload_write_t w;
+    int v = VIEW_CALLS;
+    TEST_ASSERT_EQUAL_INT(ISO_RES_INSUFFICIENT_STORAGE, put_range(ID, 3000, 10, &w));
+    TEST_ASSERT_EQUAL_INT(v + 1, VIEW_CALLS);
+    TEST_ASSERT_EQUAL_UINT64(3000, entry()->received);
+    TEST_ASSERT_EQUAL_INT(v + 1, VIEW_CALLS);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_INSUFFICIENT_STORAGE, put_range(ID, 3000, 10, &w));
+    TEST_ASSERT_EQUAL_INT(v + 1, VIEW_CALLS); /* 訂正がなければ、更新しない */
+}
+
+void test_a_rejected_put_to_an_uploading_image_does_not_notify_the_view(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 3000, 1000);
+    iso_upload_write_t w;
+    int v = VIEW_CALLS;
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OFFSET_MISMATCH, put_range(ID, 5, 10, &w));
+    TEST_ASSERT_EQUAL_INT(ISO_RES_EXCEEDS_SIZE, put_range(ID, 3000, (size_t)SZ, &w));
+    TEST_ASSERT_EQUAL_INT(v, VIEW_CALLS); /* uploading の進行中は、メモリの値を信じる。訂正はなく、何も変わらない */
+}
+
+void test_chunk_accepted_hook_is_called_once_per_accepted_chunk_only(void) {
+    begin_small(SZ);
+    iso_upload_write_t w;
+    TEST_ASSERT_EQUAL_INT(0, CHUNK_CALLS);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(ID, 0, 1000, &w));
+    TEST_ASSERT_EQUAL_INT(1, CHUNK_CALLS);
+    TEST_ASSERT_EQUAL_STRING(ID, CHUNK_ID);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OFFSET_MISMATCH, put_range(ID, 5, 10, &w));
+    TEST_ASSERT_EQUAL_INT(1, CHUNK_CALLS); /* 拒否: 呼ばない */
+    mock_fs_fail_write(&FS, 1, 0, ISO_ERR_IO);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, put_range(ID, 1000, 10, &w));
+    TEST_ASSERT_EQUAL_INT(1, CHUNK_CALLS); /* 書き込みの失敗: 呼ばない */
+    mock_fs_fail_write(&FS, 0, 0, 0);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(ID, 1000, 10, &w)); /* 再開 */
+    TEST_ASSERT_EQUAL_INT(2, CHUNK_CALLS);
 }
 
 void test_resume_is_refused_while_another_image_uses_the_slot(void) {
@@ -723,6 +787,10 @@ int main(void) {
     RUN_TEST(test_resume_after_idle_appends_without_writing_meta);
     RUN_TEST(test_resume_exactly_at_a_part_boundary_creates_the_next_part);
     RUN_TEST(test_resume_recomputes_received_from_the_disk);
+    RUN_TEST(test_a_corrected_received_notifies_the_view_even_when_the_put_is_rejected);
+    RUN_TEST(test_a_corrected_received_notifies_the_view_when_the_storage_check_rejects);
+    RUN_TEST(test_a_rejected_put_to_an_uploading_image_does_not_notify_the_view);
+    RUN_TEST(test_chunk_accepted_hook_is_called_once_per_accepted_chunk_only);
     RUN_TEST(test_resume_is_refused_while_another_image_uses_the_slot);
     RUN_TEST(test_resume_storage_check_needs_remaining_plus_reserve);
     RUN_TEST(test_resume_storage_check_counts_other_images_but_not_itself);

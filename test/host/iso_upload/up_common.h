@@ -39,6 +39,8 @@ static iso_blockdev_t BDEV;
 static iso_upload_t UP;
 static iso_upload_t *UPP; /* put_range が使う iso_upload_t。NULL なら UP(iso_core のテストは &CORE.up を入れる) */
 static int VIEW_CALLS;
+static int CHUNK_CALLS;                /* chunk_accepted の呼ばれた回数 */
+static char CHUNK_ID[ISO_ID_LEN + 1]; /* 最後に呼ばれたときの id */
 static int TABLES_READY;
 static char TABLE_ID[ISO_ID_LEN + 1];
 static iso_extent_table_t *LAST_TABLE; /* table_ready で受け取った表(テストが持つ。次の受け取りか teardown で unref) */
@@ -49,6 +51,12 @@ static const char *SIG = "CD001";      /* gen_byte が、セクタ 16 のバイ�
 static void hook_view(void *ctx) {
     (void)ctx;
     VIEW_CALLS++;
+}
+
+static void hook_chunk(void *ctx, const char *id) {
+    (void)ctx;
+    CHUNK_CALLS++;
+    snprintf(CHUNK_ID, sizeof(CHUNK_ID), "%s", id);
 }
 
 static void hook_table(void *ctx, const char *id, iso_extent_table_t *t) {
@@ -84,6 +92,11 @@ static uint32_t epoch_fn(void *ctx) {
     return EPOCH;
 }
 
+static void epoch_bump_fn(void *ctx) {
+    (void)ctx;
+    EPOCH++;
+}
+
 /* ---- 準備と後始末 ------------------------------------------------------------------------ */
 
 static inline void fx_up_cfg(iso_upload_cfg_t *cfg, uint32_t chunk, uint32_t sync) {
@@ -100,6 +113,7 @@ static inline void fx_up_cfg(iso_upload_cfg_t *cfg, uint32_t chunk, uint32_t syn
     cfg->sync_bytes = sync;
     cfg->hooks.view_changed = hook_view;
     cfg->hooks.table_ready = hook_table;
+    cfg->hooks.chunk_accepted = hook_chunk;
 }
 
 /* /iso と /iso/import がある、空き 60 GiB / 全体 64 GiB のカード。chunk / sync = 0 は既定値 */
@@ -127,7 +141,10 @@ static inline void fx_base(void) {
     EPOCH = 7;
     memset(&BDEV, 0, sizeof(BDEV));
     BDEV.epoch = epoch_fn;
+    BDEV.epoch_bump = epoch_bump_fn;
     VIEW_CALLS = 0;
+    CHUNK_CALLS = 0;
+    CHUNK_ID[0] = '\0';
     TABLES_READY = 0;
     TABLE_ID[0] = '\0';
     LAST_TABLE = NULL;
