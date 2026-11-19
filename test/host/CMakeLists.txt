@@ -191,6 +191,15 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE usb_vbus_ctrl)
     endif()
 
+    if (test_source MATCHES "/iso_media/")
+        target_link_libraries(${test_name} PRIVATE iso_media)
+    endif()
+
+    if (test_source MATCHES "/mmc_scsi/")
+        target_link_libraries(${test_name} PRIVATE mmc_scsi iso_media)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/iso_seams/include)
+    endif()
+
     if (test_source MATCHES "/kvm_api/")
         target_link_libraries(${test_name} PRIVATE kvm_api kvm_ctrl kvm_board_mock http_guard auth_logic)
     endif()
@@ -261,6 +270,12 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/usb_vbus_ctrl ${CMAKE_BINA
 
 # kvm_api (HTTP API of KVM/ATX: strict body parser, JSON, result -> HTTP mapping, pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_api ${CMAKE_BINARY_DIR}/kvm_api)
+
+# iso_media (virtual CD-ROM media state: EMPTY/LOADED, unit attention, prevent removal; docs/ISO_MOUNT_DESIGN.md 5.5; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_media ${CMAKE_BINARY_DIR}/iso_media)
+
+# mmc_scsi (CD-ROM SCSI/MMC commands for the virtual drive; docs/ISO_MOUNT_DESIGN.md 5.4; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/mmc_scsi ${CMAKE_BINARY_DIR}/mmc_scsi)
 
 # Mock kvm_board_hal_t (reproduces the board-side obligations of docs/INTERFACES.md 6.2)
 add_library(kvm_board_mock STATIC ${CMAKE_SOURCE_DIR}/kvm_board/kvm_board_mock.c)
