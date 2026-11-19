@@ -64,7 +64,11 @@ static size_t cdb_len_for(uint8_t op) {
 
 static uint8_t pick_byte(void) {
     static const uint8_t v[] = {0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x08, 0x10, 0x18, 0x20, 0x3F, 0x40, 0x80, 0xC0, 0xFF};
-    return (rnd() % 3 == 0) ? (uint8_t)rnd() : v[rnd() % sizeof(v)];
+    /* 乱数の評価順は、1 つの式に複数の rnd() を書かず、文で分けて固定する */
+    uint32_t choose = rnd() % 3;
+    uint32_t any = rnd();
+    uint32_t idx = rnd() % (uint32_t)sizeof(v);
+    return (choose == 0) ? (uint8_t)any : v[idx];
 }
 
 static uint32_t pick_lba(void) {
@@ -91,6 +95,15 @@ static uint32_t pick_blocks(void) {
     }
 }
 
+/* MODE SENSE の byte 2（PC と ページコード）。乱数の評価順を固定するため、文で分ける */
+static uint8_t mode_sense_page_byte(void) {
+    uint32_t pc = rnd() % 4;
+    uint32_t pick_a = rnd() & 1;
+    uint32_t pick_b = rnd() & 1;
+    uint32_t page = pick_a ? 0x2Au : (pick_b ? 0x3Fu : 0x01u);
+    return (uint8_t)((pc << 6) | page);
+}
+
 static void put16(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v >> 8);
     p[1] = (uint8_t)v;
@@ -103,16 +116,22 @@ static void put32(uint8_t *p, uint32_t v) {
 /* コマンドに沿った CDB（予約は 0）。len を返す。 */
 static size_t clean_cdb(uint8_t *c, uint8_t *op_out) {
     uint8_t op = K_OPS[rnd() % sizeof(K_OPS)];
-    uint16_t alloc = (uint16_t)((rnd() % 3 == 0) ? (rnd() % 40) : ((rnd() & 1) ? 0xFFFF : 0x00FF));
+    uint16_t alloc;
     size_t len = cdb_len_for(op);
+    {
+        uint32_t kind = rnd() % 3;
+        uint32_t small = rnd() % 40;
+        uint32_t big = rnd() & 1;
+        alloc = (uint16_t)(kind == 0 ? small : (big ? 0xFFFFu : 0x00FFu));
+    }
     memset(c, 0, 16);
     c[0] = op;
     *op_out = op;
     switch (op) {
         case 0x03: c[4] = (uint8_t)alloc; break;
         case 0x12: put16(c + 3, alloc); break;
-        case 0x1A: c[2] = (uint8_t)(((rnd() % 4) << 6) | ((rnd() & 1) ? 0x2A : ((rnd() & 1) ? 0x3F : 0x01))); c[4] = (uint8_t)alloc; break;
-        case 0x5A: c[2] = (uint8_t)(((rnd() % 4) << 6) | ((rnd() & 1) ? 0x2A : ((rnd() & 1) ? 0x3F : 0x01))); put16(c + 7, alloc); break;
+        case 0x1A: c[2] = mode_sense_page_byte(); c[4] = (uint8_t)alloc; break;
+        case 0x5A: c[2] = mode_sense_page_byte(); put16(c + 7, alloc); break;
         case 0x1B: c[4] = (uint8_t)(rnd() % 4); break;
         case 0x1E: c[4] = (uint8_t)(rnd() % 3 == 0 ? 0 : 1); break;
         case 0x23: put16(c + 7, alloc); break;
@@ -139,11 +158,30 @@ static size_t clean_cdb(uint8_t *c, uint8_t *op_out) {
             static const uint8_t cl[] = {0x10, 0x10, 0x00, 0x7E, 0x02};
             c[1] = (uint8_t)(rnd() % 8 == 0 ? 0 : 1);
             c[4] = cl[rnd() % 5];
-            put16(c + 7, (rnd() % 3 == 0) ? (uint16_t)(rnd() % 12) : 8);
+            {
+                uint32_t short_len = rnd() % 3;
+                uint32_t len_value = rnd() % 12;
+                put16(c + 7, short_len == 0 ? len_value : 8u);
+            }
             break;
         }
-        case 0x51: c[1] = (uint8_t)(rnd() % 4 == 0 ? rnd() % 4 : 0); put16(c + 7, alloc); break;
-        case 0x52: c[1] = (uint8_t)(rnd() % 4); put32(c + 2, (rnd() & 1) ? rnd() % 3 : pick_lba() % 130); put16(c + 7, alloc); break;
+        case 0x51: {
+            uint32_t use_type = rnd() % 4;
+            uint32_t type = rnd() % 4;
+            c[1] = (uint8_t)(use_type == 0 ? type : 0);
+            put16(c + 7, alloc);
+            break;
+        }
+        case 0x52: {
+            uint32_t type = rnd() % 4;
+            uint32_t small = rnd() & 1;
+            uint32_t small_value = rnd() % 3;
+            uint32_t lba_value = pick_lba() % 130;
+            c[1] = (uint8_t)type;
+            put32(c + 2, small ? small_value : lba_value);
+            put16(c + 7, alloc);
+            break;
+        }
         default: break;
     }
     return len;
@@ -165,8 +203,12 @@ static size_t make_cdb(uint8_t *c, uint8_t *op_out) {
         default: /* コマンドに沿って作り、25% で壊す */
             len = clean_cdb(c, op_out);
             if (rnd() % 4 == 0) {
-                if (rnd() & 1) c[1 + rnd() % 9] ^= (uint8_t)(1u << (rnd() % 8));
-                else c[1 + rnd() % 9] = pick_byte();
+                uint32_t flip = rnd() & 1;
+                uint32_t pos = 1 + rnd() % 9;
+                uint32_t bit = rnd() % 8;
+                uint8_t replacement = pick_byte();
+                if (flip) c[pos] ^= (uint8_t)(1u << bit);
+                else c[pos] = replacement;
             }
             if (rnd() % 16 == 0) len = len > 1 ? len - 1 - rnd() % 2 : len; /* 短い CDB */
             return len;
@@ -178,9 +220,22 @@ static void random_media_op(void) {
     switch (rnd() % 12) {
         case 0:
         case 1:
-        case 2: (void)iso_media_mount(&MEDIA, K_IDS[rnd() % 8], (rnd() & 3) == 0); break;
-        case 3: (void)iso_media_eject(&MEDIA, (rnd() & 3) == 0); break;
-        case 4: (void)iso_media_set_prevent(&MEDIA, (rnd() & 1) != 0); break;
+        case 2: {
+            uint32_t which = rnd() % 8;
+            bool force = (rnd() & 3) == 0;
+            (void)iso_media_mount(&MEDIA, K_IDS[which], force);
+            break;
+        }
+        case 3: {
+            bool force = (rnd() & 3) == 0;
+            (void)iso_media_eject(&MEDIA, force);
+            break;
+        }
+        case 4: {
+            bool prevent = (rnd() & 1) != 0;
+            (void)iso_media_set_prevent(&MEDIA, prevent);
+            break;
+        }
         case 5: iso_media_bus_reset(&MEDIA); break;
         case 6: iso_media_force_eject(&MEDIA); break;
         case 7: (void)iso_media_request_eject(&MEDIA); break;
@@ -222,21 +277,32 @@ static void run_fuzz(int seeds, long iters) {
             uint32_t exec_id = 0;
             cur_iter = it;
 
-            if (rnd() % 6 == 0) random_media_op();
+            if (rnd() % 6 == 0) {
+                random_media_op();
+            }
             /* 失敗の注入（まれに） */
-            MOCK.size_rc = (rnd() % 40 == 0) ? ISO_ERR_IO : 0;
-            MOCK.acquire_rc = (rnd() % 40 == 0) ? (int)((rnd() & 1) ? ISO_ERR_NOT_FOUND : ISO_ERR_EPOCH) : 0;
-            MOCK.read_rc = (rnd() % 20 == 0) ? (int)((rnd() & 1) ? ISO_ERR_EPOCH : ISO_ERR_IO) : 0;
-            MOCK.read_fail_after = MOCK.reads + (rnd() % 3);
-            MOCK.bump_epoch_on_read = (rnd() % 60 == 0);
+            {
+                uint32_t size_fail = rnd() % 40;
+                uint32_t acq_fail = rnd() % 40;
+                uint32_t acq_kind = rnd() & 1;
+                uint32_t read_fail = rnd() % 20;
+                uint32_t read_kind = rnd() & 1;
+                uint32_t read_after = rnd() % 3;
+                uint32_t bump = rnd() % 60;
+                MOCK.size_rc = (size_fail == 0) ? ISO_ERR_IO : 0;
+                MOCK.acquire_rc = (acq_fail == 0) ? (int)(acq_kind ? ISO_ERR_NOT_FOUND : ISO_ERR_EPOCH) : 0;
+                MOCK.read_rc = (read_fail == 0) ? (int)(read_kind ? ISO_ERR_EPOCH : ISO_ERR_IO) : 0;
+                MOCK.read_fail_after = MOCK.reads + read_after;
+                MOCK.bump_epoch_on_read = (bump == 0);
+            }
 
             len = make_cdb(cdb, &op);
             cap = caps[rnd() % (sizeof(caps) / sizeof(caps[0]))];
             had_media = iso_media_get_id(&MEDIA, &exec_id);
 
             /* 同じ状態から、大きな out_cap で実行する（切り詰めの性質の基準）。READ のバックエンドの参照は、すぐ放す。 */
-            media2 = MEDIA;
-            scsi2 = SCSI;
+            memcpy(&media2, &MEDIA, sizeof(media2)); /* atomic を含む構造体なので memcpy */
+            memcpy(&scsi2, &SCSI, sizeof(scsi2));
             scsi2.media = &media2;
             scsi2.held = false; /* 本番が持っている参照は、本番だけが放す */
             scsi2.held_handle = NULL;
@@ -251,7 +317,10 @@ static void run_fuzz(int seeds, long iters) {
 
             /* 本番: 番兵つきの out */
             memset(ARENA, 0xA5, sizeof(ARENA));
-            CHECK(mmc_scsi_execute(&SCSI, cdb, len, dir, rnd(), ARENA + GUARD, cap, &r) == 0, "execute returned an error");
+            {
+                uint32_t expected_len = rnd();
+                CHECK(mmc_scsi_execute(&SCSI, cdb, len, dir, expected_len, ARENA + GUARD, cap, &r) == 0, "execute returned an error");
+            }
             ST.executed++;
 
             for (size_t i = 0; i < GUARD; i++) CHECK(ARENA[i] == 0xA5, "wrote before out");
@@ -308,8 +377,23 @@ static void run_fuzz(int seeds, long iters) {
 
             /* read_blocks（参照を持っているとき） */
             if (mmc_scsi_holds_reference(&SCSI)) {
-                uint32_t sub = r.read.lba + (rnd() % r.read.blocks);
-                uint32_t n = 1 + rnd() % (r.read.lba + r.read.blocks - sub < 4 ? r.read.lba + r.read.blocks - sub : 4);
+                /* 相対のオフセットと残りのブロック数を先に求め、絶対の LBA は 64 ビットで計算する。
+                 * read_blocks の LBA は 32 ビットなので、検証に使うのは、32 ビットに収まる範囲だけ */
+                uint32_t rel = rnd() % r.read.blocks;
+                uint64_t abs_lba;
+                uint64_t remaining;
+                uint64_t span;
+                uint32_t sub;
+                uint32_t n;
+                uint32_t pick;
+                if ((uint64_t)r.read.lba + rel > 0xFFFFFFFFull) rel = 0;
+                abs_lba = (uint64_t)r.read.lba + rel;
+                remaining = r.read.blocks - rel;
+                span = remaining < 4 ? remaining : 4;
+                if (abs_lba + span > 0x100000000ull) span = 0x100000000ull - abs_lba; /* 最後のブロックまで */
+                pick = rnd();
+                n = 1 + (uint32_t)(pick % span);
+                sub = (uint32_t)abs_lba;
                 size_t bytes = (size_t)n * 2048;
                 uint32_t gen_at_exec = iso_media_abort_generation(&MEDIA);
                 mmc_status_t st;

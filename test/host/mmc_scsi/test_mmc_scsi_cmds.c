@@ -201,6 +201,31 @@ static void test_request_sense_is_cut_and_zero_length_keeps_the_sense(void) {
     TEST_ASSERT_EQUAL_UINT32(18, RES.data_len);
 }
 
+static void test_request_sense_keeps_the_sense_when_nothing_was_returned(void) {
+    static const uint8_t not_ready[18] = {0x70, 0x00, 0x02, 0, 0, 0, 0, 0x0A, 0, 0, 0, 0, 0x3A, 0x00, 0, 0, 0, 0};
+    const uint8_t cdb[6] = {0x03, 0, 0, 0, 18, 0};
+    uint8_t small[4];
+    EXEC(0x00, 0, 0, 0, 0, 0); /* NOT READY 3A/00 */
+    expect_cc(0x2, 0x3A, 0x00);
+    /* 割り当て長は 18 でも、out_cap が 0（NULL）: 何も返さないので、センスは消えない */
+    TEST_ASSERT_EQUAL_INT(0, mmc_scsi_execute(&SCSI, cdb, 6, MMC_DIR_IN, 18, NULL, 0, &RES));
+    expect_no_data_good();
+    TEST_ASSERT_EQUAL_INT(0, mmc_scsi_execute(&SCSI, cdb, 6, MMC_DIR_IN, 18, small, 0, &RES));
+    TEST_ASSERT_EQUAL_UINT32(0, RES.data_len);
+    {
+        mmc_sense_t s;
+        TEST_ASSERT_TRUE(mmc_scsi_last_sense(&SCSI, &s));
+        TEST_ASSERT_EQUAL_HEX8(0x3A, s.asc);
+    }
+    EXEC(0x03, 0, 0, 0, 18, 0);
+    EXPECT_DATA(not_ready); /* まだ残っている */
+    /* 1 バイト以上を返したら（部分応答でも）消える */
+    EXEC(0x00, 0, 0, 0, 0, 0);
+    TEST_ASSERT_EQUAL_INT(0, mmc_scsi_execute(&SCSI, cdb, 6, MMC_DIR_IN, 18, small, sizeof(small), &RES));
+    TEST_ASSERT_EQUAL_UINT32(4, RES.data_len);
+    TEST_ASSERT_FALSE(mmc_scsi_last_sense(&SCSI, NULL));
+}
+
 static void test_request_sense_descriptor_format_and_reserved_are_rejected(void) {
     EXEC(0x03, 0x01, 0, 0, 18, 0); /* DESC = 1 */
     expect_cc(0x5, 0x24, 0x00);
@@ -619,6 +644,7 @@ int main(void) {
     RUN_TEST(test_request_sense_returns_fixed_format_and_clears);
     RUN_TEST(test_request_sense_after_unit_attention_and_after_illegal_request);
     RUN_TEST(test_request_sense_is_cut_and_zero_length_keeps_the_sense);
+    RUN_TEST(test_request_sense_keeps_the_sense_when_nothing_was_returned);
     RUN_TEST(test_request_sense_descriptor_format_and_reserved_are_rejected);
     RUN_TEST(test_inquiry_does_not_clear_the_stored_sense_but_other_commands_do);
     RUN_TEST(test_bus_reset_discards_the_stored_sense);

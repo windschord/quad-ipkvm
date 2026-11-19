@@ -27,7 +27,7 @@ static void test_read_capacity_10_exact_bytes(void) {
     fx_mount_quiet(ID_BIG);
     EXEC(0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     EXPECT_DATA(big);
-    fx_mount_quiet(ID_HUGE); /* 4 GiB を超える（ブロック数が 32 ビットを超える）: 0xFFFFFFFF */
+    fx_mount_quiet(ID_HUGE); /* 最終 LBA が 32 ビットを超える（約 18 TiB）: 0xFFFFFFFF。BIGP（5 GiB + 100 B）は、最終 LBA が 0x00280000 で、丸めない */
     EXEC(0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     EXPECT_DATA(huge);
 }
@@ -276,8 +276,10 @@ static void test_command_done_is_idempotent_and_releases_exactly_once(void) {
     fx_mount_quiet(ID_A);
     exec_read10(0, 1);
     mmc_scsi_command_done(&SCSI);
+    TEST_ASSERT_EQUAL_INT(MMC_REF_IDLE, atomic_load(&SCSI.ref_state)); /* 解放の後は IDLE（RELEASING のまま残らない） */
     mmc_scsi_command_done(&SCSI);
     mmc_scsi_command_done(&SCSI);
+    TEST_ASSERT_EQUAL_INT(MMC_REF_IDLE, atomic_load(&SCSI.ref_state));
     TEST_ASSERT_EQUAL_UINT(1, MOCK.acquires);
     TEST_ASSERT_EQUAL_UINT(1, MOCK.releases);
     TEST_ASSERT_EQUAL_UINT(0, MOCK.bad_use);
@@ -505,6 +507,195 @@ static void test_read_blocks_failure_in_the_middle_of_a_transfer_then_recovery(v
     TEST_ASSERT_EQUAL_INT(MMC_STATUS_CHECK_CONDITION, mmc_scsi_read_blocks(&SCSI, 1, 1, buf, sizeof(buf)));
     mmc_scsi_command_done(&SCSI);
     TEST_ASSERT_EQUAL_INT(0, MOCK.live);
+    TEST_ASSERT_EQUAL_UINT(1, MOCK.releases);
+    /* エラーの注入を解除して、新しい READ が成功し、期待するデータを返す（失敗が次のコマンドに残らない） */
+    MOCK.read_rc = 0;
+    exec_read10(5, 1);
+    expect_good();
+    memset(buf, 0xCC, sizeof(buf));
+    TEST_ASSERT_EQUAL_INT(MMC_STATUS_GOOD, mmc_scsi_read_blocks(&SCSI, 5, 1, buf, sizeof(buf)));
+    expect_pattern(ID_A, 5u * 2048u, buf, 2048);
+    mmc_scsi_command_done(&SCSI);
+    TEST_ASSERT_EQUAL_INT(0, MOCK.live);
+    TEST_ASSERT_EQUAL_UINT(2, MOCK.releases);
+}
+
+/* ---------------------------------------------------------------- read_blocks の実行中の command_done（参照の解放の順序） */
+static unsigned HOOK_CALLS;
+static mmc_result_t HOOK_RES;
+static int HOOK_STATE_SEEN;
+static int HOOK_RELEASES_SEEN;
+static bool HOOK_HOLDS_SEEN;
+
+static void hook_command_done_twice(void) {
+    HOOK_CALLS++;
+    mmc_scsi_command_done(&SCSI); /* BOT 層が、完了を待たずにリセット / 切断で呼んだ場合の模擬 */
+    HOOK_STATE_SEEN = atomic_load(&SCSI.ref_state);
+    HOOK_RELEASES_SEEN = (int)MOCK.releases;
+    HOOK_HOLDS_SEEN = mmc_scsi_holds_reference(&SCSI);
+    mmc_scsi_command_done(&SCSI); /* 冪等 */
+}
+
+static void hook_bus_reset_and_command_done(void) {
+    HOOK_CALLS++;
+    iso_media_bus_reset(&MEDIA);
+    mmc_scsi_command_done(&SCSI);
+}
+
+static void hook_force_eject(void) {
+    HOOK_CALLS++;
+    iso_media_force_eject(&MEDIA);
+}
+
+static void hook_command_done_then_execute(void) {
+    static const uint8_t cdb[10] = {0x28, 0, 0, 0, 0, 0, 0, 0, 1, 0};
+    static uint8_t out[8];
+    HOOK_CALLS++;
+    mmc_scsi_command_done(&SCSI);
+    TEST_ASSERT_EQUAL_INT(0, mmc_scsi_execute(&SCSI, cdb, 10, MMC_DIR_IN, 2048, out, sizeof(out), &HOOK_RES));
+}
+
+static void test_command_done_during_read_blocks_defers_the_release_until_it_returns(void) {
+    static uint8_t buf[2048];
+    fx_mount_quiet(ID_A);
+    exec_read10(0, 2);
+    HOOK_CALLS = 0;
+    MOCK.on_read = hook_command_done_twice;
+    memset(buf, 0xCC, sizeof(buf));
+    TEST_ASSERT_EQUAL_INT(MMC_STATUS_GOOD, mmc_scsi_read_blocks(&SCSI, 0, 1, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_UINT(1, HOOK_CALLS);
+    /* 読み出しの最中: 解放は予約されただけで、実行されていない（backend.read の最中に backend.release を呼ばない） */
+    TEST_ASSERT_EQUAL_INT(MMC_REF_READING_RELEASE_PENDING, HOOK_STATE_SEEN);
+    TEST_ASSERT_EQUAL_INT(0, HOOK_RELEASES_SEEN);
+    TEST_ASSERT_TRUE(HOOK_HOLDS_SEEN);
+    TEST_ASSERT_EQUAL_UINT(0, MOCK.release_in_read);
+    /* 読み出しは、取得済みの表で完了している */
+    expect_pattern(ID_A, 0, buf, 2048);
+    /* 復帰の後: ちょうど 1 回だけ解放された */
+    TEST_ASSERT_EQUAL_UINT(1, MOCK.releases);
+    TEST_ASSERT_EQUAL_INT(0, MOCK.live);
+    TEST_ASSERT_FALSE(mmc_scsi_holds_reference(&SCSI));
+    TEST_ASSERT_EQUAL_INT(MMC_REF_IDLE, atomic_load(&SCSI.ref_state));
+    TEST_ASSERT_EQUAL_UINT(0, MOCK.bad_use);
+    mmc_scsi_command_done(&SCSI); /* 後からの command_done も冪等 */
+    TEST_ASSERT_EQUAL_UINT(1, MOCK.releases);
+    /* 次のコマンドは、通常どおり動く */
+    MOCK.on_read = NULL;
+    exec_read10(1, 1);
+    expect_good();
+    TEST_ASSERT_EQUAL_INT(MMC_STATUS_GOOD, mmc_scsi_read_blocks(&SCSI, 1, 1, buf, sizeof(buf)));
+    expect_pattern(ID_A, 2048, buf, 2048);
+    mmc_scsi_command_done(&SCSI);
+    TEST_ASSERT_EQUAL_UINT(2, MOCK.releases);
+    TEST_ASSERT_EQUAL_INT(0, MOCK.live);
+}
+
+static void test_reset_and_command_done_during_read_blocks_abort_it_and_release_once_after(void) {
+    static uint8_t buf[2048];
+    fx_mount_quiet(ID_A);
+    exec_read10(0, 2);
+    MOCK.on_read = hook_bus_reset_and_command_done;
+    memset(buf, 0xCC, sizeof(buf));
+    TEST_ASSERT_EQUAL_INT(MMC_STATUS_CHECK_CONDITION, mmc_scsi_read_blocks(&SCSI, 0, 1, buf, sizeof(buf)));
+    expect_zero(buf, sizeof(buf)); /* 読めたデータを返さない */
+    {
+        mmc_sense_t s;
+        TEST_ASSERT_TRUE(mmc_scsi_last_sense(&SCSI, &s));
+        TEST_ASSERT_EQUAL_HEX8(0xB, s.key);
+    }
+    TEST_ASSERT_EQUAL_UINT(0, MOCK.release_in_read);
+    TEST_ASSERT_EQUAL_UINT(1, MOCK.releases);
+    TEST_ASSERT_EQUAL_INT(0, MOCK.live);
+    TEST_ASSERT_EQUAL_INT(MMC_REF_IDLE, atomic_load(&SCSI.ref_state));
+}
+
+static void test_execute_during_read_blocks_does_not_replace_the_reference(void) {
+    static uint8_t buf[2048];
+    fx_mount_quiet(ID_A);
+    exec_read10(0, 2);
+    MOCK.on_read = hook_command_done_then_execute; /* 契約違反: 実行中に次のコマンドが来る */
+    TEST_ASSERT_EQUAL_INT(MMC_STATUS_GOOD, mmc_scsi_read_blocks(&SCSI, 0, 1, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(MMC_STATUS_CHECK_CONDITION, HOOK_RES.status);
+    TEST_ASSERT_EQUAL_HEX8(0xB, HOOK_RES.sense.key); /* 新しい READ は、参照を取らず、ABORTED COMMAND */
+    TEST_ASSERT_FALSE(HOOK_RES.read.is_read);
+    TEST_ASSERT_EQUAL_UINT(1, MOCK.acquires);
+    TEST_ASSERT_EQUAL_UINT(0, MOCK.release_in_read);
+    TEST_ASSERT_EQUAL_UINT(1, MOCK.releases); /* 元の参照は、復帰の直前に、1 回だけ解放 */
+    TEST_ASSERT_EQUAL_INT(0, MOCK.live);
+    TEST_ASSERT_EQUAL_UINT(0, MOCK.bad_use);
+}
+
+static void test_read_blocks_without_the_right_to_use_the_reference_is_not_ready(void) {
+    static uint8_t buf[2048];
+    fx_mount_quiet(ID_A);
+    exec_read10(0, 1);
+    atomic_store(&SCSI.ref_state, MMC_REF_RELEASING); /* 他のタスクが解放中の模擬 */
+    TEST_ASSERT_EQUAL_INT(MMC_STATUS_CHECK_CONDITION, mmc_scsi_read_blocks(&SCSI, 0, 1, buf, sizeof(buf)));
+    {
+        mmc_sense_t s;
+        TEST_ASSERT_TRUE(mmc_scsi_last_sense(&SCSI, &s));
+        TEST_ASSERT_EQUAL_HEX8(0x2, s.key); /* NOT READY / メディアなし（参照を使えない） */
+        TEST_ASSERT_EQUAL_HEX8(0x3A, s.asc);
+    }
+    TEST_ASSERT_EQUAL_UINT(0, MOCK.reads);
+    atomic_store(&SCSI.ref_state, MMC_REF_READING_RELEASE_PENDING);
+    TEST_ASSERT_EQUAL_INT(MMC_STATUS_CHECK_CONDITION, mmc_scsi_read_blocks(&SCSI, 0, 1, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_UINT(0, MOCK.reads);
+    mmc_scsi_command_done(&SCSI); /* RELEASING / PENDING の間は、何もしない */
+    TEST_ASSERT_EQUAL_UINT(0, MOCK.releases);
+    atomic_store(&SCSI.ref_state, MMC_REF_IDLE);
+    mmc_scsi_command_done(&SCSI);
+    TEST_ASSERT_EQUAL_UINT(1, MOCK.releases);
+}
+
+static void test_abort_is_decided_before_the_backend_error_is_classified(void) {
+    static uint8_t buf[2048];
+    fx_mount_quiet(ID_A);
+    exec_read10(0, 3);
+    TEST_ASSERT_EQUAL_INT(MMC_STATUS_GOOD, mmc_scsi_read_blocks(&SCSI, 0, 1, buf, sizeof(buf))); /* 先行のチャンクは成功 */
+    MOCK.on_read = hook_force_eject; /* 次の read の最中に force_eject。バックエンドは ISO_ERR_EPOCH を返す */
+    MOCK.read_rc = ISO_ERR_EPOCH;
+    MOCK.read_fail_after = MOCK.reads;
+    memset(buf, 0xCC, sizeof(buf));
+    TEST_ASSERT_EQUAL_INT(MMC_STATUS_CHECK_CONDITION, mmc_scsi_read_blocks(&SCSI, 1, 1, buf, sizeof(buf)));
+    {
+        mmc_sense_t s;
+        TEST_ASSERT_TRUE(mmc_scsi_last_sense(&SCSI, &s));
+        TEST_ASSERT_EQUAL_HEX8(0xB, s.key); /* MEDIUM ERROR ではなく ABORTED COMMAND */
+        TEST_ASSERT_EQUAL_HEX8(0x00, s.asc);
+    }
+    expect_zero(buf, sizeof(buf));
+    mmc_scsi_command_done(&SCSI);
+    TEST_ASSERT_EQUAL_INT(0, MOCK.live);
+    /* 世代が変わっていない ISO_ERR_EPOCH は、MEDIUM ERROR（test_read_blocks_epoch_mismatch_is_medium_error...） */
+}
+
+static void test_aborted_sense_survives_until_request_sense(void) {
+    static uint8_t buf[2048];
+    static const uint8_t aborted[18] = {0x70, 0x00, 0x0B, 0, 0, 0, 0, 0x0A, 0, 0, 0, 0, 0x00, 0x00, 0, 0, 0, 0};
+    static const uint8_t no_sense[18] = {0x70, 0x00, 0x00, 0, 0, 0, 0, 0x0A, 0, 0, 0, 0, 0x00, 0x00, 0, 0, 0, 0};
+    fx_mount_quiet(ID_A);
+    exec_read10(0, 2);
+    iso_media_force_eject(&MEDIA); /* READ の開始後に取り外し（世代が進む） */
+    TEST_ASSERT_EQUAL_INT(MMC_STATUS_CHECK_CONDITION, mmc_scsi_read_blocks(&SCSI, 0, 1, buf, sizeof(buf)));
+    mmc_scsi_command_done(&SCSI);
+    EXEC(0x03, 0, 0, 0, 18, 0); /* 世代が進んだ後に記録したセンスなので、捨てない */
+    EXPECT_DATA(aborted);
+    EXEC(0x03, 0, 0, 0, 18, 0);
+    EXPECT_DATA(no_sense);
+}
+
+static void test_bus_reset_after_the_sense_was_recorded_still_discards_it(void) {
+    static uint8_t buf[2048];
+    static const uint8_t no_sense[18] = {0x70, 0x00, 0x00, 0, 0, 0, 0, 0x0A, 0, 0, 0, 0, 0x00, 0x00, 0, 0, 0, 0};
+    fx_mount_quiet(ID_A);
+    exec_read10(0, 2);
+    iso_media_force_eject(&MEDIA);
+    TEST_ASSERT_EQUAL_INT(MMC_STATUS_CHECK_CONDITION, mmc_scsi_read_blocks(&SCSI, 0, 1, buf, sizeof(buf)));
+    mmc_scsi_command_done(&SCSI);
+    iso_media_bus_reset(&MEDIA); /* さらに世代が進んだ */
+    EXEC(0x03, 0, 0, 0, 18, 0);
+    EXPECT_DATA(no_sense);
 }
 
 static void test_read_blocks_misuse_is_rejected_without_calling_the_backend(void) {
@@ -961,8 +1152,8 @@ static void test_get_configuration_allocation_length_and_reserved(void) {
 #define GESN_MEDIA 0x4A, 0x01, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x08, 0x00
 
 static void test_gesn_reports_new_media_once_then_no_change(void) {
-    static const uint8_t new_media[8] = {0x00, 0x04, 0x04, 0x10, 0x02, 0x02, 0x00, 0x00};
-    static const uint8_t no_change[8] = {0x00, 0x04, 0x04, 0x10, 0x00, 0x02, 0x00, 0x00};
+    static const uint8_t new_media[8] = {0x00, 0x06, 0x04, 0x10, 0x02, 0x02, 0x00, 0x00};
+    static const uint8_t no_change[8] = {0x00, 0x06, 0x04, 0x10, 0x00, 0x02, 0x00, 0x00};
     TEST_ASSERT_EQUAL_INT(ISO_MEDIA_MOUNTED, iso_media_mount(&MEDIA, ID_A, false));
     EXEC(0x00, 0, 0, 0, 0, 0); /* UNIT ATTENTION を消費 */
     EXEC(GESN_MEDIA);
@@ -972,7 +1163,7 @@ static void test_gesn_reports_new_media_once_then_no_change(void) {
 }
 
 static void test_gesn_two_byte_allocation_length(void) {
-    static const uint8_t new_media[8] = {0x00, 0x04, 0x04, 0x10, 0x02, 0x02, 0x00, 0x00};
+    static const uint8_t new_media[8] = {0x00, 0x06, 0x04, 0x10, 0x02, 0x02, 0x00, 0x00};
     TEST_ASSERT_EQUAL_INT(ISO_MEDIA_MOUNTED, iso_media_mount(&MEDIA, ID_A, false));
     EXEC(0x00, 0, 0, 0, 0, 0);
     EXEC(0x4A, 0x01, 0x00, 0x00, 0x10, 0x00, 0x00, 0x01, 0x00, 0x00); /* 割り当て長 256 */
@@ -980,8 +1171,8 @@ static void test_gesn_two_byte_allocation_length(void) {
 }
 
 static void test_gesn_reports_removal_for_web_eject_target_eject_and_force_eject(void) {
-    static const uint8_t removal[8] = {0x00, 0x04, 0x04, 0x10, 0x03, 0x00, 0x00, 0x00};
-    static const uint8_t no_change_empty[8] = {0x00, 0x04, 0x04, 0x10, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t removal[8] = {0x00, 0x06, 0x04, 0x10, 0x03, 0x00, 0x00, 0x00};
+    static const uint8_t no_change_empty[8] = {0x00, 0x06, 0x04, 0x10, 0x00, 0x00, 0x00, 0x00};
     fx_mount_quiet(ID_A);
     TEST_ASSERT_EQUAL_INT(ISO_MEDIA_EJECTED, iso_media_eject(&MEDIA, false));
     EXEC(GESN_MEDIA);
@@ -1003,7 +1194,7 @@ static void test_gesn_reports_removal_for_web_eject_target_eject_and_force_eject
 }
 
 static void test_gesn_eject_request_event(void) {
-    static const uint8_t req[8] = {0x00, 0x04, 0x04, 0x10, 0x01, 0x02, 0x00, 0x00};
+    static const uint8_t req[8] = {0x00, 0x06, 0x04, 0x10, 0x01, 0x02, 0x00, 0x00};
     fx_mount_quiet(ID_A);
     TEST_ASSERT_TRUE(iso_media_request_eject(&MEDIA));
     EXEC(GESN_MEDIA);
@@ -1011,8 +1202,8 @@ static void test_gesn_eject_request_event(void) {
 }
 
 static void test_gesn_without_the_media_class_is_nea_and_keeps_the_event(void) {
-    static const uint8_t nea[4] = {0x00, 0x00, 0x80, 0x10};
-    static const uint8_t new_media[8] = {0x00, 0x04, 0x04, 0x10, 0x02, 0x02, 0x00, 0x00};
+    static const uint8_t nea[4] = {0x00, 0x02, 0x80, 0x10};
+    static const uint8_t new_media[8] = {0x00, 0x06, 0x04, 0x10, 0x02, 0x02, 0x00, 0x00};
     fx_mount_quiet(ID_A);
     TEST_ASSERT_EQUAL_INT(ISO_MEDIA_MOUNTED, iso_media_mount(&MEDIA, ID_B, false));
     EXEC(0x00, 0, 0, 0, 0, 0);
@@ -1024,9 +1215,41 @@ static void test_gesn_without_the_media_class_is_nea_and_keeps_the_event(void) {
     EXPECT_DATA(new_media);
 }
 
+static void test_gesn_consumes_the_event_only_when_the_host_asked_for_the_whole_descriptor(void) {
+    static const uint8_t new_media[8] = {0x00, 0x06, 0x04, 0x10, 0x02, 0x02, 0x00, 0x00};
+    static const uint8_t no_change[8] = {0x00, 0x06, 0x04, 0x10, 0x00, 0x02, 0x00, 0x00};
+    static const uint8_t cdb[10] = {0x4A, 0x01, 0, 0, 0x10, 0, 0, 0x00, 0x08, 0};
+    TEST_ASSERT_EQUAL_INT(ISO_MEDIA_MOUNTED, iso_media_mount(&MEDIA, ID_A, false));
+    EXEC(0x00, 0, 0, 0, 0, 0); /* UNIT ATTENTION を消費 */
+    /* CBW の dCBWDataTransferLength が 8 未満、方向が IN でない: 応答は作るが、イベントは消えない */
+    exec_expected(cdb, 10, MMC_DIR_IN, 7);
+    expect_good();
+    TEST_ASSERT_EQUAL_UINT32(8, RES.data_len);
+    TEST_ASSERT_EQUAL_INT(ISO_MEDIA_EVENT_NEW_MEDIA, iso_media_peek_event(&MEDIA));
+    exec_expected(cdb, 10, MMC_DIR_IN, 0);
+    TEST_ASSERT_EQUAL_INT(ISO_MEDIA_EVENT_NEW_MEDIA, iso_media_peek_event(&MEDIA));
+    exec_expected(cdb, 10, MMC_DIR_NONE, 8);
+    TEST_ASSERT_EQUAL_INT(ISO_MEDIA_EVENT_NEW_MEDIA, iso_media_peek_event(&MEDIA));
+    exec_expected(cdb, 10, MMC_DIR_OUT, 8);
+    TEST_ASSERT_EQUAL_INT(ISO_MEDIA_EVENT_NEW_MEDIA, iso_media_peek_event(&MEDIA));
+    /* 8 バイト以上を要求した IN: 消費する */
+    exec_expected(cdb, 10, MMC_DIR_IN, 8);
+    EXPECT_DATA(new_media);
+    TEST_ASSERT_EQUAL_INT(ISO_MEDIA_EVENT_NONE, iso_media_peek_event(&MEDIA));
+    exec_expected(cdb, 10, MMC_DIR_IN, 4096);
+    EXPECT_DATA(no_change);
+    /* 消費されなかった場合も、次の（十分な長さの）ポーリングで、同じイベントを受け取れる */
+    iso_media_force_eject(&MEDIA);
+    EXEC(0x00, 0, 0, 0, 0, 0); /* UNIT ATTENTION */
+    exec_expected(cdb, 10, MMC_DIR_IN, 4);
+    TEST_ASSERT_EQUAL_INT(ISO_MEDIA_EVENT_MEDIA_REMOVAL, iso_media_peek_event(&MEDIA));
+    exec_expected(cdb, 10, MMC_DIR_IN, 8);
+    TEST_ASSERT_EQUAL_INT(ISO_MEDIA_EVENT_NONE, iso_media_peek_event(&MEDIA));
+}
+
 static void test_gesn_truncated_reply_does_not_consume_the_event(void) {
-    static const uint8_t head[4] = {0x00, 0x04, 0x04, 0x10};
-    static const uint8_t new_media[8] = {0x00, 0x04, 0x04, 0x10, 0x02, 0x02, 0x00, 0x00};
+    static const uint8_t head[4] = {0x00, 0x06, 0x04, 0x10};
+    static const uint8_t new_media[8] = {0x00, 0x06, 0x04, 0x10, 0x02, 0x02, 0x00, 0x00};
     TEST_ASSERT_EQUAL_INT(ISO_MEDIA_MOUNTED, iso_media_mount(&MEDIA, ID_A, false));
     EXEC(0x00, 0, 0, 0, 0, 0);
     EXEC(0x4A, 0x01, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x04, 0x00); /* 見出しだけ */
@@ -1049,7 +1272,7 @@ static void test_gesn_truncated_reply_does_not_consume_the_event(void) {
 }
 
 static void test_gesn_with_pending_unit_attention_reports_the_attention_first(void) {
-    static const uint8_t new_media[8] = {0x00, 0x04, 0x04, 0x10, 0x02, 0x02, 0x00, 0x00};
+    static const uint8_t new_media[8] = {0x00, 0x06, 0x04, 0x10, 0x02, 0x02, 0x00, 0x00};
     TEST_ASSERT_EQUAL_INT(ISO_MEDIA_MOUNTED, iso_media_mount(&MEDIA, ID_A, false));
     EXEC(GESN_MEDIA);
     expect_cc(0x6, 0x28, 0x00); /* Linux の sr は、これを「メディア変更」として扱う */
@@ -1192,6 +1415,13 @@ int main(void) {
     RUN_TEST(test_read_blocks_io_error_is_medium_error_and_clears_the_buffer);
     RUN_TEST(test_read_blocks_epoch_mismatch_is_medium_error_like_any_io_error);
     RUN_TEST(test_read_blocks_failure_in_the_middle_of_a_transfer_then_recovery);
+    RUN_TEST(test_command_done_during_read_blocks_defers_the_release_until_it_returns);
+    RUN_TEST(test_reset_and_command_done_during_read_blocks_abort_it_and_release_once_after);
+    RUN_TEST(test_execute_during_read_blocks_does_not_replace_the_reference);
+    RUN_TEST(test_read_blocks_without_the_right_to_use_the_reference_is_not_ready);
+    RUN_TEST(test_abort_is_decided_before_the_backend_error_is_classified);
+    RUN_TEST(test_aborted_sense_survives_until_request_sense);
+    RUN_TEST(test_bus_reset_after_the_sense_was_recorded_still_discards_it);
     RUN_TEST(test_read_blocks_misuse_is_rejected_without_calling_the_backend);
     RUN_TEST(test_read_blocks_length_in_bytes_does_not_wrap_at_32_bits);
     RUN_TEST(test_web_eject_during_a_read_lets_the_command_finish_on_its_snapshot);
@@ -1220,6 +1450,7 @@ int main(void) {
     RUN_TEST(test_gesn_reports_removal_for_web_eject_target_eject_and_force_eject);
     RUN_TEST(test_gesn_eject_request_event);
     RUN_TEST(test_gesn_without_the_media_class_is_nea_and_keeps_the_event);
+    RUN_TEST(test_gesn_consumes_the_event_only_when_the_host_asked_for_the_whole_descriptor);
     RUN_TEST(test_gesn_truncated_reply_does_not_consume_the_event);
     RUN_TEST(test_gesn_with_pending_unit_attention_reports_the_attention_first);
     RUN_TEST(test_gesn_requires_polled_and_checks_reserved);

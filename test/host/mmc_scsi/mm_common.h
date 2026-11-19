@@ -50,6 +50,9 @@ typedef struct {
     uint32_t live_ids[MOCK_MAX_LIVE];
     uint32_t last_lba, last_blocks;
     int bump_epoch_on_read; /* 1: read の途中で media の世代を進める（リセットの模擬）。media は fixture のもの */
+    void (*on_read)(void);  /* read の最中（バックエンドの read の中）に呼ぶ関数（command_done など、別のタスクの模擬） */
+    int in_read;            /* read の最中なら 1 */
+    unsigned release_in_read; /* read の最中に release が呼ばれた回数（0 でなければならない） */
 } mock_t;
 
 static iso_media_t MEDIA;
@@ -113,7 +116,7 @@ static inline int mock_find_live(mock_t *m, void *handle) {
     return -1;
 }
 
-static inline int mock_read(void *ctx, void *handle, uint32_t lba, uint32_t blocks, uint8_t *buf) {
+static inline int mock_read_body(void *ctx, void *handle, uint32_t lba, uint32_t blocks, uint8_t *buf) {
     mock_t *m = (mock_t *)ctx;
     int idx = mock_find_live(m, handle);
     m->reads++;
@@ -124,6 +127,7 @@ static inline int mock_read(void *ctx, void *handle, uint32_t lba, uint32_t bloc
         return ISO_ERR_INVALID;
     }
     if (m->bump_epoch_on_read) iso_media_bus_reset(&MEDIA);
+    if (m->on_read) m->on_read();
     if (m->read_rc != 0 && m->reads > m->read_fail_after) {
         /* 失敗のときは、途中まで書いたふりをする（呼び出し側が 0 で埋めること） */
         if (blocks > 0) buf[0] = 0x5A;
@@ -140,8 +144,18 @@ static inline int mock_read(void *ctx, void *handle, uint32_t lba, uint32_t bloc
     return 0;
 }
 
+static inline int mock_read(void *ctx, void *handle, uint32_t lba, uint32_t blocks, uint8_t *buf) {
+    mock_t *m = (mock_t *)ctx;
+    int rc;
+    m->in_read++;
+    rc = mock_read_body(ctx, handle, lba, blocks, buf);
+    m->in_read--;
+    return rc;
+}
+
 static inline void mock_release(void *ctx, void *handle) {
     mock_t *m = (mock_t *)ctx;
+    if (m->in_read) m->release_in_read++;
     int idx = mock_find_live(m, handle);
     if (idx < 0) {
         m->bad_use++;
@@ -180,9 +194,13 @@ static inline void fx_mount_quiet(uint32_t id) {
 static uint8_t OUT[8192];
 static mmc_result_t RES;
 
-static inline void exec_dir(const uint8_t *cdb, size_t len, mmc_dir_t dir) {
+/* CBW の dCBWDataTransferLength: IN なら十分大きな値（8192）、それ以外は 0 */
+static inline void exec_expected(const uint8_t *cdb, size_t len, mmc_dir_t dir, uint32_t expected_len) {
     memset(OUT, 0xA5, sizeof(OUT));
-    TEST_ASSERT_EQUAL_INT(0, mmc_scsi_execute(&SCSI, cdb, len, dir, 0, OUT, sizeof(OUT), &RES));
+    TEST_ASSERT_EQUAL_INT(0, mmc_scsi_execute(&SCSI, cdb, len, dir, expected_len, OUT, sizeof(OUT), &RES));
+}
+static inline void exec_dir(const uint8_t *cdb, size_t len, mmc_dir_t dir) {
+    exec_expected(cdb, len, dir, dir == MMC_DIR_IN ? 8192u : 0u);
 }
 static inline void exec(const uint8_t *cdb, size_t len) { exec_dir(cdb, len, MMC_DIR_IN); }
 

@@ -46,6 +46,17 @@ def main():
     spec.loader.exec_module(mod)
     mutants = mod.MUTANTS
 
+    # 指定された ID が MUTANTS にないときは、何も作らずに（ビルドの前に）終了コード 2 で終わる。
+    # 有効な ID と未知の ID が混ざっていても拒否する（打ち間違いで、黙って一部だけ実行しない）。引数なしは全数。
+    known = [m["id"] for m in mutants]
+    if len(set(known)) != len(known):
+        print("ERROR: duplicate mutant ids in", mfile, file=sys.stderr)
+        sys.exit(2)
+    unknown = sorted(only - set(known))
+    if unknown:
+        print("ERROR: unknown mutant id(s): " + " ".join(unknown), file=sys.stderr)
+        sys.exit(2)
+
     work = os.path.realpath(work)
     src_tree = os.path.join(work, "repo")
     build = os.path.join(work, "build")

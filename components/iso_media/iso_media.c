@@ -5,6 +5,7 @@
 void iso_media_init(iso_media_t *m, iso_media_force_eject_cb_t on_force_eject, void *ctx) {
     if (!m) return;
     memset(m, 0, sizeof(*m));
+    atomic_init(&m->abort_generation, 0);
     m->on_force_eject = on_force_eject;
     m->on_force_eject_ctx = ctx;
 }
@@ -68,7 +69,7 @@ void iso_media_bus_reset(iso_media_t *m) {
     if (!m) return;
     m->prevent_removal = false;
     m->unit_attention_reset = true;
-    m->abort_generation++;
+    atomic_fetch_add_explicit(&m->abort_generation, 1u, memory_order_release);
 }
 
 void iso_media_force_eject(iso_media_t *m) {
@@ -80,7 +81,7 @@ void iso_media_force_eject(iso_media_t *m) {
         m->event_pending = ISO_MEDIA_EVENT_MEDIA_REMOVAL;
     }
     m->prevent_removal = false;
-    m->abort_generation++;
+    atomic_fetch_add_explicit(&m->abort_generation, 1u, memory_order_release);
     if (m->on_force_eject) m->on_force_eject(m->on_force_eject_ctx);
 }
 
@@ -104,7 +105,9 @@ bool iso_media_get_id(const iso_media_t *m, uint32_t *id) {
 
 bool iso_media_prevent_removal(const iso_media_t *m) { return m && m->prevent_removal; }
 
-uint32_t iso_media_abort_generation(const iso_media_t *m) { return m ? m->abort_generation : 0; }
+uint32_t iso_media_abort_generation(const iso_media_t *m) {
+    return m ? atomic_load_explicit(&m->abort_generation, memory_order_acquire) : 0;
+}
 
 bool iso_media_take_unit_attention(iso_media_t *m, uint8_t *asc, uint8_t *ascq) {
     if (!m) return false;

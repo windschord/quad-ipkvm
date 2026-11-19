@@ -46,7 +46,8 @@
 4. **PREVENT は、メディアがないときに「防止」を受け付けない**（設計に記述なし）。理由: Web の GET は `mounted == null` のとき `locked = false` で、`mount` が EMPTY から防止付きで始まるのを避けるため。`mmc_scsi` は NOT READY（メディアなし）を返す（`TODO(device-check)`）。
 5. **世代 `abort_generation`**: 「進行中のコマンドへの中止の印」を、フラグではなく**世代（カウンター）**にした（印を消す手順が要らず、複数のコマンドで取りこぼさない）。`mmc_scsi` が、コマンドの開始時の値と比べる。
 6. **`iso_media_request_eject()` を足した**（設計 5.4 の GET EVENT STATUS NOTIFICATION に「取り外し要求」のクラスがあるため）。呼ぶ側（グルー）は、今は決まっていない（`locked_by_target` のときに、ターゲットへ取り外しを促す用途の候補）。**呼ばれなければ、取り外し要求のイベントは出ない**。
-7. **UNIT ATTENTION の順序**: 29h/00h（リセット）を先、28h/00h（メディア変更）を後に報告する（SPC-4 の優先順位の記述は、本文で確認できていない。`TODO(device-check)`）。
+7. **`abort_generation` は C11 の atomic**（`_Atomic uint32_t`。書き込みは release、読み出しは acquire）。iso_state_mutex を持たずに呼ばれる `mmc_scsi_read_blocks()`（iso_msc_task）が読み、bus_reset / force_eject（別のタスク）が進めるため。メモリ順序は、ホストの単一スレッドのテストでは観測できない。他のフィールドは、これまでどおり iso_state_mutex の下だけ。
+8. **UNIT ATTENTION の順序**: 29h/00h（リセット）を先、28h/00h（メディア変更）を後に報告する（SPC-4 の優先順位の記述は、本文で確認できていない。`TODO(device-check)`）。
 
 ## 4. ミューテーションテスト
 
@@ -56,13 +57,15 @@
 python3 tools/test/mutate_iso_media.py <repo> <スクラッチ> tools/test/iso_media_mutants.py <結果.json>
 ```
 
-**結果**（全数: 106 個。ベースラインは全テスト成功）:
+**判定の手順（終了コードだけで判定しない）**: 同値で生き残るもの（4.1）があるので、`mutate_iso_media.py` の終了コードは 1 になる。実行後の結果の JSON で、(1) `build_error` が 0 件、(2) `survived` の ID が、4.1 の既知の同値のもの（B06、B07、R03、G04、G06）だけ、を確認する（`MMC_SCSI_TESTS.md` 6 章の例と同じ）。未知の ID を指定すると、ビルドの前に終了コード 2 で終わる。
+
+**結果**（全数: 107 個。ベースラインは全テスト成功）:
 
 | 実行した数 | 殺した数 | 生き残った数（すべて同値と判断） | ビルドエラー |
 |---|---|---|---|
-| 106 | 101 | 5 | 0 |
+| 107 | 102 | 5 | 0 |
 
-経緯: 最初の実行（91 個を殺し、7 個が生き残り、8 個がビルドエラー: ミュータントが -Werror の未使用の警告になった。書き直した）の後に、`test_removal_paths_clear_the_stored_id`（取り外しの全経路で `id` が 0 に戻る。E12）と `test_take_unit_attention_accepts_null_output_pointers`（出力ポインターが NULL でもよい。U10）を足し、全数を最初から実行し直したのが上の結果。
+経緯: 最初の実装（106 個）の全数では、91 個を殺し、7 個が生き残り、8 個がビルドエラー（ミュータントが -Werror の未使用の警告になった。書き直した）だった。`test_removal_paths_clear_the_stored_id`（E12）と `test_take_unit_attention_accepts_null_output_pointers`（U10）を足し、全数をやり直して 101 個を殺した。PR #151 のレビューの指摘で、(1) `abort_generation` を C11 の atomic にしたので、世代に関するミュータント（H03〜H09、F03〜F13、G14）を、atomic の呼び出しに合わせて書き直し、getter の NULL を見る `G15` を足した（107 個）。(2) `F10` を「呼び出しを足す」のではなく、「既存の `on_force_eject` の呼び出しを、状態の更新の前に移す（呼び出しは 1 回のまま）」に、`U02` を「分岐を無効化する」のではなく、「`unit_attention_reset` と `unit_attention_media` の 2 つの分岐の順序を入れ替える」に直した。全数（107 個）を最初から実行し直したのが、上の結果。
 
 ### 4.1 同値のミュータント（5 個）
 

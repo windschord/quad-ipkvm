@@ -68,6 +68,8 @@ typedef struct {
     uint8_t *out;
     size_t out_cap;
     mmc_result_t *r;
+    mmc_dir_t dir;          /* CBW の方向（GET EVENT STATUS NOTIFICATION のイベントの消費の判定だけに使う） */
+    uint32_t expected_len;  /* CBW の dCBWDataTransferLength（同上） */
 } env_t;
 
 static void fail(mmc_result_t *r, uint8_t key, uint8_t asc, uint8_t ascq) {
@@ -147,8 +149,8 @@ static void cmd_request_sense(env_t *e) {
     /* DESC ビット（記述子形式）は未対応: 要求されたら INVALID FIELD IN CDB */
     if (e->cdb[1] != 0 || !zero_bytes(e->cdb, 2, 3) || !control_ok(e->cdb, 5)) { invalid_field(e); return; }
     mmc_scsi_build_sense(e->s->sense_valid ? &e->s->sense : &none, buf);
-    if (e->cdb[4] > 0) e->s->sense_valid = false; /* 返したら消える */
-    (void)reply(e, buf, sizeof(buf), e->cdb[4]);
+    /* 返したら消える。実際に 1 バイト以上を返したときだけ（割り当て長 0 や out_cap 0 では消さない） */
+    if (reply(e, buf, sizeof(buf), e->cdb[4]) > 0) e->s->sense_valid = false;
 }
 
 /* ---- INQUIRY（SPC-4）。標準の応答 36 バイト ---- */
@@ -252,7 +254,7 @@ static void cmd_read_capacity_10(env_t *e) {
     if (!need_medium(e, &size)) return;
     cap = capacity_blocks(size);
     if (pmi && rd32(c + 2) >= cap) { invalid_field(e); return; }
-    wr32(buf, clamp32(cap - 1u)); /* RETURNED LOGICAL BLOCK ADDRESS = 最終 LBA（4 GiB 超は 0xFFFFFFFF） */
+    wr32(buf, clamp32(cap - 1u)); /* RETURNED LOGICAL BLOCK ADDRESS = 最終 LBA（最終 LBA が 32 ビットを超えるときだけ 0xFFFFFFFF） */
     wr32(buf + 4, MMC_SCSI_BLOCK_SIZE);
     (void)reply(e, buf, sizeof(buf), sizeof(buf));
 }
@@ -307,6 +309,10 @@ static void cmd_read(env_t *e, bool is12) {
     e->r->read.lba = lba;
     e->r->read.blocks = blocks;
     if (blocks == 0) return; /* 転送なし。エラーではない */
+    if (s->held) { /* 前の read_blocks が実行中で、解放が遅れている（契約違反）。上書きしない */
+        fail(e->r, MMC_SENSE_ABORTED_COMMAND, 0x00, 0x00);
+        return;
+    }
     (void)iso_media_get_id(s->media, &id);
     rc = s->backend.acquire(s->backend.ctx, id, &handle);
     if (rc != 0) {
@@ -318,6 +324,7 @@ static void cmd_read(env_t *e, bool is12) {
     s->held_handle = handle;
     s->held_size_bytes = size;
     s->held_abort_generation = iso_media_abort_generation(s->media);
+    atomic_store_explicit(&s->ref_state, MMC_REF_IDLE, memory_order_release); /* held_* を、read_blocks に公開する */
 }
 
 /* ---- READ TOC/PMA/ATIP（MMC-6）。形式 0 / 1 / 2 ---- */
@@ -468,11 +475,12 @@ static void cmd_get_event_status(env_t *e) {
     memset(buf, 0, sizeof(buf));
     buf[3] = 0x10; /* SUPPORTED EVENT CLASSES: メディア */
     if (!media_class) {
-        buf[2] = 0x80; /* NEA（要求されたクラスに、報告できるものがない）。EVENT DESCRIPTOR LENGTH = 0 */
+        buf[2] = 0x80; /* NEA（要求されたクラスに、報告できるものがない）。 */
+        wr16(buf, 2); /* EVENT DESCRIPTOR LENGTH: この欄に続く 2 バイト（byte 2、3）。TODO(device-check): 定義（docs/MMC_SCSI_TESTS.md 5 章） */
         n = 4;
     } else {
         iso_media_event_t ev = iso_media_peek_event(e->s->media);
-        wr16(buf, 4); /* EVENT DESCRIPTOR LENGTH。TODO(device-check): 定義（4 か 6 か） */
+        wr16(buf, 6); /* EVENT DESCRIPTOR LENGTH: この欄に続く 6 バイト（byte 2、3 と記述子 4）。TODO(device-check) */
         buf[2] = 0x04; /* 通知クラス = メディア */
         switch (ev) {
             case ISO_MEDIA_EVENT_EJECT_REQUEST: buf[4] = 0x01; break;
@@ -482,8 +490,13 @@ static void cmd_get_event_status(env_t *e) {
         }
         buf[5] = iso_media_is_loaded(e->s->media) ? 0x02 : 0x00; /* MEDIA STATUS: メディアあり（bit 1）、トレイは閉じている */
         n = 8;
-        /* 記述子の全体を返せたときだけ、イベントを消費する */
-        if (reply(e, buf, n, alloc) >= 8 && ev != ISO_MEDIA_EVENT_NONE) (void)iso_media_take_event(e->s->media);
+        /* 記述子の全体をホストに渡せると見なせるときだけ、イベントを消費する:
+         * out に 8 バイト書けて（割り当て長と out_cap）、CBW が IN で 8 バイト以上を要求している（dir と expected_len）。
+         * mmc_scsi は、実際に配送した長さを知らないので、CBW の要求の長さで判断する（msc_bot の 13 のケースで、
+         * 要求より長い応答は、要求の長さまでに切られる。要求が 8 未満なら、記述子は届かない） */
+        if (reply(e, buf, n, alloc) >= 8 && e->dir == MMC_DIR_IN && e->expected_len >= 8 && ev != ISO_MEDIA_EVENT_NONE) {
+            (void)iso_media_take_event(e->s->media);
+        }
         return;
     }
     (void)reply(e, buf, n, alloc);
@@ -621,17 +634,42 @@ int mmc_scsi_init(mmc_scsi_t *s, iso_media_t *media, const mmc_scsi_backend_t *b
     memset(s, 0, sizeof(*s));
     s->media = media;
     s->backend = *backend;
-    s->seen_abort_generation = iso_media_abort_generation(media);
+    atomic_init(&s->ref_state, MMC_REF_IDLE);
     return 0;
 }
 
-void mmc_scsi_command_done(mmc_scsi_t *s) {
+/* 保持中の参照を放す（ref_state を RELEASING にした側だけが呼ぶ） */
+static void release_held(mmc_scsi_t *s) {
     void *handle;
-    if (!s || !s->held) return;
+    if (!s->held) return;
     handle = s->held_handle;
     s->held = false;
     s->held_handle = NULL;
     s->backend.release(s->backend.ctx, handle);
+}
+
+/* 冪等。read_blocks の実行中（ref_state = READING）なら、解放を遅らせる（read_blocks の復帰の直前に、1 回だけ行う）。
+ * 他の誰かが解放中（RELEASING）、または解放を予約済み（READING_RELEASE_PENDING）なら、何もしない。 */
+void mmc_scsi_command_done(mmc_scsi_t *s) {
+    if (!s) return;
+    for (;;) {
+        int cur = atomic_load_explicit(&s->ref_state, memory_order_acquire);
+        if (cur == MMC_REF_IDLE) {
+            if (atomic_compare_exchange_strong_explicit(&s->ref_state, &cur, MMC_REF_RELEASING, memory_order_acq_rel,
+                                                        memory_order_acquire)) {
+                release_held(s);
+                atomic_store_explicit(&s->ref_state, MMC_REF_IDLE, memory_order_release);
+                return;
+            }
+        } else if (cur == MMC_REF_READING) {
+            if (atomic_compare_exchange_strong_explicit(&s->ref_state, &cur, MMC_REF_READING_RELEASE_PENDING,
+                                                        memory_order_acq_rel, memory_order_acquire)) {
+                return;
+            }
+        } else {
+            return;
+        }
+    }
 }
 
 bool mmc_scsi_holds_reference(const mmc_scsi_t *s) { return s && s->held; }
@@ -644,6 +682,7 @@ bool mmc_scsi_last_sense(const mmc_scsi_t *s, mmc_sense_t *out) {
 
 static void remember_sense(mmc_scsi_t *s, uint8_t key, uint8_t asc, uint8_t ascq) {
     s->sense_valid = true;
+    s->sense_generation = iso_media_abort_generation(s->media); /* この後にリセットがあれば、次のコマンドで捨てる */
     s->sense.key = key;
     s->sense.asc = asc;
     s->sense.ascq = ascq;
@@ -656,8 +695,6 @@ int mmc_scsi_execute(mmc_scsi_t *s, const uint8_t *cdb, size_t cdb_len, mmc_dir_
     bool exempt;
     uint8_t ua_asc = 0;
     uint8_t ua_ascq = 0;
-    (void)dir;          /* CBW の 13 のケースは msc_bot が処理する */
-    (void)expected_len;
     if (!s || !cdb || !result) return -1;
     memset(result, 0, sizeof(*result));
     result->status = MMC_STATUS_GOOD;
@@ -668,11 +705,12 @@ int mmc_scsi_execute(mmc_scsi_t *s, const uint8_t *cdb, size_t cdb_len, mmc_dir_
     e.out = out;
     e.out_cap = out_cap;
     e.r = result;
+    e.dir = dir;
+    e.expected_len = expected_len;
 
-    if (iso_media_abort_generation(s->media) != s->seen_abort_generation) { /* バスリセット、force_eject */
-        s->seen_abort_generation = iso_media_abort_generation(s->media);
-        s->sense_valid = false;
-    }
+    /* バスリセット / force_eject（世代が進んだ）より前に記録したセンスは捨てる。
+     * 中止（ABORTED COMMAND）のセンスのように、世代が進んだ後に記録したものは、次の REQUEST SENSE まで残す */
+    if (s->sense_valid && iso_media_abort_generation(s->media) != s->sense_generation) s->sense_valid = false;
 
     if (cdb_len == 0 || cdb_len > MMC_SCSI_CDB_MAX) {
         invalid_field(&e);
@@ -692,11 +730,23 @@ int mmc_scsi_execute(mmc_scsi_t *s, const uint8_t *cdb, size_t cdb_len, mmc_dir_
     return 0;
 }
 
-mmc_status_t mmc_scsi_read_blocks(mmc_scsi_t *s, uint32_t lba, uint32_t blocks, uint8_t *buf, size_t cap) {
+/* read_blocks の終わり: ref_state の READING を手放す。実行中に command_done が来ていれば（PENDING）、ここで解放する */
+static void finish_reading(mmc_scsi_t *s) {
+    int cur = MMC_REF_READING;
+    if (atomic_compare_exchange_strong_explicit(&s->ref_state, &cur, MMC_REF_IDLE, memory_order_acq_rel, memory_order_acquire)) {
+        return;
+    }
+    /* PENDING（READING から PENDING に変えられるのは command_done だけで、PENDING から先は、この関数だけ） */
+    atomic_store_explicit(&s->ref_state, MMC_REF_RELEASING, memory_order_relaxed);
+    release_held(s);
+    atomic_store_explicit(&s->ref_state, MMC_REF_IDLE, memory_order_release);
+}
+
+/* ref_state = READING を取った後の本体。s->held と held_* は、この間は書き換えられない */
+static mmc_status_t read_claimed(mmc_scsi_t *s, uint32_t lba, uint32_t blocks, uint8_t *buf, size_t cap) {
     uint64_t bytes;
     uint64_t start;
     int rc;
-    if (!s) return MMC_STATUS_CHECK_CONDITION;
     if (!s->held) { /* execute が参照を取っていない */
         remember_sense(s, MMC_SENSE_NOT_READY, 0x3A, 0x00);
         return MMC_STATUS_CHECK_CONDITION;
@@ -717,14 +767,16 @@ mmc_status_t mmc_scsi_read_blocks(mmc_scsi_t *s, uint32_t lba, uint32_t blocks, 
         return MMC_STATUS_CHECK_CONDITION;
     }
     rc = s->backend.read(s->backend.ctx, s->held_handle, lba, blocks, buf);
-    if (rc != 0) { /* ISO_ERR_EPOCH、ISO_ERR_IO など */
-        memset(buf, 0, (size_t)bytes);
-        remember_sense(s, MMC_SENSE_MEDIUM_ERROR, 0x11, 0x00);
-        return MMC_STATUS_CHECK_CONDITION;
-    }
-    if (iso_media_abort_generation(s->media) != s->held_abort_generation) { /* 読み出し中のリセット */
+    /* 戻り値を分類する前に、世代を確認する（force_eject が epoch を進めて、バックエンドが ISO_ERR_EPOCH を返しても、
+     * 原因はリセット / 取り外し。エラーの種類によらず ABORTED COMMAND） */
+    if (iso_media_abort_generation(s->media) != s->held_abort_generation) {
         memset(buf, 0, (size_t)bytes);
         remember_sense(s, MMC_SENSE_ABORTED_COMMAND, 0x00, 0x00);
+        return MMC_STATUS_CHECK_CONDITION;
+    }
+    if (rc != 0) { /* 世代が変わっていない ISO_ERR_EPOCH、ISO_ERR_IO など */
+        memset(buf, 0, (size_t)bytes);
+        remember_sense(s, MMC_SENSE_MEDIUM_ERROR, 0x11, 0x00);
         return MMC_STATUS_CHECK_CONDITION;
     }
     /* size_bytes 以降は 0（ファイルの最後のセクタの EOF 以降は、0 とは限らない） */
@@ -734,4 +786,19 @@ mmc_status_t mmc_scsi_read_blocks(mmc_scsi_t *s, uint32_t lba, uint32_t blocks, 
         memset(buf + valid, 0, (size_t)(bytes - valid));
     }
     return MMC_STATUS_GOOD;
+}
+
+mmc_status_t mmc_scsi_read_blocks(mmc_scsi_t *s, uint32_t lba, uint32_t blocks, uint8_t *buf, size_t cap) {
+    int expected = MMC_REF_IDLE;
+    mmc_status_t st;
+    if (!s) return MMC_STATUS_CHECK_CONDITION;
+    /* held を使う権利を取る。IDLE でなければ（解放中、または予約済み）、参照はないものとして扱う */
+    if (!atomic_compare_exchange_strong_explicit(&s->ref_state, &expected, MMC_REF_READING, memory_order_acq_rel,
+                                                 memory_order_acquire)) {
+        remember_sense(s, MMC_SENSE_NOT_READY, 0x3A, 0x00);
+        return MMC_STATUS_CHECK_CONDITION;
+    }
+    st = read_claimed(s, lba, blocks, buf, cap);
+    finish_reading(s);
+    return st;
 }

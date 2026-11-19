@@ -16,11 +16,16 @@
  * この部品は、エクステントの表への参照を持たない（放さない）。参照を放すのは mmc_scsi_command_done() だけ。
  * epoch は iso_media の外（iso_blockdev_t）が持つ。force_eject() は、「呼ばれたこと」を、コールバックで通知する。
  *
- * スレッド: スレッドセーフではない。グルーが iso_state_mutex で包んで呼ぶ（ISO_MOUNT_DESIGN.md 4.1）。
+ * スレッド: 原則としてスレッドセーフではない。グルーが iso_state_mutex で包んで呼ぶ（ISO_MOUNT_DESIGN.md 4.1）。
+ * **例外: abort_generation だけは、C11 の atomic（_Atomic uint32_t）**。iso_state_mutex を持たずに呼ばれる
+ * mmc_scsi_read_blocks()（iso_msc_task）が iso_media_abort_generation() で読み、bus_reset / force_eject（USB のタスク、
+ * SD の監視タスク）が書く。書き込み側は release、読み出し側は acquire（世代を見た側は、その前の更新を見る）。
+ * 他のフィールドは、iso_state_mutex の下だけで読み書きする。
  * コールバックの中から iso_media を呼んではならない。コールバックでビューを公開する形にはせず、
  * 呼び出し側が iso_media_get_status() で状態を取る。
  */
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -55,7 +60,7 @@ typedef struct {
     bool unit_attention_reset; /* 29h/00h */
     iso_media_event_t event_pending;
     bool ejected_by_target;
-    uint32_t abort_generation;
+    _Atomic uint32_t abort_generation; /* 唯一、ロックなしで読まれる（上の「スレッド」） */
     iso_media_force_eject_cb_t on_force_eject;
     void *on_force_eject_ctx;
 } iso_media_t;

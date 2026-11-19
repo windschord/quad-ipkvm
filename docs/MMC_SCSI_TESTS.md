@@ -14,9 +14,10 @@
 
 **照合に使った公開資料**（いずれも 2026-11-19 に取得）
 
-- QEMU `hw/ide/atapi.c`、`hw/scsi/scsi-disk.c`（`master`）: READ TOC の形式 1（`00 0A 01 01` の 12 バイト）、MSF = LBA + 150、GET CONFIGURATION の見出し（データ長 = 全体 − 4、現在のプロファイル、プロファイル一覧のフィーチャー）、モードページ 2Ah（ページ長 0x14）、GET EVENT STATUS NOTIFICATION（見出し 4 バイト、長さの欄 = 記述子の長さ、メディア記述子 4 バイト）、READ DISC INFORMATION（34 バイト、`0E`、URU = `20`）。
+- QEMU `hw/ide/atapi.c`、`hw/scsi/scsi-disk.c`（`master`）: READ TOC の形式 1（`00 0A 01 01` の 12 バイト）、MSF = LBA + 150、GET CONFIGURATION の見出し（データ長 = 全体 − 4、現在のプロファイル、プロファイル一覧のフィーチャー）、モードページ 2Ah（ページ長 0x14）、GET EVENT STATUS NOTIFICATION（見出し 4 バイト、**長さの欄 = 全体 − 4（= 記述子だけ。メディア記述子で 4）**、メディア記述子 4 バイト）、READ DISC INFORMATION（34 バイト、`0E`、URU = `20`）。
 - Linux `drivers/scsi/sr.c`: GET EVENT STATUS NOTIFICATION の CDB（ポーリング、クラスは `1 << 4` = メディア、割り当て長 8）、応答の検査（長さの欄 ≥ 4、NEA = 0、通知クラス = 4、イベント符号 1 = 取り外し要求 / 2・3 = メディア変更）、UNIT ATTENTION の扱い、ASC 3Ah = メディアなし。READ TOC の形式を byte 9 のビット 7-6 で指定する古い形式（`sr_cd_check`）を使うこと。
 - edk2 `MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassBoot.c`（UEFI の USB マスストレージ）: CD-ROM（デバイス種別 5）に対して、INQUIRY、TEST UNIT READY、READ CAPACITY(10)、READ(10)（ブロック長 2048）、失敗時の REQUEST SENSE だけを使い、MODE SENSE は使わない。UNIT ATTENTION をメディア変更、NOT READY のメディアなしをメディアなし、DATA PROTECT を書き込み禁止として扱う。**最低限の集合で UEFI が動くことの根拠（実機での確認は別）**。READ CAPACITY の最終 LBA が 0 のときは、空のディスクとして扱う（本機は 34,816 バイト以上のイメージだけをマウントするので当たらない）。
+- VirtualBox `src/VBox/Devices/Storage/DevATA.cpp`（`atapiR3GetEventStatusNotificationSS`。2026-11-19 に取得）: GET EVENT STATUS NOTIFICATION の応答は、**長さの欄 = 6**（`scsiH2BE_U16(pbBuf + 0, 6)`）、byte 2 = 0x04（メディア）、byte 3 = サポートするクラス、記述子 4 バイト（byte 4 = イベント符号、byte 5 = 0x02（メディアあり））。**長さの欄に、見出しの byte 2、3 を含める**（= 長さの欄に続く全バイト）。QEMU の「全体 − 4」とは食い違う。
 - libcdio-devel のメーリングリスト（2020-05、`msg00030`）: MMC-5 の、単一セッションの DVD の TOC で、MSF 形式のリードアウトの上限は FF:3B:4A（255:59:74）。LBA 形式の 1151849 に当たる。**これは、メールが MMC-5 の表を引用している二次情報**。
 
 **コマンドごとの根拠**
@@ -31,12 +32,12 @@
 | MODE SENSE(6)/(10)（1Ah / 5Ah） | ヘッダー（4 / 8 バイト、ブロック記述子なし）+ ページ 2Ah（22 バイト、ページ長 0x14）。ページ 3Fh は 2Ah だけ。PC = 3 は 39h/00h | ページ長は ◎（QEMU）。ヘッダーとページの欄の位置は ○（MMC-6 の MM 能力とメカニカルステータスのページ）。ページの中身（DVD-ROM の読み出し、ローディング機構 = トレイ、イジェクト可、ロック可、ロックの状態）は △ |
 | START STOP UNIT（1Bh） | LoEj = bit 1、Start = bit 0。イジェクトは防止が掛かっていれば 05h/53h/02h | ○ MMC-6 |
 | PREVENT ALLOW MEDIUM REMOVAL（1Eh） | PREVENT = bit 0、PERSISTENT = bit 1（未対応） | ○ MMC-6 / SPC-4 |
-| READ CAPACITY(10)（25h） | 最終 LBA（BE32）+ ブロック長 2048（BE32）。4 GiB 超は最終 LBA = 0xFFFFFFFF | ○ SBC-3 / MMC-6。ブロック長 2048 と最終 LBA の使い方は ◎（edk2） |
+| READ CAPACITY(10)（25h） | 最終 LBA（BE32）+ ブロック長 2048（BE32）。**最終 LBA が 32 ビットの上限を超えるとき（約 8 TiB 超）だけ 0xFFFFFFFF**（5 GiB + 100 バイトのイメージの最終 LBA は 0x00280000） | ○ SBC-3 / MMC-6。ブロック長 2048 と最終 LBA の使い方は ◎（edk2） |
 | READ FORMAT CAPACITIES（23h） | 4 バイトの見出し + 8 バイトの記述子（ブロック数、種別、ブロック長 24 ビット）。メディアなしは 0xFFFFFFFF、種別 3 | ○ MMC-6。メディアなしの記述子は △ |
 | READ(10) / (12)（28h / A8h） | 範囲外は 21h/00h。0 ブロックは GOOD（転送なし）。RDPROTECT 非 0、ストリーミングは 24h/00h | ○ SBC-3 / MMC-6 |
 | READ TOC/PMA/ATIP（43h） | 形式 0（4 + 8 × 2 バイト。トラック 1 と 0xAA）、形式 1（12 バイト）、形式 2（4 + 11 × 4 バイト。A0、A1、A2、トラック 1）。ADR/CONTROL = 0x14。MSF = LBA + 150。形式の指定は byte 2 の下位 4 ビット（0 のときは byte 9 のビット 7-6）| 形式 1 の 12 バイトと +150 は ◎（QEMU）。byte 9 の古い形式は ◎（Linux の sr）。形式 0 / 2 の欄の位置は ○（MMC-6 の READ TOC の応答）。MSF の上限（255:59:74）は ◎（二次情報）。形式 2 の中身は △ |
 | GET CONFIGURATION（46h） | 見出し 8 バイト（データ長 = 全体 − 4、現在のプロファイル 0010h = DVD-ROM）+ フィーチャー 0000h（プロファイル一覧）、0001h（コア）、0003h（取り外し可能メディア）、0010h（ランダム読み出し）。RT = 0 / 1 / 2 | 見出しとプロファイル一覧の形は ◎（QEMU）。コア、取り外し可能メディア、ランダム読み出しの欄は ○ で、バージョンなどが △ |
-| GET EVENT STATUS NOTIFICATION（4Ah） | ポーリング形式（POLLED = 1 のみ）。メディアクラス（0x10）。見出し: 長さ = 記述子の長さ（4）、NEA / 通知クラス（04h）、サポートするクラス（10h）。記述子: イベント符号（0 なし、1 取り外し要求、2 新メディア、3 取り外し）、メディアの状態（bit 1 = メディアあり）、0、0 | 見出しの形と「長さ = 全体 − 4」は ◎（QEMU）。Linux の sr が受け付けることは ◎。長さの欄の定義は △ |
+| GET EVENT STATUS NOTIFICATION（4Ah） | ポーリング形式（POLLED = 1 のみ）。メディアクラス（0x10）。見出し: **長さ = この欄に続くバイト数（メディア記述子の応答で 6、NEA の応答で 2）**、NEA / 通知クラス（04h）、サポートするクラス（10h）。記述子: イベント符号（0 なし、1 取り外し要求、2 新メディア、3 取り外し）、メディアの状態（bit 1 = メディアあり）、0、0 | 見出しの形は ◎（QEMU、VirtualBox）。**長さの欄は、VirtualBox（6）と、MMC-6 の表の読み（レビューの指摘: 長さの欄に続くバイト数）に合わせて 6 / 2 にした。QEMU は 4 / 0**。Linux の sr（長さ ≥ 4）はどちらも受け付ける。**両方の実装の食い違いが残るので、実機（Windows、Linux、UEFI）で確認する。△** |
 | READ DISC INFORMATION（51h） | 34 バイト、`00 20 0E 01 01 01 01 20 00 …` | ◎（QEMU） |
 | READ TRACK INFORMATION（52h） | 36 バイト（長さ 0x22）、トラック 1、セッション 1、データ（トラックモード 4、データモード 1）、トラックの大きさ = capacity_blocks | ○ MMC-3 / MMC-6。実装では確認できていない。△ |
 | 書き込み系 | DATA PROTECT 07h/27h/00h（WRITE(6/10/12/16)、WRITE AND VERIFY(10/12/16)、WRITE SAME(10/16)、FORMAT UNIT、BLANK） | ○（設計 5.4 の指示。edk2 が DATA PROTECT を書き込み禁止として扱うことは ◎） |
@@ -46,8 +47,8 @@
 
 | ファイル | 内容 | 件数（Unity のテストケース） |
 |---|---|---|
-| `test/host/mmc_scsi/test_mmc_scsi_cmds.c` | メディアの内容に依存しないコマンド（INQUIRY、TEST UNIT READY、REQUEST SENSE、UNIT ATTENTION、MODE SENSE、START STOP UNIT、PREVENT、書き込み系、未対応、CDB の長さと予約ビット） | 40 |
-| `test/host/mmc_scsi/test_mmc_scsi_data.c` | READ CAPACITY、READ FORMAT CAPACITIES、READ(10)/(12)、`mmc_scsi_read_blocks`（ゼロ埋め、I/O エラー、`ISO_ERR_EPOCH`、リセットによる中止、64 ビットのオフセット）、参照のリーク、READ TOC、GET CONFIGURATION、GET EVENT STATUS NOTIFICATION、READ DISC / TRACK INFORMATION、全コマンド共通の予約ビット・コントロールバイト・割り当て長 | 61 |
+| `test/host/mmc_scsi/test_mmc_scsi_cmds.c` | メディアの内容に依存しないコマンド（INQUIRY、TEST UNIT READY、REQUEST SENSE、UNIT ATTENTION、MODE SENSE、START STOP UNIT、PREVENT、書き込み系、未対応、CDB の長さと予約ビット） | 41 |
+| `test/host/mmc_scsi/test_mmc_scsi_data.c` | READ CAPACITY、READ FORMAT CAPACITIES、READ(10)/(12)、`mmc_scsi_read_blocks`（ゼロ埋め、I/O エラー、`ISO_ERR_EPOCH`、リセットによる中止、64 ビットのオフセット）、参照のリーク、READ TOC、GET CONFIGURATION、GET EVENT STATUS NOTIFICATION、READ DISC / TRACK INFORMATION、全コマンド共通の予約ビット・コントロールバイト・割り当て長、`read_blocks` の実行中の `command_done`（参照の解放の順序）、GET EVENT STATUS NOTIFICATION のイベントの消費の条件 | 69 |
 | `test/host/mmc_scsi/test_mmc_scsi_fuzz.c` | 固定シードのファズ（12 シード × 4 万回） | 1 |
 | `test/host/mmc_scsi/mm_common.h` | 共通の部品（メモリ上のモックのバックエンド。参照の取得 / 釈放を数え、生きていない参照の使用を検出。イメージ A: 204,900 バイト、B: 102,400 バイト、BIG: 2.5 GiB、BIGP: 5 GiB + 100 バイト、HUGE: 約 18 TiB、C: 5000 ブロック） | - |
 | `test/host/iso_media/test_iso_media.c` | `docs/ISO_MEDIA_TESTS.md` | 27 |
@@ -63,14 +64,18 @@
 1. **参照を放さない**: Issue #140 の v3 コメントには「`iso_media_bus_reset()` と `force_eject()` も、保持中の参照を放す」とあるが、設計 v4（4.1）と依頼の指示に従い、**放すのは `mmc_scsi_command_done()` だけ**にした。バスリセット / `force_eject` は、世代（`iso_media_abort_generation`）を進め、`mmc_scsi_read_blocks` が、それを見て ABORTED COMMAND（0Bh/00h/00h）で中止する（参照は保持したまま）。
 2. **`execute` の先頭で、前のコマンドの参照が残っていれば放す**（`command_done` の呼び損ねの保険）。放すのは `mmc_scsi_command_done` の処理そのもの。BOT 層が必ず呼ぶ契約は変わらない。
 3. **バックエンド**: `size_bytes(ctx, id, *out)`、`acquire(ctx, id, *handle)`、`read(ctx, handle, lba, blocks, buf)`、`release(ctx, handle)`（`mmc_scsi.h`）。`iso_media` は id だけを持ち、大きさはバックエンドから取る（`iso_extent` と結線するのは親）。`read` は `size_bytes` 以降の内容を保証しなくてよく、ゼロ埋めは `mmc_scsi_read_blocks`。`acquire` の失敗は、`ISO_ERR_NOT_FOUND` / `ISO_ERR_NO_CARD` なら NOT READY（メディアなし）、それ以外（`ISO_ERR_EPOCH` を含む）は MEDIUM ERROR。
-4. **`dir` と `expected_len` は使わない**（13 のケースは `msc_bot`）。OUT のデータを受け取るコマンド（WRITE 系）は、データを受け取らず DATA PROTECT。MODE SELECT は未対応（ILLEGAL REQUEST 20h/00h）。
+4. **`dir` と `expected_len` は、GET EVENT STATUS NOTIFICATION のイベントの消費の判定だけに使う**（13 のケースは `msc_bot`）。イベントは、`dir == IN`、`expected_len >= 8`、割り当て長 >= 8、out_cap >= 8 のときだけ消す（ホストが記述子の全体を要求していないとき、イベントが消えない）。`msc_bot` は、`expected_len` に CBW の値を渡すこと（案 B。案 A の「配送した長さを返す関数」は作っていない）。**設計（5.4 の呼び出しの形）は、これらを BOT の層の引数としていたので、使う範囲が広がった**。OUT のデータを受け取るコマンド（WRITE 系）は、データを受け取らず DATA PROTECT。MODE SELECT は未対応（ILLEGAL REQUEST 20h/00h）。
 5. **READ の範囲**: `lba + blocks == capacity_blocks` かつ `blocks == 0` は GOOD（転送なし）。`lba > capacity_blocks`（`blocks == 0` でも）は 21h/00h。`lba + blocks` は 64 ビットで計算する（32 ビットだと巻き戻る）。
 6. **PREVENT（防止）はメディアがないとき NOT READY（3Ah/00h）**、解除は GOOD。START STOP UNIT の Start = 1（ロード）は、メディアの有無によらず GOOD。
 7. **REQUEST SENSE は、保留中の UNIT ATTENTION を報告せず、消さない**（依頼の「INQUIRY と REQUEST SENSE を除く、次の最初のコマンドで」に従った）。SPC-4 が、REQUEST SENSE で UNIT ATTENTION を返して消す、と定めているかは、本文で確認できていない。
 8. **バスリセット / `force_eject` の後は、保持中のセンスを捨てる**（SAM の「リセットでセンスが消える」の記憶による）。
-9. **GET EVENT STATUS NOTIFICATION の長さの欄 = 記述子の長さ（4）**（QEMU と Linux の sr に合わせた。`TODO(device-check)`）。
+9. **GET EVENT STATUS NOTIFICATION の長さの欄 = この欄に続くバイト数（メディアの応答で 6、NEA で 2）**（VirtualBox と、MMC-6 の表の読みに合わせた。QEMU は 4 / 0。1 章。`TODO(device-check)`）。
 10. **READ TOC の byte 9（SFF-8020i の形式の指定）に対応**（Linux の `sr_cd_check` が使う）。形式 2（フル TOC）は、MSF ビットによらず MSF。
 11. **`iso_seams.h` は変更していない**。
+12. **`read_blocks` の実行中の `command_done`（レビューの指摘 1）**: `ref_state`（IDLE / READING / READING_RELEASE_PENDING / RELEASING）を C11 の atomic で持つ。`read_blocks` の実行中に `command_done` が来たら、解放を予約するだけで、`read_blocks` の復帰の直前に、ちょうど 1 回解放する（`backend.read` の最中に `backend.release` を呼ばない。`handle` と `size_bytes` を実行中に書き換えない）。**この結果、`backend.release()` は、`command_done` を呼んだタスクと、`read_blocks` を呼んだタスクの、どちらからも呼ばれうる**。設計 4.1 は `command_done` を `iso_state_mutex` の下で呼ぶとしているが、遅延した解放は、そのロックの外（`iso_msc_task`）で行われる。**`iso_extent` の参照カウントは、原子的、または自分でロックすること**（設計に追記が要る。最終報告）。`read_blocks` の実行中に次の `execute`（READ）が来る（契約違反）と、参照を取らず ABORTED COMMAND。
+13. **`abort_generation` は C11 の atomic**（レビューの指摘 2。`iso_media.h`）。書き込みは release、読み出しは acquire。メモリ順序は、ホストの単一スレッドのテストでは、検証できない（TSan を使えば、競合の検出はできるが、CI にはない）。
+14. **世代が変わっていれば、バックエンドの戻り値によらず ABORTED COMMAND**（指摘 6）。センスは、記録した世代を持ち、**その後にさらに世代が進んだときだけ**捨てる（指摘 7。中止のセンスが REQUEST SENSE まで残る）。
+15. **REQUEST SENSE のセンスは、1 バイト以上を実際に返したときだけ消える**（指摘 4）。
 
 ## 4. 未実装の項目
 
@@ -84,7 +89,7 @@
 
 | # | 内容 | 場所 |
 |---|---|---|
-| 1 | GET EVENT STATUS NOTIFICATION の「イベント記述子の長さ」の定義（記述子だけの 4 か、見出しの 2 バイトを含む 6 か） | `cmd_get_event_status` |
+| 1 | GET EVENT STATUS NOTIFICATION の「イベント記述子の長さ」の定義（今は 6 / 2 = 長さの欄に続くバイト数。VirtualBox と同じで、QEMU は 4 / 0） | `cmd_get_event_status` |
 | 2 | READ TOC の MSF で、大きなイメージ（リードアウト + 150 が 1,151,999 を超える）を FF:3B:4A に飽和させる規則。LBA 形式のリードアウトが、同じ上限になる実機がある（libcdio のメール）。本機は LBA 形式を飽和させない | `msf_of`、`toc_track_desc` |
 | 3 | READ TOC 形式 2（フル TOC）の記述子（A0 のディスク種別 = 0、時刻の欄 = 0）と、MSF ビットによらず MSF にすること。DVD-ROM でのフル TOC の扱い | `cmd_read_toc` |
 | 4 | READ TOC の byte 2 と byte 9 の、形式の優先順位（byte 2 が 0 でなければ byte 2） | `cmd_read_toc` |
@@ -105,20 +110,39 @@
 python3 tools/test/mutate_mmc_scsi.py <repo> <スクラッチ> tools/test/mmc_scsi_mutants.py <結果.json> [ID ...]
 ```
 
-**結果**（全数: 439 個を、3 つに分けて実行。ベースラインは全テスト成功）:
+**判定の手順（終了コードだけで判定しない）**: 全数を実行すると、同値で生き残るもの（6.1）があるので、`mutate_mmc_scsi.py` の終了コードは **1 になる**（生き残り、またはビルドエラーが 1 つでもあると 1）。終了コードで合否を決めず、実行後の結果の JSON（`<結果.json>`。全数を 3 つに分けて実行したときは、3 つ）で、次を確認する。(1) `status == "build_error"` が 0 件 (2) `status == "survived"` の ID が、6.1 の既知の同値のものだけ（S15、O04、Q15、Q16）。例:
+
+```
+python3 - <<'PY'
+import json, sys
+known = {"S15", "O04", "Q15", "Q16"}
+res = [r for f in sys.argv[1:] for r in json.load(open(f))]
+bad = [r["id"] for r in res if r["status"] == "build_error" or (r["status"] == "survived" and r["id"] not in known)]
+print(len(res), "mutants;", "unexpected:", bad)
+sys.exit(1 if bad else 0)
+PY
+```
+
+指定した ID が `mmc_scsi_mutants.py` にないとき（打ち間違い）は、何もビルドせずに終了コード 2 で終わる（有効な ID と混ざっていても拒否する）。ID を指定しない実行が全数。
+
+**結果**（全数: 474 個。ベースラインは全テスト成功。3 つに分けて実行し、ビルドエラーと、テストを足した後の生き残りだった 8 個は、書き直し・テストの追加の後に、その 8 個だけ実行し直して殺した）:
 
 | 実行した数 | 殺した数 | 生き残った数（すべて同値と判断） | ビルドエラー |
 |---|---|---|---|
-| 439 | 437 | 2 | 0 |
+| 474 | 470 | 4 | 0 |
 
-経緯: (1) 最初の全数の実行で、26 個が生き残り（多くは、コントロールバイト、予約バイト、2 バイトの割り当て長の上位バイト、`read_blocks` のセンス、4 GiB を超えるイメージの部分的な最後のブロックの検査が、コマンドごとに揃っていなかった）、24 個がビルドエラー（ミュータントが -Werror の未使用の警告になった。書き直した）だった。(2) 殺すテストを足した: 全コマンド共通の表（`test_every_command_rejects_each_reserved_control_bit_and_accepts_vendor_bits`、`test_every_command_rejects_each_reserved_byte`、`test_two_byte_allocation_length_is_honoured_by_every_command_that_has_one`）、`test_read_blocks_zero_fill_of_a_partial_last_block_beyond_4_gib`（5 GiB + 100 バイトのイメージ BIGP）、`test_read_blocks_misuse_senses`、`test_read_toc_msf_minutes_seconds_and_frames`、`test_read_toc_two_byte_allocation_length_and_huge_lba_form` ほか。(3) テストを足した後に、全数を最初から実行し直した（これが上の結果。ビルドエラーだった 3 個は、書き直して、その 3 個だけ実行し直して殺した）。
+経緯: (1) 最初の実装（439 個）の全数で、26 個が生き残り、24 個がビルドエラー（ミュータントが -Werror の未使用の警告になった。書き直した）だった。殺すテストを足し（全コマンド共通の表、`test_read_blocks_zero_fill_of_a_partial_last_block_beyond_4_gib`、`test_read_blocks_misuse_senses`、`test_read_toc_msf_minutes_seconds_and_frames` ほか）、全数を実行し直して、437 個を殺した（生き残り 2 個は同値）。(2) PR #151 のレビューの指摘（`ref_state`、世代の atomic、センスの世代、GESN の長さと消費、REQUEST SENSE の消費、世代の確認の順序）を直し、ミュータントを 35 個増やし（新規 52 個と、変えたコードに依存するので書き直した既存の 17 個。Q 系 = 参照の状態機械、E28〜E36 = GESN の消費、R14 / R15、A39〜A41、B14b / B31 など）、**全数（474 個）を最初から実行し直した**。この実行で、ビルドエラー 6 個と、テストの不足 2 個（Q12: 参照を使えないときのセンス、Q04: 解放の後の `ref_state`）が見つかったので、ミュータントを書き直し、テストを足して、その 8 個を実行し直し、全て殺した。
 
-### 6.1 同値のミュータント（2 個）
+### 6.1 同値のミュータント（4 個）
 
 | ID | 変更箇所 | 同値の理由 |
 |---|---|---|
 | S15 | `clamp32`: `v > 0xFFFFFFFF` -> `>=` | `v == 0xFFFFFFFF` のとき、どちらの分岐も 0xFFFFFFFF を返す |
 | O04 | `msf_of`: `v > 上限` -> `>=` | `v == 上限` のとき、`v = 上限` の代入は同じ値 |
+| Q15 | `execute`（READ）の最後の `atomic_store(ref_state, IDLE, release)` を外す | その時点で `ref_state` はすでに IDLE（`execute` の先頭の `command_done` と、直前の `held` の検査がそれを保証する）。値は変わらない。この store は、`held_*` を `read_blocks` のタスクへ公開するための release の順序のためで、**メモリ順序は、単一スレッドのホストテストでは観測できない** |
+| Q16 | `mmc_scsi_init` の `atomic_init(ref_state, IDLE)` を外す | 直前の `memset` が 0（= IDLE）にしている。`atomic_init` は、規格上の初期化の作法 |
+
+メモリ順序（`release` / `acquire`）そのものを変えるミュータント（`relaxed` など）は、ホストの単一スレッドでは区別できないので、作っていない（TSan で競合を見るのは、実機側の確認、または別の整備）。
 
 ### 6.2 殺したミュータントの代表
 

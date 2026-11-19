@@ -11,7 +11,7 @@ else()
 
     # Enforce C99, ASan, UBSan, and warnings
     target_compile_options(mmc_scsi PRIVATE
-        -std=c99
+        -std=c11
         -Wall -Wextra -Werror
         -fsanitize=address -fsanitize=undefined
     )
