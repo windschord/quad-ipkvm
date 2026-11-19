@@ -126,9 +126,14 @@ def main(config):
         sys.exit(2)
     repo, work, mfile, outp = rest[:4]
     only = set(rest[4:])
+    check_workdir(repo, outp)  # 結果の JSON を、リポジトリ(作業ツリー)の中に書かない(既存のファイルを上書きしない)
     spec = importlib.util.spec_from_file_location("mutants", mfile)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    unknown = sorted(only - {m["id"] for m in mod.MUTANTS})
+    if unknown:  # ビルドの前に、指定した ID を照合する(打ち間違いで、何も実行せずに成功しない)
+        print("ERROR: unknown mutant id(s): " + " ".join(unknown), file=sys.stderr)
+        sys.exit(2)
     mutants = [m for m in mod.MUTANTS if not only or m["id"] in only]
     files = config["files"]
     tests = config["tests"]

@@ -646,6 +646,30 @@ void test_apply_on_corrupt_entry(void) {
     TEST_ASSERT_EQUAL_INT(0, FS.nlog);
 }
 
+void test_apply_reboot_keeps_the_invalid_reason(void) {
+    /* meta_corrupt (理由 5) と、保存された理由 (part_mismatch) は、REBOOT で消えない */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/00000001"));
+    iso_meta_t inv = mk_meta("I", 100000, ISO_META_INVALID, 3);
+    inv.invalid_reason = ISO_INVALID_PART_MISMATCH;
+    put_slot("00000002", 0, &inv);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    iso_catalog_entry_t *c = iso_catalog_find(&CAT, "00000001");
+    TEST_ASSERT_EQUAL_UINT8(ISO_INVALID_META_CORRUPT, c->invalid_reason);
+    TEST_ASSERT_EQUAL_INT(0, iso_catalog_apply(&CAT, c, ISO_EV_REBOOT, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_INVALID, c->state);
+    TEST_ASSERT_EQUAL_UINT8(ISO_INVALID_META_CORRUPT, c->invalid_reason);
+    iso_catalog_entry_t *v = iso_catalog_find(&CAT, "00000002");
+    TEST_ASSERT_EQUAL_INT(0, iso_catalog_apply(&CAT, v, ISO_EV_REBOOT, NULL, NULL));
+    TEST_ASSERT_EQUAL_UINT8(ISO_INVALID_PART_MISMATCH, v->invalid_reason);
+    /* ready に REBOOT しても理由は 0 */
+    iso_catalog_entry_t *r = new_image("R", 100000);
+    r->received = 100000;
+    TEST_ASSERT_EQUAL_INT(0, iso_catalog_apply(&CAT, r, ISO_EV_FINISH, &CTX_FREE, NULL));
+    TEST_ASSERT_EQUAL_INT(0, iso_catalog_apply(&CAT, r, ISO_EV_FINALIZE_OK, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(0, iso_catalog_apply(&CAT, r, ISO_EV_REBOOT, NULL, NULL));
+    TEST_ASSERT_EQUAL_UINT8(0, r->invalid_reason);
+}
+
 void test_apply_reboot_event_does_not_write(void) {
     iso_catalog_entry_t *e = new_image("A", 100000);
     fx_settle();
@@ -687,6 +711,7 @@ int main(void) {
     RUN_TEST(test_apply_generation_wraps_from_uint32_max_to_zero);
     RUN_TEST(test_write_meta_rejects_an_invalid_meta_without_writing);
     RUN_TEST(test_apply_on_corrupt_entry);
+    RUN_TEST(test_apply_reboot_keeps_the_invalid_reason);
     RUN_TEST(test_apply_reboot_event_does_not_write);
     return UNITY_END();
 }

@@ -204,11 +204,14 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE kvm_api kvm_ctrl kvm_board_mock http_guard auth_logic)
     endif()
 
-    if (test_source MATCHES "/iso_extent/")
+    # ホストテストのディレクトリからの相対パスで選ぶ（チェックアウト先の絶対パスに /msc_bot/ や /iso_catalog/ が含まれても、他のテストにはリンクしない）
+    file(RELATIVE_PATH test_rel_path ${CMAKE_CURRENT_SOURCE_DIR} ${test_source})
+
+    if (test_rel_path MATCHES "^iso_extent/")
         target_link_libraries(${test_name} PRIVATE iso_extent pthread)
     endif()
 
-    if (test_source MATCHES "/iso_catalog/")
+    if (test_rel_path MATCHES "^iso_catalog/")
         target_link_libraries(${test_name} PRIVATE iso_catalog iso_mock_fs)
         target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/iso_catalog)
     endif()
@@ -224,8 +227,7 @@ foreach(test_source ${TEST_SOURCES})
         target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/iso_catalog ${CMAKE_SOURCE_DIR}/iso_upload ${CMAKE_SOURCE_DIR}/../../components/iso_upload)
     endif()
 
-    # msc_bot のテストだけ（チェックアウト先の絶対パスに /msc_bot/ が含まれても、他のテストにはリンクしない）
-    file(RELATIVE_PATH test_rel_path ${CMAKE_CURRENT_SOURCE_DIR} ${test_source})
+    # msc_bot のテストだけ
     if (test_rel_path MATCHES "^msc_bot/")
         target_link_libraries(${test_name} PRIVATE msc_bot)
     endif()

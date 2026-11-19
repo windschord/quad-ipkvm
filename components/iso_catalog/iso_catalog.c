@@ -467,7 +467,8 @@ int iso_catalog_apply(iso_catalog_t *cat, iso_catalog_entry_t *e, iso_event_t ev
 
     bool writes = (ev == ISO_EV_IDLE_TIMEOUT || ev == ISO_EV_WRITE_FAIL || ev == ISO_EV_FINALIZE_OK ||
                    ev == ISO_EV_FINALIZE_FAIL || ev == ISO_EV_FINALIZE_IOERR || ev == ISO_EV_INDEX_FAIL);
-    uint8_t reason = 0;
+    /* INVALID のまま変わらないイベント(REBOOT など)では、理由(meta_corrupt を含む)を保つ。INVALID に入るイベントは、引数の理由 */
+    uint8_t reason = (next == ISO_STATE_INVALID && e->state == ISO_STATE_INVALID) ? e->invalid_reason : 0;
     if (writes) {
         if (!e->meta_valid) return ISO_ERR_INVALID;
         iso_meta_t m = e->meta;
@@ -561,7 +562,7 @@ static int find_part_entry(const iso_fs_t *fs, const char *id, char *name_out, b
             return rc;
         }
         if (rc == 1) break;
-        if (name[0] == 'p') {
+        if (name[0] == 'p' && !st.is_dir) { /* ファイルだけ(p で始まるディレクトリは、外来のものとして残す) */
             memcpy(name_out, name, sizeof(name));
             *found = true;
             break;
@@ -571,6 +572,48 @@ static int find_part_entry(const iso_fs_t *fs, const char *id, char *name_out, b
     return ISO_OK;
 }
 
+/* <id>/p000 の先頭クラスタが、/iso/import/ のファイルと同じか */
+static int find_crosslink(const iso_fs_t *fs, const char *id, bool *out) {
+    *out = false;
+    char path[ISO_PATH_MAX];
+    int rc = path_part(path, sizeof(path), id, 0);
+    if (rc < 0) return rc;
+    iso_stat_t p0;
+    rc = fs->stat(fs->ctx, path, &p0);
+    if (rc == ISO_ERR_NOT_FOUND) return ISO_OK;
+    if (rc < 0) return rc;
+    if (p0.is_dir || p0.first_cluster == 0) return ISO_OK;
+    iso_dir_t *dir = NULL;
+    rc = fs->dir_open(fs->ctx, IMPORT_DIR, &dir);
+    if (rc == ISO_ERR_NOT_FOUND) return ISO_OK;
+    if (rc < 0) return rc;
+    for (;;) {
+        char name[ISO_NAME_MAX + 1];
+        iso_stat_t st;
+        memset(&st, 0, sizeof(st));
+        rc = fs->dir_next(fs->ctx, dir, name, &st);
+        if (rc < 0) {
+            fs->dir_close(fs->ctx, dir);
+            return rc;
+        }
+        if (rc == 1) break;
+        if (!st.is_dir && st.first_cluster == p0.first_cluster) {
+            *out = true;
+            break;
+        }
+    }
+    fs->dir_close(fs->ctx, dir);
+    return ISO_OK;
+}
+
+int iso_catalog_delete_precheck(const iso_catalog_t *cat, const char *id) {
+    if (!cat || !iso_id_valid(id)) return ISO_ERR_INVALID;
+    bool cross = false;
+    int rc = find_crosslink(cat->fs, id, &cross);
+    if (rc < 0) return rc;
+    return cross ? ISO_CAT_ERR_CROSSLINKED : ISO_OK;
+}
+
 iso_step_result_t iso_catalog_delete_step(iso_catalog_t *cat, iso_delete_job_t *job) {
     const iso_fs_t *fs = cat->fs;
     for (;;) {
@@ -578,6 +621,11 @@ iso_step_result_t iso_catalog_delete_step(iso_catalog_t *cat, iso_delete_job_t *
         int rc;
         switch (job->phase) {
         case PH_INIT: {
+            /* 何かを変更する前に、クロスリンクを照合する(再開でも同じ。一致したら、何も消さずに止める) */
+            bool cross = false;
+            rc = find_crosslink(fs, job->id, &cross);
+            if (rc < 0) return step_error(rc);
+            if (cross) return step_error(ISO_CAT_ERR_CROSSLINKED);
             iso_slots_t sl;
             rc = iso_slots_read(fs, job->id, &sl);
             if (rc < 0) return step_error(rc);

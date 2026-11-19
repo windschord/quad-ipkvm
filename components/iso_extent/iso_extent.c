@@ -44,7 +44,7 @@ uint64_t iso_extent_part_bytes(uint64_t size_bytes, uint32_t part_blocks, uint32
     uint64_t n = iso_extent_part_count(size_bytes, part_blocks);
     if (index >= n) return 0;
     uint64_t pb = (uint64_t)part_blocks * ISO_CD_BLOCK_BYTES;
-    if (index + 1 < n) return pb;
+    if ((uint64_t)index + 1 < n) return pb; /* index は 32 ビット。加算を 64 ビットで行う */
     return size_bytes - (n - 1) * pb;
 }
 
@@ -52,7 +52,7 @@ uint64_t iso_extent_part_bytes(uint64_t size_bytes, uint32_t part_blocks, uint32
 
 /* part のエクステントを、need セクタまでにクリップして数える(emit != NULL なら書き出す)。
  * 戻り値: 0 = OK、負 = iso_ext_err_t。*kept にクリップ後の個数。 */
-static int clip_part(const iso_part_input_t *in, uint64_t need, iso_extent_t *emit, uint32_t *kept) {
+static int clip_part(const iso_part_input_t *in, uint64_t need, iso_extent_t *emit, uint32_t emit_cap, uint32_t *kept) {
     uint64_t taken = 0;
     uint32_t k = 0;
     for (size_t i = 0; i < in->n_extents && taken < need; i++) {
@@ -62,6 +62,8 @@ static int clip_part(const iso_part_input_t *in, uint64_t need, iso_extent_t *em
         uint64_t n = e->sector_count;
         if (n > need - taken) n = need - taken;
         if (emit) {
+            /* 2 回目の書き出しで、容量(1 回目の個数)を超えない。入力が alloc の最中に変わった場合の防御 */
+            if (k >= emit_cap) return ISO_EXT_ERR_INVALID;
             emit[k].start_sector = e->start_sector;
             emit[k].sector_count = n;
         }
@@ -92,7 +94,7 @@ int iso_extent_table_build(const iso_allocator_t *alloc, uint32_t epoch, uint64_
         if (parts[i].file_bytes != expect_bytes) return ISO_EXT_ERR_PART_MISMATCH;
         if (parts[i].n_extents > 0 && !parts[i].extents) return ISO_EXT_ERR_INVALID;
         uint32_t kept = 0;
-        int rc = clip_part(&parts[i], iso_extent_file_sectors(expect_bytes), NULL, &kept);
+        int rc = clip_part(&parts[i], iso_extent_file_sectors(expect_bytes), NULL, 0, &kept);
         if (rc != ISO_EXT_OK) return rc;
         if (kept > ISO_MAX_EXTENTS - total) return ISO_EXT_ERR_TOO_FRAGMENTED;
         total += kept;
@@ -103,9 +105,9 @@ int iso_extent_table_build(const iso_allocator_t *alloc, uint32_t epoch, uint64_
     size_t bytes = ext_off + (size_t)total * sizeof(iso_extent_t);
     uint8_t *base = (uint8_t *)alloc->alloc(alloc->ctx, bytes);
     if (!base) return ISO_EXT_ERR_NOMEM;
+    memset(base, 0, bytes); /* 確保した領域の全体を 0 にする(アロケータの初期化に頼らない) */
 
     iso_extent_table_t *t = (iso_extent_table_t *)(void *)base;
-    memset(t, 0, sizeof(*t));
     t->alloc = *alloc;
     atomic_init(&t->refs, 1u);
     t->epoch = epoch;
@@ -121,7 +123,11 @@ int iso_extent_table_build(const iso_allocator_t *alloc, uint32_t epoch, uint64_
     for (uint32_t i = 0; i < n_parts; i++) {
         uint32_t kept = 0;
         uint64_t need = iso_extent_file_sectors(iso_extent_part_bytes(size_bytes, part_blocks, i));
-        (void)clip_part(&parts[i], need, t->extents + pos, &kept);
+        if (clip_part(&parts[i], need, t->extents + pos, total - pos, &kept) != ISO_EXT_OK) {
+            /* 1 回目の検査の後で入力が変わった(契約違反)。表は公開しない */
+            alloc->free(alloc->ctx, base);
+            return ISO_EXT_ERR_INVALID;
+        }
         t->parts[i].first_extent = pos;
         t->parts[i].extent_count = kept;
         pos += kept;
@@ -138,7 +144,7 @@ uint32_t iso_extent_table_unref(iso_extent_table_t *t) {
     if (!t) return 0;
     uint32_t old = atomic_load_explicit(&t->refs, memory_order_relaxed);
     for (;;) {
-        if (old == 0) return 0; /* 0 のものは、すでに解放済み（二重の unref）。何もしない */
+        if (old == 0) return 0; /* 到達しない(参照を持たない表への unref は、呼び出し側の契約違反)。解放済みの表は読めないので、二重の unref は防げない */
         if (atomic_compare_exchange_weak_explicit(&t->refs, &old, old - 1u, memory_order_acq_rel,
                                                   memory_order_relaxed)) {
             break;

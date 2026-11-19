@@ -6,12 +6,12 @@
 
 | ファイル | 内容 | 件数(Unity のテストケース) |
 |---|---|---|
-| `test/host/iso_extent/test_iso_extent_build.c` | 純粋な計算(`capacity_blocks`、`file_sectors`、`part_count`、`part_bytes`)、表の構築と検証(引数、大きさ・パーツ数の上限、`part_mismatch`、`too_fragmented`、クリップ、メモリ不足)、参照カウント | 26 |
+| `test/host/iso_extent/test_iso_extent_build.c` | 純粋な計算(`capacity_blocks`、`file_sectors`、`part_count`、`part_bytes`)、表の構築と検証(引数、大きさ・パーツ数の上限、`part_mismatch`、`too_fragmented`、クリップ、メモリ不足)、参照カウント | 29 |
 | `test/host/iso_extent/test_iso_extent_map.c` | 変換 `iso_extent_map`(パーツの境界、エクステントの境界、最終ブロック、大きさが 2048 / 512 の倍数でない場合、64 ビットのセクタ、併合、範囲外、`SPANS_FULL`)、`iso_extent_valid_bytes` | 15 |
 | `test/host/iso_extent/test_iso_extent_fuzz.c` | 固定シードのファズ(下記) | 2 |
 | `test/host/iso_extent/ie_common.h` | 共通の部品(数え上げ付きのアロケータ、基準の表 A) | - |
 
-合計 43 件(`test/host/CMakeLists.txt` の既存の自動発見で、ctest の実行ファイルは 3 つ増える)。
+合計 46 件(`test/host/CMakeLists.txt` の既存の自動発見で、ctest の実行ファイルは 3 つ増える)。
 
 **期待値はすべて手書き**。基準の表 A(`ie_common.h`。`part_blocks` = 4 = 16 セクタ / パーツ、3 パーツ、`size_bytes` = 22628)は、論理セクタごとの SD 上の位置を、コメントに手計算で書いてある。
 
@@ -32,7 +32,7 @@ python3 tools/test/mutate_iso_extent.py <repo> <スクラッチ> tools/test/iso_
 
 | 実行した数 | 殺した数 | 生き残った数(すべて同値と判断) | ビルドエラー |
 |---|---|---|---|
-| 180 | 162 | 18 | 0 |
+| 188 | 170 | 18 | 0 |
 
 経緯: 最初の実行では、殺した 151、生き残り 25、ビルドエラー 4(`-Werror` の未使用変数。ミュータントの書き方を直した)だった。生き残りのうち、同値でないものを調べ、次のテストを足した(足したあとに**全体を最初から実行し直した**のが上の結果)。
 
@@ -52,7 +52,7 @@ python3 tools/test/mutate_iso_extent.py <repo> <スクラッチ> tools/test/iso_
 | E026 | clip: `n > need - taken` を `>=` | 等しいときの代入は同じ値 |
 | E070 | build: ヘッダーのアラインを外す | `sizeof(struct iso_extent_table)` はすでに 8 の倍数なので、切り上げても同じ |
 | E071 | build: パーツの領域を切り上げない | `sizeof(part_t)` = 8 の倍数なので、パーツ数に依らず同じ |
-| E092 | build: `extent_count` を記録しない | エクステントは、パーツの順に連続して配列に置く。変換は `first_extent` から順に読み、パーツの終わりと次のパーツの先頭が同じ位置なので、`extent_count` が 0 でも、有効な表では読み出しの結果が変わらない(`extent_count` は、境界の検査用の防御) |
+| E211 | build: 確保した領域を 0 で埋めない | 全フィールドを、その後で代入する。0 埋めは、アロケータの初期化に頼らないための防御(パディングなど) |
 | E109 | unref: `refs == 0` の検査を外す | 参照が 0 になった時点で解放されるので、`refs == 0` の表は呼ばれない |
 | E141 | map: `blocks == 0` の早期の戻りを外す | `remaining` が 0 になり、ループに入らず、区間 0 個で OK になる(同じ結果) |
 | E145 | map: `want` を 32 ビットの積にする | `blocks` は範囲検査の後で、最大 8388608(16 GiB / 2048)なので、× 4 でも 32 ビットに収まる |
@@ -68,7 +68,7 @@ python3 tools/test/mutate_iso_extent.py <repo> <スクラッチ> tools/test/iso_
 | E202 | valid_bytes: 範囲検査を `>` | `lba == capacity` のとき、`start >= size_bytes` が 0 を返す |
 | E204 | valid_bytes: `start >= size_bytes` を外す | 範囲検査を通った `lba` では、`start < size_bytes` |
 
-### 2.2 殺したミュータントの一覧(162 個)
+### 2.2 殺したミュータントの一覧(170 個)
 
 「殺したテスト」は、失敗したテストのうち先頭のもの(最初に落ちたテストの実行ファイルで止める)。ファズだけが殺したものは、`test_fuzz_*`。
 
@@ -103,12 +103,12 @@ python3 tools/test/mutate_iso_extent.py <repo> <スクラッチ> tools/test/iso_
 | E028 | clip: loop stops one extent early | `test_build_table_a_attributes`, `test_build_does_not_keep_pointers_to_the_input` |
 | E029 | clip: emit start not copied | `test_build_does_not_keep_pointers_to_the_input`, `test_build_clips_tail_and_drops_zero_length` |
 | E030 | clip: emit count not clipped | `test_iso_extent_map:crash/rc=1` |
-| E031 | clip: kept not counted | `test_iso_extent_build:crash/rc=1` |
+| E031 | clip: kept not counted | `test_build_table_a_attributes`, `test_build_does_not_keep_pointers_to_the_input` |
 | E032 | clip: taken not advanced | `test_build_table_a_attributes`, `test_build_does_not_keep_pointers_to_the_input` |
 | E033 | clip: short coverage accepted | `test_build_extents_must_cover_the_file` |
 | E034 | clip: short coverage by one accepted | `test_build_extents_must_cover_the_file` |
 | E035 | clip: exact coverage rejected | `test_build_table_a_attributes`, `test_build_does_not_keep_pointers_to_the_input` |
-| E036 | clip: kept not reported | `test_iso_extent_build:crash/rc=1` |
+| E036 | clip: kept not reported | `test_build_table_a_attributes`, `test_build_does_not_keep_pointers_to_the_input` |
 | E040 | build: NULL out accepted | `test_iso_extent_build:crash/rc=1` |
 | E041 | build: *out not cleared | `test_build_invalid_args`, `test_build_rejects_more_than_16_parts_but_accepts_16` |
 | E042 | build: NULL alloc accepted | `test_iso_extent_build:crash/rc=1` |
@@ -131,12 +131,12 @@ python3 tools/test/mutate_iso_extent.py <repo> <スクラッチ> tools/test/iso_
 | E059 | build: part smaller than expected accepted | `test_build_part_size_mismatch` |
 | E060 | build: NULL extents with count accepted | `test_iso_extent_build:crash/rc=1` |
 | E061 | build: NULL extents check needs 2+ extents | `test_iso_extent_build:crash/rc=1` |
-| E062 | build: clip result ignored | `test_build_extents_must_cover_the_file`, `test_build_extent_end_overflow_is_invalid` |
+| E062 | build: clip result ignored | `test_build_extents_must_cover_the_file` |
 | E063 | build: clip error always part_mismatch | `test_build_extent_end_overflow_is_invalid` |
-| E064 | build: too_fragmented check removed | `test_build_too_fragmented_boundary_single_part`, `test_build_too_fragmented_limit_is_for_the_whole_image` |
+| E064 | build: too_fragmented check removed | `test_build_too_fragmented_boundary_single_part` |
 | E065 | build: too_fragmented check >= | `test_build_too_fragmented_boundary_single_part`, `test_build_too_fragmented_limit_is_for_the_whole_image` |
 | E066 | build: too_fragmented limit is per part | `test_build_too_fragmented_limit_is_for_the_whole_image` |
-| E067 | build: total not accumulated | `test_iso_extent_build:crash/rc=1` |
+| E067 | build: total not accumulated | `test_build_table_a_attributes`, `test_build_does_not_keep_pointers_to_the_input` |
 | E068 | build: file sectors of the wrong size passed to clip | `test_build_table_a_attributes`, `test_build_does_not_keep_pointers_to_the_input` |
 | E072 | build: allocation too small by one extent | `test_iso_extent_build:crash/rc=1` |
 | E073 | build: allocation counts extents as bytes | `test_iso_extent_build:crash/rc=1` |
@@ -155,16 +155,17 @@ python3 tools/test/mutate_iso_extent.py <repo> <スクラッチ> tools/test/iso_
 | E086 | build: n_extents stored without clipping | `test_build_table_a_attributes`, `test_build_max_image_16_parts` |
 | E087 | build: parts pointer wrong | `test_build_does_not_keep_pointers_to_the_input`, `test_build_clips_tail_and_drops_zero_length` |
 | E088 | build: extents pointer wrong | `test_iso_extent_build:crash/rc=1` |
-| E089 | build: second pass clips by one sector more | `test_iso_extent_build:crash/rc=1` |
+| E089 | build: second pass clips by one sector more | `test_build_table_a_attributes`, `test_build_does_not_keep_pointers_to_the_input` |
 | E090 | build: extents written at wrong position | `test_build_does_not_keep_pointers_to_the_input`, `test_build_clips_tail_and_drops_zero_length` |
-| E091 | build: first_extent not recorded | `test_iso_extent_build:crash/rc=1` |
+| E091 | build: first_extent not recorded | `test_build_clips_tail_and_drops_zero_length` |
+| E092 | build: extent_count not recorded | `test_build_does_not_keep_pointers_to_the_input`, `test_build_clips_tail_and_drops_zero_length` |
 | E093 | build: pos not advanced | `test_build_does_not_keep_pointers_to_the_input`, `test_build_clips_tail_and_drops_zero_length` |
 | E094 | build: *out not set | `test_build_table_a_attributes`, `test_build_does_not_keep_pointers_to_the_input` |
 | E100 | ref: increments by 2 | `test_iso_extent_build:crash/rc=1` |
 | E101 | ref: does nothing | `test_iso_extent_build:crash/rc=1` |
 | E102 | ref: NULL not checked | `test_iso_extent_build:crash/rc=1` |
-| E103 | unref: does not decrement | `test_build_table_a_attributes`, `test_build_does_not_keep_pointers_to_the_input` |
-| E104 | unref: frees one reference early | `test_refcount` |
+| E103 | unref: does not decrement | `test_iso_extent_build:crash/rc=1` |
+| E104 | unref: frees one reference early | `test_iso_extent_build:crash/rc=1` |
 | E105 | unref: never frees | `test_build_table_a_attributes`, `test_build_does_not_keep_pointers_to_the_input` |
 | E106 | unref: frees a wrong pointer | `test_iso_extent_build:crash/rc=1` |
 | E107 | unref: free with a NULL context | `test_iso_extent_build:crash/rc=1` |
@@ -236,11 +237,28 @@ python3 tools/test/mutate_iso_extent.py <repo> <スクラッチ> tools/test/iso_
 | E207 | valid_bytes: takes the larger | `test_iso_extent_map:crash/rc=1` |
 | E208 | valid_bytes: remainder off by one | `test_iso_extent_map:crash/rc=1` |
 | E209 | valid_bytes: always len | `test_iso_extent_map:crash/rc=1` |
+| E210 | part_bytes: index + 1 in 32 bits | `test_part_count_and_bytes` |
+| E212 | clip: emit capacity not checked | `test_iso_extent_build:crash/rc=1` |
+| E213 | clip: emit capacity check off by one (>) | `test_iso_extent_build:crash/rc=1` |
+| E214 | build: second pass error ignored | `test_build_second_pass_does_not_overrun_if_the_input_changes`, `test_build_second_pass_capacity_is_the_remainder_of_the_table` |
+| E215 | build: second pass error does not free the allocation | `test_iso_extent_build:crash/rc=1` |
+| E216 | build: second pass error reported as part_mismatch | `test_build_second_pass_does_not_overrun_if_the_input_changes`, `test_build_second_pass_capacity_is_the_remainder_of_the_table` |
+| E217 | build: second pass capacity is the whole table (not the remainder) | `test_iso_extent_build:crash/rc=1` |
 
+## 3. PR #150 のレビュー(CodeRabbit)への対応で足した変更とミュータント
 
-## 追記: 参照カウントを原子的にした（PR #151 のレビューを受けて）
+全体(188 個)を最初から実行し直した(`ext_result` 相当。170 個を殺し、18 個が同値。E217 と E211 の判定だけは、テストを足した後に個別に再実行した)。
 
-`mmc_scsi` の遅延した `backend.release()` は、`iso_msc_task`（`read_blocks` を呼んだタスク）から、`iso_state_mutex` の外で呼ばれうる。そのため、`iso_extent_table_ref` / `unref` / `refs` を C11 の atomic にした（`iso_extent.c`。ビルドは `-std=c11`）。表の中身は作成後に変わらないので、参照を持つ間は、ロックなしで `iso_extent_map` できる。
-
-- テスト: `test_refcount_is_atomic_across_threads`（4 スレッド × 20000 回の `ref` / `unref` の後、参照数が 1 に戻り、解放が 1 回も起きない）。
-- 変異テスト: 参照の E078〜E079、E100〜E111、E120 を、新しいコードに合わせて書き直した。15 件を再実行し、**killed 14、survived 1（E109。`old == 0` の検査を外すもの。0 になった表は解放済みで、二重の `unref` は、使用後の解放になり、テストできない。同値）**。
+| 指摘 | 対応 | 足したテスト / ミュータント |
+|---|---|---|
+| `iso_extent_part_bytes` の最終パーツの判定で、`index + 1` が 32 ビットで 0 に戻る(`part_blocks = 1`、`index = UINT32_MAX`) | 直した(`(uint64_t)index + 1`) | `test_part_count_and_bytes`(`size_bytes = UINT32_MAX * 2048 + 1`)、E210 |
+| 2 回目の書き出しが、入力が `alloc` の最中に変わると、確保した範囲を超えて書く | 直した(書き出しの容量 = 1 回目の個数の残りを検査し、食い違ったら確保した領域を解放して `ISO_EXT_ERR_INVALID`。公開の契約にも「入力は `build` の実行中(`alloc` の呼び出しを含む)変えない」と明記) | `test_build_second_pass_does_not_overrun_if_the_input_changes`、`test_build_second_pass_capacity_is_the_remainder_of_the_table`、E212〜E217 |
+| `unref` の「二重の unref は無害」という説明 | 説明を直した(解放した表を読めないので、二重の `unref` は防げない。呼び出しごとに、呼び出し側が持つ参照を 1 つ消費する、と公開ヘッダーに明記)。`refs == 0` の防御は残す(到達しない) | E109(同値のまま) |
+| `ISO_EXT_ERR_SPANS_FULL` のコメント | 直した(1 ブロックは最悪 4 個の区間。1 ブロックでも足りないなら、ブロック数を減らしても進まないので、配列を大きくするかエラー) | - |
+| E092 を同値と判定した | **誤りだった**(ASan がヒープを 0xBE で埋めるので、`extent_count` が大きな値になり、たまたま動いていた。ゼロ埋めのアロケータでは `INVALID` になる)。`build` が確保した領域の全体を 0 にするようにし、E092 は変換のテストが殺す(同値のリストから外した)。新たに、0 埋めを外す E211 を同値とした(全フィールドを代入する) | E092、E211 |
+| CMake: サニタイザーのリンクオプション(`PRIVATE`)が利用側に伝わらない | 直した(`INTERFACE`)。`iso_catalog` も同じ | - |
+| CMake: 手書きの `-std=c11` が、親の `CMAKE_C_STANDARD=99` で上書きされる | 直した(`C_STANDARD 11`、`C_STANDARD_REQUIRED ON`、`C_EXTENSIONS OFF` をターゲットに設定し、手書きの `-std` を削除)。`cmake --build -v` で、`iso_extent.c` のコンパイルが `-std=c11` だけであることを確認した | - |
+| ファズ: `merged_queries` が、1 つのエクステント内の読み出しも数える | 直した(元のエクステントの番号を、論理セクタごとに持ち、区間の数が、交差する元のエクステントの数より少ない要求だけを数える。実測 6989 件) | `test_fuzz_map_matches_sector_by_sector_oracle` |
+| ファズ: `(uint64_t)rnd() << 32 \| rnd()` の評価順 | 直した(上位、下位の順に、別々の文で取る) | - |
+| `test/host/CMakeLists.txt`: テストの選択が絶対パスの部分一致 | 直した(ホストテストのディレクトリからの相対パス `^iso_extent/`、`^iso_catalog/`) | - |
+| `mutate_iso_*.py`: 結果の出力先の保護、未知のミュータント ID | 直した(出力先がリポジトリ内なら拒否。未知の ID は、ビルドの前にエラーで、ID を示して終了) | - |

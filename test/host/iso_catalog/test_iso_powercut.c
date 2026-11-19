@@ -158,21 +158,25 @@ void test_power_cut_at_every_write_and_every_tear(void) {
             int effective = completed + (applied_meta ? 1 : 0); /* この数番目までの meta が、ディスクに残っている */
 
             if (n >= 8) {
-                /* 削除の手順 (1) の後: ディレクトリが残っていれば deleting を続ける、または meta_corrupt */
-                if (c2.count == 0) {
+                /* 削除の手順 (1) の後: 電源断の位置ごとに、期待する状態が決まる。
+                 *   8 / 9 / 10 (p000、p001、meta.a(古い方)の削除): どのときも deleting (meta.b = 世代 6 が残る)
+                 *   11 (meta.b の削除): 完了していれば、スロットがなく meta_corrupt。そうでなければ deleting
+                 *   12 (rmdir): 完了していれば、ディレクトリがない。そうでなければ、空のディレクトリ = meta_corrupt */
+                bool expect_absent = (n == 12 && t == MOCK_TEAR_FULL);
+                bool expect_corrupt = (n == 11 && t == MOCK_TEAR_FULL) || (n == 12 && t != MOCK_TEAR_FULL);
+                if (expect_absent) {
+                    TEST_ASSERT_EQUAL_UINT_MESSAGE(0, c2.count, msg);
                     saw_absent++;
-                    TEST_ASSERT_TRUE_MESSAGE(n == 12 && t == MOCK_TEAR_FULL, msg); /* rmdir が完了した場合だけ */
                 } else {
                     TEST_ASSERT_EQUAL_UINT_MESSAGE(1, c2.count, msg);
                     iso_catalog_entry_t *e = &c2.images[0];
-                    bool deleting = (e->state == ISO_STATE_DELETING && e->resume_delete && e->meta_valid);
-                    bool corrupt = (e->state == ISO_STATE_INVALID && !e->meta_valid && e->invalid_reason == ISO_INVALID_META_CORRUPT);
-                    TEST_ASSERT_TRUE_MESSAGE(deleting || corrupt, msg);
-                    if (deleting) {
-                        saw_deleting++;
-                        TEST_ASSERT_EQUAL_UINT32_MESSAGE(L[6].gen, e->meta.generation, msg);
-                    } else {
+                    if (expect_corrupt) {
+                        TEST_ASSERT_TRUE_MESSAGE(e->state == ISO_STATE_INVALID && !e->meta_valid && e->invalid_reason == ISO_INVALID_META_CORRUPT, msg);
                         saw_corrupt++;
+                    } else {
+                        TEST_ASSERT_TRUE_MESSAGE(e->state == ISO_STATE_DELETING && e->resume_delete && e->meta_valid, msg);
+                        TEST_ASSERT_EQUAL_UINT32_MESSAGE(L[6].gen, e->meta.generation, msg);
+                        saw_deleting++;
                     }
                 }
             } else if (n == 1 && t != MOCK_TEAR_FULL) {
@@ -210,7 +214,7 @@ void test_power_cut_at_every_write_and_every_tear(void) {
 
 /* 削除の最中の電源断を、さらに削除のやり直し(再起動後の続き)の最中にも落とす(二重の電源断) */
 void test_double_power_cut_during_delete(void) {
-    unsigned cases = 0;
+    unsigned cases = 0, cases_double = 0, cases_finished = 0, cases_absent = 0;
     for (int n = 1; n <= 6; n++) {
         for (int t = 0; t < 3; t++) {
             for (int m = 1; m <= 6; m++) {
@@ -241,12 +245,25 @@ void test_double_power_cut_during_delete(void) {
 
                     iso_catalog_t c2;
                     reboot(&c2);
-                    if (c2.count == 1) {
+                    /* 書き込みの列: 1 meta (deleting)、2 p000、3 p001、4 meta.a (古い)、5 meta.b、6 rmdir。
+                     * 1 回目の電源断の直後の状態: 1 の NONE / HALF は元の ready のまま(世代 7)。5 の FULL は meta_corrupt、6 の NONE / HALF も
+                     * (空のディレクトリ)meta_corrupt、6 の FULL はディレクトリなし。それ以外は deleting */
+                    bool old_ready = (n == 1 && t != MOCK_TEAR_FULL);
+                    bool is_corrupt = (n == 5 && t == MOCK_TEAR_FULL) || (n == 6 && t != MOCK_TEAR_FULL);
+                    bool is_absent = (n == 6 && t == MOCK_TEAR_FULL);
+                    if (is_absent) {
+                        TEST_ASSERT_EQUAL_UINT_MESSAGE(0, c2.count, msg);
+                        cases_absent++;
+                    } else {
+                        TEST_ASSERT_EQUAL_UINT_MESSAGE(1, c2.count, msg);
                         iso_catalog_entry_t *e = &c2.images[0];
-                        bool deleting = (e->state == ISO_STATE_DELETING && e->resume_delete && e->meta_valid);
-                        bool corrupt = (e->state == ISO_STATE_INVALID && !e->meta_valid);
-                        bool still_old = (n == 1 && t != MOCK_TEAR_FULL && e->state == ISO_STATE_READY && e->meta.generation == 7);
-                        TEST_ASSERT_TRUE_MESSAGE(deleting || corrupt || still_old, msg);
+                        if (old_ready) {
+                            TEST_ASSERT_TRUE_MESSAGE(e->state == ISO_STATE_READY && e->meta.generation == 7, msg);
+                        } else if (is_corrupt) {
+                            TEST_ASSERT_TRUE_MESSAGE(e->state == ISO_STATE_INVALID && !e->meta_valid, msg);
+                        } else {
+                            TEST_ASSERT_TRUE_MESSAGE(e->state == ISO_STATE_DELETING && e->resume_delete && e->meta_valid, msg);
+                        }
 
                         /* 2 回目: 続きの m 番目の書き込みで、また電源断 */
                         mock_fs_cut_at(&FS, m, (mock_tear_t)t2);
@@ -255,17 +272,26 @@ void test_double_power_cut_during_delete(void) {
                         do {
                             r = iso_catalog_delete_step(&c2, &job);
                         } while (r.kind == ISO_STEP_CONTINUE && ++guard < 30);
+                        /* 2 回目の電源断の位置に到達したか(到達していれば、電源が落ちていて、ISO_STEP_ERROR / ISO_ERR_IO) */
+                        bool reached = (r.kind == ISO_STEP_ERROR && r.err == ISO_ERR_IO && FS.dead);
+                        if (reached) {
+                            cases_double++;
+                        } else {
+                            TEST_ASSERT_FALSE_MESSAGE(FS.dead, msg);
+                            TEST_ASSERT_EQUAL_INT_MESSAGE(ISO_STEP_DONE, r.kind, msg); /* 到達しなければ、削除が完了している */
+                            cases_finished++;
+                        }
                         iso_catalog_t c3;
                         reboot(&c3);
                         for (size_t i = 0; i < c3.count; i++) {
                             bool d3 = (c3.images[i].state == ISO_STATE_DELETING && c3.images[i].resume_delete);
                             bool k3 = (c3.images[i].state == ISO_STATE_INVALID && !c3.images[i].meta_valid);
-                            bool o3 = (c3.images[i].state == ISO_STATE_READY && c3.images[i].meta.generation == 7 && n == 1 && t != MOCK_TEAR_FULL);
+                            /* 元の ready (世代 7)が許されるのは、2 回目も deleting の書き込みが完了していないとき(m = 1 の NONE / HALF)だけ */
+                            bool o3 = (c3.images[i].state == ISO_STATE_READY && c3.images[i].meta.generation == 7 && n == 1 && t != MOCK_TEAR_FULL &&
+                                       m == 1 && t2 != MOCK_TEAR_FULL);
                             TEST_ASSERT_TRUE_MESSAGE(d3 || k3 || o3, msg);
                         }
                         delete_everything_and_check_clean(&c3);
-                    } else {
-                        TEST_ASSERT_EQUAL_UINT_MESSAGE(0, c2.count, msg);
                     }
                     cases++;
                 }
@@ -273,6 +299,10 @@ void test_double_power_cut_during_delete(void) {
         }
     }
     TEST_ASSERT_EQUAL_UINT(6 * 3 * 6 * 3, cases);
+    /* 2 回目の電源断に到達したものだけが「二重の電源断」。到達しなかったもの(再開が短い)は、別に数える */
+    printf("double power cut: reached=%u finished_before=%u absent_after_first=%u\n", cases_double, cases_finished, cases_absent);
+    TEST_ASSERT_TRUE(cases_double > 150);
+    TEST_ASSERT_TRUE(cases_finished > 20);
 }
 
 /* import の電源断: mkdir / meta / rename のそれぞれ */
@@ -334,6 +364,42 @@ void test_power_cut_during_import(void) {
     }
 }
 
+/* rename の途中の電源断で、import/ のファイルと <id>/p000 の両方が残る(同じ先頭クラスタ。設計 3.3)ときの復旧 */
+void test_power_cut_in_rename_leaves_both_names_and_recovery_keeps_the_shared_cluster(void) {
+    put_import("Linux.iso", 40000, "CD001", 0);
+    uint32_t cluster = mock_fs_first_cluster(&FS, "/iso/import/Linux.iso");
+    fx_settle();
+    mock_fs_cut_at(&FS, 3, MOCK_TEAR_BOTH); /* mkdir、meta、rename の 3 つ目 */
+    iso_rescan_result_t r;
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_catalog_rescan(&CAT, 0, &r));
+    iso_catalog_t c2;
+    reboot(&c2);
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/import/Linux.iso"));
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/11110001/p000"));
+    TEST_ASSERT_EQUAL_UINT32(cluster, mock_fs_first_cluster(&FS, "/iso/import/Linux.iso"));
+    TEST_ASSERT_EQUAL_UINT32(cluster, mock_fs_first_cluster(&FS, "/iso/11110001/p000"));
+    TEST_ASSERT_EQUAL_UINT(1, c2.count);
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_READY, c2.images[0].state);
+    /* 再取り込みはしない(クロスリンクとして skipped。同名でもある) */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_rescan(&c2, 0, &r));
+    TEST_ASSERT_EQUAL_UINT32(0, r.imported);
+    TEST_ASSERT_EQUAL_UINT32(1, r.skipped);
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/import/Linux.iso"));
+    /* 削除は、共有しているクラスタを解放しない: 拒否し、何も消さない */
+    fx_settle();
+    TEST_ASSERT_EQUAL_INT(ISO_CAT_ERR_CROSSLINKED, iso_catalog_delete_precheck(&c2, c2.images[0].id));
+    iso_delete_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_delete_job_init(&job, c2.images[0].id));
+    iso_step_result_t st = iso_catalog_delete_step(&c2, &job);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, st.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_CAT_ERR_CROSSLINKED, st.err);
+    TEST_ASSERT_EQUAL_INT(0, FS.mut_count);
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/11110001/p000"));
+    /* PC のチェックディスクで、どちらかの名前が消える。import/ 側が消えたら、削除できる */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/import/Linux.iso"));
+    delete_everything_and_check_clean(&c2);
+}
+
 /* begin の電源断: mkdir、meta.a のそれぞれ。どれも meta_corrupt として削除できる、または何も残らない */
 void test_power_cut_during_begin(void) {
     for (int n = 1; n <= 2; n++) {
@@ -371,6 +437,7 @@ int main(void) {
     RUN_TEST(test_power_cut_at_every_write_and_every_tear);
     RUN_TEST(test_double_power_cut_during_delete);
     RUN_TEST(test_power_cut_during_import);
+    RUN_TEST(test_power_cut_in_rename_leaves_both_names_and_recovery_keeps_the_shared_cluster);
     RUN_TEST(test_power_cut_during_begin);
     return UNITY_END();
 }

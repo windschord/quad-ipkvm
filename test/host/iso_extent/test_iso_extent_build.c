@@ -70,6 +70,11 @@ void test_part_count_and_bytes(void) {
     TEST_ASSERT_EQUAL_UINT64(2, iso_extent_part_count(5 * GIB, 2097152));
     TEST_ASSERT_EQUAL_UINT64(4 * GIB, iso_extent_part_bytes(5 * GIB, 2097152, 0));
     TEST_ASSERT_EQUAL_UINT64(GIB, iso_extent_part_bytes(5 * GIB, 2097152, 1));
+    /* index + 1 が 32 ビットで 0 に戻る位置: part_blocks = 1 (2048 B / パーツ)、パーツ数 = 2^32、最後のパーツは 1 バイト */
+    const uint64_t big_size = (uint64_t)UINT32_MAX * 2048u + 1u;
+    TEST_ASSERT_EQUAL_UINT64(4294967296ull, iso_extent_part_count(big_size, 1));
+    TEST_ASSERT_EQUAL_UINT64(1, iso_extent_part_bytes(big_size, 1, UINT32_MAX));
+    TEST_ASSERT_EQUAL_UINT64(2048, iso_extent_part_bytes(big_size, 1, UINT32_MAX - 1));
 }
 
 /* ---- 表の構築: 成功 ---- */
@@ -436,6 +441,46 @@ void test_build_checks_parts_in_order(void) {
 
 /* ---- メモリ ---- */
 
+static iso_extent_t mut_extents[2];
+static void mutate_input_in_alloc(void) { mut_extents[0].sector_count = 2; }
+
+/* 契約違反(入力を alloc の最中に変える)でも、確保した範囲を超えて書かず、表を公開せずに解放する */
+void test_build_second_pass_does_not_overrun_if_the_input_changes(void) {
+    /* part_blocks = 1 (4 セクタ)。{100,4} {200,2}: 1 回目は 1 個(4 セクタで足りる)。alloc の最中に先頭が 2 セクタになる -> 2 回目は 2 個 */
+    mut_extents[0].start_sector = 100;
+    mut_extents[0].sector_count = 4;
+    mut_extents[1].start_sector = 200;
+    mut_extents[1].sector_count = 2;
+    iso_part_input_t in[1] = {{2048, mut_extents, 2}};
+    iso_extent_table_t *t = (iso_extent_table_t *)0x1;
+    H.on_alloc = mutate_input_in_alloc;
+    TEST_ASSERT_EQUAL_INT(ISO_EXT_ERR_INVALID, build(0, 2048, 1, in, 1, &t));
+    H.on_alloc = NULL;
+    TEST_ASSERT_NULL(t);
+    TEST_ASSERT_EQUAL_INT(1, H.allocs);
+    TEST_ASSERT_EQUAL_INT(1, H.frees); /* 確保した領域は解放した(tearDown でも見る) */
+}
+
+static iso_extent_t mut2_p0[1], mut2_p1[2];
+static void mutate_second_part_in_alloc(void) { mut2_p1[0].sector_count = 2; }
+
+/* 2 つ目のパーツの入力が変わる場合: 書き出しの容量は、表の全体ではなく、残り(全体 - すでに書いた分) */
+void test_build_second_pass_capacity_is_the_remainder_of_the_table(void) {
+    mut2_p0[0].start_sector = 100;
+    mut2_p0[0].sector_count = 4;
+    mut2_p1[0].start_sector = 200;
+    mut2_p1[0].sector_count = 4;
+    mut2_p1[1].start_sector = 300;
+    mut2_p1[1].sector_count = 2;
+    iso_part_input_t in[2] = {{2048, mut2_p0, 1}, {2048, mut2_p1, 2}};
+    iso_extent_table_t *t = (iso_extent_table_t *)0x1;
+    H.on_alloc = mutate_second_part_in_alloc;
+    TEST_ASSERT_EQUAL_INT(ISO_EXT_ERR_INVALID, build(0, 4096, 1, in, 2, &t));
+    H.on_alloc = NULL;
+    TEST_ASSERT_NULL(t);
+    TEST_ASSERT_EQUAL_INT(H.allocs, H.frees);
+}
+
 void test_build_nomem(void) {
     iso_extent_t e0[1] = {EXT(0, 16)}, e1[1] = {EXT(100, 16)}, e2[1] = {EXT(200, 13)};
     iso_part_input_t in[3] = {{8192, e0, 1}, {8192, e1, 1}, {6244, e2, 1}};
@@ -527,6 +572,8 @@ int main(void) {
     RUN_TEST(test_build_too_fragmented_counts_after_clipping);
     RUN_TEST(test_build_too_fragmented_limit_is_for_the_whole_image);
     RUN_TEST(test_build_checks_parts_in_order);
+    RUN_TEST(test_build_second_pass_does_not_overrun_if_the_input_changes);
+    RUN_TEST(test_build_second_pass_capacity_is_the_remainder_of_the_table);
     RUN_TEST(test_build_nomem);
     RUN_TEST(test_refcount);
     RUN_TEST(test_refcount_is_atomic_across_threads);

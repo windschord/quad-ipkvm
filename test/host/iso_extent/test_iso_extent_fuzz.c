@@ -16,6 +16,12 @@ static uint32_t rnd(void) {
     return (uint32_t)(rs >> 11);
 }
 static uint32_t rnd_below(uint32_t n) { return n ? rnd() % n : 0; }
+/* 64 ビットの乱数。上位、下位の順に別々の文で取る(| の左右の評価順は決まっていない) */
+static uint64_t rnd64(void) {
+    uint64_t hi = rnd();
+    uint64_t lo = rnd();
+    return (hi << 32) | lo;
+}
 
 #define MAXP 4
 #define MAXE 64
@@ -69,6 +75,7 @@ static void gen_extents(uint64_t need_sectors, iso_extent_t *out, size_t *n_out)
 
 typedef struct {
     uint64_t phys[MAXP * 6 * 4 * 16]; /* 論理セクタ -> SD セクタ */
+    uint32_t src[MAXP * 6 * 4 * 16];  /* 論理セクタ -> 元のエクステントの番号(パーツ * MAXE + 添字) */
     uint64_t file_sectors;
 } oracle_t;
 
@@ -99,6 +106,7 @@ void test_fuzz_map_matches_sector_by_sector_oracle(void) {
             for (size_t i = 0; i < g.n[p] && k < need; i++) {
                 for (uint64_t s = 0; s < g.ext[p][i].sector_count && k < need; s++) {
                     o.phys[(uint64_t)p * pb * 4 + k] = g.ext[p][i].start_sector + s;
+                    o.src[(uint64_t)p * pb * 4 + k] = p * MAXE + (uint32_t)i;
                     k++;
                 }
             }
@@ -165,7 +173,12 @@ void test_fuzz_map_matches_sector_by_sector_oracle(void) {
                 full_checks++;
             }
             if (n >= 2) split_queries++;
-            if (n >= 1 && (last - first) > 0 && n < (size_t)(last - first)) merged_queries++;
+            /* 併合が起きた要求: 元のエクステント(要求と交差する非空のもの)の数より、区間が少ない */
+            size_t distinct = 0;
+            for (uint64_t L = first; L < last; L++) {
+                if (L == first || o.src[L] != o.src[L - 1]) distinct++;
+            }
+            if (n < distinct) merged_queries++;
         }
         iso_extent_table_unref(t);
     }
@@ -183,7 +196,7 @@ void test_fuzz_build_with_garbage_inputs(void) {
         iso_extent_t e[MAXP + 1][8];
         iso_part_input_t in[MAXP + 1];
         uint32_t pb = rnd_below(8);
-        uint64_t size = rnd_below(5) == 0 ? ((uint64_t)rnd() << 32 | rnd()) : rnd_below(70000);
+        uint64_t size = rnd_below(5) == 0 ? rnd64() : rnd_below(70000);
         uint64_t expect = iso_extent_part_count(size, pb);
         uint32_t parts = (rnd_below(4) != 0 && expect <= MAXP) ? (uint32_t)expect : rnd_below(MAXP + 2);
         for (uint32_t p = 0; p < MAXP + 1; p++) {

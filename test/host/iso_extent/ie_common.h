@@ -17,12 +17,14 @@ typedef struct {
     int frees;
     int fail_next; /* > 0: その回数目の alloc を失敗させる(1 = 次の alloc) */
     void *last;
+    void (*on_alloc)(void); /* alloc の最中に呼ぶ(入力を変える契約違反のテスト用) */
 } ie_heap_t;
 
 static ie_heap_t H;
 
 static void *ie_alloc(void *ctx, size_t n) {
     ie_heap_t *h = (ie_heap_t *)ctx;
+    if (h->on_alloc) h->on_alloc();
     if (h->fail_next > 0 && --h->fail_next == 0) return NULL;
     h->allocs++;
     h->last = malloc(n);

@@ -63,7 +63,10 @@ typedef enum {
     ISO_EXT_ERR_RANGE = -3,           /* LBA が capacity_blocks 以上、または範囲が capacity_blocks を超える */
     ISO_EXT_ERR_TOO_FRAGMENTED = -4,  /* エクステントの数が ISO_MAX_EXTENTS を超える (invalid / too_fragmented) */
     ISO_EXT_ERR_PART_MISMATCH = -5,   /* パーツの数・大きさが期待と違う、またはエクステントがファイルを覆わない (invalid / part_mismatch) */
-    ISO_EXT_ERR_SPANS_FULL = -6       /* 出力の配列 (max_spans) が足りない。呼び出し側は、ブロック数を減らして呼び直す */
+    ISO_EXT_ERR_SPANS_FULL = -6       /* 出力の配列 (max_spans) が足りない。呼び出し側は、ブロック数を減らして呼び直す。
+                                       * 1 ブロックは最悪 ISO_SECTORS_PER_BLOCK (4) 個の区間になる(エクステントが 1 セクタずつ離れている場合)ので、
+                                       * 出力の配列は、少なくともそれだけ確保する。1 ブロックでも足りないなら、ブロック数を減らしても進まないので、
+                                       * 配列を大きくするか、エラーとして扱う */
 } iso_ext_err_t;
 
 /* アロケータ(注入)。free は alloc の対。 */
@@ -104,14 +107,17 @@ typedef struct {
  *     - エクステントを先頭から、ファイルのセクタ数でクリップして数える(sector_count 0 は捨てる)。クリップ後に覆えるセクタが
  *       ファイルのセクタ数に満たない -> PART_MISMATCH。全体の個数が ISO_MAX_EXTENTS を超える -> TOO_FRAGMENTED
  *       (start_sector + sector_count がオーバーフローするエクステントは INVALID)
- *   失敗したとき、何も確保しない(*out = NULL)。
+ *   失敗したとき、何も確保しない(*out = NULL)(2 回目の書き出しでの失敗は、確保した領域を解放する)。
+ *   **入力(parts と、その extents)は、この関数の実行中(alloc の呼び出しを含む)は変えない**。変えると、検査の結果と食い違い、ISO_EXT_ERR_INVALID になる。
  */
 int iso_extent_table_build(const iso_allocator_t *alloc, uint32_t epoch, uint64_t size_bytes, uint32_t part_blocks,
                            const iso_part_input_t *parts, size_t n_parts, iso_extent_table_t **out);
 
 /* 参照を 1 つ増やす(NULL は何もしない)。 */
 void iso_extent_table_ref(iso_extent_table_t *t);
-/* 参照を 1 つ減らし、残りの参照数を返す。0 になったら解放する。NULL は 0 を返す。 */
+/* 参照を 1 つ減らし、残りの参照数を返す。0 になったら解放する。NULL は 0 を返す。
+ * **呼び出しごとに、呼び出し側が持っている有効な参照を 1 つだけ消費する**。解放した表への unref はできない(二重の unref を
+ * 防ぐのは、参照を持つ呼び出し側の責務。mmc_scsi の command_done のように、冪等にする側が自分の状態で守る)。 */
 uint32_t iso_extent_table_unref(iso_extent_table_t *t);
 /* 参照数(NULL は 0)。DELETE のジョブが「カタログの分だけになるまで待つ」ために見る。 */
 uint32_t iso_extent_table_refs(const iso_extent_table_t *t);

@@ -19,6 +19,12 @@ static uint32_t rnd(void) {
     return (uint32_t)(rs >> 11);
 }
 static uint32_t below(uint32_t n) { return n ? rnd() % n : 0; }
+/* 64 ビットの乱数。上位、下位の順に別々の文で取る(| の左右の評価順は決まっていない) */
+static uint64_t rnd64(void) {
+    uint64_t hi = rnd();
+    uint64_t lo = rnd();
+    return (hi << 32) | lo;
+}
 
 static void set_crc(uint8_t *b) {
     uint32_t c = iso_crc32(b, 252);
@@ -135,7 +141,7 @@ void test_fuzz_encode_matches_validate(void) {
         memset(&m, 0, sizeof(m));
         m.state = (uint8_t)below(7);
         m.invalid_reason = (uint8_t)below(7);
-        m.size_bytes = below(3) == 0 ? ((uint64_t)rnd() << 32 | rnd()) : (uint64_t)below(20) * 1073741824ull + below(3);
+        m.size_bytes = below(3) == 0 ? rnd64() : (uint64_t)below(20) * 1073741824ull + below(3);
         m.part_count = (uint16_t)below(20);
         m.part_blocks = below(3) ? below(2097160) : 0;
         m.sha_flag = (uint8_t)below(5);
@@ -310,6 +316,11 @@ static void check_catalog_against_disk(const iso_catalog_t *c) {
         if (adopted >= 0) {
             TEST_ASSERT_EQUAL_UINT32(o.gen[adopted], e->meta.generation);
             TEST_ASSERT_EQUAL_UINT8(o.state[adopted], e->meta.state);
+            /* 実行時の状態(スキャン後): 保存された uploading は incomplete、それ以外はそのまま(仕様の対応を、ここに手書きする) */
+            static const iso_state_t runtime_of_meta[5] = {ISO_STATE_INCOMPLETE, ISO_STATE_READY, ISO_STATE_INCOMPLETE, ISO_STATE_INVALID,
+                                                           ISO_STATE_DELETING};
+            TEST_ASSERT_EQUAL_INT(runtime_of_meta[o.state[adopted]], e->state);
+            TEST_ASSERT_EQUAL_INT(o.state[adopted] == ISO_META_DELETING ? 1 : 0, e->resume_delete ? 1 : 0);
             TEST_ASSERT_TRUE(iso_name_valid(e->meta.name, e->meta.name_len));
         } else {
             TEST_ASSERT_EQUAL_INT(ISO_STATE_INVALID, e->state);
@@ -405,12 +416,12 @@ static void fuzz_one_seed(int seed, unsigned *st_ops, unsigned *st_cuts, unsigne
         default: { /* 電源断の予約: 今から k 回目の書き込みで落ちる(頻度は抑える) */
             if (below(3) != 0) break;
             mock_fs_cut_at(&FS, 1 + (int)below(3), (mock_tear_t)below(3));
-            (*st_cuts)++;
             break;
         }
         }
         if (rc == ISO_ERR_IO || FS.dead) {
-            /* 電源が落ちた: 再起動 */
+            /* 電源が落ちた: 再起動(電源断を数えるのは、実際に落ちたとき。予約の上書きや、起きなかった予約は数えない) */
+            if (FS.dead) (*st_cuts)++;
             have_job = false;
             mock_fs_power_on(&FS);
             iso_catalog_init(&CAT, &IFS, &IRND);
