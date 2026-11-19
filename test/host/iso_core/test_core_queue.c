@@ -520,6 +520,47 @@ void test_init_validates_the_config(void) {
     TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_core_init(&c, &cfg));
 }
 
+
+void test_a_finalizing_image_without_a_job_gets_a_job_again(void) {
+    char id[9];
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_begin(up(), "live", 4, 34816, NULL, id));
+    put_all(id, 0, 34816, 20000);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_upload_finish_begin(up(), id, NULL)); /* ジョブを積まずに finalizing(あってはならない状態) */
+    TEST_ASSERT_EQUAL_UINT(0, iso_core_queue_len(&CORE));
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit_finish(&CORE, id, NULL)); /* 冪等ではなく、積み直す */
+    TEST_ASSERT_EQUAL_UINT(1, iso_core_queue_len(&CORE));
+    TEST_ASSERT_EQUAL_INT(1, drive(0, 1000));
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_READY, find(id)->state);
+}
+
+void test_a_finalizing_image_without_a_job_and_a_full_queue_is_busy_and_unchanged(void) {
+    make_ten_incomplete();
+    scan();
+    char id[9];
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_begin(up(), "live", 4, 34816, NULL, id));
+    put_all(id, 0, 34816, 20000);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_upload_finish_begin(up(), id, NULL));
+    for (int i = 0; i < 8; i++) {
+        char qid[9];
+        snprintf(qid, sizeof(qid), "000001%02d", i);
+        TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit(&CORE, ISO_JOB_IDLE_CLOSE, qid));
+    }
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_BUSY, iso_core_submit_finish(&CORE, id, NULL));
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_FINALIZING, find(id)->state);
+    TEST_ASSERT_TRUE(up()->slot_finalizing); /* 受付を取り消さない(もともと finalizing) */
+    TEST_ASSERT_TRUE(iso_upload_slot_busy(up()));
+}
+
+void test_config_chunk_and_sync_sizes_reach_the_upload(void) {
+    iso_core_cfg_t cfg;
+    fx_core_cfg(&cfg, 5000, 3000);
+    iso_core_t c2;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_core_init(&c2, &cfg));
+    TEST_ASSERT_EQUAL_UINT32(5000, iso_upload_chunk_bytes(iso_core_upload(&c2)));
+    TEST_ASSERT_EQUAL_UINT32(3000, iso_core_upload(&c2)->cfg.sync_bytes);
+    TEST_ASSERT_EQUAL_UINT32(131072, iso_upload_chunk_bytes(up())); /* 0 は既定 */
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_pick_with_nothing_queued_returns_null);
@@ -552,6 +593,9 @@ int main(void) {
     RUN_TEST(test_step_with_a_wrong_job_pointer_is_an_error);
     RUN_TEST(test_submit_of_an_unknown_kind_is_invalid);
     RUN_TEST(test_waiting_flag_of_a_null_job_is_false);
+    RUN_TEST(test_a_finalizing_image_without_a_job_gets_a_job_again);
+    RUN_TEST(test_a_finalizing_image_without_a_job_and_a_full_queue_is_busy_and_unchanged);
+    RUN_TEST(test_config_chunk_and_sync_sizes_reach_the_upload);
     RUN_TEST(test_init_validates_the_config);
     return UNITY_END();
 }

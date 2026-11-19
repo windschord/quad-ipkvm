@@ -201,6 +201,8 @@ void test_remount_failure_leaves_an_empty_catalog_and_no_jobs(void) {
     TEST_ASSERT_EQUAL_UINT(0, iso_core_queue_len(&CORE));
     TEST_ASSERT_EQUAL_UINT(0, iso_core_index_pending(&CORE));
     TEST_ASSERT_EQUAL_UINT(0, VIEW_COPY.count); /* ビューも空 */
+    TEST_ASSERT_EQUAL_UINT32(0, CAT.hidden);
+    TEST_ASSERT_EQUAL_UINT32(0, VIEW_COPY.hidden);
     TEST_ASSERT_NULL(iso_core_pick(&CORE));
     /* SD が戻ったら、もう一度 */
     OBS.ret = ISO_OK;
@@ -216,6 +218,8 @@ void test_scan_failure_after_remount_leaves_an_empty_catalog(void) {
     TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_core_sd_reinit(&CORE, NULL, NULL));
     TEST_ASSERT_EQUAL_UINT(0, CAT.count);
     TEST_ASSERT_EQUAL_UINT(0, VIEW_COPY.count);
+    TEST_ASSERT_EQUAL_UINT32(0, CAT.hidden);
+    TEST_ASSERT_EQUAL_UINT32(0, VIEW_COPY.hidden);
     TEST_ASSERT_EQUAL_UINT(0, iso_core_index_pending(&CORE));
     mock_fs_fail_dir_next(&FS, NULL);
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_core_boot(&CORE)); /* 戻ったら、起動できる */
@@ -294,6 +298,29 @@ void test_boot_scan_error_is_returned(void) {
     mock_fs_fail_dir_next(&FS, NULL);
 }
 
+
+void test_hidden_images_are_forgotten_when_the_remount_or_the_scan_fails(void) {
+    for (int i = 0; i < 18; i++) {
+        char path[32];
+        snprintf(path, sizeof(path), "/iso/000005%02d", i);
+        TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, path));
+    }
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_core_boot(&CORE));
+    TEST_ASSERT_EQUAL_UINT32(2, CAT.hidden);
+    memset(&OBS, 0, sizeof(OBS));
+    OBS.ret = ISO_ERR_NO_CARD;
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_NO_CARD, iso_core_sd_reinit(&CORE, remount_cb, NULL));
+    TEST_ASSERT_EQUAL_UINT32(0, CAT.hidden);
+    TEST_ASSERT_EQUAL_UINT32(0, VIEW_COPY.hidden);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_core_boot(&CORE));
+    TEST_ASSERT_EQUAL_UINT32(2, CAT.hidden);
+    mock_fs_fail_dir_next(&FS, "/iso");
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_core_boot(&CORE));
+    TEST_ASSERT_EQUAL_UINT32(0, CAT.hidden);
+    TEST_ASSERT_EQUAL_UINT32(0, VIEW_COPY.hidden);
+    mock_fs_fail_dir_next(&FS, NULL);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_reinit_cancels_everything_before_remount_and_rebuilds_after);
@@ -308,5 +335,6 @@ int main(void) {
     RUN_TEST(test_boot_discards_previous_runtime_state);
     RUN_TEST(test_free_cache_refresh_failure_does_not_fail_the_boot);
     RUN_TEST(test_boot_scan_error_is_returned);
+    RUN_TEST(test_hidden_images_are_forgotten_when_the_remount_or_the_scan_fails);
     return UNITY_END();
 }

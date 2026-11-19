@@ -522,6 +522,62 @@ void test_the_end_of_a_job_publishes_the_view(void) {
     TEST_ASSERT_NOT_NULL(view_of("000000a1")->table); /* ビューに、表が出ている */
 }
 
+
+void test_sixteen_images_all_get_tables_and_each_can_be_removed(void) {
+    for (int i = 0; i < 16; i++) {
+        char id[9], name[8];
+        snprintf(id, sizeof(id), "000004%02d", i);
+        snprintf(name, sizeof(name), "r%d", i);
+        make_image(id, name, 34816, PB_SMALL, ISO_META_READY, 34816);
+    }
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_core_boot(&CORE));
+    TEST_ASSERT_EQUAL_UINT(16, iso_core_index_pending(&CORE));
+    TEST_ASSERT_EQUAL_INT(16, drive(0, 1000));
+    for (int i = 0; i < 16; i++) {
+        char id[9];
+        snprintf(id, sizeof(id), "000004%02d", i);
+        TEST_ASSERT_NOT_NULL(iso_core_table(&CORE, id));
+    }
+    TEST_ASSERT_EQUAL_UINT(16, CORE.table_n);
+    /* 先頭、真ん中、末尾を消す */
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit_delete(&CORE, "00000400"));
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit_delete(&CORE, "00000407"));
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit_delete(&CORE, "00000415"));
+    TEST_ASSERT_EQUAL_INT(3, drive(0, 1000));
+    TEST_ASSERT_EQUAL_UINT(13, CORE.table_n);
+    TEST_ASSERT_NULL(iso_core_table(&CORE, "00000407"));
+    TEST_ASSERT_NOT_NULL(iso_core_table(&CORE, "00000408"));
+    TEST_ASSERT_NOT_NULL(iso_core_table(&CORE, "00000414"));
+    /* 空いた分で、新しい表を入れ直せる */
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit(&CORE, ISO_JOB_INDEX, "00000408"));
+    TEST_ASSERT_EQUAL_INT(1, drive(0, 1000));
+    TEST_ASSERT_EQUAL_UINT(13, CORE.table_n); /* 置き換え。増えない */
+}
+
+void test_index_job_whose_image_left_the_catalog_ends_done(void) {
+    make_image("000000a1", "x1", SZ, PB_SMALL, ISO_META_READY, SZ);
+    scan();
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit(&CORE, ISO_JOB_INDEX, "000000a1"));
+    iso_job_t *j = iso_core_pick(&CORE);
+    iso_job_step(&CORE, j, 0);
+    iso_catalog_remove(&CAT, "000000a1"); /* カタログから消えた(中止の印なしに) */
+    iso_step_result_t r = run_job(j, 0, 1000, 100, NULL);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_NULL(iso_core_table(&CORE, "000000a1"));
+}
+
+void test_a_stale_job_pointer_cannot_be_stepped(void) {
+    make_image("000000a1", "x1", SZ, PB_SMALL, ISO_META_INCOMPLETE, 1000);
+    scan();
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit(&CORE, ISO_JOB_IDLE_CLOSE, "000000a1"));
+    iso_job_t *j = iso_core_pick(&CORE);
+    iso_step_result_t r = run_job(j, 0, 1000, 10, NULL);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    r = iso_job_step(&CORE, j, 0); /* 終わったジョブ */
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, r.err);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_finish_job_end_to_end);
@@ -549,5 +605,8 @@ int main(void) {
     RUN_TEST(test_view_reports_the_sd_state_and_hidden_images);
     RUN_TEST(test_view_without_hooks_and_sd_status_does_not_crash);
     RUN_TEST(test_the_end_of_a_job_publishes_the_view);
+    RUN_TEST(test_sixteen_images_all_get_tables_and_each_can_be_removed);
+    RUN_TEST(test_index_job_whose_image_left_the_catalog_ends_done);
+    RUN_TEST(test_a_stale_job_pointer_cannot_be_stepped);
     return UNITY_END();
 }

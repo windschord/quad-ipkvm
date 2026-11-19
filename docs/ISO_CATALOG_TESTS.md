@@ -71,7 +71,7 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | D16(削除の続きで、残す方のスロットを覚えていない) | `test_delete_resume_when_slot_a_holds_the_deleting_meta`(採用されているのが `meta.a` のとき) |
 | D40、D41(スロットの削除のエラーを無視) | `test_delete_error_at_every_write_is_reported_and_retried`(6 回の書き込みのそれぞれで失敗させる) |
 | I06(`.iso` の検査が、4 バイトより短い名前で名前の手前を読む) | `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` に `a`、`ab`、`abc` を追加(ASan) |
-| I15、I19(署名の読み出しの I/O エラーを無視) | `test_rescan_read_errors_while_checking_the_signature`(`read` だけを失敗させる。1 回目と 65 回目) |
+| I12〜I20(署名の読み出し: `open` の失敗、`read_at` の位置・長さ・I/O エラー、閉じ忘れ)。C-10b で `read_at` に変えたので、書き直した | `test_rescan_read_errors_while_checking_the_signature`(`read_at` の 1 回目を失敗させる)、`test_import_signature_is_one_read_at_at_sector_16`、署名のテスト |
 | I30(クロスリンクの検査が先頭のイメージだけ) | `test_import_crosslink_is_checked_against_every_image_and_ignores_directories` |
 | I33(クロスリンクの検査がディレクトリも数える) | 同上(`p000` が、先頭クラスタが同じディレクトリのとき) |
 | I54(import の名前に拡張子が入る。ミュータントの書き方が間違っていて、同じ内容になっていた。書き直した) | (既存のテストが殺す) |
@@ -682,7 +682,7 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 3. **`received`** は、`ready` では `size_bytes`、`uploading`(→ `incomplete`)/ `incomplete` / `invalid` では「同期済みのパーツのファイルの大きさの合計」(先頭から順、満たない / 無いパーツで止める。期待する大きさを超える分は数えない)。`deleting` と `meta_corrupt` は 0。
 4. **同名の判定**は、`deleting` のイメージと `meta_corrupt` のイメージを見ない(API から見えないため)。**上限(`ISO_MAX_IMAGES`)は、`deleting` のイメージも数える**(ディレクトリが残っている間は、枠を使う)。`begin` の検査の順は、名前 / 大きさ(400)→ 同名 → 上限。
 5. **`import` の電源断**: `mkdir` → `meta`(`ready`)→ `rename` の順なので、`meta` と `rename` の間で落ちると、`p000` のない `ready` のイメージが残る。ファイルは `import/` に残るが、**同名のイメージが残っているので、次の `rescan` は `skipped` にする**(`INDEX` が `part_mismatch` にしたあと、利用者が削除すれば、取り込める)。`rename` を先にすると、ファイルが `<id>/p000` に移ったあとで `meta` がなく、`meta_corrupt` になる(データは残るが、`import/` からは見えない)ので、`meta` を先にした。
-6. **`import` の署名の検査**は、`iso_fs_t` に位置を指定した読み出し(seek)がないので、**ファイルの先頭から 32 KiB + 6 バイトを順に読む**(512 バイトずつ)。1 ファイルあたり 65 回の `read`。`iso_seams.h` に `read_at(ctx, f, offset, buf, len, &got)` があれば、1 回で済む(変更の提案)。
+6. **`import` の署名の検査**は、`iso_fs_t.read_at(ctx, f, offset, buf, len, &got)`(C-10b で `iso_seams.h` に足した。位置指定の読み出し)で、**セクタ 16 の先頭から 6 バイトを 1 回で読む**(`test_import_signature_is_one_read_at_at_sector_16` が、`read_at` が 1 回、オフセット 32768、順次読みなし、を固定する)。C-10a の初版は、`read_at` がなく、先頭から 512 バイトずつ 65 回の順次読みだった。
 7. **`close`** は、読み取り用に開いたハンドルにも使う(`iso_seams.h` のコメントは「失敗した `write` の後でも呼べる」とだけ書いている。読み取り用のハンドルも閉じられる、と明記してほしい)。
 8. **削除のステップ**は `p` で始まるエントリだけを消す(設計の `p*`)。ほかのファイルが残っていると、`rmdir` が失敗し、`ERROR`(`ISO_ERR_INVALID` など、`remove` が返したエラー)になる。最後のスロットを消したあと `rmdir` の前で電源が落ちると、スロットのないディレクトリ(`meta_corrupt`)が残る。削除できる(上の網羅のテストで確認)。
 9. **`iso_extent` の表の構築**は、`get_extents` の結果を、パーツごとの配列(`iso_part_input_t`)で、1 回の呼び出しで渡す。パーツの順に検査するので、先のパーツの `too_fragmented` が、後のパーツの `part_mismatch` より先に出る。

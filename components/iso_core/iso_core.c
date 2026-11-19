@@ -221,8 +221,7 @@ int iso_core_submit_finish(iso_core_t *c, const char *id, uint64_t *out_received
         return ISO_ERR_BUSY;
     }
     queue_drop(c, ISO_JOB_IDLE_CLOSE, id);
-    queue_push(c, ISO_JOB_FINISH, id);
-    iso_core_publish(c);
+    queue_push(c, ISO_JOB_FINISH, id); /* ビューは、iso_upload_finish_begin が更新した(状態が finalizing になった) */
     return ISO_RES_OK;
 }
 
@@ -230,8 +229,7 @@ int iso_core_submit_delete(iso_core_t *c, const char *id) {
     iso_catalog_entry_t *e = iso_catalog_find(c->cfg.cat, id);
     if (!e || e->state == ISO_STATE_NONE) return ISO_RES_NOT_FOUND;
     if (queue_has(c, ISO_JOB_DELETE, id) || cur_is(c, ISO_JOB_DELETE, id)) return ISO_RES_JOINED;
-    iso_trans_ctx_t tc = {false, false, false};
-    tc.mounted = c->cfg.hooks.is_mounted && c->cfg.hooks.is_mounted(c->cfg.hooks.ctx, id);
+    iso_trans_ctx_t tc = {.mounted = c->cfg.hooks.is_mounted && c->cfg.hooks.is_mounted(c->cfg.hooks.ctx, id)};
     iso_state_t next;
     if (iso_state_transition(e->state, ISO_EV_DELETE, &tc, &next) == ISO_TR_REJECT_MOUNTED) return ISO_RES_MOUNTED;
     if (c->qn - queue_count(c, ISO_JOB_NONE, id) >= ISO_WORKER_QUEUE) return ISO_ERR_BUSY; /* 待っているジョブは、DELETE に置き換わる */
@@ -395,14 +393,11 @@ static iso_step_result_t step_index(iso_core_t *c, iso_job_t *job) {
     case ISO_OUTCOME_OK: {
         iso_extent_table_t *t = job->idx.table;
         job->idx.table = NULL;
-        (void)iso_catalog_apply(c->cfg.cat, e, ISO_EV_INDEX_OK, NULL, NULL);
-        table_install(c, job->id, t);
+        table_install(c, job->id, t); /* ready のまま(INDEX_OK は、状態も meta も変えない) */
         return end_job(c, sres(ISO_STEP_DONE, ISO_OK));
     }
     case ISO_OUTCOME_INVALID: {
-        iso_apply_arg_t arg;
-        memset(&arg, 0, sizeof(arg));
-        arg.invalid_reason = job->idx.reason;
+        iso_apply_arg_t arg = {.invalid_reason = job->idx.reason};
         int rc = iso_catalog_apply(c->cfg.cat, e, ISO_EV_INDEX_FAIL, NULL, &arg);
         if (rc != 0 && e->state == ISO_STATE_READY) { /* meta を書けなかった: メモリ上は invalid(次の起動で、もう一度判定される) */
             e->state = ISO_STATE_INVALID;
@@ -412,8 +407,7 @@ static iso_step_result_t step_index(iso_core_t *c, iso_job_t *job) {
         return end_job(c, sres(rc < 0 ? ISO_STEP_ERROR : ISO_STEP_DONE, rc < 0 ? rc : ISO_OK));
     }
     default: /* IOERR: ready のまま、表なし(SD の再初期化の後に、もう一度行う) */
-        (void)iso_catalog_apply(c->cfg.cat, e, ISO_EV_INDEX_IOERR, NULL, NULL);
-        return end_job(c, sres(ISO_STEP_ERROR, job->idx.err));
+        return end_job(c, sres(ISO_STEP_ERROR, job->idx.err)); /* ready のまま、表なし(INDEX_IOERR は、状態も meta も変えない) */
     }
 }
 
