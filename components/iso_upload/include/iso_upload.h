@@ -105,7 +105,6 @@ typedef struct iso_upload {
     uint64_t last_put_ms;             /* 直近の begin / PUT の時刻(アイドルと receiving / idle の判定) */
     /* 書き込み用のハンドル(現在のパーツ) */
     iso_file_t *f;
-    uint32_t f_part;
     uint64_t since_sync;              /* 最後の sync からの書き込みのバイト数 */
     /* SHA-256 の逐次の状態(メモリ上にだけある。設計 3.4)。有効 = 先頭から sha_bytes バイトを、sha_id のイメージについて計算済み */
     bool sha_valid;

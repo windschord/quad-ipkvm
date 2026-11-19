@@ -320,6 +320,74 @@ void test_resume_after_a_failed_idle_close_works(void) {
     expect_disk_prefix(ID, PB_SMALL, 4000);
 }
 
+
+void test_a_clean_rollback_does_not_read_the_disk_again(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 2000, 2000);
+    fx_settle();
+    FS.n_stat = 0;
+    int v = VIEW_CALLS;
+    mock_fs_fail_write(&FS, 1, 300, ISO_ERR_NO_SPACE);
+    iso_upload_write_t w;
+    TEST_ASSERT_EQUAL_INT(ISO_RES_INSUFFICIENT_STORAGE, put_range(ID, 2000, 1000, &w));
+    TEST_ASSERT_EQUAL_INT(0, FS.n_stat);      /* truncate が成功したので、大きさを調べ直さない */
+    TEST_ASSERT_EQUAL_INT(v + 1, VIEW_CALLS); /* 失敗の後始末で、ビューを更新する */
+    TEST_ASSERT_EQUAL_UINT64(2000, w.received);
+}
+
+void test_a_failed_rollback_reads_the_file_size(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 2000, 2000);
+    fx_settle();
+    FS.n_stat = 0;
+    mock_fs_fail_write(&FS, 1, 300, ISO_ERR_NO_SPACE);
+    mock_fs_error_at(&FS, 3, ISO_ERR_IO);
+    iso_upload_write_t w;
+    TEST_ASSERT_EQUAL_INT(ISO_RES_INSUFFICIENT_STORAGE, put_range(ID, 2000, 1000, &w));
+    TEST_ASSERT_TRUE(FS.n_stat > 0);
+}
+
+void test_idle_close_when_sync_and_close_both_fail_takes_received_from_the_disk(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 3000, 1000); /* 未同期のまま */
+    fx_settle();
+    mock_fs_error_range(&FS, 1, 2, ISO_ERR_IO); /* sync と、close の同期が失敗 */
+    int v = VIEW_CALLS;
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_upload_idle_close(&UP, ID));
+    TEST_ASSERT_EQUAL_INT(v + 1, VIEW_CALLS);
+    expect_incomplete_and_free(0); /* ディレクトリ上の大きさは 0(同期できていない)。メモリの 3000 ではない */
+    mock_fs_reset_counter(&FS);
+    /* 再開: 0 から送り直せる(空でないかもしれない p000 は、EXISTS で 0 に切り詰める) */
+    iso_upload_write_t w;
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OFFSET_MISMATCH, put_range(ID, 3000, 10, &w));
+    TEST_ASSERT_EQUAL_UINT64(0, w.received);
+    put_all(ID, 0, 3000, 1000);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
+    expect_disk_prefix(ID, PB_SMALL, 3000);
+}
+
+void test_idle_close_reports_a_failing_close_after_a_good_sync(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 3000, 1000);
+    mock_fs_set_fail_close(&FS, true);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_upload_idle_close(&UP, ID)); /* sync は成功、close が失敗 */
+    mock_fs_set_fail_close(&FS, false);
+    expect_incomplete_and_free(3000);
+    TEST_ASSERT_EQUAL_INT64(3000, mock_fs_size(&FS, P0));
+}
+
+void test_the_end_of_a_part_reports_a_failing_close(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 34000, 34000);
+    fx_settle();
+    mock_fs_set_fail_close(&FS, true);
+    iso_upload_write_t w;
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, put_range(ID, 34000, 816, &w)); /* パーツの終わりの sync + close。close の失敗は、書き込みの失敗 */
+    mock_fs_set_fail_close(&FS, false);
+    expect_incomplete_and_free(34000);
+    TEST_ASSERT_EQUAL_INT64(34000, mock_fs_size(&FS, P0));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_first_write_failure_is_rolled_back_and_the_upload_becomes_incomplete);
@@ -338,5 +406,10 @@ int main(void) {
     RUN_TEST(test_idle_close_sync_failure_still_ends_incomplete);
     RUN_TEST(test_idle_close_meta_failure_still_frees_the_slot);
     RUN_TEST(test_resume_after_a_failed_idle_close_works);
+    RUN_TEST(test_a_clean_rollback_does_not_read_the_disk_again);
+    RUN_TEST(test_a_failed_rollback_reads_the_file_size);
+    RUN_TEST(test_idle_close_when_sync_and_close_both_fail_takes_received_from_the_disk);
+    RUN_TEST(test_idle_close_reports_a_failing_close_after_a_good_sync);
+    RUN_TEST(test_the_end_of_a_part_reports_a_failing_close);
     return UNITY_END();
 }

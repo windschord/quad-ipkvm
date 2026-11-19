@@ -348,6 +348,72 @@ void test_extent_pool_is_shared_across_parts(void) {
     iso_index_job_release(&UP, &job);
 }
 
+
+void test_exactly_16_parts_are_accepted(void) {
+    iso_meta_t m = mk_meta("img", 16 * PART_SMALL, PB_SMALL, ISO_META_READY, 5);
+    TEST_ASSERT_EQUAL_UINT16(16, m.part_count);
+    put_meta(ID, &m);
+    put_parts_data(ID, PB_SMALL, 16 * PART_SMALL);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    iso_index_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_index_job_init(&job, ID));
+    int steps = 0;
+    iso_step_result_t r = run(&job, &steps);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_OUTCOME_OK, job.outcome);
+    TEST_ASSERT_EQUAL_INT(1 + 16 + 1, steps);
+    TEST_ASSERT_EQUAL_UINT32(16, iso_extent_table_part_count(job.table));
+    iso_index_job_release(&UP, &job);
+}
+
+void test_job_init_clears_the_whole_job(void) {
+    iso_index_job_t job;
+    memset(&job, 0xAA, sizeof(job));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_index_job_init(&job, ID));
+    TEST_ASSERT_NULL(job.pool);
+    TEST_ASSERT_NULL(job.table);
+    TEST_ASSERT_EQUAL_UINT(0, job.pool_used);
+    TEST_ASSERT_EQUAL_UINT32(0, job.part);
+    TEST_ASSERT_EQUAL_INT(ISO_OUTCOME_NONE, job.outcome);
+    TEST_ASSERT_EQUAL_STRING(ID, job.id);
+    iso_finish_job_t fj;
+    memset(&fj, 0xAA, sizeof(fj));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_finish_job_init(&fj, ID));
+    TEST_ASSERT_EQUAL_UINT8(0, fj.phase);
+    TEST_ASSERT_FALSE(fj.hash_started);
+    TEST_ASSERT_FALSE(fj.have_digest);
+    TEST_ASSERT_EQUAL_INT(ISO_OUTCOME_NONE, fj.fail);
+    TEST_ASSERT_NULL(fj.idx.pool);
+    TEST_ASSERT_EQUAL_STRING(ID, fj.idx.id);
+}
+
+void test_step_after_an_invalid_or_error_outcome_stays_done_and_allocates_nothing(void) {
+    static uint8_t patch_buf[34816];
+    gen_fill(patch_buf, 34816, sizeof(patch_buf));
+    make_ready();
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/" ID "/p001"));
+    iso_index_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_index_job_init(&job, ID));
+    iso_step_result_t r = run(&job, NULL);
+    TEST_ASSERT_EQUAL_INT(ISO_OUTCOME_INVALID, job.outcome);
+    ALLOC_CALLS = 0;
+    r = iso_index_step(&UP, &job); /* invalid で終わった後は、何もしない */
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_EQUAL_INT(0, ALLOC_CALLS);
+    TEST_ASSERT_EQUAL_INT(ISO_OUTCOME_INVALID, job.outcome);
+    /* I/O エラーで終わった後も */
+    TEST_ASSERT_TRUE(mock_fs_fail_extents(&FS, "/iso/" ID "/p002", ISO_ERR_IO));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_index_job_init(&job, ID));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_file(&FS, "/iso/" ID "/p001", patch_buf, 34816, 0));
+    r = run(&job, NULL);
+    TEST_ASSERT_EQUAL_INT(ISO_OUTCOME_IOERR, job.outcome);
+    ALLOC_CALLS = 0;
+    r = iso_index_step(&UP, &job);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_EQUAL_INT(0, ALLOC_CALLS);
+    TEST_ASSERT_EQUAL_INT(ISO_OUTCOME_IOERR, job.outcome);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_index_builds_the_table_part_by_part);
@@ -373,5 +439,8 @@ int main(void) {
     RUN_TEST(test_job_init_rejects_a_bad_id);
     RUN_TEST(test_release_in_the_middle_frees_the_work_area);
     RUN_TEST(test_extent_pool_is_shared_across_parts);
+    RUN_TEST(test_exactly_16_parts_are_accepted);
+    RUN_TEST(test_job_init_clears_the_whole_job);
+    RUN_TEST(test_step_after_an_invalid_or_error_outcome_stays_done_and_allocates_nothing);
     return UNITY_END();
 }

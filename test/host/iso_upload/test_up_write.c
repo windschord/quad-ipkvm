@@ -610,6 +610,85 @@ void test_consumed_since_accumulates_and_lowers_the_estimate(void) {
     TEST_ASSERT_EQUAL_UINT64(10 * GIB - SZ, iso_upload_free_estimate(&UP));
 }
 
+
+void test_resume_one_byte_into_the_part_appends_without_truncating(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 1, 1); /* パーツの 1 バイト目だけ */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
+    fx_settle();
+    iso_upload_write_t w;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(ID, 1, 1000, &w));
+    TEST_ASSERT_TRUE(mock_fs_log_is(&FS, 0, "open_a /iso/11110001/p000")); /* 空でないファイルは、追記で開く(EXISTS で 0 に切り詰めない) */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
+    expect_disk_prefix(ID, PB_SMALL, 1001);
+}
+
+void test_state_changes_notify_the_view(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 1000, 1000);
+    int v = VIEW_CALLS;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
+    TEST_ASSERT_EQUAL_INT(v + 1, VIEW_CALLS); /* アイドル: 枠を空けた */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID)); /* もう uploading でない: 何もしない */
+    TEST_ASSERT_EQUAL_INT(v + 1, VIEW_CALLS);
+    iso_upload_write_t w;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(ID, 1000, 10, &w)); /* 再開 */
+    TEST_ASSERT_EQUAL_INT(v + 2, VIEW_CALLS);
+    iso_upload_abort(&UP, "deadbeef"); /* 枠を持たない id: 何もしない */
+    TEST_ASSERT_EQUAL_INT(v + 2, VIEW_CALLS);
+    iso_upload_abort(&UP, ID);
+    TEST_ASSERT_EQUAL_INT(v + 3, VIEW_CALLS);
+}
+
+void test_info_of_an_image_with_corrupt_meta(void) {
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/0000000f"));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    iso_upload_info_t info;
+    iso_upload_info(&UP, "0000000f", &info);
+    TEST_ASSERT_TRUE(info.found);
+    TEST_ASSERT_FALSE(info.meta_valid);
+    TEST_ASSERT_EQUAL_UINT64(0, info.size_bytes);
+    TEST_ASSERT_EQUAL_UINT64(0, info.received);
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_INVALID, info.state);
+}
+
+void test_reinit_drops_the_file_the_sha_state_and_the_slot(void) {
+    reconf(0, 10000);
+    begin_small(SZ);
+    put_all(ID, 0, 6000, 6000); /* since_sync = 6000 */
+    TEST_ASSERT_EQUAL_INT(1, FS.open_files);
+    iso_upload_reinit(&UP);
+    TEST_ASSERT_NULL(UP.f);
+    TEST_ASSERT_EQUAL_INT(0, FS.open_files);
+    TEST_ASSERT_FALSE(iso_upload_slot_busy(&UP));
+    TEST_ASSERT_FALSE(UP.sha_valid);
+    TEST_ASSERT_EQUAL_UINT64(0, UP.since_sync);
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_INCOMPLETE, entry()->state); /* uploading は incomplete(meta は書かない) */
+    /* finalizing も incomplete */
+    entry()->state = ISO_STATE_FINALIZING;
+    iso_upload_reinit(&UP);
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_INCOMPLETE, entry()->state);
+    entry()->state = ISO_STATE_READY; /* ほかの状態は変えない */
+    iso_upload_reinit(&UP);
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_READY, entry()->state);
+    entry()->state = ISO_STATE_INCOMPLETE;
+    /* 別のアップロード: sync の数え始めは 0(前の分を引きずらない)。6000 バイトでは sync しない */
+    char id2[9];
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_begin(&UP, "second", 6, SZ, NULL, id2));
+    put_all(id2, 0, 6000, 6000);
+    TEST_ASSERT_EQUAL_INT(0, FS.n_sync);
+}
+
+void test_reinit_closes_the_handle_even_if_close_fails(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 100, 100);
+    mock_fs_set_fail_close(&FS, true);
+    iso_upload_reinit(&UP);
+    mock_fs_set_fail_close(&FS, false);
+    TEST_ASSERT_NULL(UP.f);
+    TEST_ASSERT_EQUAL_INT(0, FS.open_files);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_first_chunk_creates_p000_and_does_not_sync);
@@ -649,5 +728,10 @@ int main(void) {
     RUN_TEST(test_resume_storage_check_counts_other_images_but_not_itself);
     RUN_TEST(test_continuing_upload_has_no_storage_precheck);
     RUN_TEST(test_consumed_since_accumulates_and_lowers_the_estimate);
+    RUN_TEST(test_resume_one_byte_into_the_part_appends_without_truncating);
+    RUN_TEST(test_state_changes_notify_the_view);
+    RUN_TEST(test_info_of_an_image_with_corrupt_meta);
+    RUN_TEST(test_reinit_drops_the_file_the_sha_state_and_the_slot);
+    RUN_TEST(test_reinit_closes_the_handle_even_if_close_fails);
     return UNITY_END();
 }

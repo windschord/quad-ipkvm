@@ -101,6 +101,8 @@ typedef struct {
     bool dead;
     int err_at;    /* 0 = なし。n 回目の書き込みだけ、err_code で失敗する(何も起きない。電源は落ちない) */
     int err_code;
+    int err_to;    /* 0 でなければ、err_at 回目から err_to 回目までの書き込みが失敗する(mock_fs_error_range) */
+    bool fail_close; /* 書き込み用ハンドルの close が、(同期した後に)ISO_ERR_IO を返す */
     bool settled;  /* 電源断のときの「未同期の分を失う」処理を済ませたか */
 
     /* write の失敗の注入(通算の write の回数。mock_fs_fail_write) */
@@ -116,7 +118,7 @@ typedef struct {
     int mi_err;    /* 0 でなければ mount_info がこのエラーで失敗する */
 
     /* 呼び出しの数 */
-    int n_write, n_sync, n_truncate, n_open_w, n_read, n_read_at;
+    int n_write, n_sync, n_truncate, n_open_w, n_read, n_read_at, n_stat;
     uint64_t last_read_at_offset;
 
     /* 読み出しの失敗の注入(完全一致のパス) */
@@ -170,6 +172,9 @@ bool mock_fs_set_size(mock_fs_t *m, const char *path, uint64_t size); /* 切り�
 void mock_fs_cut_at(mock_fs_t *m, int n, mock_tear_t tear);
 /* 今から n 回目の書き込みだけが err_code (iso_err_t) で失敗する(何も起きない)。電源は落ちない。 */
 void mock_fs_error_at(mock_fs_t *m, int n, int err_code);
+/* from 回目から to 回目までの書き込みが、err_code (iso_err_t)で失敗する(何も起きない。電源は落ちない) */
+void mock_fs_error_range(mock_fs_t *m, int from, int to, int err_code);
+void mock_fs_set_fail_close(mock_fs_t *m, bool on);
 void mock_fs_power_on(mock_fs_t *m); /* dead と cut_at を解除する(内容は、そのまま) */
 void mock_fs_reset_counter(mock_fs_t *m);
 /* いま電源が落ちた: 未同期の分を失い、ハンドルを全部捨てて、電源を戻す(書き込みの数え方・注入は変えない) */

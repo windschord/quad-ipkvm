@@ -70,7 +70,7 @@ static void log_add(mock_fs_t *m, const char *op, const char *a, const char *b, 
 static int begin_mutation(mock_fs_t *m) {
     if (m->dead) return -1;
     m->mut_count++;
-    if (m->err_at > 0 && m->mut_count == m->err_at) return 2;
+    if (m->err_at > 0 && m->mut_count >= m->err_at && m->mut_count <= (m->err_to ? m->err_to : m->err_at)) return 2;
     if (m->cut_at > 0 && m->mut_count == m->cut_at) {
         m->dead = true;
         return 1;
@@ -169,6 +169,7 @@ static int fs_rename(void *ctx, const char *from, const char *to) {
 
 static int fs_stat(void *ctx, const char *path, iso_stat_t *out) {
     mock_fs_t *m = (mock_fs_t *)ctx;
+    m->n_stat++;
     if (read_fails(m, path)) return ISO_ERR_IO;
     memset(out, 0, sizeof(*out));
     if (strcmp(path, "/") == 0) {
@@ -507,6 +508,7 @@ static int fs_close(void *ctx, iso_file_t *f) {
             }
         }
         n->writers = 0;
+        if (m->fail_close && rc == ISO_OK) rc = ISO_ERR_IO; /* 同期の後の close の失敗(ハンドルは解放する) */
     }
     h->used = false;
     h->write = false;
@@ -684,8 +686,18 @@ void mock_fs_cut_at(mock_fs_t *m, int n, mock_tear_t tear) {
 void mock_fs_error_at(mock_fs_t *m, int n, int err_code) {
     m->mut_count = 0;
     m->err_at = n;
+    m->err_to = 0;
     m->err_code = err_code;
 }
+
+void mock_fs_error_range(mock_fs_t *m, int from, int to, int err_code) {
+    m->mut_count = 0;
+    m->err_at = from;
+    m->err_to = to;
+    m->err_code = err_code;
+}
+
+void mock_fs_set_fail_close(mock_fs_t *m, bool on) { m->fail_close = on; }
 
 void mock_fs_drop_handles(mock_fs_t *m) {
     for (int h = 0; h < MOCK_MAX_HANDLES; h++) {
@@ -718,6 +730,7 @@ void mock_fs_power_on(mock_fs_t *m) {
 void mock_fs_reset_counter(mock_fs_t *m) {
     m->mut_count = 0;
     m->err_at = 0;
+    m->err_to = 0;
 }
 
 void mock_fs_fail_path(mock_fs_t *m, const char *path_or_null) {

@@ -40,11 +40,7 @@ iso_step_result_t iso_upload_hash_step(iso_upload_t *u, iso_finish_job_t *job, u
     if (!job->hash_started) {
         iso_up_discard_sha(u); /* 作業用に、同じ状態の領域を使う */
         sha->init(u->cfg.sha_state);
-        job->hash_started = true;
-        job->hash_part = 0;
-        job->hash_off = 0;
-        job->have_digest = false;
-        job->fail = ISO_OUTCOME_NONE;
+        job->hash_started = true; /* ジョブの初期化(iso_finish_job_init)で、ほかの欄は 0 になっている */
     }
     const uint64_t n_parts = iso_extent_part_count(m->size_bytes, m->part_blocks);
     const uint64_t expected = iso_extent_part_bytes(m->size_bytes, m->part_blocks, job->hash_part);

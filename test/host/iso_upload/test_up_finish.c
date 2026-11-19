@@ -874,6 +874,150 @@ void test_table_hook_may_be_absent(void) {
     TEST_ASSERT_EQUAL_INT(0, ALLOC_LIVE); /* 受け取らない表は、放した */
 }
 
+
+/* ---- 追加: 通知、資源、境界 ------------------------------------------------------------------ */
+
+void test_a_new_upload_after_an_incomplete_one_starts_a_fresh_sha_state(void) {
+    /* 1 つ目: 途中でアイドル(SHA-256 の状態は、そのイメージのものとして残る) */
+    char id1[9];
+    img_begin_pb("first", SZ, PB_SMALL, NULL, id1);
+    put_all(id1, 0, 5000, 5000);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, id1));
+    TEST_ASSERT_EQUAL_UINT64(5000, UP.sha_bytes);
+    /* 2 つ目: begin で SHA-256 を初期化し直す。逐次の計算が使える(読み直さない) */
+    img_begin_pb("second", SZ, PB_SMALL, NULL, ID);
+    TEST_ASSERT_EQUAL_STRING("11110002", ID);
+    TEST_ASSERT_EQUAL_UINT64(0, UP.sha_bytes);
+    put_all(ID, 0, SZ, 20000);
+    FS.n_read_at = 0;
+    iso_step_result_t r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    expect_ready(SHA_100000, 3);
+    TEST_ASSERT_EQUAL_INT(1, FS.n_read_at);
+}
+
+void test_finish_notifies_the_view_at_the_acceptance_and_at_the_end_only(void) {
+    upload_all(SZ, PB_SMALL);
+    int v = VIEW_CALLS;
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_upload_finish_begin(&UP, ID, NULL));
+    TEST_ASSERT_EQUAL_INT(v + 1, VIEW_CALLS);
+    iso_finish_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_finish_job_init(&job, ID));
+    iso_step_result_t r = run_finish(&job, 0, NULL);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_EQUAL_INT(v + 2, VIEW_CALLS); /* 途中のステップでは更新しない。ready になったときに 1 回 */
+}
+
+void test_invalid_end_notifies_and_refreshes_the_free_space(void) {
+    SIG = "XXXXX";
+    upload_all(SZ, PB_SMALL);
+    mock_fs_set_mount_info(&FS, 64 * GIB, 51 * GIB, 32768);
+    int v = VIEW_CALLS;
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_upload_finish_begin(&UP, ID, NULL));
+    iso_finish_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_finish_job_init(&job, ID));
+    iso_step_result_t r = run_finish(&job, 0, NULL);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    expect_invalid(ISO_INVALID_NOT_ISO);
+    TEST_ASSERT_EQUAL_INT(v + 2, VIEW_CALLS);
+    TEST_ASSERT_EQUAL_UINT64(51 * GIB, UP.free_bytes); /* invalid でも、finish の完了で採り直す */
+    TEST_ASSERT_EQUAL_UINT64(0, UP.consumed_since);
+}
+
+void test_ioerr_end_notifies_and_takes_received_from_the_disk(void) {
+    upload_all(SZ, PB_SMALL);
+    TEST_ASSERT_TRUE(mock_fs_fail_extents(&FS, "/iso/11110001/p001", ISO_ERR_IO));
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_upload_finish_begin(&UP, ID, NULL));
+    iso_finish_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_finish_job_init(&job, ID));
+    iso_step_result_t r;
+    do {
+        r = iso_upload_finish_step(&UP, &job, 0, false);
+    } while (r.kind == ISO_STEP_CONTINUE && job.idx.pool == NULL); /* ファイルを閉じた後まで */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/11110001/p002"));
+    TEST_ASSERT_TRUE(mock_fs_set_size(&FS, "/iso/11110001/p001", 34000)); /* p000 と、p001 の一部だけ残る */
+    int v = VIEW_CALLS;
+    while (r.kind == ISO_STEP_CONTINUE) r = iso_upload_finish_step(&UP, &job, 0, false);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(v + 1, VIEW_CALLS);
+    expect_incomplete_after_ioerr();
+    TEST_ASSERT_EQUAL_UINT64(34816 + 34000, entry()->received); /* 実ファイルの大きさから決める */
+}
+
+void test_missing_first_part_with_the_streamed_sha_is_part_mismatch(void) {
+    upload_all(SZ, PB_SMALL);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/11110001/p000")); /* 署名の読み出しが NOT_FOUND */
+    iso_step_result_t r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    expect_invalid(ISO_INVALID_PART_MISMATCH);
+}
+
+void test_close_failure_after_a_good_sync_is_an_io_error(void) {
+    upload_all(SZ, PB_SMALL);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_upload_finish_begin(&UP, ID, NULL));
+    mock_fs_set_fail_close(&FS, true);
+    iso_finish_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_finish_job_init(&job, ID));
+    iso_step_result_t r = run_finish(&job, 0, NULL);
+    mock_fs_set_fail_close(&FS, false);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, r.err);
+    expect_incomplete_after_ioerr();
+}
+
+void test_hash_step_of_an_unknown_image_fails_without_touching_the_sha_state(void) {
+    iso_finish_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_finish_job_init(&job, "0000000b"));
+    iso_step_result_t r = iso_upload_hash_step(&UP, &job, 0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_OUTCOME_IOERR, job.fail);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_NOT_FOUND, job.fail_err);
+    TEST_ASSERT_EQUAL_UINT8(0, job.fail_reason);
+    TEST_ASSERT_FALSE(job.have_digest);
+    TEST_ASSERT_FALSE(job.hash_started);
+}
+
+void test_hash_step_discards_the_streamed_state_it_overwrites(void) {
+    upload_all(SZ, PB_SMALL);
+    TEST_ASSERT_TRUE(UP.sha_valid);
+    iso_finish_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_finish_job_init(&job, ID));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.sync(&FS, UP.f)); /* 読み取りで開けるように、書き込み用のハンドルを閉じる */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.close(&FS, UP.f));
+    UP.f = NULL;
+    iso_step_result_t r = iso_upload_hash_step(&UP, &job, 0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_CONTINUE, r.kind);
+    TEST_ASSERT_FALSE(UP.sha_valid); /* 作業用に同じ領域を使うので、逐次の状態は使えなくなる */
+}
+
+void test_stale_job_after_the_work_area_was_allocated_frees_it(void) {
+    upload_all(SZ, PB_SMALL);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_upload_finish_begin(&UP, ID, NULL));
+    iso_finish_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_finish_job_init(&job, ID));
+    iso_step_result_t r;
+    do {
+        r = iso_upload_finish_step(&UP, &job, 0, false);
+    } while (r.kind == ISO_STEP_CONTINUE && job.idx.pool == NULL);
+    TEST_ASSERT_EQUAL_INT(1, ALLOC_LIVE);
+    iso_upload_reinit(&UP); /* SD の再初期化: incomplete になり、枠が空く */
+    r = iso_upload_finish_step(&UP, &job, 0, false);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_EQUAL_INT(0, ALLOC_LIVE); /* 古いジョブの作業領域を解放する */
+    r = iso_upload_finish_step(&UP, &job, 0, false);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+}
+
+void test_undo_and_acceptance_notify_the_view(void) {
+    upload_all(SZ, PB_SMALL);
+    iso_catalog_entry_t *e = entry();
+    int v = VIEW_CALLS;
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_upload_finish_begin(&UP, ID, NULL));
+    TEST_ASSERT_EQUAL_INT(v + 1, VIEW_CALLS);
+    iso_upload_finish_undo(&UP, e, ISO_STATE_UPLOADING);
+    TEST_ASSERT_EQUAL_INT(v + 2, VIEW_CALLS);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_finish_begin_complete_upload_becomes_finalizing_and_keeps_the_slot);
@@ -933,5 +1077,15 @@ int main(void) {
     RUN_TEST(test_stale_job_when_the_slot_belongs_to_nobody);
     RUN_TEST(test_table_epoch_is_read_when_the_indexing_starts);
     RUN_TEST(test_table_hook_may_be_absent);
+    RUN_TEST(test_a_new_upload_after_an_incomplete_one_starts_a_fresh_sha_state);
+    RUN_TEST(test_finish_notifies_the_view_at_the_acceptance_and_at_the_end_only);
+    RUN_TEST(test_invalid_end_notifies_and_refreshes_the_free_space);
+    RUN_TEST(test_ioerr_end_notifies_and_takes_received_from_the_disk);
+    RUN_TEST(test_missing_first_part_with_the_streamed_sha_is_part_mismatch);
+    RUN_TEST(test_close_failure_after_a_good_sync_is_an_io_error);
+    RUN_TEST(test_hash_step_of_an_unknown_image_fails_without_touching_the_sha_state);
+    RUN_TEST(test_hash_step_discards_the_streamed_state_it_overwrites);
+    RUN_TEST(test_stale_job_after_the_work_area_was_allocated_frees_it);
+    RUN_TEST(test_undo_and_acceptance_notify_the_view);
     return UNITY_END();
 }

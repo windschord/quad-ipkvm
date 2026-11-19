@@ -172,8 +172,6 @@ static int open_part(iso_upload_t *u, const char *id, uint32_t part, uint64_t of
     }
     if (rc < 0) return rc;
     u->f = f;
-    u->f_part = part;
-    u->since_sync = 0;
     return ISO_OK;
 }
 
@@ -199,7 +197,6 @@ static int fail_write(iso_upload_t *u, iso_catalog_entry_t *e, uint64_t received
     if (trunc_failed) (void)iso_upload_reload_received(u, e); /* 失敗したら、received_before のまま(再開のときに、ディスクから決め直す) */
     (void)iso_up_force_incomplete(u, e, ISO_EV_WRITE_FAIL);
     iso_up_release_slot(u);
-    u->since_sync = 0;
     if (out) out->received = e->received;
     iso_up_notify(u);
     return err == ISO_ERR_NO_SPACE ? (int)ISO_RES_INSUFFICIENT_STORAGE : err;
@@ -220,8 +217,8 @@ int iso_upload_write_chunk(iso_upload_t *u, const char *id, uint64_t offset, con
     } else if (e->state != ISO_STATE_UPLOADING) {
         return ISO_RES_NOT_UPLOADING;
     }
-    /* ファイルを開いていない(再開、アイドルの後、パーツの終わりの後)ときは、ディスク上の大きさから決め直す */
-    if (resume || !u->f) {
+    /* 再開(incomplete)のときは、ディスク上のパーツの大きさから決め直す(取り消せなかった書き込みや、再起動の後のメモリの値は信用しない) */
+    if (resume) {
         int rc = iso_upload_reload_received(u, e);
         if (rc < 0) return rc;
     }
@@ -255,11 +252,9 @@ int iso_upload_write_chunk(iso_upload_t *u, const char *id, uint64_t offset, con
             rc = open_part(u, id, part, off);
             if (rc < 0) return fail_write(u, e, received_before, touched, nt, rc, out);
         }
-        if (nt == 0 || touched[nt - 1].part != part) {
-            touched[nt].part = part;
-            touched[nt].before = off;
-            nt++;
-        }
+        touched[nt].part = part; /* 1 つのチャンクの中で、同じパーツを 2 回通ることはない */
+        touched[nt].before = off;
+        nt++;
         rc = fs->write(fs->ctx, u->f, p + done, (size_t)seg);
         if (rc < 0) return fail_write(u, e, received_before, touched, nt, rc, out);
         pos += seg;
@@ -320,7 +315,7 @@ int iso_upload_finish_begin(iso_upload_t *u, const char *id, uint64_t *out_recei
     case ISO_STATE_INVALID: return ISO_RES_INVALID_IMAGE;
     default: break;
     }
-    if (e->state == ISO_STATE_INCOMPLETE || !u->f) {
+    if (e->state == ISO_STATE_INCOMPLETE) {
         int rc = iso_upload_reload_received(u, e);
         if (rc < 0) return rc;
     }
