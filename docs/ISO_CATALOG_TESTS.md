@@ -50,7 +50,7 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 
 | 実行した数 | 殺した数 | 生き残った数(すべて同値と判断) | ビルドエラー |
 |---|---|---|---|
-| 578 | 554 | 24 | 0 |
+| 578 | 557 | 21 | 0 |
 
 ミュータントの内訳(PR #150 の対応で、Q の 30 個を足した。下の 3.): `iso_name.c` 63 個(N)、`iso_meta.c` 88 個(T)、遷移表と状態の対応 56 個(S)、2 スロット 31 個(L)、カタログ・received・スキャン 66 個(C)、`begin` と `<id>` 50 個(B)、`write_meta` と `apply` 49 個(W)、削除 52 個(D)、import 69 個(I)、`rescan` 24 個(R)、クロスリンクの照合と、削除の拒否 30 個(Q)。
 
@@ -59,6 +59,8 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 1. 最初の実行(548 個): 殺した 477、生き残り 49、ビルドエラー 22(`-Werror` の未使用変数・関数・引数。ミュータントの書き方を直した。ミュータントの意味は変えていない)。
 2. 生き残ったものを 1 つずつ調べ、**同値でないものには、殺すテストを足した**(下表)。足した後、最初の実行で殺せなかった 71 個(生き残り + ビルドエラー)を実行し直して、47 個を殺し、24 個が生き残った(うち 1 個は、下の `iso_meta_encode` の変更で殺せるようになった)。
 3. `T52`(符号化の一時バッファを 0 で埋めない)は、スタックを汚すテストでも殺せなかった(スタックの場所が重ならない)。**実装を変えた**: `iso_meta_encode` は、検査が済んだ後は失敗しないので、一時バッファを使わず、`out` に直接書く(`out` を 0 で埋めてから書く)。これで、`out` を 0xAA で汚したテストが殺す。変更の後、`iso_meta.c` のミュータント 88 個を**最初から実行し直して**、85 個を殺し、3 個が同値(T21、T23、T90)。その他のミュータント(`iso_catalog.c`、`iso_name.c`)は、`iso_meta.c` の変更に影響されず、テストは足しただけなので、最初の実行 / 2 回目の実行の結果を使った。
+
+4. **C-10b での変更(Issue #139 の後半)**: `iso_seams.h` に `iso_fs_t.read_at` を足したので、import の署名の検査は、順次読み 65 回から `read_at` の 1 回に変わった(上の 6.)。それに関わるミュータント I12〜I20 を書き直して、全数を再実行した。**Q11**(クロスリンクの照合で、一致した後に `break` しない)は、一致の次の `dir_next` が `ISO_ERR_IO` を返すと、`crosslinked` ではなく I/O エラーになる(同値ではない)ので、`test_delete_precheck_stops_at_the_first_match_and_does_not_read_further`(モックに `mock_fs_fail_dir_next_after` を足した)で殺した。全数の再実行: 578 個、殺した 557、生き残り 21(すべて同値。下の 2.1)、ビルドエラー 0。
 
 | 最初の実行で生き残ったミュータント | 足したテスト |
 |---|---|
@@ -71,7 +73,7 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | D16(削除の続きで、残す方のスロットを覚えていない) | `test_delete_resume_when_slot_a_holds_the_deleting_meta`(採用されているのが `meta.a` のとき) |
 | D40、D41(スロットの削除のエラーを無視) | `test_delete_error_at_every_write_is_reported_and_retried`(6 回の書き込みのそれぞれで失敗させる) |
 | I06(`.iso` の検査が、4 バイトより短い名前で名前の手前を読む) | `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` に `a`、`ab`、`abc` を追加(ASan) |
-| I15、I19(署名の読み出しの I/O エラーを無視) | `test_rescan_read_errors_while_checking_the_signature`(`read` だけを失敗させる。1 回目と 65 回目) |
+| I12〜I20(署名の読み出し: `open` の失敗、`read_at` の位置・長さ・I/O エラー、閉じ忘れ)。C-10b で `read_at` に変えたので、書き直した | `test_rescan_read_errors_while_checking_the_signature`(`read_at` の 1 回目を失敗させる)、`test_import_signature_is_one_read_at_at_sector_16`、署名のテスト |
 | I30(クロスリンクの検査が先頭のイメージだけ) | `test_import_crosslink_is_checked_against_every_image_and_ignores_directories` |
 | I33(クロスリンクの検査がディレクトリも数える) | 同上(`p000` が、先頭クラスタが同じディレクトリのとき) |
 | I54(import の名前に拡張子が入る。ミュータントの書き方が間違っていて、同じ内容になっていた。書き直した) | (既存のテストが殺す) |
@@ -83,7 +85,7 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | W36、W37(SHA-256 の更新が、`FINALIZE_OK` 以外、または `set_sha` なしでも起きる) | `test_apply_sha_update_only_for_finalize_ok_with_set_sha` |
 | W48、W49(`DELETE` で、理由と「続ける」印が消えない) | `test_apply_delete_clears_reason_and_resume_mark` |
 
-### 2.1 同値のミュータント(24 個)
+### 2.1 同値のミュータント(21 個)
 
 | ID | 変更箇所 | 同値の理由 |
 |---|---|---|
@@ -104,15 +106,12 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | W32 | `apply` が理由 5(`meta_corrupt`)を受け付ける | `iso_meta_encode` が理由 5 を拒否し、何も書かない(エラーは `ISO_ERR_INVALID` で同じ) |
 | D05 | 削除ジョブの初期化で `keep` を -1 にしない | 直前の `memset` で 0 になるが、`PH_INIT` の最初のステップが `keep` を設定する(それまで読まれない) |
 | D35 | 削除で、パスの長さの検査を外す | 名前は 255 バイト以下で、パスは最大 `/iso/xxxxxxxx/` + 255 + NUL = 270 < 288 |
-| I13 | 署名の読み飛ばしで、毎回 512 バイト読む | 32768 は 512 の倍数なので、同じ回数・同じ位置 |
-| I14 | 署名の読み飛ばしで、短い読み出しを許す | 大きさ 34816 以上は、直前に検査している。短い読み出しは起きない |
-| I20 | 署名の 6 バイトで、`got == 6` の検査を外す | 同上 |
+| I17 | 署名の `read_at` の `got == 6` の検査を外す | 大きさ 34816 以上は、直前に検査している。短い読み出しは起きない |
 | I69 | import のパスの長さの検査を外す | `/iso/import/` + 255 バイト + NUL = 268 < 288 |
-| Q11 | クロスリンクの照合で、一致したあと `break` しない | 一致のあとも走査を続けるだけで、結果(一致した)は同じ |
 | Q41 | `apply`: INVALID に入るときも、直前の理由を引き継ぐ | INVALID に入るイベント(`FINALIZE_FAIL` / `INDEX_FAIL`)は、引数の理由で上書きする |
 | Q42 | `apply`: INVALID を離れるときも、理由を引き継ぐ | 離れるとき(`DELETE`)は、その後で理由を 0 にする |
 
-### 2.2 殺したミュータントの一覧(554 個)
+### 2.2 殺したミュータントの一覧(557 個)
 
 「殺したテスト」は、失敗したテストのうち先頭の 2 つ(最初に落ちたテストの実行ファイルで止める)。
 
@@ -568,11 +567,13 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | I10 | signature: offset 17 sectors | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
 | I11 | signature: offset 16 * 512 | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
 | I12 | signature: open error ignored | `test_rescan_io_errors_are_propagated`, `test_rescan_counts_before_an_error_are_kept` |
-| I15 | signature: read error during skip ignored | `test_rescan_read_errors_while_checking_the_signature` |
-| I16 | signature: remaining not reduced | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
-| I17 | signature: reads 5 bytes only | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
+| I13 | signature: read_at offset 0 | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
+| I14 | signature: reads 5 bytes only | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
+| I15 | signature: reads from SIG_OFFSET + 1 | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
+| I16 | signature: sequential read instead of read_at (the file start) | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
 | I18 | signature: file not closed | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
 | I19 | signature: read error ignored | `test_rescan_read_errors_while_checking_the_signature` |
+| I20 | signature: read length 7 | `test_iso_import:crash/rc=1` |
 | I21 | signature: compares from byte 0 | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
 | I22 | signature: CD001 not accepted | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
 | I23 | signature: BEA01 not accepted | `test_import_signature` |
@@ -655,6 +656,7 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | Q08 | crosslink: import directories compared | `test_delete_precheck_non_matches` |
 | Q09 | crosslink: cluster compare inverted | `test_delete_precheck_refuses_when_import_has_the_same_first_cluster`, `test_delete_precheck_non_matches` |
 | Q10 | crosslink: match not reported | `test_delete_precheck_refuses_when_import_has_the_same_first_cluster`, `test_delete_precheck_non_matches` |
+| Q11 | crosslink: match does not stop (the next dir_next error turns crosslinked into an I/O error) | `test_delete_precheck_stops_at_the_first_match_and_does_not_read_further` |
 | Q12 | crosslink: import dir not closed after the loop | `test_delete_full_sequence_and_order`, `test_delete_when_slot_a_is_the_older_one` |
 | Q13 | crosslink: import dir not closed on a dir_next error | `test_delete_precheck_propagates_io_errors` |
 | Q14 | crosslink: p000 path is p001 | `test_delete_precheck_refuses_when_import_has_the_same_first_cluster`, `test_delete_precheck_non_matches` |
@@ -682,7 +684,7 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 3. **`received`** は、`ready` では `size_bytes`、`uploading`(→ `incomplete`)/ `incomplete` / `invalid` では「同期済みのパーツのファイルの大きさの合計」(先頭から順、満たない / 無いパーツで止める。期待する大きさを超える分は数えない)。`deleting` と `meta_corrupt` は 0。
 4. **同名の判定**は、`deleting` のイメージと `meta_corrupt` のイメージを見ない(API から見えないため)。**上限(`ISO_MAX_IMAGES`)は、`deleting` のイメージも数える**(ディレクトリが残っている間は、枠を使う)。`begin` の検査の順は、名前 / 大きさ(400)→ 同名 → 上限。
 5. **`import` の電源断**: `mkdir` → `meta`(`ready`)→ `rename` の順なので、`meta` と `rename` の間で落ちると、`p000` のない `ready` のイメージが残る。ファイルは `import/` に残るが、**同名のイメージが残っているので、次の `rescan` は `skipped` にする**(`INDEX` が `part_mismatch` にしたあと、利用者が削除すれば、取り込める)。`rename` を先にすると、ファイルが `<id>/p000` に移ったあとで `meta` がなく、`meta_corrupt` になる(データは残るが、`import/` からは見えない)ので、`meta` を先にした。
-6. **`import` の署名の検査**は、`iso_fs_t` に位置を指定した読み出し(seek)がないので、**ファイルの先頭から 32 KiB + 6 バイトを順に読む**(512 バイトずつ)。1 ファイルあたり 65 回の `read`。`iso_seams.h` に `read_at(ctx, f, offset, buf, len, &got)` があれば、1 回で済む(変更の提案)。
+6. **`import` の署名の検査**は、`iso_fs_t.read_at(ctx, f, offset, buf, len, &got)`(C-10b で `iso_seams.h` に足した。位置指定の読み出し)で、**セクタ 16 の先頭から 6 バイトを 1 回で読む**(`test_import_signature_is_one_read_at_at_sector_16` が、`read_at` が 1 回、オフセット 32768、順次読みなし、を固定する)。C-10a の初版は、`read_at` がなく、先頭から 512 バイトずつ 65 回の順次読みだった。
 7. **`close`** は、読み取り用に開いたハンドルにも使う(`iso_seams.h` のコメントは「失敗した `write` の後でも呼べる」とだけ書いている。読み取り用のハンドルも閉じられる、と明記してほしい)。
 8. **削除のステップ**は `p` で始まるエントリだけを消す(設計の `p*`)。ほかのファイルが残っていると、`rmdir` が失敗し、`ERROR`(`ISO_ERR_INVALID` など、`remove` が返したエラー)になる。最後のスロットを消したあと `rmdir` の前で電源が落ちると、スロットのないディレクトリ(`meta_corrupt`)が残る。削除できる(上の網羅のテストで確認)。
 9. **`iso_extent` の表の構築**は、`get_extents` の結果を、パーツごとの配列(`iso_part_input_t`)で、1 回の呼び出しで渡す。パーツの順に検査するので、先のパーツの `too_fragmented` が、後のパーツの `part_mismatch` より先に出る。
