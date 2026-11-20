@@ -65,6 +65,16 @@ static const row_t ROWS[] = {
     {"/api/v1/iso/a1b2c3d45", U, OK, ISO_API_EP_PUT, NULL, true, false, ""},
     {"/api/v1/iso/a1b2c3dg", D, OK, ISO_API_EP_DELETE, NULL, true, false, ""},
     {"/api/v1/iso/zzzzzzzz", U, OK, ISO_API_EP_PUT, NULL, true, false, ""},
+    {"/api/v1/iso/gaaaaaaa", U, OK, ISO_API_EP_PUT, NULL, true, false, ""}, /* 先頭だけが 16 進でない */
+    {"/api/v1/iso/aaaaaaag", U, OK, ISO_API_EP_PUT, NULL, true, false, ""}, /* 末尾だけ */
+    {"/api/v1/iso/Aaaaaaaa", U, OK, ISO_API_EP_PUT, NULL, true, false, ""}, /* 先頭だけ大文字 */
+    {"/api/v1/iso/99999999", U, OK, ISO_API_EP_PUT, NULL, true, true, "99999999"}, /* '9' は 16 進 */
+    {"/api/v1/iso/00000000", D, OK, ISO_API_EP_DELETE, NULL, true, true, "00000000"},
+    {"/api/v1/iso/:0000000", U, OK, ISO_API_EP_PUT, NULL, true, false, ""}, /* '9' の次 */
+    {"/api/v1/iso//000000", U, NF, ISO_API_EP_NONE, NULL, false, false, ""},
+    {"/api/v1/iso/`0000000", U, OK, ISO_API_EP_PUT, NULL, true, false, ""}, /* 'a' の前 */
+    {"/api/v1/iso/g0000000", U, OK, ISO_API_EP_PUT, NULL, true, false, ""}, /* 'f' の次 */
+    {"/api/v1/iso/ffffffff", U, OK, ISO_API_EP_PUT, NULL, true, true, "ffffffff"},
     {"/api/v1/iso/mounts", U, OK, ISO_API_EP_PUT, NULL, true, false, ""},
     {"/api/v1/iso/Mount", P, MT, ISO_API_EP_NONE, "PUT, DELETE", true, false, ""},
     {"/api/v1/iso/zzzzzzzz", G, MT, ISO_API_EP_NONE, "PUT, DELETE", true, false, ""},

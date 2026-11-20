@@ -465,6 +465,7 @@ void test_mount_that_finds_the_image_already_mounted_reports_it(void) {
 void test_mount_of_an_image_without_a_table_is_refused_even_if_the_view_says_ready(void) {
     api_add_ready(A, "alpha", SZ2);
     api_boot_no_index(); /* 表がない */
+    EPOCH = 0;           /* 表がなくても、epoch の比較(表の epoch は 0 として読まれる)では、拒否されない値にする */
     SNAP.view.images[0].state = ISO_STATE_READY; /* 古いビュー */
     api_post_json("/api/v1/iso/mount", "{\"id\":\"" A "\"}");
     expect_err(409, "image_not_ready");
