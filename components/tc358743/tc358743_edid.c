@@ -172,6 +172,62 @@ size_t tc358743_edid_build(uint8_t* out_buffer, size_t buffer_size, uint32_t max
     return 256;
 }
 
+typedef struct {
+    uint16_t pix_clk_10khz;
+    uint16_t h_active;
+    uint16_t h_blank;
+    uint16_t v_active;
+    uint16_t v_blank;
+    uint16_t h_sync_off;
+    uint16_t h_sync_width;
+    uint16_t v_sync_off;
+    uint16_t v_sync_width;
+    uint8_t flags;
+} dtd_params_t;
+
+static void write_dtd(uint8_t *dst,
+                      uint16_t pix_clk_10khz,
+                      uint16_t h_active, uint16_t h_blank,
+                      uint16_t v_active, uint16_t v_blank,
+                      uint16_t h_sync_off, uint16_t h_sync_width,
+                      uint16_t v_sync_off, uint16_t v_sync_width,
+                      uint8_t flags) {
+    dst[0] = (uint8_t)(pix_clk_10khz & 0xFFu);
+    dst[1] = (uint8_t)((pix_clk_10khz >> 8) & 0xFFu);
+    dst[2] = (uint8_t)(h_active & 0xFFu);
+    dst[3] = (uint8_t)(h_blank & 0xFFu);
+    dst[4] = (uint8_t)(((h_active >> 4) & 0xF0u) | ((h_blank >> 8) & 0x0Fu));
+    dst[5] = (uint8_t)(v_active & 0xFFu);
+    dst[6] = (uint8_t)(v_blank & 0xFFu);
+    dst[7] = (uint8_t)(((v_active >> 4) & 0xF0u) | ((v_blank >> 8) & 0x0Fu));
+    dst[8] = (uint8_t)(h_sync_off & 0xFFu);
+    dst[9] = (uint8_t)(h_sync_width & 0xFFu);
+    dst[10] = (uint8_t)(((v_sync_off & 0x0Fu) << 4) | (v_sync_width & 0x0Fu));
+    dst[11] = (uint8_t)((((h_sync_off >> 8) & 0x03u) << 6) |
+                       (((h_sync_width >> 8) & 0x03u) << 4) |
+                       (((v_sync_off >> 4) & 0x03u) << 2) |
+                       ((v_sync_width >> 4) & 0x03u));
+    dst[12] = 0xA0u; // H image size 160 mm
+    dst[13] = 0x5Au; // V image size 90 mm
+    dst[14] = 0x00u;
+    dst[15] = 0x00u;
+    dst[16] = 0x00u;
+    dst[17] = flags;
+}
+
+static uint8_t append_ext_dtds(uint8_t *ext, uint8_t dtd_ptr,
+                               const dtd_params_t *dtds, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if ((size_t)dtd_ptr + 18u > 127u) break;
+        const dtd_params_t *d = &dtds[i];
+        write_dtd(ext + dtd_ptr, d->pix_clk_10khz, d->h_active, d->h_blank,
+                  d->v_active, d->v_blank, d->h_sync_off, d->h_sync_width,
+                  d->v_sync_off, d->v_sync_width, d->flags);
+        dtd_ptr += 18u;
+    }
+    return dtd_ptr;
+}
+
 size_t tc358743_edid_build_profile(uint8_t* out_buffer, size_t buffer_size, tc358743_edid_profile_t profile) {
     if (buffer_size < 256) return 0;
 
@@ -190,60 +246,29 @@ size_t tc358743_edid_build_profile(uint8_t* out_buffer, size_t buffer_size, tc35
     out_buffer[18] = 0x01; // EDID 1.3
     out_buffer[19] = 0x03;
     out_buffer[20] = 0x80; // Digital input
-    out_buffer[21] = 0x10; // H size
-    out_buffer[22] = 0x09; // V size
+    out_buffer[21] = 0x10; // H size (16 cm)
+    out_buffer[22] = 0x09; // V size (9 cm)
     out_buffer[23] = 0x78; // Gamma
     out_buffer[24] = 0x0A; // Features
-    out_buffer[35] = 0x20; // Established Timings
+
+    // Established Timings I & II:
+    // Both profiles: 640x480@60 (0x20) + 800x600@60 (0x01) = 0x21.
+    // 1080p30 profile also advertises 1024x768@60 (byte 36 bit 3 = 0x08; height 768 > 720).
+    out_buffer[35] = 0x21;
+    if (profile == TC358743_EDID_PROFILE_1080P_30) {
+        out_buffer[36] = 0x08;
+    }
 
     for (int i = 38; i < 54; i += 2) {
         out_buffer[i] = 0x01;
         out_buffer[i+1] = 0x01;
     }
 
-    // Detailed Timing Descriptor (DTD) 1
+    // Detailed Timing Descriptor (DTD) 1 (Preferred Timing)
     if (profile == TC358743_EDID_PROFILE_1080P_30) {
-        // 1080p30 DTD (~74.25 MHz)
-        uint16_t pix_clk = 7425;
-        out_buffer[54] = pix_clk & 0xFF;
-        out_buffer[55] = pix_clk >> 8;
-        out_buffer[56] = 0x80;
-        out_buffer[57] = 0x18;
-        out_buffer[58] = 0x71;
-        out_buffer[59] = 0x38;
-        out_buffer[60] = 0x2D;
-        out_buffer[61] = 0x40;
-        out_buffer[62] = 0x58;
-        out_buffer[63] = 0x2C;
-        out_buffer[64] = 0x45;
-        out_buffer[65] = 0x00;
-        out_buffer[66] = 0x10;
-        out_buffer[67] = 0x09;
-        out_buffer[68] = 0x00;
-        out_buffer[69] = 0x00;
-        out_buffer[70] = 0x00;
-        out_buffer[71] = 0x1E;
+        write_dtd(&out_buffer[54], 7425, 1920, 280, 1080, 45, 88, 44, 4, 5, 0x1E);
     } else {
-        // 720p60 DTD (~74.25 MHz) (VIC 4)
-        uint16_t pix_clk = 7425;
-        out_buffer[54] = pix_clk & 0xFF;
-        out_buffer[55] = pix_clk >> 8;
-        out_buffer[56] = 0x00; // H active 1280 lower 8 (0x00)
-        out_buffer[57] = 0x72; // H blanking 370 (0x172) lower 8 (0x72)
-        out_buffer[58] = 0x51; // H active upper 4 (0x5), H blank 4 (0x1) -> 0x51
-        out_buffer[59] = 0xD0; // V active 720 lower 8 (0xD0)
-        out_buffer[60] = 0x1E; // V blanking 30 (0x1E)
-        out_buffer[61] = 0x20; // V active upper 4 (0x2), V blank 4 (0x0) -> 0x20
-        out_buffer[62] = 0x6E; // H sync offset 110 (0x6E)
-        out_buffer[63] = 0x28; // H sync width 40 (0x28)
-        out_buffer[64] = 0x55; // V sync offset 5, V sync width 5 -> 0x55
-        out_buffer[65] = 0x00; // sync upper bits
-        out_buffer[66] = 0x10;
-        out_buffer[67] = 0x09;
-        out_buffer[68] = 0x00;
-        out_buffer[69] = 0x00;
-        out_buffer[70] = 0x00;
-        out_buffer[71] = 0x1E; // sync positive/positive -> 0x1E
+        write_dtd(&out_buffer[54], 7425, 1280, 370, 720, 30, 110, 40, 5, 5, 0x1E);
     }
 
     // Monitor Name Descriptor (Descriptor 2)
@@ -302,6 +327,27 @@ size_t tc358743_edid_build_profile(uint8_t* out_buffer, size_t buffer_size, tc35
     ext[data_block_ptr++] = 0x00;
 
     ext[2] = data_block_ptr;
+
+    // CVT-RB v1 DTDs (H_blank=160, H_fp=48, H_sw=32, V_fp=3, +H/-V sync=0x1A),
+    // all <= 74.25 MHz, w % 16 == 0, h % 2 == 0, 15.15 < Hfreq < 100 kHz.
+    static const dtd_params_t k_ext_1080p_mid_dtds[] = {
+        {4826, 1600, 160, 900, 14, 48, 32, 3, 5, 0x1A}, // 1600x900@30
+        {7376, 1440, 160, 900, 22, 48, 32, 3, 6, 0x1A}, // 1440x900@50
+        {7205, 1360, 160, 768, 22, 48, 32, 3, 5, 0x1A}, // 1360x768@60
+    };
+    static const dtd_params_t k_ext_low_dtds[] = {
+        {5258, 1152, 160, 648, 20, 48, 32, 3, 5, 0x1A}, // 1152x648@60
+        {4220, 1024, 160, 576, 18, 48, 32, 3, 5, 0x1A}, // 1024x576@60
+        {3736,  960, 160, 540, 16, 48, 32, 3, 5, 0x1A}, // 960x540@60
+    };
+
+    uint8_t dtd_ptr = data_block_ptr;
+    if (profile == TC358743_EDID_PROFILE_1080P_30) {
+        dtd_ptr = append_ext_dtds(ext, dtd_ptr, k_ext_1080p_mid_dtds,
+                                  sizeof(k_ext_1080p_mid_dtds) / sizeof(k_ext_1080p_mid_dtds[0]));
+    }
+    dtd_ptr = append_ext_dtds(ext, dtd_ptr, k_ext_low_dtds,
+                              sizeof(k_ext_low_dtds) / sizeof(k_ext_low_dtds[0]));
 
     sum = 0;
     for (int i = 0; i < 127; i++) sum += ext[i];
