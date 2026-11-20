@@ -6,6 +6,8 @@
 #include "unity.h"
 #include "iso_api.h"
 #include "iso_api_priv.h"
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 void setUp(void) {}
@@ -542,6 +544,113 @@ void test_the_output_is_cleared_first(void) {
     TEST_ASSERT_FALSE(b.force);
 }
 
+/* ---- 追加: 定義していないキー、部分的なエスケープ、サロゲートの対、末尾の読み出し -------------------------------- */
+
+void test_unknown_keys_are_rejected_in_every_schema_whatever_the_value(void) {
+    static const char *VALS[] = {"\"abc\"", "1", "true", "false", "null", "\"a1b2c3d4\"", "0", "{}", "[]", "\"\"", "65535"};
+    static const struct {
+        iso_api_schema_t sc;
+        const char *prefix; /* そのスキーマの正しいキーの部分(あれば、続けて , を付ける) */
+    } S[] = {
+        {BEGIN, "\"name\":\"a\",\"size\":34816,"}, {MOUNT, "\"id\":\"a1b2c3d4\","}, {EJECT, ""}, {RESCAN, ""}, {FINISH, ""},
+    };
+    static const char *KEYS[] = {"zz", "x", "name", "size", "sha256", "id", "force", "cursor", "Force", "cursors"};
+    for (size_t i = 0; i < sizeof(S) / sizeof(S[0]); i++) {
+        for (size_t k = 0; k < sizeof(KEYS) / sizeof(KEYS[0]); k++) {
+            for (size_t v = 0; v < sizeof(VALS) / sizeof(VALS[0]); v++) {
+                bool valid_key = (S[i].sc == BEGIN && (!strcmp(KEYS[k], "name") || !strcmp(KEYS[k], "size") || !strcmp(KEYS[k], "sha256"))) ||
+                                 (S[i].sc == MOUNT && (!strcmp(KEYS[k], "id") || !strcmp(KEYS[k], "force"))) ||
+                                 (S[i].sc == EJECT && !strcmp(KEYS[k], "force")) || (S[i].sc == RESCAN && !strcmp(KEYS[k], "cursor"));
+                if (valid_key) continue; /* 正しいキーと値の組は、別のテストで受理を確かめる */
+                char json[200];
+                size_t n = (size_t)snprintf(json, sizeof(json), "{%s\"%s\":%s}", S[i].prefix, KEYS[k], VALS[v]);
+                iso_api_body_t b;
+                TEST_ASSERT_EQUAL_INT_MESSAGE(-1, iso_api_parse_body(S[i].sc, json, n, &b), json);
+            }
+        }
+    }
+}
+
+void test_partial_unicode_escapes_are_not_decoded(void) {
+    expect_begin_bad("{\"name\":\"\\u41zz\",\"size\":34816}"); /* 41 まで読めた値(A)で、続きを文字として読んではいけない */
+    expect_begin_bad("{\"name\":\"\\u4g00\",\"size\":34816}");
+    expect_begin_bad("{\"name\":\"\\u414\",\"size\":34816}");
+    expect_begin_bad("{\"name\":\"\\u41\",\"size\":34816}");
+    expect_begin_bad("{\"name\":\"\\u4\",\"size\":34816}");
+    expect_begin_bad("{\"name\":\"\\u41 1\",\"size\":34816}");
+    expect_begin_bad("{\"name\":\"\\u41\\u42\",\"size\":34816}");
+    expect_begin_bad("{\"name\":\"\\u4142zz\\u4\",\"size\":34816}");
+    iso_api_body_t b;
+    TEST_ASSERT_EQUAL_INT(-1, parse(MOUNT, "{\"id\":\"a1b2c3\\u64\"}", &b));
+    TEST_ASSERT_EQUAL_INT(-1, parse(MOUNT, "{\"id\":\"a1b2c3\\u0064\\u0064\\u0064\"}", &b)); /* 9 文字 */
+    TEST_ASSERT_EQUAL_INT(0, parse(MOUNT, "{\"id\":\"a1b2c3\\u0064\\u0034\"}", &b)); /* d4 */
+    TEST_ASSERT_EQUAL_STRING("a1b2c3d4", b.id);
+}
+
+void test_a_high_surrogate_needs_an_escaped_low_surrogate_right_after_it(void) {
+    expect_begin_bad("{\"name\":\"\\ud800xuDC00\",\"size\":34816}");   /* 2 文字目が u でも、1 文字目が \ でなければ対ではない */
+    expect_begin_bad("{\"name\":\"\\ud800\\xDC00\",\"size\":34816}");  /* \ の次が u でない */
+    expect_begin_bad("{\"name\":\"\\ud800\\\\uDC00\",\"size\":34816}"); /* \\ (バックスラッシュ)の後の uDC00 */
+    expect_begin_bad("{\"name\":\"\\ud800 uDC00\",\"size\":34816}");
+    expect_begin_bad("{\"name\":\"\\ud800\\u\",\"size\":34816}");
+    expect_begin_bad("{\"name\":\"\\ud800\\");
+    expect_begin_bad("{\"name\":\"\\ud800\\u");
+    expect_begin_bad("{\"name\":\"\\ud800");
+    expect_begin_bad("{\"name\":\"\\ud800\"");
+    expect_begin_bad("{\"name\":\"\\ud800\\udc0");
+    expect_begin_name("{\"name\":\"\\ud800\\udc00\",\"size\":34816}", "\xF0\x90\x80\x80", 4);
+    expect_begin_name("{\"name\":\"\\udbff\\udfff\",\"size\":34816}", "\xF4\x8F\xBF\xBF", 4);
+    expect_begin_bad("{\"name\":\"\\ud800\\udbff\",\"size\":34816}"); /* 下位の範囲の 1 つ前 */
+    expect_begin_bad("{\"name\":\"\\ud800\\ue000\",\"size\":34816}"); /* 範囲の 1 つ後ろ */
+    expect_begin_bad("{\"name\":\"\\udc00\",\"size\":34816}");        /* 下位の範囲の最初 */
+    expect_begin_bad("{\"name\":\"\\udfff\",\"size\":34816}");        /* 最後 */
+    expect_begin_name("{\"name\":\"\\ud7ff\",\"size\":34816}", "\xED\x9F\xBF", 3);  /* 1 つ前 */
+    expect_begin_name("{\"name\":\"\\ue000\",\"size\":34816}", "\xEE\x80\x80", 3);  /* 1 つ後ろ */
+}
+
+/* 本体と同じ大きさだけのヒープに置いて(読み出しが範囲を超えると、ASan が検出する)、すべての先頭部分を解析する */
+void test_every_prefix_of_valid_bodies_is_safe_on_exact_heap_buffers(void) {
+    static const struct {
+        iso_api_schema_t sc;
+        const char *body;
+    } SAMPLES[] = {
+        {BEGIN, "{\"name\":\"caf\\u00e9 \\ud83d\\ude00\",\"size\":34816,\"sha256\":\"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\"}"},
+        {BEGIN, "{ \"size\" : 69632 , \"name\" : \"a\\\"b\" }"},
+        {MOUNT, "{\"id\":\"a1b2c3d4\",\"force\":true}"},
+        {MOUNT, "{\"force\":false,\"id\":\"a1b2c3d4\"}"},
+        {EJECT, "{\"force\":true}"},
+        {RESCAN, "{\"cursor\":65535}"},
+        {FINISH, "{ }"},
+    };
+    for (size_t i = 0; i < sizeof(SAMPLES) / sizeof(SAMPLES[0]); i++) {
+        size_t full = strlen(SAMPLES[i].body);
+        for (size_t len = 0; len <= full; len++) {
+            char *buf = malloc(len ? len : 1);
+            TEST_ASSERT_NOT_NULL(buf);
+            memcpy(buf, SAMPLES[i].body, len);
+            iso_api_body_t b;
+            int rc = iso_api_parse_body(SAMPLES[i].sc, buf, len, &b);
+            if (len == full) {
+                TEST_ASSERT_EQUAL_INT_MESSAGE(0, rc, SAMPLES[i].body);
+            } else if (len > 0) {
+                TEST_ASSERT_EQUAL_INT_MESSAGE(-1, rc, SAMPLES[i].body); /* 閉じていない本体は、受理しない */
+            }
+            free(buf);
+        }
+    }
+    const char *num = "18446744073709551615";
+    for (size_t len = 1; len <= strlen(num); len++) {
+        char *buf = malloc(len);
+        memcpy(buf, num, len);
+        uint64_t v = 0;
+        int rc = iso_api_parse_u64(buf, len, &v);
+        if (len == strlen(num)) {
+            TEST_ASSERT_EQUAL_INT(0, rc);
+        }
+        free(buf);
+    }
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_begin_minimal_and_full);
@@ -565,5 +674,9 @@ int main(void) {
     RUN_TEST(test_rescan_body);
     RUN_TEST(test_finish_body);
     RUN_TEST(test_the_output_is_cleared_first);
+    RUN_TEST(test_unknown_keys_are_rejected_in_every_schema_whatever_the_value);
+    RUN_TEST(test_partial_unicode_escapes_are_not_decoded);
+    RUN_TEST(test_a_high_surrogate_needs_an_escaped_low_surrogate_right_after_it);
+    RUN_TEST(test_every_prefix_of_valid_bodies_is_safe_on_exact_heap_buffers);
     return UNITY_END();
 }

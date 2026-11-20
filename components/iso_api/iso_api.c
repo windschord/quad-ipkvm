@@ -44,22 +44,25 @@ static void route_set(iso_api_route_t *out, iso_api_method_t m, iso_api_method_t
     }
 }
 
+/* seg[0..n) が <id>(8 桁の小文字の 16 進)か */
+static bool seg_is_id(const char *seg, size_t n) {
+    if (n != ISO_ID_LEN) return false;
+    for (size_t i = 0; i < n; i++) {
+        if (!((seg[i] >= '0' && seg[i] <= '9') || (seg[i] >= 'a' && seg[i] <= 'f'))) return false;
+    }
+    return true;
+}
+
 static void route_image(iso_api_route_t *out, const char *seg, size_t n) {
     out->has_id = true;
-    if (n == ISO_ID_LEN) {
-        char tmp[ISO_ID_LEN + 1];
-        memcpy(tmp, seg, n);
-        tmp[n] = '\0';
-        if (iso_id_valid(tmp)) {
-            out->id_ok = true;
-            memcpy(out->id, tmp, sizeof(tmp));
-        }
+    if (seg_is_id(seg, n)) {
+        out->id_ok = true;
+        memcpy(out->id, seg, n); /* out は memset 済み: NUL 終端 */
     }
 }
 
 void iso_api_route(iso_api_method_t method, const char *path, iso_api_route_t *out) {
-    memset(out, 0, sizeof(*out));
-    out->result = ISO_API_ROUTE_NOT_FOUND;
+    memset(out, 0, sizeof(*out)); /* result = ISO_API_ROUTE_NOT_FOUND(0) */
     if (!path) return;
     size_t plen = strcspn(path, "?");
     const size_t pre = sizeof(ISO_API_PATH_PREFIX) - 1;
@@ -143,15 +146,13 @@ iso_api_ctype_t iso_api_ctype_parse(const char *value) {
     if (!value) return ISO_API_CT_NONE;
     const char *p = value;
     while (*p == ' ' || *p == '\t') p++;
-    iso_api_ctype_t t = ISO_API_CT_OTHER;
+    iso_api_ctype_t t = ISO_API_CT_JSON;
     size_t n = starts_with_ci(p, "application/json");
-    if (n) {
-        t = ISO_API_CT_JSON;
-    } else {
+    if (n == 0) {
+        t = ISO_API_CT_OCTET;
         n = starts_with_ci(p, "application/octet-stream");
-        if (n) t = ISO_API_CT_OCTET;
     }
-    if (t == ISO_API_CT_OTHER) return t;
+    if (n == 0) return ISO_API_CT_OTHER;
     p += n;
     while (*p == ' ' || *p == '\t') p++;
     return (*p == '\0' || *p == ';') ? t : ISO_API_CT_OTHER;
@@ -308,8 +309,8 @@ static bool env_usable(const iso_api_env_t *e) {
     return e && e->state_lock && e->state_unlock && e->op_trylock && e->op_unlock && e->snapshot && e->media && e->core;
 }
 
+/* vc は、呼び出し側が {0} で初期化する(usable でないとき、ms は 0 = マウントなし) */
 static void view_enter(const iso_api_env_t *env, bool usable, vctx_t *vc) {
-    memset(vc, 0, sizeof(*vc));
     if (!usable) {
         vc->snap = &EMPTY_SNAPSHOT;
         return;
@@ -337,20 +338,19 @@ static uint64_t avail_bytes(const iso_api_snapshot_t *s, const iso_view_image_t 
     const iso_view_t *v = &s->view;
     if (!v->free_known) return 0;
     uint64_t used = s->consumed_since;
+    /* 配列の添字で直接読む(count が配列の大きさのとき、1 つ先を読む誤りを、UBSan の bounds が検出できる) */
     for (size_t i = 0; i < v->count; i++) {
-        const iso_view_image_t *img = &v->images[i];
-        if (img == skip || !img->meta_valid) continue;
-        if (img->state != ISO_STATE_UPLOADING && img->state != ISO_STATE_INCOMPLETE) continue;
-        if (img->received < img->size_bytes) used += img->size_bytes - img->received;
+        if (&v->images[i] == skip || !v->images[i].meta_valid) continue;
+        if (v->images[i].state != ISO_STATE_UPLOADING && v->images[i].state != ISO_STATE_INCOMPLETE) continue;
+        if (v->images[i].received < v->images[i].size_bytes) used += v->images[i].size_bytes - v->images[i].received;
     }
     return v->free_bytes > used ? v->free_bytes - used : 0;
 }
 
 static bool name_exists(const iso_view_t *v, const char *name, size_t len) {
     for (size_t i = 0; i < v->count; i++) {
-        const iso_view_image_t *img = &v->images[i];
-        if (!img->meta_valid || img->state == ISO_STATE_NONE || img->state == ISO_STATE_DELETING) continue;
-        if (iso_name_equal(img->name, img->name_len, name, len)) return true;
+        if (!v->images[i].meta_valid || v->images[i].state == ISO_STATE_NONE || v->images[i].state == ISO_STATE_DELETING) continue;
+        if (iso_name_equal(v->images[i].name, v->images[i].name_len, name, len)) return true;
     }
     return false;
 }
@@ -603,6 +603,17 @@ static bool check_put(const vctx_t *vc, const char *id, uint64_t offset, uint64_
     return true;
 }
 
+/* 判定(go)を通って、処理(段 13)に進むか。サービスが起動していない(usable でない)ときは、公開ビューが空(no_card)なので、判定がすべて拒否する。
+ * ここは、念のための守り(env を使わせない)。 */
+static bool proceed(bool go, bool usable, iso_api_response_t *rsp) {
+    if (!go) return false;
+    if (!usable) {
+        set_not_ready(rsp);
+        return false;
+    }
+    return true;
+}
+
 /* ---- 段 13(処理。iso_op_mutex の下) ------------------------------------------------------------ */
 
 /* iso_op_mutex を try-lock で取り、SD の状態を再検査する(取れなければ 503 busy、使えなければ 503 not_ready)。 */
@@ -812,7 +823,7 @@ static void exec_rescan(const iso_api_env_t *env, uint32_t cursor, iso_api_respo
 
 static bool put_precheck_routed(const iso_api_env_t *env, const iso_api_request_t *rq, const iso_api_route_t *rt, iso_api_response_t *rsp) {
     const bool usable = env_usable(env);
-    vctx_t vc;
+    vctx_t vc = {0};
 
     /* 段 5: Content-Length が chunk_size を超える(413)。chunk_size は、公開ビューの値 */
     view_enter(env, usable, &vc);
@@ -920,7 +931,7 @@ void iso_api_handle(const iso_api_env_t *env, const iso_api_request_t *rq, iso_a
         return;
     }
     const bool usable = env_usable(env);
-    vctx_t vc;
+    vctx_t vc = {0};
     iso_api_body_t b;
 
     switch (rt.ep) {
@@ -948,11 +959,7 @@ void iso_api_handle(const iso_api_env_t *env, const iso_api_request_t *rq, iso_a
         view_enter(env, usable, &vc);
         bool go = check_begin(&vc, &b, rsp);
         view_leave(env, usable);
-        if (!go) return;
-        if (!usable) {
-            set_not_ready(rsp);
-            return;
-        }
+        if (!proceed(go, usable, rsp)) return;
         exec_begin(env, &b, rsp);
         return;
     }
@@ -966,11 +973,7 @@ void iso_api_handle(const iso_api_env_t *env, const iso_api_request_t *rq, iso_a
         view_enter(env, usable, &vc);
         bool go = check_mount(&vc, b.id, id_u32, b.force, rsp);
         view_leave(env, usable);
-        if (!go) return;
-        if (!usable) {
-            set_not_ready(rsp);
-            return;
-        }
+        if (!proceed(go, usable, rsp)) return;
         exec_mount(env, b.id, id_u32, b.force, rsp);
         return;
     }
@@ -982,11 +985,7 @@ void iso_api_handle(const iso_api_env_t *env, const iso_api_request_t *rq, iso_a
         view_enter(env, usable, &vc);
         bool go = check_eject(&vc, b.force, rsp);
         view_leave(env, usable);
-        if (!go) return;
-        if (!usable) {
-            set_not_ready(rsp);
-            return;
-        }
+        if (!proceed(go, usable, rsp)) return;
         exec_eject(env, b.force, rsp);
         return;
     }
@@ -998,11 +997,7 @@ void iso_api_handle(const iso_api_env_t *env, const iso_api_request_t *rq, iso_a
         view_enter(env, usable, &vc);
         bool go = check_rescan(&vc, rsp);
         view_leave(env, usable);
-        if (!go) return;
-        if (!usable) {
-            set_not_ready(rsp);
-            return;
-        }
+        if (!proceed(go, usable, rsp)) return;
         exec_rescan(env, b.cursor, rsp);
         return;
     }
@@ -1014,11 +1009,7 @@ void iso_api_handle(const iso_api_env_t *env, const iso_api_request_t *rq, iso_a
         view_enter(env, usable, &vc);
         bool go = check_finish(&vc, rt.id, rsp);
         view_leave(env, usable);
-        if (!go) return;
-        if (!usable) {
-            set_not_ready(rsp);
-            return;
-        }
+        if (!proceed(go, usable, rsp)) return;
         exec_finish(env, rt.id, rsp);
         return;
     }
@@ -1028,11 +1019,7 @@ void iso_api_handle(const iso_api_env_t *env, const iso_api_request_t *rq, iso_a
         view_enter(env, usable, &vc);
         bool go = check_delete(&vc, rt.id, id_u32, rsp);
         view_leave(env, usable);
-        if (!go) return;
-        if (!usable) {
-            set_not_ready(rsp);
-            return;
-        }
+        if (!proceed(go, usable, rsp)) return;
         exec_delete(env, rt.id, rsp);
         return;
     }

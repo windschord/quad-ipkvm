@@ -21,12 +21,15 @@ static bool OL_FAIL;                 /* true なら、op_trylock は取れない
 static bool LOCK_VIOLATION;
 static uint32_t OL_LAST_WAIT;
 static void (*OL_HOOK)(void);        /* op_trylock が成功した直後に呼ぶ(判定と処理の間の、競合の注入) */
+static void (*SL_HOOK)(void);        /* SL_CALLS が SL_HOOK_AT になった state_lock の中(ロックを取った直後)で呼ぶ */
+static int SL_HOOK_AT;
 
 static void t_state_lock(void *c) {
     (void)c;
     SL_DEPTH++;
     SL_CALLS++;
     if (SL_DEPTH > 1) LOCK_VIOLATION = true;
+    if (SL_HOOK && SL_CALLS == SL_HOOK_AT) SL_HOOK();
 }
 static void t_state_unlock(void *c) {
     (void)c;
@@ -92,6 +95,8 @@ static inline void fx_api_setup(void) {
     LOCK_VIOLATION = false;
     OL_LAST_WAIT = 0;
     OL_HOOK = NULL;
+    SL_HOOK = NULL;
+    SL_HOOK_AT = 0;
     iso_core_publish(&CORE);
 }
 

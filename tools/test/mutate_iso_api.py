@@ -24,6 +24,7 @@ if __name__ == "__main__":
             "test_api_list",
             "test_api_order",
             "test_api_ops",
+            "test_api_edges",
             "test_api_fuzz",
         ],
     })
