@@ -1089,9 +1089,10 @@ static int ws_socket_send_chunk(httpd_handle_t server, int fd, const char *buf, 
     int ret = httpd_socket_send(server, fd, buf, len, 0);
     if (ws_send_is_wouldblock(ret) && allow_wait) {
         // On a healthy LAN client, TCP ACKs arrive within ~0.3-1 ms and tcpip_thread
-        // updates pcb->snd_buf even when <= TCP_SNDLOWAT (2881 B with default
-        // TCP_SND_BUF=5760), which select() cannot observe. Retry twice after 500 us
-        // first, then wait per tick up to CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS.
+        // updates pcb->snd_buf even when <= TCP_SNDLOWAT (half of TCP_SND_BUF: 16384 B
+        // with sdkconfig.defaults TCP_SND_BUF=32768; lwIP 5760 B default is 2881 B),
+        // which select() cannot observe. Retry twice after 500 us first, then wait
+        // per tick up to CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS.
         for (int us_tries = 0; ws_send_is_wouldblock(ret) && us_tries < 2; us_tries++) {
             esp_rom_delay_us(500);
             ret = httpd_socket_send(server, fd, buf, len, 0);

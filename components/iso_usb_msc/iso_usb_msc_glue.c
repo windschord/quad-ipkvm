@@ -231,6 +231,16 @@ void iso_usb_msc_extent_backend_clear(iso_usb_msc_extent_backend_t *be) {
     iso_usb_msc_extent_backend_set_image(be, 0u, NULL);
 }
 
+void iso_usb_msc_sync_media_backend(const iso_media_t *media,
+                                    iso_usb_msc_extent_backend_t *be) {
+    if (media == NULL || be == NULL) {
+        return;
+    }
+    if (!iso_media_is_loaded(media)) {
+        iso_usb_msc_extent_backend_clear(be);
+    }
+}
+
 mmc_scsi_backend_t iso_usb_msc_extent_backend_as_scsi(iso_usb_msc_extent_backend_t *be) {
     mmc_scsi_backend_t out = {
         .ctx = be,

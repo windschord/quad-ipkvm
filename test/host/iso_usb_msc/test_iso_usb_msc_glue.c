@@ -185,6 +185,7 @@ static void h_command_done(void *ctx) {
     harness_t *h = (harness_t *)ctx;
     h->command_done_count++;
     mmc_scsi_command_done(&h->scsi);
+    iso_usb_msc_sync_media_backend(&h->media, &h->backend);
 }
 
 static void h_reset_done(void *ctx) {
@@ -246,6 +247,9 @@ static void pump_worker_once(harness_t *h) {
     h->cmd_pending = false;
     msc_bot_cmd_result_t res;
     iso_usb_msc_exec_cmd(&h->scsi, &h->pending_cmd, &res);
+    if (h->pending_cmd.kind == MSC_BOT_CMD_EXECUTE) {
+        iso_usb_msc_sync_media_backend(&h->media, &h->backend);
+    }
     msc_bot_command_complete(&h->bot, &res);
 }
 
@@ -677,6 +681,69 @@ void test_highly_fragmented_spans_full_fallback(void) {
     TEST_ASSERT_EQUAL_UINT32(0u, iso_extent_table_unref(tbl));
 }
 
+void test_target_start_stop_unit_eject_releases_extent_ref(void) {
+    mock_bdev_t raw = {.current_epoch = 3u, .fail_after_reads = -1};
+    uint8_t dummy[2048];
+    memset(dummy, 0x5Au, sizeof(dummy));
+    for (uint32_t s = 0; s < ISO_SECTORS_PER_BLOCK; s++) {
+        memcpy(raw.sectors[s], dummy + s * ISO_SECTOR_BYTES, ISO_SECTOR_BYTES);
+    }
+    const iso_extent_t ext = {.start_sector = 0u, .sector_count = ISO_SECTORS_PER_BLOCK};
+    const iso_part_input_t part = {.file_bytes = sizeof(dummy), .extents = &ext, .n_extents = 1u};
+    iso_extent_table_t *tbl = NULL;
+    TEST_ASSERT_EQUAL_INT(
+        ISO_EXT_OK, iso_extent_table_build(&s_alloc, 3u, sizeof(dummy), 1u, &part, 1u, &tbl));
+
+    iso_blockdev_t bdev = {
+        .ctx = &raw,
+        .read_sectors = mock_bdev_read_sectors,
+        .epoch = mock_bdev_epoch,
+    };
+    harness_t h;
+    harness_init(&h, &bdev, 4u * ISO_CD_BLOCK_BYTES);
+
+    iso_usb_msc_extent_backend_set_image(&h.backend, 0x42u, tbl);
+    iso_media_mount(&h.media, 0x42u, false);
+    TEST_ASSERT_EQUAL_UINT32(2u, iso_extent_table_refs(tbl)); /* test + backend */
+
+    /* Prevent=1 blocks target START STOP UNIT eject and keeps backend ref */
+    const uint8_t prevent_on[6] = {0x1Eu, 0u, 0u, 0u, 0x01u, 0u};
+    host_run_bot_transaction(&h, 60u, 0u, 0x00u, prevent_on, 6u, NULL, 0u);
+    TEST_ASSERT_EQUAL_UINT8(MSC_BOT_CSW_FAILED, h.csw_status);
+    uint8_t k = 0u, a = 0u, q = 0u;
+    host_request_sense(&h, 61u, &k, &a, &q); /* UNIT ATTENTION 06h/28h */
+    host_run_bot_transaction(&h, 62u, 0u, 0x00u, prevent_on, 6u, NULL, 0u);
+    TEST_ASSERT_EQUAL_UINT8(MSC_BOT_CSW_PASSED, h.csw_status);
+
+    const uint8_t ssu_eject[6] = {0x1Bu, 0u, 0u, 0u, 0x02u, 0u}; /* LoEj=1, Start=0 */
+    host_run_bot_transaction(&h, 63u, 0u, 0x00u, ssu_eject, 6u, NULL, 0u);
+    TEST_ASSERT_EQUAL_UINT8(MSC_BOT_CSW_FAILED, h.csw_status);
+    host_request_sense(&h, 64u, &k, &a, &q);
+    TEST_ASSERT_EQUAL_HEX8(0x05u, k);
+    TEST_ASSERT_EQUAL_HEX8(0x53u, a);
+    TEST_ASSERT_EQUAL_HEX8(0x02u, q);
+    TEST_ASSERT_TRUE(iso_media_is_loaded(&h.media));
+    TEST_ASSERT_EQUAL_UINT32(2u, iso_extent_table_refs(tbl));
+
+    /* Clear prevent=0 -> START STOP UNIT eject succeeds and backend ref is released immediately */
+    const uint8_t prevent_off[6] = {0x1Eu, 0u, 0u, 0u, 0x00u, 0u};
+    host_run_bot_transaction(&h, 65u, 0u, 0x00u, prevent_off, 6u, NULL, 0u);
+    TEST_ASSERT_EQUAL_UINT8(MSC_BOT_CSW_PASSED, h.csw_status);
+
+    host_run_bot_transaction(&h, 66u, 0u, 0x00u, ssu_eject, 6u, NULL, 0u);
+    TEST_ASSERT_EQUAL_UINT8(MSC_BOT_CSW_PASSED, h.csw_status);
+    TEST_ASSERT_FALSE(iso_media_is_loaded(&h.media));
+
+    iso_media_status_t st;
+    iso_media_get_status(&h.media, &st);
+    TEST_ASSERT_FALSE(st.mounted);
+    TEST_ASSERT_TRUE(st.ejected_by_target);
+    TEST_ASSERT_EQUAL_UINT32(1u, iso_extent_table_refs(tbl)); /* backend released immediately */
+
+    harness_destroy(&h);
+    TEST_ASSERT_EQUAL_UINT32(0u, iso_extent_table_unref(tbl));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_inquiry_and_tur_empty);
@@ -685,5 +752,6 @@ int main(void) {
     RUN_TEST(test_mid_read_epoch_error_reports_medium_error_and_releases_ref);
     RUN_TEST(test_mid_command_bus_reset_defers_reset_done_and_reports_ua_29);
     RUN_TEST(test_highly_fragmented_spans_full_fallback);
+    RUN_TEST(test_target_start_stop_unit_eject_releases_extent_ref);
     return UNITY_END();
 }

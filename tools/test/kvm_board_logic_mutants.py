@@ -1,8 +1,9 @@
-"""Mutants for components/kvm_board/kvm_board_logic.c and components/kvm_board/kvm_board_drv.c.
+"""Mutants for components/kvm_board/kvm_board_logic.c, kvm_board_drv.c, and kvm_board_drv.h.
 Consumed by tools/test/mutate_kvm_board_logic.py."""
 
 LOGIC_FILE = "components/kvm_board/kvm_board_logic.c"
 DRV_FILE = "components/kvm_board/kvm_board_drv.c"
+DRV_HDR_FILE = "components/kvm_board/include/kvm_board_drv.h"
 
 
 def M(mid, desc, *edits, file=LOGIC_FILE):
@@ -163,10 +164,10 @@ MUTANTS = [
     M("D01", "drv_assert_line: drop pre-timer has_active_line guard (Review Major #1)",
       ("    if (!can_arm) {\n        drv_mutex_unlock(drv);\n        return -1;\n    }\n", ""),
       file=DRV_FILE),
-    M("D02", "drv_on_alarm: drop count_value < alarm_value check (Review Minor #3)",
-      ("    if (!drv || count_value < alarm_value) {",
-       "    if (!drv) {"),
-      file=DRV_FILE),
+    M("D02", "drv_eval_alarm: drop count_value < alarm_value check (Issue #142 M-2)",
+      ("    if (!drv || !out_release_gpio || count_value < alarm_value) {",
+       "    (void)count_value;\n    if (!drv || !out_release_gpio) {"),
+      file=DRV_HDR_FILE),
     M("D03", "drv configure_output_pin_list: config output BEFORE preloading idle level",
       ("        if (io->gpio_set_level(io->ctx, gpios[i], idle_level) != 0) {\n"
        "            if (out_configured) {\n"
@@ -205,5 +206,23 @@ MUTANTS = [
       file=DRV_FILE),
     M("D10", "drv_init: accept half-populated irq_lock/irq_unlock pair",
       ("    if ((io->irq_lock != NULL) != (io->irq_unlock != NULL)) {\n        return false;\n    }\n", ""),
+      file=DRV_FILE),
+    M("D11", "drv_stop_timer_locked: always stop even when !drv->timer_running (Issue #142 M-3)",
+      ("    if (drv->timer_running) {\n        (void)drv->io.timer_stop(drv->io.ctx);\n        drv->timer_running = false;\n    }",
+       "    (void)drv->io.timer_stop(drv->io.ctx);\n    drv->timer_running = false;"),
+      file=DRV_FILE),
+    M("D12", "hal_set_addr: omit current_channel rollback on A1 write failure (Issue #142 M-4)",
+      ("                bool prev_a0 = false;\n"
+       "                drv->logic.current_channel = prev_ch;\n"
+       "                if (kvm_board_logic_channel_to_addr(prev_ch, &prev_a0, NULL) == 0) {",
+       "                bool prev_a0 = false;\n"
+       "                if (kvm_board_logic_channel_to_addr(prev_ch, &prev_a0, NULL) == 0) {"),
+      file=DRV_FILE),
+    M("D13", "hal_set_addr: omit A0 GPIO rollback on A1 write failure (Issue #142 M-4)",
+      ("                if (kvm_board_logic_channel_to_addr(prev_ch, &prev_a0, NULL) == 0) {\n"
+       "                    (void)drv->io.gpio_set_level(drv->io.ctx, drv->logic.config.pins.a0,\n"
+       "                                                 prev_a0 ? 1 : 0);\n"
+       "                }",
+       "                (void)prev_a0;"),
       file=DRV_FILE),
 ]

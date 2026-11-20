@@ -72,6 +72,9 @@
 #endif
 #include "kvm_board_hw.h"
 #include "kvm_service.h"
+#if defined(CONFIG_SD_ENABLE) && CONFIG_SD_ENABLE
+#include "iso_sd.h"
+#endif
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -323,10 +326,14 @@ void app_main(void)
 #endif
 #if CONFIG_USB_DEVICE_ENABLE
         {
+            bool msc_ready = false;
 #if defined(CONFIG_USB_MSC_ENABLE) && CONFIG_USB_MSC_ENABLE
             esp_err_t msc_err = iso_usb_msc_init(NULL);
-            if (msc_err != ESP_OK) {
-                ESP_LOGE(TAG, "USB MSC init failed: %s", esp_err_to_name(msc_err));
+            if (msc_err == ESP_OK) {
+                msc_ready = iso_usb_msc_is_initialized();
+            } else {
+                ESP_LOGE(TAG, "USB MSC init failed: %s (HID-only fallback enabled)",
+                         esp_err_to_name(msc_err));
             }
 #endif
 #if CONFIG_WEB_SERVER_ENABLE
@@ -334,7 +341,7 @@ void app_main(void)
 #else
             usb_hid_mounted_cb_t on_mounted = NULL;
 #endif
-            esp_err_t usb_err = usb_hid_init(on_mounted);
+            esp_err_t usb_err = usb_hid_init_ex(on_mounted, msc_ready);
             if (usb_err != ESP_OK) {
                 ESP_LOGE(TAG, "usb_hid_init failed: %s", esp_err_to_name(usb_err));
             } else {
@@ -345,6 +352,19 @@ void app_main(void)
         }
 #endif
     }
+
+#if defined(CONFIG_SD_ENABLE) && CONFIG_SD_ENABLE
+    if (iso_sd_init(NULL) == ESP_OK) {
+#if defined(CONFIG_SD_SELF_TEST_ON_BOOT) && CONFIG_SD_SELF_TEST_ON_BOOT
+        esp_err_t st_err = iso_sd_run_self_test();
+        if (st_err != ESP_OK) {
+            ESP_LOGW(TAG, "iso_sd_run_self_test failed: %s", esp_err_to_name(st_err));
+        }
+#endif
+    } else {
+        ESP_LOGE(TAG, "iso_sd_init failed");
+    }
+#endif
 
     // Use a standard C `if` to guard the body, as specifically requested
     if (CONFIG_TC358743_INIT) {

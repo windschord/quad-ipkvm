@@ -62,6 +62,22 @@ typedef struct {
     void *hw_ctx;
 } usb_hid_sink_ctx_t;
 
+/**
+ * @brief Lock-free teardown gate protecting TinyUSB calls from concurrent uninstall.
+ */
+typedef struct {
+    uint32_t state;
+} usb_hid_gate_t;
+
+void usb_hid_gate_init(usb_hid_gate_t *gate);
+bool usb_hid_gate_activate(usb_hid_gate_t *gate);
+bool usb_hid_gate_enter(usb_hid_gate_t *gate);
+void usb_hid_gate_leave(usb_hid_gate_t *gate);
+uint32_t usb_hid_gate_begin_teardown(usb_hid_gate_t *gate);
+uint32_t usb_hid_gate_in_flight(const usb_hid_gate_t *gate);
+bool usb_hid_gate_is_active(const usb_hid_gate_t *gate);
+bool usb_hid_gate_is_closed(const usb_hid_gate_t *gate);
+
 const uint8_t *usb_hid_get_kbd_report_desc(size_t *out_len);
 const uint8_t *usb_hid_get_abs_report_desc(size_t *out_len);
 const uint8_t *usb_hid_get_rel_report_desc(size_t *out_len);
@@ -90,6 +106,16 @@ const uint8_t *usb_hid_get_fs_config_desc_with_msc(size_t *out_len);
  * @brief Return the High-Speed (480 Mbps) Configuration Descriptor with MSC (107 bytes).
  */
 const uint8_t *usb_hid_get_hs_config_desc_with_msc(size_t *out_len);
+
+/**
+ * @brief Select Full-Speed Configuration Descriptor (107B with MSC when @p include_msc, else 84B HID-only).
+ */
+const uint8_t *usb_hid_select_fs_config_desc(bool include_msc, size_t *out_len);
+
+/**
+ * @brief Select High-Speed Configuration Descriptor (107B with MSC when @p include_msc, else 84B HID-only).
+ */
+const uint8_t *usb_hid_select_hs_config_desc(bool include_msc, size_t *out_len);
 
 /**
  * @brief Pack a 6KRO Boot Keyboard report (8 bytes, no Report ID).

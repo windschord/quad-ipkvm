@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "iso_extent.h"
+#include "iso_media.h"
 #include "iso_seams.h"
 #include "mmc_scsi.h"
 #include "msc_bot.h"
@@ -62,6 +63,15 @@ void iso_usb_msc_extent_backend_set_image(iso_usb_msc_extent_backend_t *be,
 
 /** @brief Clear the active extent table (equivalent to set_image(..., 0, NULL)). */
 void iso_usb_msc_extent_backend_clear(iso_usb_msc_extent_backend_t *be);
+
+/**
+ * @brief Synchronize backend extent retention with media state (clears backend ref when not loaded).
+ *
+ * Call under iso_state_mutex after SCSI EXECUTE commands (e.g., target START STOP UNIT eject),
+ * on command_done, and on status reads so an ejected extent table is unreferenced immediately.
+ */
+void iso_usb_msc_sync_media_backend(const iso_media_t *media,
+                                    iso_usb_msc_extent_backend_t *be);
 
 /** @brief Construct an mmc_scsi_backend_t bound to @p be. */
 mmc_scsi_backend_t iso_usb_msc_extent_backend_as_scsi(iso_usb_msc_extent_backend_t *be);

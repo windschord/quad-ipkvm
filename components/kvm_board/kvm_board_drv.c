@@ -83,6 +83,14 @@ static int configure_output_pin_list(const kvm_board_io_t *io,
     return 0;
 }
 
+static void drv_stop_timer_locked(kvm_board_drv_t *drv)
+{
+    if (drv->timer_running) {
+        (void)drv->io.timer_stop(drv->io.ctx);
+        drv->timer_running = false;
+    }
+}
+
 static int drv_release_all_locked(kvm_board_drv_t *drv)
 {
     int gpios[KVM_BOARD_NUM_ENABLE_LINES] = { -1, -1, -1 };
@@ -99,7 +107,7 @@ static int drv_release_all_locked(kvm_board_drv_t *drv)
     }
     drv_irq_unlock(drv);
 
-    (void)drv->io.timer_stop(drv->io.ctx);
+    drv_stop_timer_locked(drv);
     (void)drv->io.timer_disarm(drv->io.ctx);
     return rc;
 }
@@ -119,10 +127,19 @@ static int hal_set_addr(void *ctx, uint8_t ch)
     int rc = -1;
     drv_irq_lock(drv);
     if (drv->ready) {
+        uint8_t prev_ch = drv->logic.current_channel;
         rc = kvm_board_logic_begin_set_addr(&drv->logic, ch, &a0, &a1);
         if (rc == 0) {
-            if (drv->io.gpio_set_level(drv->io.ctx, drv->logic.config.pins.a0, a0 ? 1 : 0) != 0 ||
-                drv->io.gpio_set_level(drv->io.ctx, drv->logic.config.pins.a1, a1 ? 1 : 0) != 0) {
+            if (drv->io.gpio_set_level(drv->io.ctx, drv->logic.config.pins.a0, a0 ? 1 : 0) != 0) {
+                drv->logic.current_channel = prev_ch;
+                rc = -1;
+            } else if (drv->io.gpio_set_level(drv->io.ctx, drv->logic.config.pins.a1, a1 ? 1 : 0) != 0) {
+                bool prev_a0 = false;
+                drv->logic.current_channel = prev_ch;
+                if (kvm_board_logic_channel_to_addr(prev_ch, &prev_a0, NULL) == 0) {
+                    (void)drv->io.gpio_set_level(drv->io.ctx, drv->logic.config.pins.a0,
+                                                 prev_a0 ? 1 : 0);
+                }
                 rc = -1;
             }
         }
@@ -153,7 +170,7 @@ static int hal_assert_line(void *ctx, kvm_board_line_t line, uint32_t max_ms)
     }
 
     /* Stop any timer still coasting after an earlier auto-release ISR before reading count. */
-    (void)drv->io.timer_stop(drv->io.ctx);
+    drv_stop_timer_locked(drv);
 
     uint64_t now_us = 0u;
     if (drv->io.timer_get_count(drv->io.ctx, &now_us) != 0) {
@@ -184,6 +201,9 @@ static int hal_assert_line(void *ctx, kvm_board_line_t line, uint32_t max_ms)
     }
     if (err == 0) {
         err = drv->io.timer_start(drv->io.ctx);
+        if (err == 0) {
+            drv->timer_running = true;
+        }
     }
     if (err != 0) {
         (void)drv_release_all_locked(drv);
@@ -232,7 +252,7 @@ static int hal_release_line(void *ctx, kvm_board_line_t line)
     drv_irq_unlock(drv);
 
     if (released) {
-        (void)drv->io.timer_stop(drv->io.ctx);
+        drv_stop_timer_locked(drv);
         (void)drv->io.timer_disarm(drv->io.ctx);
     }
 
@@ -365,22 +385,21 @@ void kvm_board_drv_deinit(kvm_board_drv_t *drv)
     memset(&drv->logic, 0, sizeof(drv->logic));
     memset(&drv->io, 0, sizeof(drv->io));
     drv->ready = false;
+    drv->timer_running = false;
 }
 
 bool kvm_board_drv_on_alarm(kvm_board_drv_t *drv,
                             uint64_t count_value,
                             uint64_t alarm_value)
 {
-    if (!drv || count_value < alarm_value) {
+    if (!drv) {
         return false;
     }
 
     bool fired = false;
     int release_gpio = -1;
     drv_irq_lock(drv);
-    if (drv->ready &&
-        kvm_board_logic_on_timer_alarm(&drv->logic, alarm_value, &release_gpio) &&
-        release_gpio >= 0) {
+    if (kvm_board_drv_eval_alarm(drv, count_value, alarm_value, &release_gpio)) {
         (void)drv->io.gpio_set_level(drv->io.ctx, release_gpio, 1);
         fired = true;
     }

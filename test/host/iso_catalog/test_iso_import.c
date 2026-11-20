@@ -454,21 +454,30 @@ void test_rescan_io_errors_are_propagated(void) {
 void test_rescan_read_errors_while_checking_the_signature(void) {
     put_iso("a.iso", 40000);
     iso_rescan_result_t r;
-    /* 先頭から順に読む途中(1 回目 = 最初の 512 バイト)の IO エラー */
+    /* 署名の読み出しは read_at の 1 回だけ(セクタ 16 の先頭 = 32768)。その IO エラー */
     mock_fs_fail_read(&FS, "/iso/import/a.iso", 1);
     TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_catalog_rescan(&CAT, 0, &r));
     TEST_ASSERT_EQUAL_INT(0, FS.open_files); /* 失敗しても閉じる */
-    /* 署名の 6 バイトの読み出し(65 回目 = 512 バイト x 64 の後)の IO エラー */
-    mock_fs_fail_read(&FS, "/iso/import/a.iso", 65);
-    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_catalog_rescan(&CAT, 0, &r));
-    TEST_ASSERT_EQUAL_INT(0, FS.open_files);
     TEST_ASSERT_EQUAL_UINT(0, CAT.count);
     TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/import/a.iso"));
-    /* 66 回目は読まない: 失敗の注入が当たらず、取り込める */
-    mock_fs_fail_read(&FS, "/iso/import/a.iso", 66);
+    /* 2 回目は読まない: 失敗の注入が当たらず、取り込める */
+    mock_fs_fail_read(&FS, "/iso/import/a.iso", 2);
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_rescan(&CAT, 0, &r));
     TEST_ASSERT_EQUAL_UINT32(1, r.imported);
     mock_fs_fail_read(&FS, NULL, 0);
+}
+
+void test_import_signature_is_one_read_at_at_sector_16(void) {
+    put_iso("a.iso", 40000);
+    iso_rescan_result_t r;
+    FS.n_read = 0;
+    FS.n_read_at = 0;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_rescan(&CAT, 0, &r));
+    TEST_ASSERT_EQUAL_UINT32(1, r.imported);
+    TEST_ASSERT_EQUAL_INT(1, FS.n_read_at);
+    TEST_ASSERT_EQUAL_UINT64(32768, FS.last_read_at_offset);
+    TEST_ASSERT_EQUAL_INT(0, FS.n_read); /* 順次読みは使わない */
+    TEST_ASSERT_EQUAL_INT(0, FS.open_files);
 }
 
 void test_import_crosslink_is_checked_against_every_image_and_ignores_directories(void) {
@@ -594,6 +603,7 @@ int main(void) {
     RUN_TEST(test_rescan_without_import_directory_does_nothing);
     RUN_TEST(test_rescan_io_errors_are_propagated);
     RUN_TEST(test_rescan_read_errors_while_checking_the_signature);
+    RUN_TEST(test_import_signature_is_one_read_at_at_sector_16);
     RUN_TEST(test_import_crosslink_is_checked_against_every_image_and_ignores_directories);
     RUN_TEST(test_rescan_crosslink_stat_error_is_propagated);
     RUN_TEST(test_rescan_counts_before_an_error_are_kept);

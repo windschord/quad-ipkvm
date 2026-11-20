@@ -57,6 +57,8 @@ static bool s_out_armed = false;
 static bool s_reset_pending = false;
 static bool s_reset_stalled = false;
 static tusb_control_request_t s_reset_req;
+static uint32_t s_cmd_inflight = 0u;
+static bool s_usb_uninstalling = false;
 
 static void backend_lock_cb(void *ctx) {
     (void)ctx;
@@ -74,6 +76,9 @@ static void backend_unlock_cb(void *ctx) {
 
 static void on_msc_result_deferred(void *param) {
     (void)param;
+    if (__atomic_load_n(&s_usb_uninstalling, __ATOMIC_SEQ_CST)) {
+        return;
+    }
     msc_bot_cmd_result_t res;
     while (xQueueReceive(s_res_queue, &res, 0) == pdTRUE) {
         msc_bot_command_complete(&s_bot, &res);
@@ -91,6 +96,7 @@ static void iso_msc_task(void *arg) {
         if (cmd.kind == MSC_BOT_CMD_EXECUTE) {
             xSemaphoreTake(s_state_mutex, portMAX_DELAY);
             iso_usb_msc_exec_cmd(&s_scsi, &cmd, &res);
+            iso_usb_msc_sync_media_backend(&s_media, &s_backend);
             xSemaphoreGive(s_state_mutex);
         } else {
             /* READ_BLOCKS performs blocking SD I/O without iso_state_mutex (mmc_scsi.h). */
@@ -99,9 +105,10 @@ static void iso_msc_task(void *arg) {
 
         if (xQueueSend(s_res_queue, &res, portMAX_DELAY) != pdTRUE) {
             ESP_LOGE(TAG, "Failed to enqueue MSC command result");
-            continue;
+        } else if (!__atomic_load_n(&s_usb_uninstalling, __ATOMIC_SEQ_CST)) {
+            usbd_defer_func(on_msc_result_deferred, NULL, false);
         }
-        usbd_defer_func(on_msc_result_deferred, NULL, false);
+        __atomic_fetch_sub(&s_cmd_inflight, 1u, __ATOMIC_SEQ_CST);
     }
 }
 
@@ -183,16 +190,22 @@ static void bot_cancel_xfers(void *ctx) {
 
 static int bot_submit_command(void *ctx, const msc_bot_cmd_t *cmd) {
     (void)ctx;
-    if (cmd == NULL || s_cmd_queue == NULL) {
+    if (cmd == NULL || s_cmd_queue == NULL || __atomic_load_n(&s_usb_uninstalling, __ATOMIC_SEQ_CST)) {
         return -1;
     }
-    return (xQueueSend(s_cmd_queue, cmd, 0) == pdTRUE) ? 0 : -1;
+    __atomic_fetch_add(&s_cmd_inflight, 1u, __ATOMIC_SEQ_CST);
+    if (xQueueSend(s_cmd_queue, cmd, 0) != pdTRUE) {
+        __atomic_fetch_sub(&s_cmd_inflight, 1u, __ATOMIC_SEQ_CST);
+        return -1;
+    }
+    return 0;
 }
 
 static void bot_command_done(void *ctx) {
     (void)ctx;
     xSemaphoreTake(s_state_mutex, portMAX_DELAY);
     mmc_scsi_command_done(&s_scsi);
+    iso_usb_msc_sync_media_backend(&s_media, &s_backend);
     xSemaphoreGive(s_state_mutex);
 }
 
@@ -229,10 +242,33 @@ static bool msc_drv_deinit(void) {
     s_itf_num = 0u;
 
     if (s_initialized) {
+        __atomic_store_n(&s_usb_uninstalling, true, __ATOMIC_SEQ_CST);
         xSemaphoreTake(s_state_mutex, portMAX_DELAY);
         iso_media_bus_reset(&s_media);
         xSemaphoreGive(s_state_mutex);
         msc_bot_detach(&s_bot);
+
+        /* Wait for any in-flight worker command so usbd_defer_func() never hits a torndown queue. */
+        msc_bot_cmd_result_t res;
+        const TickType_t step_ticks = (pdMS_TO_TICKS(10u) > 0u) ? pdMS_TO_TICKS(10u) : 1u;
+        TickType_t elapsed = 0u;
+        while (elapsed < pdMS_TO_TICKS(2000u)) {
+            while (s_res_queue != NULL && xQueueReceive(s_res_queue, &res, 0) == pdTRUE) {
+                msc_bot_command_complete(&s_bot, &res);
+            }
+            if (__atomic_load_n(&s_cmd_inflight, __ATOMIC_SEQ_CST) == 0u) {
+                break;
+            }
+            vTaskDelay(step_ticks);
+            elapsed += step_ticks;
+        }
+        while (s_res_queue != NULL && xQueueReceive(s_res_queue, &res, 0) == pdTRUE) {
+            msc_bot_command_complete(&s_bot, &res);
+        }
+        if (__atomic_load_n(&s_cmd_inflight, __ATOMIC_SEQ_CST) != 0u) {
+            ESP_LOGW(TAG, "MSC deinit drain timeout (%u in-flight cmd)",
+                     (unsigned)__atomic_load_n(&s_cmd_inflight, __ATOMIC_SEQ_CST));
+        }
     }
     return true;
 }
@@ -282,6 +318,7 @@ static uint16_t msc_drv_open(uint8_t rhport, tusb_desc_interface_t const *desc_i
     s_out_armed = false;
     s_reset_pending = false;
     s_reset_stalled = false;
+    __atomic_store_n(&s_usb_uninstalling, false, __ATOMIC_SEQ_CST);
 
     msc_bot_attach(&s_bot);
     return drv_len;
@@ -297,6 +334,9 @@ static bool msc_drv_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_
         const uint8_t ep_addr = tu_u16_low(request->wIndex);
         if (ep_addr != s_ep_in && ep_addr != s_ep_out) {
             return false;
+        }
+        if (stage == CONTROL_STAGE_SETUP) {
+            s_reset_pending = false;
         }
         if (request->bRequest == TUSB_REQ_CLEAR_FEATURE &&
             request->wValue == TUSB_REQ_FEATURE_EDPT_HALT) {
@@ -322,6 +362,9 @@ static bool msc_drv_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_
         request->bmRequestType_bit.recipient == TUSB_REQ_RCPT_INTERFACE) {
         if (tu_u16_low(request->wIndex) != s_itf_num) {
             return false;
+        }
+        if (stage == CONTROL_STAGE_SETUP) {
+            s_reset_pending = false;
         }
         if (request->bRequest == ISO_MSC_REQ_MAX_LUN) {
             if (request->bmRequestType_bit.direction != TUSB_DIR_IN ||
@@ -490,6 +533,9 @@ esp_err_t iso_usb_msc_init(const iso_blockdev_t *bdev) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    __atomic_store_n(&s_cmd_inflight, 0u, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&s_usb_uninstalling, false, __ATOMIC_SEQ_CST);
+
     if (xTaskCreate(iso_msc_task, "iso_msc", CONFIG_USB_MSC_TASK_STACK_SIZE, NULL,
                     CONFIG_USB_MSC_TASK_PRIO, &s_worker_task) != pdPASS) {
         s_worker_task = NULL;
@@ -573,6 +619,7 @@ esp_err_t iso_usb_msc_get_status(iso_media_status_t *out) {
         return ESP_ERR_INVALID_ARG;
     }
     xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    iso_usb_msc_sync_media_backend(&s_media, &s_backend);
     iso_media_get_status(&s_media, out);
     xSemaphoreGive(s_state_mutex);
     return ESP_OK;

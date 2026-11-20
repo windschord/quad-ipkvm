@@ -1,0 +1,44 @@
+menu "ISO Virtual Media: microSD / FAT32 (P8 / A-13)"
+
+    config SD_ENABLE
+        bool "Enable microSD Card (SDMMC Slot 0 + FAT32 + iso_sd seams)"
+        default n
+        depends on SOC_SDMMC_HOST_SUPPORTED
+        select FATFS_USE_FASTSEEK
+        help
+            Enable the Waveshare ESP32-P4-ETH microSD card driver (SDMMC Slot 0:
+            D0..D3=GPIO39..42, CLK=GPIO43, CMD=GPIO44, 51k pull-ups on ESP_LDO_VO4,
+            PMOS power switch on GPIO45) and implement iso_blockdev_t / iso_fs_t /
+            iso_sd_status_t / iso_clock_t for ISO virtual media.
+            Requires FATFS_API_ENCODING_UTF_8=y and non-none FATFS_LFN for UTF-8
+            filenames in /iso/import/.
+
+    config SD_MAX_FREQ_KHZ
+        int "microSD SDMMC max clock frequency (kHz)"
+        default 40000
+        range 400 40000
+        depends on SD_ENABLE
+        help
+            Maximum SDMMC clock in kHz (40000 = 40 MHz High-Speed, 20000 = 20 MHz
+            Default Speed). Hardware verification: docs/HW_VERIFY.md I3.
+
+    config SD_MONITOR_POLL_MS
+        int "microSD health/removal monitor polling period (ms)"
+        default 2000
+        range 500 10000
+        depends on SD_ENABLE
+        help
+            Interval between SD card status checks and card-insertion re-probes
+            (there is no hardware card-detect GPIO wired on this board).
+
+    config SD_SELF_TEST_ON_BOOT
+        bool "Run non-destructive FAT32/CLMT/raw-sector self-test on boot"
+        default n
+        depends on SD_ENABLE
+        help
+            Developer verification only: writes a temporary /iso/_selftest.tmp file,
+            verifies iso_fs_t.get_extents() + iso_blockdev_t.read_sectors() match
+            iso_fs_t.read(), logs timing and throughput, and removes the temp file.
+            Never formats the card. Keep disabled in normal builds.
+
+endmenu

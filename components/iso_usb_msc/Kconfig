@@ -2,7 +2,7 @@ menu "Quad-IPKVM USB Virtual CD-ROM (MSC)"
 
     config USB_MSC_ENABLE
         bool "Enable USB Mass Storage (Virtual CD-ROM) interface"
-        depends on USB_DEVICE_ENABLE
+        depends on USB_DEVICE_ENABLE && !TINYUSB_MSC_ENABLED
         default n
         help
             Expose USB interface 3 as a Mass Storage Bulk-Only Transport (BOT)
@@ -22,7 +22,7 @@ menu "Quad-IPKVM USB Virtual CD-ROM (MSC)"
         int "iso_msc_task stack size (bytes)"
         depends on USB_MSC_ENABLE
         range 2048 16384
-        default 4096
+        default 8192
 
     config USB_MSC_TASK_PRIO
         int "iso_msc_task FreeRTOS priority"

@@ -97,10 +97,32 @@ void test_hs_config_desc_with_msc(void) {
     assert_msc_desc_common(msc, msc_len, hid, hid_len, 512u);
 }
 
+void test_runtime_config_desc_fallback_when_msc_not_ready(void) {
+    size_t hid_fs_len = 0, hid_hs_len = 0;
+    const uint8_t *hid_fs = usb_hid_get_fs_config_desc(&hid_fs_len);
+    const uint8_t *hid_hs = usb_hid_get_hs_config_desc(&hid_hs_len);
+
+    size_t fs_len = 0, hs_len = 0;
+    const uint8_t *fs_fallback = usb_hid_select_fs_config_desc(false, &fs_len);
+    const uint8_t *hs_fallback = usb_hid_select_hs_config_desc(false, &hs_len);
+    TEST_ASSERT_EQUAL_UINT(USB_HID_CONFIG_DESC_LEN, fs_len);
+    TEST_ASSERT_EQUAL_UINT(USB_HID_CONFIG_DESC_LEN, hs_len);
+    TEST_ASSERT_EQUAL_UINT8(USB_HID_ITF_COUNT, fs_fallback[4]);
+    TEST_ASSERT_EQUAL_UINT8(USB_HID_ITF_COUNT, hs_fallback[4]);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(hid_fs, fs_fallback, USB_HID_CONFIG_DESC_LEN);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(hid_hs, hs_fallback, USB_HID_CONFIG_DESC_LEN);
+
+    const uint8_t *fs_comp = usb_hid_select_fs_config_desc(true, &fs_len);
+    const uint8_t *hs_comp = usb_hid_select_hs_config_desc(true, &hs_len);
+    assert_msc_desc_common(fs_comp, fs_len, hid_fs, hid_fs_len, 64u);
+    assert_msc_desc_common(hs_comp, hs_len, hid_hs, hid_hs_len, 512u);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_hid_only_descriptors_unchanged);
     RUN_TEST(test_fs_config_desc_with_msc);
     RUN_TEST(test_hs_config_desc_with_msc);
+    RUN_TEST(test_runtime_config_desc_fallback_when_msc_not_ready);
     return UNITY_END();
 }
