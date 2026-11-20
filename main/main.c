@@ -69,6 +69,9 @@
 #endif
 #include "kvm_board_hw.h"
 #include "kvm_service.h"
+#if defined(CONFIG_SD_ENABLE) && CONFIG_SD_ENABLE
+#include "iso_sd.h"
+#endif
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -336,6 +339,19 @@ void app_main(void)
         }
 #endif
     }
+
+#if defined(CONFIG_SD_ENABLE) && CONFIG_SD_ENABLE
+    if (iso_sd_init(NULL) == ESP_OK) {
+#if defined(CONFIG_SD_SELF_TEST_ON_BOOT) && CONFIG_SD_SELF_TEST_ON_BOOT
+        esp_err_t st_err = iso_sd_run_self_test();
+        if (st_err != ESP_OK) {
+            ESP_LOGW(TAG, "iso_sd_run_self_test failed: %s", esp_err_to_name(st_err));
+        }
+#endif
+    } else {
+        ESP_LOGE(TAG, "iso_sd_init failed");
+    }
+#endif
 
     // Use a standard C `if` to guard the body, as specifically requested
     if (CONFIG_TC358743_INIT) {
