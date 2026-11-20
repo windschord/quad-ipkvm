@@ -2030,9 +2030,41 @@ function mutants(source) {
     });
 }
 
+// 1 つのミュータントを、別のプロセスで検査する(止まらなくなったものが、他に影響しないように。時間切れも「落ちた」と数える)。
+// 子プロセスの終了コード: 0 = 落ちた(殺した)、3 = 生き残った、4 = 適用できなかった。
+function runMutantChild(n, name) {
+    return new Promise((resolve) => {
+        const { spawn } = require('child_process');
+        const child = spawn(process.execPath, [__filename, '--mutant', String(n)], { stdio: 'ignore' });
+        let timedOut = false;
+        const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 90000);
+        child.on('exit', (code) => {
+            clearTimeout(timer);
+            if (timedOut) resolve('killed');
+            else if (code === 0) resolve('killed');
+            else if (code === 3) resolve(EQUIVALENT.has(name) ? 'equivalent' : 'survived');
+            else if (code === 4) resolve('nomatch');
+            else resolve('killed');
+        });
+    });
+}
+
 (async () => {
     const source = fs.readFileSync(APP_JS, 'utf8');
     const args = process.argv.slice(2);
+    const mc = args.indexOf('--mutant');
+    if (mc >= 0) { // 子プロセス
+        const n = Number(args[mc + 1]);
+        const [name, mutated] = mutants(source)[n - 1];
+        if (mutated === null) process.exit(4);
+        DEADLINE = Date.now() + 30000;
+        let killed = false;
+        try {
+            const r = await checkAll(mutated, { big: name.includes('bit length'), failFast: true });
+            killed = r.problems.length > 0;
+        } catch (e) { killed = true; }
+        process.exit(killed ? 0 : 3);
+    }
     const { problems, stats } = await checkAll(source);
     problems.forEach((p) => console.log('FAIL:', p));
     let status = problems.length ? 1 : 0;
@@ -2040,25 +2072,27 @@ function mutants(source) {
     const mi = args.indexOf('--mutations');
     if (mi >= 0) {
         const only = new Set(args.slice(mi + 1));
+        const list = mutants(source);
+        const results = new Array(list.length);
+        let next = 0;
+        const worker = async () => {
+            while (next < list.length) {
+                const k = next++;
+                const n = k + 1;
+                const name = list[k][0];
+                if (only.size && !only.has(String(n)) && !only.has(name)) { results[k] = 'skipped'; continue; }
+                results[k] = list[k][1] === null ? 'nomatch' : await runMutantChild(n, name);
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(4, require('os').cpus().length || 1) }, worker));
         let survived = 0;
-        let n = 0;
-        for (const [name, mutated] of mutants(source)) {
-            n++;
-            if (only.size && !only.has(String(n)) && !only.has(name)) continue;
-            if (mutated === null) { console.log('NOMATCH  ' + n + ' ' + name); survived++; continue; }
-            unhandled.length = 0;
-            let killed = false;
-            try {
-                DEADLINE = Date.now() + 20000;
-                const r = await checkAll(mutated, { big: name.includes('bit length'), failFast: true });
-                killed = r.problems.length > 0;
-            } catch (e) { killed = true; }
-            DEADLINE = 0;
-            const equiv = !killed && EQUIVALENT.has(name);
-            console.log((killed ? 'KILLED   ' : equiv ? 'EQUIVALENT ' : 'SURVIVED ') + n + ' ' + name);
-            if (!killed && !equiv) survived++;
-        }
-        console.log(n + ' mutants, ' + survived + ' survived or did not apply');
+        list.forEach(([name], k) => {
+            if (results[k] === 'skipped') return;
+            const label = { killed: 'KILLED   ', survived: 'SURVIVED ', equivalent: 'EQUIVALENT ', nomatch: 'NOMATCH  ' }[results[k]];
+            console.log(label + (k + 1) + ' ' + name);
+            if (results[k] === 'survived' || results[k] === 'nomatch') survived++;
+        });
+        console.log(list.length + ' mutants, ' + survived + ' survived or did not apply');
         if (survived) status = 1;
     }
     process.exit(status);
