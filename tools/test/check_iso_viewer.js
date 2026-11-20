@@ -18,6 +18,10 @@ const path = require('path');
 const vm = require('vm');
 const crypto = require('crypto');
 
+// ミュータントの実行では、1 回の検査に時間の上限を付ける(再試行が止まらなくなったものを「落ちた」と数える)。
+let DEADLINE = 0;
+function checkDeadline() { if (DEADLINE && Date.now() > DEADLINE) throw new Error('timeout (mutation run)'); }
+
 const unhandled = [];
 process.on('unhandledRejection', (e) => { unhandled.push(String(e && e.message)); });
 
@@ -360,6 +364,7 @@ function boot(Iso, server, opts) {
         async run(cond, limit) {
             for (let i = 0; i < (limit || 30000); i++) {
                 await flush();
+                checkDeadline();
                 if (cond()) return true;
                 if (timers.length === 0) { await flush(); return cond(); }
                 let k = 0;
@@ -374,6 +379,7 @@ function boot(Iso, server, opts) {
             const end = clock.t + ms;
             for (let i = 0; i < 200000; i++) {
                 await flush();
+                checkDeadline();
                 let k = -1;
                 for (let j = 0; j < timers.length; j++) if (timers[j].at <= end && (k < 0 || timers[j].at < timers[k].at || (timers[j].at === timers[k].at && timers[j].seq < timers[k].seq))) k = j;
                 if (k < 0) break;
@@ -1875,6 +1881,7 @@ async function bootApp(source, statusValue, opts) {
         async run(cond) {
             for (let i = 0; i < 100000; i++) {
                 await flush();
+                checkDeadline();
                 if (cond()) return true;
                 if (timers.length === 0) { await flush(); return cond(); }
                 let k = 0;
@@ -1889,6 +1896,7 @@ async function bootApp(source, statusValue, opts) {
             const end = clock.t + ms;
             for (let i = 0; i < 100000; i++) {
                 await flush();
+                checkDeadline();
                 let k = -1;
                 for (let j = 0; j < timers.length; j++) if (timers[j].at <= end && (k < 0 || timers[j].at < timers[k].at)) k = j;
                 if (k < 0) break;
@@ -1906,6 +1914,12 @@ async function bootApp(source, statusValue, opts) {
 }
 
 // ---------- ミュータント(--mutations): app.js の ISO の区間を 1 か所ずつ変えて、(A)〜(E) が落ちることを確認する ----------
+// 同値のミュータント(理由つき)。
+const EQUIVALENT = new Set([
+    // サーバーは、受理した PUT に、必ず offset + n を返す(docs/WEB_API.md 8.3: 一部だけ受理することはない)。応答の値を使うのは、念のため。
+    'upload: received from response ignored',
+]);
+
 function mutants(source) {
     const R = [
         // [名前, 元, 変更後]
@@ -2035,11 +2049,14 @@ function mutants(source) {
             unhandled.length = 0;
             let killed = false;
             try {
+                DEADLINE = Date.now() + 20000;
                 const r = await checkAll(mutated, { big: name.includes('bit length'), failFast: true });
                 killed = r.problems.length > 0;
             } catch (e) { killed = true; }
-            console.log((killed ? 'KILLED   ' : 'SURVIVED ') + n + ' ' + name);
-            if (!killed) survived++;
+            DEADLINE = 0;
+            const equiv = !killed && EQUIVALENT.has(name);
+            console.log((killed ? 'KILLED   ' : equiv ? 'EQUIVALENT ' : 'SURVIVED ') + n + ' ' + name);
+            if (!killed && !equiv) survived++;
         }
         console.log(n + ' mutants, ' + survived + ' survived or did not apply');
         if (survived) status = 1;
