@@ -1726,6 +1726,35 @@ async function checkAll(source, o) {
         ok('done', await h.run(() => h.msg().includes('取り込みが終わりました')), h.msg());
         eq('bodies', h.posts('/rescan').map((x) => x.json), [{}, { cursor: 0 }]);
     });
+    await guard('rescan: the same cursor with imports in between keeps going (imported files leave import/)', async () => {
+        // 9 files, 4 per call: the imported files move out of import/, so next_cursor stays 0 while the imports go on (PR #158 review)
+        stats.scenarios++;
+        const server = makeServer();
+        const h = boot(Iso, server);
+        const answers = [
+            { imported: 4, skipped: 0, next_cursor: 0 },
+            { imported: 4, skipped: 0, next_cursor: 0 },
+            { imported: 1, skipped: 0, next_cursor: null },
+        ];
+        server.hooks.push((req) => (req.path === '/api/v1/iso/rescan' ? { status: 200, body: answers[req.n - 1] } : undefined));
+        await started(h);
+        h.E['iso-rescan'].click();
+        ok('done (no "not moving" error)', await h.run(() => h.msg().includes('取り込みが終わりました')), h.msg());
+        eq('bodies', h.posts('/rescan').map((x) => x.json), [{}, { cursor: 0 }, { cursor: 0 }]);
+        eq('totals', h.msg().includes('取り込み 9 件、スキップ 0 件'), true);
+        eq('no error shown', h.msgError(), false);
+    });
+    await guard('rescan: the same cursor with only skips (no import) still stops', async () => {
+        stats.scenarios++;
+        const server = makeServer();
+        const h = boot(Iso, server);
+        server.hooks.push((req) => (req.path === '/api/v1/iso/rescan' ? { status: 200, body: { imported: 0, skipped: 4, next_cursor: 4 } } : undefined));
+        await started(h);
+        h.E['iso-rescan'].click();
+        ok('stops with an error', await h.run(() => h.msgError()), h.msg());
+        eq('requests: {} then {cursor:4}', h.posts('/rescan').map((x) => x.json), [{}, { cursor: 4 }]);
+        ok('the message says it is not moving', h.msg().includes('取り込みが進みません'), h.msg());
+    });
     await guard('stop() during an upload: nothing more is sent', async () => {
         stats.scenarios++;
         const server = makeServer();
@@ -2391,7 +2420,12 @@ function mutants(source) {
         ['delete: job not aborted', 'S.job.abort = true;\n                        S.job.deleted = true;', ''],
         ['rescan: cursor not sent', 'json: cursor === null ? {} : { cursor }', 'json: {}'],
         ['rescan: stops after one round', "if (next === null) {", 'if (true) {'],
-        ['rescan: cursor repeat not detected', 'if (next === cursor) {', 'if (false) {'],
+        ['rescan: cursor repeat not detected', 'if (next === cursor && d.imported === 0) {', 'if (false) {'],
+        ['rescan: same cursor stops even when files were imported (the PR #158 bug)', 'if (next === cursor && d.imported === 0) {', 'if (next === cursor) {'],
+        ['rescan: stops on every call without imports', 'if (next === cursor && d.imported === 0) {', 'if (d.imported === 0) {'],
+        ['rescan: stop condition inverted on imports', 'if (next === cursor && d.imported === 0) {', 'if (next === cursor && d.imported !== 0) {'],
+        ['rescan: stop condition looks at skipped instead of imported', 'if (next === cursor && d.imported === 0) {', 'if (next === cursor && d.skipped === 0) {'],
+        ['rescan: stops on a same cursor or on no imports', 'if (next === cursor && d.imported === 0) {', 'if (next === cursor || d.imported === 0) {'],
         ['rescan: skipped not counted', 'skipped += d.skipped;', ''],
         ['rescan: imported not counted', 'imported += d.imported;', ''],
         ['rescan: next_cursor 0 treated as end', 'if (next === null) {', 'if (!next) {'],

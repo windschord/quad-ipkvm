@@ -7,6 +7,7 @@
 import os
 import sys
 
+sys.dont_write_bytecode = True  # mutate_iso_extent と、ミュータントの定義の読み込みで、tools/test/__pycache__ を作らない(repo を変更しない)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mutate_iso_extent as common  # noqa: E402
 
