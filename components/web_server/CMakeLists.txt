@@ -6,10 +6,13 @@ if(NOT COMMAND idf_component_register)
 else()
     set(web_srcs "web_server.c" "web_status_map.c" "web_assets.c" "web_headers.c")
     set(web_requires esp_https_server nvs_flash mbedtls esp_timer web_cert auth_logic auth_crypto_mbedtls http_guard esp_hw_support net_eth lwip auth_worker_slot ws_video_core video_codec_policy video_status frame_hub ws_clients ws_input_core hid_logic kvm_api kvm_service)
-    # ISO virtual media API (/api/v1/iso*, docs/WEB_API.md 8): only when ISO_ENABLE (the paths are not registered otherwise)
+    # ISO virtual media API (/api/v1/iso*, docs/WEB_API.md 8). The source is built only when ISO_ENABLE (the paths are not registered otherwise).
+    # The requirements are NOT conditional: ESP-IDF expands the component requirements before sdkconfig is available, so a
+    # CONFIG_ISO_ENABLE test there never adds them (the build then fails: "iso_api.h: No such file", found by CI idf-build-iso).
+    # These components are pure C and are only linked when referenced.
+    list(APPEND web_requires iso_api iso_core iso_media iso_upload iso_catalog iso_extent iso_seams)
     if(CONFIG_ISO_ENABLE)
         list(APPEND web_srcs "web_iso.c")
-        list(APPEND web_requires iso_api iso_core iso_media iso_upload iso_catalog iso_extent iso_seams)
     endif()
     idf_component_register(
         SRCS ${web_srcs}
