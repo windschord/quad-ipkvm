@@ -1762,7 +1762,7 @@ async function checkAll(source, o) {
         const h = boot(Iso, server);
         h.iso.start();
         h.iso.start();
-        await h.run(() => h.toggleShown());
+        ok('the list arrived (the second start() did not drop it)', await h.run(() => h.toggleShown()));
         await h.idle();
         eq('one GET for two start() calls', h.gets().length, 1);
         h.iso.setPanel(true);
@@ -1887,6 +1887,84 @@ async function checkAll(source, o) {
         await upload(h2, fileOf(SIZE));
         ok('user-started finish retries busy', await h2.run(() => READY1(h2)));
         eq('three POSTs', server.log.filter((x) => x.path.endsWith('/finish')).length, 3);
+    });
+    await guard('review 3b: failures that do not advance received still count, after earlier ones that did', async () => {
+        stats.scenarios++;
+        const server = makeServer({ chunk: 8192 });
+        const h = boot(Iso, server);
+        // 2〜6 回目: 書かれたが応答が読めない(位置が進む)。7〜9 回目: 書かれず、応答もない(位置が進まない)。3 回の失敗は、上限(6)以内
+        server.hooks.push((req) => {
+            if (req.method !== 'PUT') return undefined;
+            if (req.n >= 2 && req.n <= 6) return { net: true, apply: true };
+            if (req.n >= 7 && req.n <= 9) return { net: true };
+            return undefined;
+        });
+        await started(h);
+        const f = fileOf(SIZE);
+        await upload(h, f, 'myiso', false);
+        ok('ready (the earlier failures were not added to the later ones)', await h.run(() => READY1(h)), [h.msg(), h.puts().length]);
+        ok('bytes intact', server.images[0].data.equals(f._b));
+        // 位置が進まない失敗だけが続くと、上限で止まる
+        const server2 = makeServer({ chunk: 8192 });
+        const h2 = boot(Iso, server2);
+        server2.hooks.push((req) => (req.method === 'PUT' && req.n >= 2 ? { net: true } : undefined));
+        await started(h2);
+        await upload(h2, fileOf(SIZE), 'myiso', false);
+        ok('stops when nothing advances', await h2.run(() => h2.msgError() && h2.iso._state.job === null));
+        eq('PUT count: 1 good + 7 failures (the 7th exceeds the limit of 6)', h2.puts().length, 8);
+    });
+    await guard('review 4c: a network error on the automatic finish POST is not answered with another POST', async () => {
+        stats.scenarios++;
+        for (const apply of [false, true]) {
+            const server = makeServer();
+            const im = server.add({ name: 'big', size: 50000, state: 'incomplete', data: makeIso(50000) });
+            server.hooks.push((req) => (req.path.endsWith('/finish') && req.n === 1 ? { net: true, apply } : undefined));
+            const h = boot(Iso, server);
+            h.iso.start();
+            await h.run(() => h.iso._state.job === null && server.log.some((x) => x.path.endsWith('/finish')));
+            await h.runFor(120000);
+            eq('one POST (applied=' + apply + ')', server.log.filter((x) => x.path.endsWith('/finish')).length, 1);
+            // 適用された場合は、一覧で finalizing(または ready)と分かり、その待ちで ready になる。適用されなかった場合は、メッセージを出して止まる
+            if (apply) eq('applied: ready through the list', im.state, 'ready');
+            else eq('not applied: the user is told to press the button', [im.state, h.msgError(), h.msg().includes('「完了処理」')], ['incomplete', true, true]);
+        }
+    });
+    await guard('review 5c: logout while the upload is being prepared drops it silently', async () => {
+        stats.scenarios++;
+        const server = makeServer();
+        const h = boot(Iso, server);
+        await started(h);
+        const g = gate();
+        let held = false;
+        server.hooks.push((req) => { if (req.method === 'GET' && !held) { held = true; return { wait: g.p }; } return undefined; });
+        h.iso.refreshList();
+        await h.idle();
+        h.selectFile(fileOf(SIZE), 'late');
+        h.E['iso-upload'].click(); // 保留中の一覧の取得を待つ
+        await h.idle();
+        h.iso.stop(); // ログアウト
+        h.iso.start(); // 再ログイン
+        await h.run(() => h.toggleShown());
+        g.open();
+        await h.runFor(10000);
+        eq('nothing was started and nothing is said about it', [h.posts().length, h.puts().length, h.msgError(), h.iso._state.job], [0, 0, false, null]);
+    });
+    await guard('review 8d: the result of a stopped rescan is not shown in the new session', async () => {
+        stats.scenarios++;
+        const server = makeServer();
+        server.importEntries = ['ok'];
+        const h = boot(Iso, server);
+        await started(h);
+        const g = gate();
+        server.hooks.push((req) => (req.path === '/api/v1/iso/rescan' && req.n === 1 ? { wait: g.p } : undefined));
+        h.E['iso-rescan'].click();
+        await h.idle();
+        h.iso.stop();
+        h.iso.start();
+        await h.run(() => h.toggleShown());
+        g.open();
+        await h.runFor(10000);
+        eq('no message from the old operation', h.msg(), '');
     });
     await guard('review 4b: the automatic finish still waits for finalizing with GET after 202', async () => {
         stats.scenarios++;
@@ -2272,7 +2350,7 @@ function mutants(source) {
         ['upload: slow threshold never', 'if (dt >= SLOW_MS && job.chunk > MIN_CHUNK)', 'if (false)'],
         ['upload: fast never grows', 'else if (dt < FAST_MS && job.chunk < job.chunkMax)', 'else if (false)'],
         ['upload: net error does not shrink', 'if (job.chunk > MIN_CHUNK) job.chunk = Math.max(MIN_CHUNK, job.chunk >> 1);\n                    await sleep(Math.min(1000 * netFails, 5000));', 'await sleep(Math.min(1000 * netFails, 5000));'],
-        ['upload: net error does not re-sync', "const s = await resync(job);\n                    reachable = s !== 'retry';\n                    if (s === 'stop') return 'failed';\n                    if (s === 'complete') return 'done';\n                    reportProgress(job);\n                    continue;", 'continue;'],
+        ['upload: net error does not re-sync', "const s = await resync(job);\n                    reachable = s !== 'retry';\n                    if (s === 'stop') return 'failed';\n                    if (s === 'complete') return 'done';\n                    if (job.received > before) {", "const s = 'go';\n                    reachable = true;\n                    if (job.received > before) {"],
         ['upload: net error retries forever', 'if (netFails > MAX_NET_FAILS) {', 'if (netFails > 1e9) {'],
         ['upload: mismatch loop unbounded', 'if (sameMismatch > 3) {', 'if (sameMismatch > 1e9) {'],
         ['upload: 413 does not shrink', "if (r.status === 413 && code === 'payload_too_large' && job.chunk > MIN_CHUNK) {", 'if (false) {'],
@@ -2294,7 +2372,7 @@ function mutants(source) {
         ['finish: incomplete full -> no resend', 'continue; // received == size: finish を送り直す', "return 'failed';"],
         ['finish: incomplete partial -> no resume', "job.received = im.received;\n                        return 'resume';\n                    }\n                    continue;", "return 'failed';\n                    }\n                    continue;"],
         ['finish: size_mismatch ignored', "if (r.status === 409 && code === 'size_mismatch') {", 'if (false) {'],
-        ['finish: busy not retried', "if (r.status === 503 && code === 'busy' && ++waits <= MAX_WAIT_STEPS) {\n                    await sleep((r.retryAfter || 1) * 1000);\n                    continue;\n                }\n                if (r.status === 503 && (code === 'not_ready' || code === 'sd_unavailable') && ++rounds", "if (false) {\n                    continue;\n                }\n                if (r.status === 503 && (code === 'not_ready' || code === 'sd_unavailable') && ++rounds"],
+        ['finish: busy not retried', "code === 'busy' && !job.auto && ++waits <= MAX_WAIT_STEPS) {\n                    await sleep((r.retryAfter || 1) * 1000);\n                    continue;", "code === 'busy' && false) {\n                    await sleep((r.retryAfter || 1) * 1000);\n                    continue;"],
         ['finish: rounds unbounded', 'if (++rounds > MAX_FINISH_ROUNDS) {', 'if (false) {'],
         ['finish: waits for SD not done', 'if (!(await waitSdReady(job))) {\n                        if (alive(job)) setMessage(describeError(503, { error: \'not_ready\' }), \'error\');\n                        return \'failed\';\n                    }\n                    const im = imageById(job.id);', 'const im = imageById(job.id);'],
         ['finish: waitFinalize interval 1000 -> 0', "for (let i = 0; i < 100000 && alive(job); i++) {\n                await sleep(1000);", "for (let i = 0; i < 100000 && alive(job); i++) {\n                await sleep(0);"],
@@ -2331,7 +2409,7 @@ function mutants(source) {
         ['stop: job not aborted', 'if (S.job !== null) S.job.abort = true;\n            S.job = null;', 'S.job = null;'],
         ['stop: timer not cleared', 'if (S.pollTimer !== null) {\n                deps.clearTimeout(S.pollTimer);\n                S.pollTimer = null;\n            }\n            S.list = null;', 'S.list = null;'],
         ['start: not idempotent', 'if (S.running) return;\n            S.running = true;', 'S.running = true;'],
-        ['401: onUnauthorized not called', "if (res.status === 401 && deps.onUnauthorized) deps.onUnauthorized();", ''],
+        ['401: onUnauthorized not called', "if (res.status === 401 && deps.onUnauthorized && S.gen === gen) deps.onUnauthorized();", ''],
         ['review2: 401 of an old generation stops the new one', 'deps.onUnauthorized && S.gen === gen) deps.onUnauthorized();', 'deps.onUnauthorized) deps.onUnauthorized();'],
         ['review3: net failures are never reset by progress', 'netFails = 0; // 応答は失われたが、サーバーには届いている（位置が進んだ）: 失敗の数に入れない', ''],
         ['review3: limit applied before the re-sync', '} else if (netFails > MAX_NET_FAILS) {', '} else if (false) {'],
