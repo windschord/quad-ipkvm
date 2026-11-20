@@ -11,6 +11,10 @@
 #include "web_status_map.h"
 #include "kvm_api.h"
 #include "kvm_service.h"
+#if CONFIG_ISO_ENABLE
+#include "web_iso.h"
+#include "iso_api.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -962,6 +966,9 @@ static esp_err_t err_405_handler(httpd_req_t *req, httpd_err_code_t err) {
     add_security_headers(req, NULL);
     httpd_resp_set_type(req, "application/json");
     const char *allow = web_headers_allow_for_uri(req->uri);
+#if CONFIG_ISO_ENABLE
+    if (!allow) allow = iso_api_allow_for_path(req->uri);
+#endif
     if (allow) {
         httpd_resp_set_hdr(req, "Allow", allow);
     }
@@ -1945,6 +1952,36 @@ static esp_err_t power_force_handler(httpd_req_t *req) {
 }
 
 
+#if CONFIG_ISO_ENABLE
+// ---- ISO virtual media API (docs/WEB_API.md 8): steps 1-2 of the decision order (Host / setup / session / Origin) ----
+// Same checks as the KVM handler. GET needs no Origin; POST / PUT / DELETE are decided as POST (Origin mandatory). The 415 check is done by iso_api.
+// close_on_deny (PUT): the body is not read, so the connection is closed after the error response.
+bool web_server_iso_guard(httpd_req_t *req, bool mutating, bool close_on_deny) {
+    add_security_headers(req, NULL);
+    bool host_ok = check_host_origin(req, mutating);
+
+    uint8_t token[32];
+    bool has_token = get_session_token(req, token);
+    xSemaphoreTake(s_auth_mutex, portMAX_DELAY);
+    bool valid = false;
+    if (has_token) {
+        valid = (auth_logic_validate_session(&s_auth_ctx, token, sizeof(token), esp_timer_get_time() / 1000) == 0);
+    }
+    auth_state_e state = s_auth_ctx.state;
+    xSemaphoreGive(s_auth_mutex);
+
+    http_guard_action_e action = http_guard_decide(state, mutating ? HTTP_GUARD_METHOD_POST : HTTP_GUARD_METHOD_GET, HTTP_GUARD_PATH_OTHER,
+                                                   valid, host_ok, true, host_ok);
+    if (action == HTTP_GUARD_ACTION_ALLOW) return true;
+    if (close_on_deny) {
+        httpd_resp_set_hdr(req, "Connection", "close");
+        httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
+    }
+    (void)send_action_error(req, action);
+    return false;
+}
+#endif
+
 esp_err_t web_server_start(frame_hub_t *hub) {
     ESP_LOGI(TAG, "Starting web server...");
 
@@ -2050,6 +2087,12 @@ esp_err_t web_server_start(frame_hub_t *hub) {
     conf.httpd.stack_size = 10240; // 10KB to ensure PBKDF2/mbedTLS have enough space
     // 3 static + 4 auth + /video + /ws + 5 KVM/ATX (status, select, power press/reset/force) = 14 (<= 17)
     conf.httpd.max_uri_handlers = 17; // Increased for WS and the KVM/ATX API
+#if CONFIG_ISO_ENABLE
+    // + /api/v1/iso (GET, POST) and /api/v1/iso/ * (GET, POST, PUT, DELETE) = 6 (docs/WEB_API.md 8). The wildcard matcher is server-wide;
+    // the other URIs have no '*' or '?', so they still match exactly. TODO(A-15 / hw-verify): confirm on the device.
+    conf.httpd.max_uri_handlers = 24;
+    conf.httpd.uri_match_fn = httpd_uri_match_wildcard;
+#endif
     conf.httpd.send_wait_timeout = CONFIG_WEB_SERVER_SEND_WAIT_TIMEOUT;
     conf.httpd.close_fn = ws_input_close_fn;
 
@@ -2198,6 +2241,12 @@ esp_err_t web_server_start(frame_hub_t *hub) {
         ESP_LOGE(TAG, "Failed to register URI handlers on main server");
         goto fail;
     }
+#if CONFIG_ISO_ENABLE
+    if (web_iso_register(server) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register ISO URI handlers on main server");
+        goto fail;
+    }
+#endif
     if (httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, err_404_handler) != ESP_OK ||
         httpd_register_err_handler(server, HTTPD_405_METHOD_NOT_ALLOWED, err_405_handler) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register error handlers on main server");
