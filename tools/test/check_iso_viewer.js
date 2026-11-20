@@ -1093,15 +1093,35 @@ async function checkAll(source, o) {
         const h = boot(Iso, server);
         const f = fileOf(SIZE);
         const seen = [];
-        server.hooks.push((req) => { if (req.method === 'GET') seen.push([server.images[0] && server.images[0].state, h.progressText()]); return undefined; });
+        let tFinish = null;
+        server.hooks.push((req) => {
+            if (req.path.endsWith('/finish')) tFinish = h.clock.t;
+            if (req.method === 'GET') seen.push([server.images[0] && server.images[0].state, h.progressText()]);
+            return undefined;
+        });
         await started(h);
         await upload(h, f);
         ok('ready', await h.run(() => READY1(h)));
+        // 最終処理に GET が 4 回要る: 1 秒おきの確認なので、finish から ready まで 1.5 秒以上かかる(間隔 0 の待ちでないこと)
+        ok('the wait polls about once a second', h.clock.t - tFinish >= 1500, h.clock.t - tFinish);
         const fin = seen.filter((s) => s[0] === 'finalizing');
         ok('polled several times while finalizing', fin.length >= 3, seen);
         ok('the wait is announced', fin.every((s) => s[1].includes('最終処理中')), fin);
         eq('finish only once', h.server.log.filter((x) => x.path.endsWith('/finish')).length, 1);
         eq('message', h.msg().includes('完了'), true);
+    });
+    await guard('finish: keeps ending in incomplete: bounded number of finish requests, then an error', async () => {
+        stats.scenarios++;
+        const server = makeServer({ finalizePolls: 1 });
+        const h = boot(Iso, server);
+        server.onFinalize = (i) => { i.state = 'incomplete'; i.fromFinish = false; return true; }; // SD は ready のまま、いつも incomplete に戻る
+        await started(h);
+        await upload(h, fileOf(SIZE));
+        ok('stops with an error', await h.run(() => h.msgError() && h.iso._state.job === null));
+        eq('finish was sent 6 times (1 + 5 rounds)', server.log.filter((x) => x.path.endsWith('/finish')).length, 6);
+        eq('message', h.msg().includes('最終処理が完了しません'), true);
+        await h.runFor(60000);
+        eq('and then nothing more (no automatic finish either)', server.log.filter((x) => x.path.endsWith('/finish')).length, 6);
     });
     await guard('finish: invalid (not_iso) ends the wait with the reason', async () => {
         stats.scenarios++;
@@ -1953,6 +1973,13 @@ const EQUIVALENT = new Set([
     'upload: received from response ignored',
     // 書き込みの失敗の後、ここで SD を待たなくても、直後の resync が(SD が使えなければ)同じ待ちをする。
     'upload: sd error does not wait for the SD',
+    // finalizing から incomplete に戻ったとき、SD が使えない間は一覧にイメージが出ないので、waitFinalize 自身が SD の復帰を待つ。その後の待ちは二重の防御。
+    'finish: waits for SD not done',
+    // 自動送信の「1 回だけ」は、maybeAutoFinish と startJob の 2 か所の記録で守る(二重の防御)。両方を外すと落ちる(次のミュータント)。
+    'auto: sent repeatedly',
+    'auto: images the page handled are fair game',
+    // SD が使えない間は、一覧にイメージが出ない(docs/WEB_API.md 8.1)ので、候補がない。検査は二重の防御。
+    'auto: even when the SD is down',
 ]);
 
 function mutants(source) {
@@ -2059,11 +2086,16 @@ function mutants(source) {
         ['wiring: iso.stop dropped', '            iso.stop();\n            elAuthCard.classList.remove', '            elAuthCard.classList.remove'],
         ['wiring: 401 handler dropped', 'iso.stop();\n            setTimeout(fetchStatus, 1000);', 'setTimeout(fetchStatus, 1000);'],
     ];
-    return R.map(([name, from, to]) => {
+    const out = R.map(([name, from, to]) => {
         const first = source.indexOf(from);
         if (first < 0) return [name, null];
         return [name, source.slice(0, first) + to + source.slice(first + from.length)];
     });
+    // 2 か所を同時に変えるもの(二重の防御を、両方外す)
+    const a1 = 'S.autoDone.add(im.id);\n                    startJob(';
+    const a2 = 'if (id !== null) S.autoDone.add(id);';
+    out.push(['auto: no record of automatic finishes at all (both places)', source.includes(a1) && source.includes(a2) ? source.replace(a1, 'startJob(').replace(a2, '') : null]);
+    return out;
 }
 
 // 1 つのミュータントを、別のプロセスで検査する(止まらなくなったものが、他に影響しないように。時間切れも「落ちた」と数える)。
