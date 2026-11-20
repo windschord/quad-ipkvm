@@ -396,6 +396,18 @@ button:disabled {
     margin: 8px 0 3px;
     font-size: 0.9em;
 }
+/* The name of the progress bar for assistive technology (not shown). */
+.iso-upload label.iso-sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
 .iso-upload .iso-check {
     display: flex;
     align-items: flex-start;

@@ -302,7 +302,7 @@ const IsoViewer = (function () {
         const S = {
             running: false, gen: 0, disabled: false, panelVisible: false,
             list: null, listSig: null, pollTimer: null, refreshing: null,
-            job: null, opBusy: false, autoDone: new Set(), lastFile: null, lastFileId: null,
+            job: null, starting: null, opBusy: false, autoDone: new Set(), lastFile: null, lastFileId: null,
             message: null, rendered: []
         };
 
@@ -333,7 +333,8 @@ const IsoViewer = (function () {
                 show(ui.progress, true);
             }
         }
-        function fileBusy() { return S.job !== null; }
+        // ジョブの実行中、または、アップロードの準備（一覧の取得）中。準備中も、新しい開始を受け付けない
+        function fileBusy() { return S.job !== null || S.starting !== null; }
         function sdReady() { return !!(S.list && S.list.sd.state === 'ready'); }
         function updateControls() {
             const busy = fileBusy();
@@ -344,7 +345,7 @@ const IsoViewer = (function () {
             ui.upload.disabled = busy || S.opBusy || !ok;
             ui.rescan.disabled = busy || S.opBusy || !ok;
             ui.eject.disabled = S.opBusy;
-            show(ui.pause, busy && S.job.kind === 'upload' && (S.job.phase === 'uploading' || S.job.phase === 'hashing'));
+            show(ui.pause, S.job !== null && S.job.kind === 'upload' && (S.job.phase === 'uploading' || S.job.phase === 'hashing'));
         }
 
         // ---- 通信 ----
@@ -367,6 +368,7 @@ const IsoViewer = (function () {
                 init.signal = ctl.signal;
                 timer = deps.setTimeout(() => ctl.abort(), opts.timeoutMs);
             }
+            const gen = S.gen; // 世代: この要求を出した時点の画面（stop() の後の古い応答で、新しい画面を止めない）
             try {
                 const res = await deps.fetch(url, init);
                 let data = null;
@@ -376,7 +378,7 @@ const IsoViewer = (function () {
                     const ra = res.headers && res.headers.get ? Number(res.headers.get('Retry-After')) : NaN;
                     if (isFinite(ra) && ra > 0) retryAfter = Math.min(ra, 30);
                 } catch (e) { retryAfter = 0; }
-                if (res.status === 401 && deps.onUnauthorized) deps.onUnauthorized();
+                if (res.status === 401 && deps.onUnauthorized && S.gen === gen) deps.onUnauthorized();
                 return { status: res.status, data, retryAfter, net: false };
             } catch (e) {
                 return { status: 0, data: null, retryAfter: 0, net: true };
@@ -675,21 +677,24 @@ const IsoViewer = (function () {
                 if (r.net || r.status === 200) {
                     // 応答が読めない、または形の違う応答: 小さくして、一覧で received を取り直して続ける
                     netFails++;
-                    if (netFails > MAX_NET_FAILS) {
-                        // 一覧は取れる（機器には届く）のに、チャンクだけが失敗し続けるときは、別の文にする
+                    if (job.chunk > MIN_CHUNK) job.chunk = Math.max(MIN_CHUNK, job.chunk >> 1);
+                    await sleep(Math.min(1000 * netFails, 5000));
+                    if (!alive(job)) return 'stopped';
+                    const before = job.received;
+                    const s = await resync(job);
+                    reachable = s !== 'retry';
+                    if (s === 'stop') return 'failed';
+                    if (s === 'complete') return 'done';
+                    if (job.received > before) {
+                        netFails = 0; // 応答は失われたが、サーバーには届いている（位置が進んだ）: 失敗の数に入れない
+                    } else if (netFails > MAX_NET_FAILS) {
+                        // 位置が進まないまま続く。一覧は取れる（機器には届く）のに、チャンクだけが失敗し続けるときは、別の文にする
                         // （拒否のときに接続を閉じるため、理由の応答が読めないことがある。docs/WEB_API.md 8.3）
                         setMessage(reachable
                             ? '機器には接続できますが、チャンクの送信が繰り返し失敗します（空き容量不足、回線が遅すぎる、または機器が拒否している可能性があります）。しばらくしてから「再開」を押してください。'
                             : 'サーバーに接続できません。ネットワークを確認して、「再開」を押してください。', 'error');
                         return 'failed';
                     }
-                    if (job.chunk > MIN_CHUNK) job.chunk = Math.max(MIN_CHUNK, job.chunk >> 1);
-                    await sleep(Math.min(1000 * netFails, 5000));
-                    if (!alive(job)) return 'stopped';
-                    const s = await resync(job);
-                    reachable = s !== 'retry';
-                    if (s === 'stop') return 'failed';
-                    if (s === 'complete') return 'done';
                     reportProgress(job);
                     continue;
                 }
@@ -827,15 +832,15 @@ const IsoViewer = (function () {
                     setMessage(describeError(409, r.data), 'error');
                     return 'failed';
                 }
-                if (r.status === 409 && code === 'upload_in_progress' && ++waits <= MAX_WAIT_STEPS) {
+                if (r.status === 409 && code === 'upload_in_progress' && !job.auto && ++waits <= MAX_WAIT_STEPS) {
                     await sleep(1000);
                     continue;
                 }
-                if (r.status === 503 && code === 'busy' && ++waits <= MAX_WAIT_STEPS) {
+                if (r.status === 503 && code === 'busy' && !job.auto && ++waits <= MAX_WAIT_STEPS) {
                     await sleep((r.retryAfter || 1) * 1000);
                     continue;
                 }
-                if (r.status === 503 && (code === 'not_ready' || code === 'sd_unavailable') && ++rounds <= MAX_FINISH_ROUNDS) {
+                if (r.status === 503 && (code === 'not_ready' || code === 'sd_unavailable') && !job.auto && ++rounds <= MAX_FINISH_ROUNDS) {
                     if (!(await waitSdReady(job))) {
                         if (alive(job)) setMessage(describeError(503, r.data), 'error');
                         return 'failed';
@@ -864,6 +869,10 @@ const IsoViewer = (function () {
                             return 'invalid';
                         }
                         if (w !== 'incomplete') return w === 'gone' ? 'failed' : 'stopped';
+                    }
+                    if (job.auto) {
+                        setMessage('完了処理の結果を確認できません。一覧の「完了処理」を押してください。', 'error');
+                        return 'failed';
                     }
                     continue;
                 }
@@ -939,26 +948,40 @@ const IsoViewer = (function () {
                 return;
             }
             setMessage('', null);
-            const list = await refreshList();
-            if (list === null) {
-                setMessage('ISO の状態を取得できません。ネットワークを確認してください。', 'error');
-                return;
-            }
-            if (list.sd.state !== 'ready') {
-                setMessage(describeError(503, { error: 'not_ready' }), 'error');
-                return;
-            }
-            // 同じ名前で、同じ大きさの中断中のイメージがあれば、新しく作らず、その続きから送る
-            const same = list.images.find((i) => i.name === name);
-            if (same) {
-                if ((same.state === 'incomplete' || same.state === 'uploading') && same.size === file.size) {
-                    resumeWith(same.id, file);
+            // 開始権: 一覧の取得を待つ間も、他の開始（もう一度の押下、自動の finish）を入れない。準備に失敗したら、必ず放す
+            const token = {};
+            const gen = S.gen;
+            S.starting = token;
+            updateControls();
+            try {
+                const list = await refreshList();
+                if (S.gen !== gen) return; // 待つ間に、ログアウトした
+                if (list === null) {
+                    setMessage('ISO の状態を取得できません。ネットワークを確認してください。', 'error');
                     return;
                 }
-                setMessage(describeError(409, { error: 'name_exists' }), 'error');
-                return;
+                if (list.sd.state !== 'ready') {
+                    setMessage(describeError(503, { error: 'not_ready' }), 'error');
+                    return;
+                }
+                // 同じ名前で、同じ大きさの中断中のイメージがあれば、新しく作らず、その続きから送る
+                const same = list.images.find((i) => i.name === name);
+                if (same) {
+                    if ((same.state === 'incomplete' || same.state === 'uploading') && same.size === file.size) {
+                        resumeWith(same.id, file);
+                        return;
+                    }
+                    setMessage(describeError(409, { error: 'name_exists' }), 'error');
+                    return;
+                }
+                startNewUpload(file, name, list);
+            } finally {
+                if (S.starting === token) S.starting = null;
+                if (S.gen === gen) updateControls();
             }
-            S.lastFile = file;
+        }
+
+        function startNewUpload(file, name, list) {
             startJob('upload', null, file, async (job) => {
                 let sha = null;
                 if (ui.hash.checked) {
@@ -983,6 +1006,8 @@ const IsoViewer = (function () {
                 }
                 job.id = r.data.id;
                 S.autoDone.add(job.id);
+                // 再開用のファイルと id は、id が決まってから、組で更新する（begin が失敗したときは、前の組を保つ）
+                S.lastFile = file;
                 S.lastFileId = job.id;
                 job.received = 0;
                 job.chunkMax = Number.isSafeInteger(r.data.chunk_size) && r.data.chunk_size > 0 ? r.data.chunk_size : list.chunk;
@@ -1049,13 +1074,14 @@ const IsoViewer = (function () {
 
         // 再読み込みの後: incomplete で received == size のものに、finish を 1 回だけ自動で送る
         function maybeAutoFinish() {
-            if (S.job !== null || S.opBusy || !S.list || S.list.sd.state !== 'ready' || S.list.upload !== null) return;
+            if (S.job !== null || S.starting !== null || S.opBusy || !S.list || S.list.sd.state !== 'ready' || S.list.upload !== null) return;
             for (const im of S.list.images) {
                 if (im.state === 'incomplete' && im.size !== null && im.size > 0 && im.received === im.size && !S.autoDone.has(im.id)) {
                     S.autoDone.add(im.id);
                     startJob('finish', im.id, null, async (job) => {
                         job.size = im.size;
                         job.received = im.size;
+                        job.auto = true; // 自動の経路: finish の POST は 1 回（失敗しても、勝手に再送しない）
                         const f = await finishFlow(job);
                         if (f === 'resume') setMessage('アップロードが途中までです。元のファイルを選んで「再開」を押してください。', 'error');
                     });
@@ -1147,6 +1173,7 @@ const IsoViewer = (function () {
 
         function doRescan() {
             if (fileBusy()) return undefined;
+            const gen = S.gen; // 操作を始めたときの世代: ログアウトの後は、次のバッチを送らない
             return runOp(async () => {
                 setMessage('取り込み中…', 'info');
                 let cursor = null;
@@ -1154,7 +1181,9 @@ const IsoViewer = (function () {
                 let skipped = 0;
                 let busyTries = 0;
                 for (let i = 0; i < MAX_RESCAN_ROUNDS; i++) {
+                    if (S.gen !== gen) return;
                     const r = await request('POST', API + '/rescan', { json: cursor === null ? {} : { cursor } });
+                    if (S.gen !== gen) return;
                     if (r.status === 503 && r.data && r.data.error === 'busy' && ++busyTries <= 30) {
                         await sleep((r.retryAfter || 1) * 1000);
                         i--;
@@ -1231,6 +1260,9 @@ const IsoViewer = (function () {
             S.autoDone = new Set();
             S.lastFile = null;
             S.lastFileId = null;
+            S.starting = null;
+            ui.file.value = ''; // ログアウト: 選んだファイルと名前を残さない（パネルを閉じるだけなら、残す）
+            ui.name.value = '';
             S.panelVisible = false;
             show(ui.panel, false);
             show(ui.toggle, false);

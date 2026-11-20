@@ -74,7 +74,7 @@ function makeDom(violations) {
             this._text = '';
             this.listeners = {};
             this.disabled = false;
-            this.value = '';
+            this._value = '';
             this.max = 1;
             this.checked = info ? info.checked : false;
             this.files = null;
@@ -85,6 +85,11 @@ function makeDom(violations) {
                 contains(n) { return self.classes.has(n); },
                 toggle(n, on) { if (on === undefined ? !self.classes.has(n) : on) self.classes.add(n); else self.classes.delete(n); },
             };
+        }
+        get value() { return this._value; }
+        set value(v) {
+            this._value = this.tag === 'input' ? String(v) : v;
+            if (this.tag === 'input' && this._attrs.type === 'file' && this._value === '') this.files = null; // 本物のブラウザと同じ: 空にすると、選択が消える
         }
         get textContent() { return this.children.length ? this.children.map((c) => c.textContent).join('') : this._text; }
         set textContent(v) { this.children = []; this._text = String(v); }
@@ -290,10 +295,12 @@ function makeServer(init) {
         for (const h of V.hooks) {
             const o = h(req, V);
             if (o === undefined) continue;
+            if (o.wait) await o.wait; // 応答を保留する(解かれるまで)
             if (o.net) {
                 if (o.apply) handle(req);
                 throw new TypeError('Failed to fetch');
             }
+            if (o.status === undefined) break; // 保留だけ: そのあと、普通に処理する
             return respond(o);
         }
         if (req.method === 'PUT') clock.t += V.putMs(req);
@@ -557,6 +564,7 @@ async function checkAll(source, o) {
 
     // ===== (C) 偽のサーバーとの通信 =====
     const fileOf = (size, signature) => new FakeFile(makeIso(size, signature), 'test.iso');
+    const gate = () => { let open; const p = new Promise((r) => { open = r; }); return { p, open }; };
     const READY1 = (h) => h.rows().length === 1 && h.rows()[0].badge === '利用可能' && h.iso._state.job === null;
     const SIZE = 100000; // chunk_size 32768 で 4 回: 32768 + 32768 + 32768 + 1696
     const upload = async (h, file, name, hashOn) => {
@@ -1678,22 +1686,46 @@ async function checkAll(source, o) {
         eq('panel closed and idle again: stops', h.gets().length, n2);
         ok('time moved on', h.clock.t > t0);
     });
-    await guard('polling does not hit the server while PUTs are running', async () => {
+    await guard('polling does not hit the server while a PUT is in flight (held), and resumes afterwards', async () => {
         stats.scenarios++;
         const server = makeServer();
-        server.putMs = () => 3000;
         const h = boot(Iso, server);
+        const g = gate();
+        server.hooks.push((req) => (req.method === 'PUT' && req.n === 2 ? { wait: g.p } : undefined));
         await started(h);
-        const f = fileOf(SIZE);
-        await upload(h, f);
-        await h.run(() => READY1(h));
-        // PUT の間(1 回 3 秒)に、一覧の GET を挟まない
-        const idx = h.puts().map((p) => server.log.indexOf(p));
-        const between = server.log.slice(idx[0], idx[idx.length - 1]).filter((x) => x.method === 'GET');
-        eq('no GET between the first and the last PUT', between.length, 0);
+        await upload(h, fileOf(SIZE));
+        ok('the 2nd PUT is held', await h.run(() => h.puts().length === 2));
+        await h.idle();
+        const n0 = h.gets().length;
+        await h.runFor(20000); // ポーリングの期限(1 秒、3 秒)を何度も過ぎる
+        eq('no GET while the PUT is held', h.gets().length, n0);
+        eq('the PUT is still the last request', server.log[server.log.length - 1].method, 'PUT');
+        g.open();
+        ok('ready after the PUT is released', await h.run(() => READY1(h)));
+        ok('polling goes on after the PUTs (GETs are made again)', h.gets().length > n0, [h.gets().length, n0]);
     });
 
     // 停止(ログアウト)
+    await guard('stop() clears the poll timer at once', async () => {
+        stats.scenarios++;
+        const server = makeServer();
+        const h = boot(Iso, server);
+        await started(h);
+        await h.idle();
+        ok('a poll timer is pending while the panel is open', h.timers.length >= 1, h.timers.length);
+        h.iso.stop();
+        eq('no timer is left after stop()', h.timers.length, 0);
+    });
+    await guard('rescan: next_cursor 0 is a position, not the end', async () => {
+        stats.scenarios++;
+        const server = makeServer();
+        const h = boot(Iso, server);
+        server.hooks.push((req) => (req.path === '/api/v1/iso/rescan' ? { status: 200, body: { imported: 0, skipped: 1, next_cursor: req.n === 1 ? 0 : null } } : undefined));
+        await started(h);
+        h.E['iso-rescan'].click();
+        ok('done', await h.run(() => h.msg().includes('取り込みが終わりました')), h.msg());
+        eq('bodies', h.posts('/rescan').map((x) => x.json), [{}, { cursor: 0 }]);
+    });
     await guard('stop() during an upload: nothing more is sent', async () => {
         stats.scenarios++;
         const server = makeServer();
@@ -1730,7 +1762,9 @@ async function checkAll(source, o) {
         const h = boot(Iso, server);
         h.iso.start();
         h.iso.start();
-        await h.run(() => h.gets().length >= 1);
+        await h.run(() => h.toggleShown());
+        await h.idle();
+        eq('one GET for two start() calls', h.gets().length, 1);
         h.iso.setPanel(true);
         await h.run(() => h.gets().length >= 2);
         const n = h.gets().length;
@@ -1748,6 +1782,7 @@ async function checkAll(source, o) {
         await h.runFor(30000);
         ok('the loop ends', !h.E['iso-upload'].disabled);
         eq('no pause message after a delete', h.msg().includes('一時停止'), false);
+        eq('and no error either (the loop was stopped, not refused by a 404)', h.msgError(), false);
         eq('no PUT after the DELETE', server.log.slice(server.log.findIndex((x) => x.method === 'DELETE')).filter((x) => x.method === 'PUT').length <= 1, true);
         eq('image gone', server.images.length, 0);
     });
@@ -1784,6 +1819,215 @@ async function checkAll(source, o) {
         ok('the source has no eval / Function / storage', !/\beval\(|new Function|\.innerText|localStorage|sessionStorage/.test(code));
     });
 
+    // ===== レビューの指摘(PR #157)への対応 =====
+    await guard('review 2: a 401 that belongs to an older generation does not stop the new one', async () => {
+        stats.scenarios++;
+        const server = makeServer();
+        const h = boot(Iso, server);
+        h.iso.start();
+        await h.run(() => h.toggleShown());
+        const g = gate();
+        let held = false;
+        server.hooks.push((req) => { if (req.method === 'GET' && !held) { held = true; return { wait: g.p, status: 401, body: { error: 'unauthorized' } }; } return undefined; });
+        h.iso.setPanel(true); // この GET が保留される
+        await h.idle();
+        h.iso.stop(); // ログアウト
+        h.iso.start(); // 再ログイン(新しい世代)
+        await h.run(() => h.toggleShown());
+        h.iso.setPanel(true);
+        await h.idle();
+        eq('the new session is open', [h.toggleShown(), h.panelShown()], [true, true]);
+        g.open(); // 古い GET の 401 が、今ごろ届く
+        await h.idle();
+        eq('onUnauthorized is not called for the old request', h.unauth.n, 0);
+        eq('the new session is still open', [h.toggleShown(), h.panelShown()], [true, true]);
+    });
+    await guard('review 3: network errors that still advance received do not exhaust the limit', async () => {
+        stats.scenarios++;
+        const server = makeServer({ chunk: 8192 });
+        const h = boot(Iso, server);
+        // 2〜9 回目の PUT は、サーバーが書いたのに応答が読めない(8 回続く。上限は 6 回)
+        server.hooks.push((req) => (req.method === 'PUT' && req.n >= 2 && req.n <= 9 ? { net: true, apply: true } : undefined));
+        await started(h);
+        const f = fileOf(SIZE);
+        await upload(h, f, 'myiso', false);
+        ok('ready', await h.run(() => READY1(h)), [h.msg(), h.puts().length]);
+        eq('no error', h.msgError(), false);
+        ok('bytes intact', server.images[0].data.equals(f._b));
+        eq('finish was sent', server.log.filter((x) => x.path.endsWith('/finish')).length, 1);
+    });
+    await guard('review 4: the automatic finish is not re-sent after 503 busy; a manual finish is', async () => {
+        stats.scenarios++;
+        for (const [name, body, hdr] of [['busy', { error: 'busy' }, { 'Retry-After': '1' }], ['upload_in_progress', { error: 'upload_in_progress' }, {}], ['sd_unavailable', { error: 'sd_unavailable' }, {}]]) {
+            const server = makeServer();
+            const im = server.add({ name: 'big', size: 50000, state: 'incomplete', data: makeIso(50000) });
+            let denied = true;
+            server.hooks.push((req) => (req.path.endsWith('/finish') && denied ? { status: 503, body, headers: hdr } : undefined));
+            if (name === 'upload_in_progress') server.hooks[0] = (req) => (req.path.endsWith('/finish') && denied ? { status: 409, body, headers: hdr } : undefined);
+            const h = boot(Iso, server);
+            h.iso.start();
+            await h.run(() => h.msgError());
+            await h.runFor(120000);
+            eq('automatic finish: one POST only (' + name + ')', server.log.filter((x) => x.path.endsWith('/finish')).length, 1);
+            eq('the image is untouched and the reason is shown (' + name + ')', [im.state, h.msgError()], ['incomplete', true]);
+            // 利用者が「完了処理」を押せば、再試行できる
+            denied = false;
+            h.iso.setPanel(true);
+            await h.idle();
+            h.clickRow('big', '完了処理');
+            ok('manual finish works (' + name + ')', await h.run(() => im.state === 'ready' && h.iso._state.job === null));
+            eq('two POSTs in all (' + name + ')', server.log.filter((x) => x.path.endsWith('/finish')).length, 2);
+        }
+        // 利用者が始めた finish は、busy を再試行する(従来どおり)
+        const server = makeServer();
+        const h2 = boot(Iso, server);
+        let n = 0;
+        server.hooks.push((req) => (req.path.endsWith('/finish') && ++n <= 2 ? { status: 503, body: { error: 'busy' }, headers: { 'Retry-After': '1' } } : undefined));
+        await started(h2);
+        await upload(h2, fileOf(SIZE));
+        ok('user-started finish retries busy', await h2.run(() => READY1(h2)));
+        eq('three POSTs', server.log.filter((x) => x.path.endsWith('/finish')).length, 3);
+    });
+    await guard('review 4b: the automatic finish still waits for finalizing with GET after 202', async () => {
+        stats.scenarios++;
+        const server = makeServer({ finalizePolls: 3 });
+        const im = server.add({ name: 'big', size: 50000, state: 'incomplete', data: makeIso(50000) });
+        const h = boot(Iso, server);
+        h.iso.start();
+        ok('ready', await h.run(() => im.state === 'ready' && h.iso._state.job === null));
+        eq('one POST', server.log.filter((x) => x.path.endsWith('/finish')).length, 1);
+        ok('GETs were made while finalizing', h.gets().length >= 3, h.gets().length);
+    });
+    await guard('review 5: only one upload starts while the list is being fetched', async () => {
+        stats.scenarios++;
+        const server = makeServer();
+        const h = boot(Iso, server);
+        h.iso.start();
+        await h.run(() => h.toggleShown());
+        // 最初の一覧の後に、自動 finish の候補ができる(一覧の取得が保留されている間に、その一覧が届く)
+        const cand = server.add({ name: 'cand', size: 50000, state: 'incomplete', data: makeIso(50000) });
+        const g = gate();
+        let held = false;
+        server.hooks.push((req) => { if (req.method === 'GET' && !held) { held = true; return { wait: g.p }; } return undefined; });
+        h.iso.setPanel(true);
+        await h.idle();
+        const f = fileOf(SIZE);
+        h.selectFile(f, 'once');
+        h.E['iso-upload'].click(); // 一覧の取得は保留中(doUpload の中の refreshList は同じ GET を待つ)
+        h.E['iso-upload'].click(); // もう一度
+        await h.idle();
+        eq('the upload button is disabled while preparing', h.E['iso-upload'].disabled, true);
+        g.open();
+        ok('ready', await h.run(() => server.images.some((i) => i.name === 'once' && i.state === 'ready') && h.iso._state.job === null));
+        eq('one begin only', h.posts().length, 1);
+        eq('one image was created', server.images.filter((i) => i.name === 'once').length, 1);
+        eq('the automatic finish did not take the job over while preparing', server.log.filter((x) => x.path === '/api/v1/iso/' + cand.id + '/finish' && server.log.indexOf(x) < server.log.indexOf(h.puts()[h.puts().length - 1])).length, 0);
+    });
+    await guard('review 5b: a failed preparation releases the start right', async () => {
+        stats.scenarios++;
+        const server = makeServer();
+        const h = boot(Iso, server);
+        await started(h);
+        let once = true;
+        server.hooks.push((req) => { if (req.method === 'GET' && once) { once = false; return NET; } return undefined; });
+        h.selectFile(fileOf(SIZE), 'again');
+        h.E['iso-upload'].click();
+        ok('failed to prepare', await h.run(() => h.msgError() && h.E['iso-upload'].disabled === false));
+        eq('no POST', h.posts().length, 0);
+        h.E['iso-upload'].click(); // もう一度押せる
+        ok('the retry works', await h.run(() => READY1(h)));
+    });
+    await guard('review 6: a failed begin keeps the previous file and id for resuming', async () => {
+        stats.scenarios++;
+        const fa = fileOf(SIZE);
+        const fb = new FakeFile(Buffer.from(makeIso(SIZE).map((x) => x ^ 0x5a)), 'b.iso'); // 同じ大きさで、中身が違う
+        const server = makeServer();
+        const im = server.add({ name: 'a', size: SIZE, state: 'incomplete', data: Buffer.from(fa._b.subarray(0, 32768)) });
+        const h = boot(Iso, server);
+        let paused = false;
+        server.hooks.push((req) => { if (req.method === 'PUT' && !paused) { paused = true; h.E['iso-pause'].click(); } return undefined; });
+        await started(h);
+        h.E['iso-file'].files = [fa];
+        h.clickRow('a', '再開');
+        ok('paused after the first chunk', await h.run(() => h.msg().includes('一時停止しました') && h.iso._state.job === null));
+        // B を新しいアップロードとして選ぶが、begin が失敗する
+        server.hooks.push((req) => (req.method === 'POST' && req.path === '/api/v1/iso' ? { status: 500, body: null } : undefined));
+        await upload(h, fb, 'b', false);
+        ok('begin failed', await h.run(() => h.msgError() && h.iso._state.job === null));
+        // ファイルの選択を空にして、a を再開: 覚えているのは A のファイル
+        h.E['iso-file'].files = null;
+        im.state = 'incomplete';
+        h.iso.refreshList();
+        await h.idle();
+        server.hooks.length = 0;
+        h.clickRow('a', '再開');
+        ok('a is completed', await h.run(() => im.state === 'ready' && h.iso._state.job === null));
+        ok('the bytes come from file A (not from B)', im.data.equals(fa._b));
+    });
+    await guard('review 7: logout clears the chosen file and the name; closing the panel keeps them', async () => {
+        stats.scenarios++;
+        const server = makeServer();
+        const h = boot(Iso, server);
+        await started(h);
+        h.selectFile(fileOf(SIZE), 'keepme');
+        h.iso.setPanel(false);
+        eq('closing the panel keeps the selection', [h.E['iso-name'].value, !!h.E['iso-file'].files], ['keepme', true]);
+        h.iso.setPanel(true);
+        eq('and opening it again', [h.E['iso-name'].value, !!h.E['iso-file'].files], ['keepme', true]);
+        h.iso.stop();
+        eq('stop() clears them', [h.E['iso-name'].value, h.E['iso-file'].value, h.E['iso-file'].files], ['', '', null]);
+        h.iso.start();
+        await h.run(() => h.toggleShown());
+        h.E['iso-upload'].click();
+        await h.idle();
+        eq('after the next login, nothing is sent without choosing a file again', [h.msg().includes('ISO ファイルを選んで'), h.posts().length], [true, 0]);
+    });
+    await guard('review 8: a rescan that was stopped does not send the next batch', async () => {
+        stats.scenarios++;
+        // (a) 1 回目の応答を待っている間にログアウト(世代が変わる)。応答に next_cursor があっても、次を送らない
+        {
+            const server = makeServer();
+            server.importEntries = ['ok', 'ok', 'ok', 'ok', 'ok', 'ok'];
+            const h = boot(Iso, server);
+            await started(h);
+            const g = gate();
+            server.hooks.push((req) => (req.path === '/api/v1/iso/rescan' && req.n === 1 ? { wait: g.p } : undefined));
+            h.E['iso-rescan'].click();
+            await h.idle();
+            h.iso.stop();
+            h.iso.start(); // 再ログイン
+            await h.run(() => h.toggleShown());
+            g.open();
+            await h.runFor(10000);
+            eq('(a) only the first POST was sent', h.posts('/rescan').length, 1);
+        }
+        // (b) busy の待ちの間にログアウト
+        {
+            const server = makeServer();
+            server.importEntries = ['ok'];
+            const h = boot(Iso, server);
+            await started(h);
+            server.hooks.push((req) => (req.path === '/api/v1/iso/rescan' && req.n === 1 ? { status: 503, body: { error: 'busy' }, headers: { 'Retry-After': '2' } } : undefined));
+            h.E['iso-rescan'].click();
+            await h.idle();
+            h.iso.stop();
+            h.iso.start();
+            await h.run(() => h.toggleShown());
+            await h.runFor(10000);
+            eq('(b) no re-send after the stop', h.posts('/rescan').length, 1);
+        }
+        // (c) 応答を待っている間に、世代が変わらなければ、これまでどおり続く
+        {
+            const server = makeServer();
+            server.importEntries = ['ok', 'ok', 'ok', 'ok', 'ok'];
+            const h = boot(Iso, server);
+            await started(h);
+            h.E['iso-rescan'].click();
+            ok('(c) runs to the end', await h.run(() => h.msg().includes('取り込みが終わりました')));
+            eq('(c) two POSTs', h.posts('/rescan').map((x) => x.json), [{}, { cursor: 4 }]);
+        }
+    });
+
     // ===== (D) index.html / app.css =====
     await guard('static files', async () => {
         stats.scenarios++;
@@ -1804,6 +2048,8 @@ async function checkAll(source, o) {
         eq('hash checkbox is on by default', [/type="checkbox"/.test(info['iso-hash'].attrs), info['iso-hash'].checked], [true, true]);
         eq('message is a status region', [/role="status"/.test(info['iso-message'].attrs), /aria-live="polite"/.test(info['iso-message'].attrs)], [true, true]);
         ok('labels for the inputs', /<label for="iso-file">/.test(html) && /<label for="iso-name">/.test(html));
+        ok('the progress bar has its own label', /<label for="iso-progress"[^>]*>[^<]+<\/label>/.test(html));
+        ok('the progress label is hidden visually with a class (no inline style)', /<label for="iso-progress" class="iso-sr">/.test(html) && /\.iso-upload label\.iso-sr\s*\{[^}]*position:\s*absolute/.test(css));
         ok('the panel is inside the dashboard', html.indexOf('id="iso-panel"') > html.indexOf('id="view-dashboard"') && html.indexOf('id="iso-panel"') < html.indexOf('<script src="app.js">'));
         ok('the toggle is in the bar, before logout', html.indexOf('id="btn-iso"') < html.indexOf('id="btn-logout"') && html.indexOf('id="btn-iso"') > html.indexOf('class="bar"'));
         // JS が使うクラスは、CSS にある
@@ -1975,6 +2221,10 @@ const EQUIVALENT = new Set([
     'upload: sd error does not wait for the SD',
     // finalizing から incomplete に戻ったとき、SD が使えない間は一覧にイメージが出ないので、waitFinalize 自身が SD の復帰を待つ。その後の待ちは二重の防御。
     'finish: waits for SD not done',
+    // stop() は世代を進めるので、実行中のジョブは alive() が偽になって止まる。abort の印は二重の防御。
+    'stop: job not aborted',
+    // 401 の後、1 秒後の状態の確認が未認証と答えれば、showView が iso.stop() を呼ぶ。この 1 秒の間は、一覧が取れず(401)、ポーリングも始まらない。
+    'wiring: 401 handler dropped',
     // 自動送信の「1 回だけ」は、maybeAutoFinish と startJob の 2 か所の記録で守る(二重の防御)。両方を外すと落ちる(次のミュータント)。
     'auto: sent repeatedly',
     'auto: images the page handled are fair game',
@@ -2082,6 +2332,27 @@ function mutants(source) {
         ['stop: timer not cleared', 'if (S.pollTimer !== null) {\n                deps.clearTimeout(S.pollTimer);\n                S.pollTimer = null;\n            }\n            S.list = null;', 'S.list = null;'],
         ['start: not idempotent', 'if (S.running) return;\n            S.running = true;', 'S.running = true;'],
         ['401: onUnauthorized not called', "if (res.status === 401 && deps.onUnauthorized) deps.onUnauthorized();", ''],
+        ['review2: 401 of an old generation stops the new one', 'deps.onUnauthorized && S.gen === gen) deps.onUnauthorized();', 'deps.onUnauthorized) deps.onUnauthorized();'],
+        ['review3: net failures are never reset by progress', 'netFails = 0; // 応答は失われたが、サーバーには届いている（位置が進んだ）: 失敗の数に入れない', ''],
+        ['review3: limit applied before the re-sync', '} else if (netFails > MAX_NET_FAILS) {', '} else if (false) {'],
+        ['review4: automatic finish re-sent on busy', "code === 'busy' && !job.auto && ++waits", "code === 'busy' && ++waits"],
+        ['review4: automatic finish re-sent on upload_in_progress', "code === 'upload_in_progress' && !job.auto && ++waits", "code === 'upload_in_progress' && ++waits"],
+        ['review4: automatic finish re-sent on sd errors', "(code === 'not_ready' || code === 'sd_unavailable') && !job.auto && ++rounds", "(code === 'not_ready' || code === 'sd_unavailable') && ++rounds"],
+        ['review4: automatic finish re-sent after a network error', "if (job.auto) {\n                        setMessage('完了処理の結果を確認できません。", "if (false) {\n                        setMessage('完了処理の結果を確認できません。"],
+        ['review4: the job is not marked automatic', 'job.auto = true;', ''],
+        ['review5: start right not taken', 'S.starting = token;', ''],
+        ['review5: start right not released', 'if (S.starting === token) S.starting = null;', ''],
+        ['review5: automatic finish ignores the start right', "S.job !== null || S.starting !== null || S.opBusy || !S.list", "S.job !== null || S.opBusy || !S.list"],
+        ['review5: fileBusy ignores the start right', 'return S.job !== null || S.starting !== null; }', 'return S.job !== null; }'],
+        ['review5: logout during preparation not noticed', 'if (S.gen !== gen) return; // 待つ間に、ログアウトした', ''],
+        ['review6: lastFile set before begin', 'startNewUpload(file, name, list);\n            } finally {', 'S.lastFile = file;\n                startNewUpload(file, name, list);\n            } finally {'],
+        ['review6: lastFile not set after begin', 'S.lastFile = file;\n                S.lastFileId = job.id;', 'S.lastFileId = job.id;'],
+        ['review7: stop() keeps the chosen file', "ui.file.value = ''; // ログアウト", "// ログアウト"],
+        ['review7: stop() keeps the name', "ui.name.value = '';\n            S.panelVisible = false;", "S.panelVisible = false;"],
+        ['review7: closing the panel clears the form', "if (ui.toggle) ui.toggle.setAttribute('aria-expanded', on ? 'true' : 'false');\n            if (on) refreshList();", "if (ui.toggle) ui.toggle.setAttribute('aria-expanded', on ? 'true' : 'false');\n            if (!on) { ui.file.value = ''; ui.name.value = ''; }\n            if (on) refreshList();"],
+        ['review8: rescan does not check the generation after the response', "{ json: cursor === null ? {} : { cursor } });\n                    if (S.gen !== gen) return;", "{ json: cursor === null ? {} : { cursor } });"],
+        ['review8: rescan does not check the generation before the request', "for (let i = 0; i < MAX_RESCAN_ROUNDS; i++) {\n                    if (S.gen !== gen) return;", "for (let i = 0; i < MAX_RESCAN_ROUNDS; i++) {"],
+        ['review8: rescan does not take the starting generation', 'const gen = S.gen; // 操作を始めたときの世代', 'const gen = -1; // 操作を始めたときの世代'],
         ['wiring: iso.start dropped', 'updateVideoLayout();\n            iso.start();', 'updateVideoLayout();'],
         ['wiring: iso.stop dropped', '            iso.stop();\n            elAuthCard.classList.remove', '            elAuthCard.classList.remove'],
         ['wiring: 401 handler dropped', 'iso.stop();\n            setTimeout(fetchStatus, 1000);', 'setTimeout(fetchStatus, 1000);'],
