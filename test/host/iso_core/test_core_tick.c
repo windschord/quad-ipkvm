@@ -88,6 +88,48 @@ void test_clock_going_backwards_counts_as_zero_elapsed_and_rebases(void) {
     TEST_ASSERT_EQUAL_UINT(1, iso_core_queue_len(&CORE));
 }
 
+/* 巻き戻る前の時計で積んだ IDLE_CLOSE は、時計が巻き戻って基準を引き直したときに、取り消す */
+void test_a_clock_rewind_cancels_a_queued_idle_close(void) {
+    char id[9];
+    start_upload(id);
+    iso_upload_tick(&CORE, T0 + 300000);
+    TEST_ASSERT_EQUAL_UINT(1, iso_core_queue_len(&CORE));
+    iso_upload_tick(&CORE, T0 - 100); /* 巻き戻り */
+    TEST_ASSERT_EQUAL_UINT(0, iso_core_queue_len(&CORE));
+    TEST_ASSERT_EQUAL_UINT64(T0 - 100, up()->last_put_ms);
+    TEST_ASSERT_NULL(iso_core_pick(&CORE));
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_UPLOADING, find(id)->state);
+    TEST_ASSERT_TRUE(iso_upload_slot_busy(up()));
+    /* 明示的な閉じ(強制)は、残る */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(up(), id));
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_INCOMPLETE, find(id)->state);
+}
+
+void test_a_clock_rewind_aborts_a_picked_idle_close(void) {
+    char id[9];
+    start_upload(id);
+    iso_upload_tick(&CORE, T0 + 300000);
+    iso_job_t *j = iso_core_pick(&CORE);
+    TEST_ASSERT_NOT_NULL(j);
+    TEST_ASSERT_EQUAL_INT(ISO_JOB_IDLE_CLOSE, j->kind);
+    iso_upload_tick(&CORE, T0 - 100); /* 選ばれた後、実行の前に巻き戻る */
+    iso_step_result_t r = run_job(j, 0, 1000, 10, NULL);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_UPLOADING, find(id)->state); /* 閉じていない */
+    TEST_ASSERT_TRUE(iso_upload_slot_busy(up()));
+}
+
+/* 時計が、最後の PUT とちょうど同じ時刻まで巻き戻っても(経過 0)、古い時計で積んだ IDLE_CLOSE は残さない */
+void test_a_clock_rewound_exactly_to_the_last_put_cancels_a_queued_idle_close(void) {
+    char id[9];
+    start_upload(id);
+    iso_upload_tick(&CORE, T0 + 300000);
+    TEST_ASSERT_EQUAL_UINT(1, iso_core_queue_len(&CORE));
+    iso_upload_tick(&CORE, T0);
+    TEST_ASSERT_EQUAL_UINT(0, iso_core_queue_len(&CORE));
+    TEST_ASSERT_EQUAL_UINT64(T0, up()->last_put_ms);
+}
+
 void test_clock_going_back_by_one_ms_is_also_zero_elapsed(void) {
     char id[9];
     start_upload(id);
@@ -187,6 +229,9 @@ int main(void) {
     RUN_TEST(test_the_time_is_counted_from_the_last_put);
     RUN_TEST(test_a_finalizing_slot_never_times_out);
     RUN_TEST(test_clock_going_backwards_counts_as_zero_elapsed_and_rebases);
+    RUN_TEST(test_a_clock_rewind_cancels_a_queued_idle_close);
+    RUN_TEST(test_a_clock_rewind_aborts_a_picked_idle_close);
+    RUN_TEST(test_a_clock_rewound_exactly_to_the_last_put_cancels_a_queued_idle_close);
     RUN_TEST(test_clock_going_back_by_one_ms_is_also_zero_elapsed);
     RUN_TEST(test_clock_that_wraps_to_zero_does_not_time_out_at_once);
     RUN_TEST(test_a_full_queue_defers_the_idle_close_to_the_next_tick);

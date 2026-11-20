@@ -608,6 +608,34 @@ void test_chunk_accepted_hook_is_called_once_per_accepted_chunk_only(void) {
     TEST_ASSERT_EQUAL_INT(2, CHUNK_CALLS);
 }
 
+/* カタログが満杯(ISO_MAX_IMAGES 個)でも、走査は配列の外を読まない(空き容量の見積もり、再初期化) */
+static void put_a_full_catalog_with_one_incomplete_image(char tid[ISO_ID_LEN + 1]) {
+    for (int i = 0; i < (int)ISO_MAX_IMAGES - 1; i++) {
+        char id[9], name[8];
+        snprintf(id, sizeof(id), "000005%02d", i);
+        snprintf(name, sizeof(name), "f%d", i);
+        iso_meta_t m = mk_meta(name, 34816, PB_SMALL, ISO_META_READY, 5);
+        put_meta(id, &m);
+        put_parts_data(id, PB_SMALL, 34816);
+    }
+    snprintf(tid, ISO_ID_LEN + 1, "00000599");
+    iso_meta_t m = mk_meta("target", SZ, PB_SMALL, ISO_META_INCOMPLETE, 5);
+    put_meta(tid, &m);
+    put_parts_data(tid, PB_SMALL, 1000);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    TEST_ASSERT_EQUAL_UINT(ISO_MAX_IMAGES, CAT.count);
+}
+
+void test_the_storage_check_and_reinit_scan_a_full_catalog_without_reading_past_it(void) {
+    char tid[ISO_ID_LEN + 1];
+    put_a_full_catalog_with_one_incomplete_image(tid);
+    iso_upload_write_t w;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(tid, 1000, 100, &w)); /* 再開の空き容量の検査が、全イメージを数える */
+    TEST_ASSERT_EQUAL_UINT64(1100, w.received);
+    iso_upload_reinit(&UP); /* uploading を incomplete にする走査 */
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_INCOMPLETE, iso_catalog_find(&CAT, tid)->state);
+}
+
 void test_resume_is_refused_while_another_image_uses_the_slot(void) {
     begin_small(SZ);
     put_all(ID, 0, 3000, 1000);
@@ -791,6 +819,7 @@ int main(void) {
     RUN_TEST(test_a_corrected_received_notifies_the_view_when_the_storage_check_rejects);
     RUN_TEST(test_a_rejected_put_to_an_uploading_image_does_not_notify_the_view);
     RUN_TEST(test_chunk_accepted_hook_is_called_once_per_accepted_chunk_only);
+    RUN_TEST(test_the_storage_check_and_reinit_scan_a_full_catalog_without_reading_past_it);
     RUN_TEST(test_resume_is_refused_while_another_image_uses_the_slot);
     RUN_TEST(test_resume_storage_check_needs_remaining_plus_reserve);
     RUN_TEST(test_resume_storage_check_counts_other_images_but_not_itself);

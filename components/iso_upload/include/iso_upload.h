@@ -71,6 +71,9 @@ typedef enum {
     ISO_RES_MOUNTED              /* (iso_core) delete: 409 mounted */
 } iso_res_t;
 
+/* 取り消せなかった truncate の保留の最大数(イメージ数 × 1 イメージのパーツ数。溢れない) */
+#define ISO_PEND_MAX (ISO_MAX_IMAGES * ISO_MAX_PARTS)
+
 /* ---- フック(グルーが実装する) ---------------------------------------------------- */
 
 typedef struct {
@@ -118,12 +121,15 @@ typedef struct iso_upload {
     uint64_t total_bytes;
     uint64_t free_bytes;
     uint64_t consumed_since;          /* キャッシュの採取後に、アップロードが書いたバイト数(取り消せなかった分は、書こうとした分の上限を足す) */
-    /* 取り消せなかった truncate(設計 3.1)。次の再開・finish の受付の最初に、もう一度行う(メモリ上だけ。再起動すると、ディスクの大きさから決める) */
+    /* 取り消せなかった truncate(設計 3.1)。次の再開・finish の受付の最初に、もう一度行う(メモリ上だけ。再起動すると、ディスクの大きさから決める)。
+     * 全イメージで共有する。**捨てない**: 1 つのイメージの保留は、1 つのチャンクが触るパーツの数(ISO_MAX_PARTS 以下)で、そのイメージの次の再開が先に片づける
+     * (片づけられなければ、書かずに断る)ので、イメージごとに ISO_MAX_PARTS 件以下。イメージは ISO_MAX_IMAGES 個以下なので、ISO_PEND_MAX 件で足りる
+     * (1 件 24 バイト。全体で 6144 バイト) */
     struct {
         char id[ISO_ID_LEN + 1];
         uint32_t part;
         uint64_t size;
-    } pend[ISO_MAX_PARTS];
+    } pend[ISO_PEND_MAX];
     size_t pend_n;
 } iso_upload_t;
 
@@ -166,7 +172,9 @@ typedef struct {
  * 書き込み: チャンク全体を、パーツの境界で分割して追記する(パーツを先頭から。次のパーツは新規作成)。sync は、
  *   sync_bytes ごと、パーツの終わり。SHA-256 は、全体の書き込みが成功した後に更新する。
  *   **書き込み・sync の失敗**: ファイルを閉じ、触ったパーツを書く前の大きさに truncate して(チャンク全体を取り消す)、
- *   incomplete にし、枠を空ける。truncate が失敗したら、received はディスク上の大きさから決める。
+ *   incomplete にし、枠を空ける。**書き込みと truncate の両方が失敗しても、received は書く前の値のまま**(増やさない。ディスクには、未受理のバイトが残りうる)。
+ *   取り消せなかったパーツは、メモリに保留し、**次の再開の PUT と finish の受付が、先に truncate をやり直す**(失敗したら、そのエラーを返して、何も変えない)。
+ *   再起動すると保留は失われ、再開のときの received は、ディスク上のパーツの大きさから決め直す(設計 3.1、3.4)。
  *   戻り値は、ISO_ERR_NO_SPACE なら ISO_RES_INSUFFICIENT_STORAGE(507 相当)、それ以外は元のエラー(負。API は 503 sd_unavailable)。
  * out は NULL でもよい。
  */

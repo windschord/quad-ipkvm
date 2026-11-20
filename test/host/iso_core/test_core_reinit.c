@@ -126,6 +126,24 @@ void test_reinit_cancels_everything_before_remount_and_rebuilds_after(void) {
     TEST_ASSERT_NOT_NULL(iso_core_table(&CORE, "000000a4"));
 }
 
+/* 表が満杯(ISO_MAX_IMAGES 個)のときの再初期化は、全部の表を放し、配列の外を読まない */
+void test_reinit_with_every_image_indexed_releases_all_sixteen_tables(void) {
+    for (int i = 0; i < (int)ISO_MAX_IMAGES; i++) {
+        char id[9], name[8];
+        snprintf(id, sizeof(id), "000004%02d", i);
+        snprintf(name, sizeof(name), "r%d", i);
+        make_image(id, name, 34816, PB_SMALL, ISO_META_READY, 34816);
+    }
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_core_boot(&CORE));
+    TEST_ASSERT_EQUAL_INT(16, drive(0, 1000));
+    TEST_ASSERT_EQUAL_UINT(ISO_MAX_IMAGES, CORE.table_n);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_core_sd_reinit(&CORE, NULL, NULL));
+    TEST_ASSERT_EQUAL_UINT(0, CORE.table_n);
+    TEST_ASSERT_EQUAL_UINT(ISO_MAX_IMAGES, iso_core_index_pending(&CORE)); /* 全部、もう一度 INDEX が必要 */
+    TEST_ASSERT_EQUAL_INT(16, drive(0, 1000));
+    TEST_ASSERT_EQUAL_UINT(ISO_MAX_IMAGES, CORE.table_n);
+}
+
 void test_reinit_resumes_deleting_images(void) {
     iso_meta_t dm = mk_meta("d1", SZ, PB_SMALL, ISO_META_DELETING, 9);
     put_meta("000000a1", &dm);
@@ -324,6 +342,7 @@ void test_hidden_images_are_forgotten_when_the_remount_or_the_scan_fails(void) {
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_reinit_cancels_everything_before_remount_and_rebuilds_after);
+    RUN_TEST(test_reinit_with_every_image_indexed_releases_all_sixteen_tables);
     RUN_TEST(test_reinit_resumes_deleting_images);
     RUN_TEST(test_reinit_with_a_running_finish_job_leaves_the_image_incomplete_and_finish_can_be_retried);
     RUN_TEST(test_reinit_with_a_running_delete_job_waiting_for_readers);

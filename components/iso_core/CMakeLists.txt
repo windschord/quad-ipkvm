@@ -14,6 +14,7 @@ else()
         -std=c11
         -Wall -Wextra -Werror
         -fsanitize=address -fsanitize=undefined
+        -fno-sanitize-recover=undefined # UBSan の検出で、テストを失敗させる(変異テストの検出にも使う)
     )
     target_link_options(iso_core PRIVATE
         -fsanitize=address -fsanitize=undefined

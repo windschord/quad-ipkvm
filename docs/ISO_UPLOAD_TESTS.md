@@ -23,8 +23,8 @@
 |---|---|---|
 | `test/host/iso_upload/test_up_sha256.c` | テスト用 SHA-256 の参照実装(FIPS 180-4 から書いた)の検査: NIST の `"abc"` / 空 / 448 ビット / 100 万個の `a`、パディングの境界(55〜128 バイト。Python の `hashlib` で別に求めた定数)、どこで分けて `update` しても同じ、生成データの署名の位置 | 9 |
 | `test/host/iso_upload/test_up_begin.c` | `begin`: 検査の順序(400 → 枠 → 同名 → 上限 → 空き容量)、`size` の境界(34815 / 34816、16 GiB と +1)、空き容量の式の境界(`size + 64 MiB`、`total_bytes` 超、設計の数値例 `10 − 5 − (6 − 5) = 4 GiB`、途中のイメージの数え方)、キャッシュ未採取、`mkdir` / `meta` の失敗の巻き戻し | 18 |
-| `test/host/iso_upload/test_up_write.c` | `iso_upload_write_chunk`: `offset == received` のときだけ書く(不一致は何も書かず、現在の `received`)、チャンクの上限(1000 / 1001、既定 128 KiB)、`size` を超える(34816 / +1)、状態ごとの拒否、**パーツの境界**(またぐチャンク、パーツ最後の 1 バイト、次のパーツの先頭、3 パーツにまたがる 1 チャンク、**既定の 1 GiB の境界**)、`sync` の間隔(`>=`、リセット、パーツの終わり、既定 4 MiB)、SHA-256 の逐次、アイドル(`IDLE_CLOSE`)、中止、再開(`meta` を書かない、`open_a` / `open_w`、`received` の決め直し、空き容量の再検査、**訂正のときのビュー更新(3 つの拒否の分岐。進行中の拒否では更新しない)**、**`chunk_accepted` フック(受理のときだけ、1 回)**)、`receiving` / `idle` の境(5 秒) | 46 |
-| `test/host/iso_upload/test_up_failures.c` | 書き込み・`sync`・`open` の失敗: チャンク全体を `truncate` で取り消して `incomplete`(部分書き込みつきの `ISO_ERR_NO_SPACE` は 507 相当)、パーツをまたぐチャンクの両方の取り消し、**`truncate` が失敗したら `received` は確認済みの値のまま(取り消せなかった分は覚えておき、再開の最初の `PUT` と `finish` の受付の前に、もう一度 `truncate` する。再び失敗したら、何も変えずにエラー)、パーツをまたぐ失敗の取り消しの失敗(CodeRabbit の例: 35816 バイトのイメージ、34816 バイトのパーツ)で、`finish` が、受け取っていない分を数えない、`abort` / `reinit` で保留を捨てる、複数のイメージの保留を取り違えない、保留の一覧の溢れの守り、`finish` の受付が保留を先に行う**、`meta` の書き込みの失敗でもメモリ上は `incomplete`、再開の最初の `PUT` の失敗、`idle_close` の失敗(合わなくなった SHA-256 の状態を捨てる) | 28 |
+| `test/host/iso_upload/test_up_write.c` | `iso_upload_write_chunk`: `offset == received` のときだけ書く(不一致は何も書かず、現在の `received`)、チャンクの上限(1000 / 1001、既定 128 KiB)、`size` を超える(34816 / +1)、状態ごとの拒否、**パーツの境界**(またぐチャンク、パーツ最後の 1 バイト、次のパーツの先頭、3 パーツにまたがる 1 チャンク、**既定の 1 GiB の境界**)、`sync` の間隔(`>=`、リセット、パーツの終わり、既定 4 MiB)、SHA-256 の逐次、アイドル(`IDLE_CLOSE`)、中止、再開(`meta` を書かない、`open_a` / `open_w`、`received` の決め直し、空き容量の再検査、**訂正のときのビュー更新(3 つの拒否の分岐。進行中の拒否では更新しない)**、**`chunk_accepted` フック(受理のときだけ、1 回)**)、`receiving` / `idle` の境(5 秒)、**満杯のカタログの走査** | 47 |
+| `test/host/iso_upload/test_up_failures.c` | 書き込み・`sync`・`open` の失敗: チャンク全体を `truncate` で取り消して `incomplete`(部分書き込みつきの `ISO_ERR_NO_SPACE` は 507 相当)、パーツをまたぐチャンクの両方の取り消し、**`truncate` が失敗したら `received` は書く前の値のまま(直前に成功した PUT までのメモリ上の値。取り消せなかった分は覚えておき、再開の最初の `PUT` と `finish` の受付の前に、もう一度 `truncate` する。再び失敗したら、何も変えずにエラー)、パーツをまたぐ失敗の取り消しの失敗(CodeRabbit の例: 35816 バイトのイメージ、34816 バイトのパーツ)で、`finish` が、受け取っていない分を数えない、`abort` / `reinit` で保留を捨てる、複数のイメージの保留を取り違えない、保留の一覧が(全イメージ × 全パーツまで)新しい保留を捨てないこと、末尾の保留を詰め直しても配列の外を読まないこと、`finish` の受付が保留を先に行う**、`meta` の書き込みの失敗でもメモリ上は `incomplete`、再開の最初の `PUT` の失敗、`idle_close` の失敗(合わなくなった SHA-256 の状態を捨てる)、保留の一覧(捨てない、末尾の保留の詰め直し、満杯のときの守り) | 30 |
 | `test/host/iso_upload/test_up_finish.c` | `finish` の受付(`size_mismatch`、枠、冪等、`invalid`、`finalizing`、取り消し)と、`FINISH` ジョブのステップ: 逐次の SHA-256 / 再起動後の全パーツの読み直し(`budget` ごと、読み出しの回数を手で数えた期待値)、宣言値の一致・不一致、署名(`CD001` / `BEA01` / 不正 / 後ろのパーツ)、エクステント(4096 本ちょうど、4100 本、作業領域の枯渇、`get_extents` の `TOO_FRAGMENTED`)、`part_mismatch`(欠落、短い、長い、`part_count` の食い違い)、I/O エラー(`incomplete` と再試行)、確保の失敗、`meta` の失敗、中止、古いジョブ、`epoch` の記録、**`FINISH` の途中で SD が替わったとき(`epoch` が進んだら `ready` にせず `incomplete`)**、再起動の後に、取り消せなかった分が残っているときの SHA-256 の読み直し | 74 |
 | `test/host/iso_upload/test_up_index.c` | `iso_index_step`: 1 パーツずつ + 表の構築(ステップ数 = 初期化 + パーツ + 構築)、`iso_extent_map` で変換を確かめる、孤児の末尾のクリップ、`epoch`、`part_mismatch` / `too_fragmented` / I/O エラー / 確保の失敗 | 26 |
 | `test/host/iso_upload/test_up_powercut.c` | **電源断の網羅**(下記) | 4 |
@@ -32,7 +32,7 @@
 | `test/host/iso_catalog/iso_mock_fs.c` / `.h` | モックの `iso_fs_t` に、`read_at`、`open_for_write` / `write` / `sync` / `truncate` / `close`(未同期の分は電源断で失われる、書き込み中のファイルは読み取りで開けない)、`get_extents`、`mount_info` の設定、書き込みの失敗の注入(`mock_fs_fail_write`)、即時の電源断(`mock_fs_crash`)を足した(既存の関数は変えていない) | - |
 | `test/host/iso_upload/up_common.h`、`up_sha256.c` / `.h` | 共通の部品(偽の時計、確保の数え上げ、決定的なデータの生成 `gen_byte`、ディスク上の中身の照合、SHA-256) | - |
 
-合計 206 件(`test/host/CMakeLists.txt` の既存の自動発見で、ctest の実行ファイルが 8 個増える)。
+合計 209 件(`test/host/CMakeLists.txt` の既存の自動発見で、ctest の実行ファイルが 8 個増える)。
 
 **期待値はすべて手書き**。SHA-256 の定数は Python の `hashlib` で、同じ生成規則(`gen_byte`)から別に求めた。書き込みの総数(28)は、手順から手で数えた(`test_up_powercut.c`)。パーツの大きさは、テストでは 17 ブロック(34816 バイト)など小さくして、境界を安く試す
 (`begin` の後に `iso_catalog_write_meta` で `part_blocks` を書き直す。`iso_upload` は、常に `meta.part_blocks` を使う)。1 GiB の境界は、大きさだけを持つ(中身を捨てる)モードと、何もしない SHA-256 で試す。
@@ -55,7 +55,7 @@
 100 シード × 120 操作(`begin`、正しい / 間違った `offset` の `PUT`、アイドル、`finish`、削除(遷移 → 中止 → 削除のステップ)、書き込みの失敗の注入(`write` の n 回目が k バイトで失敗)、エラーの注入(n 番目の書き込み)、電源断の予約、即時の電源断、再起動)。
 パーツの大きさ(17 / 18 / 25 ブロック / 既定)、チャンクの大きさ、`sync` の間隔、署名の良し悪し、宣言した SHA-256(なし / 正しい / 1 ビット違い)は、シードごとに変える。
 **操作のたびに、ディスク上のバイト列を、実装を使わずに読んだ基準**と照合する: パーツの中身 = ソースの先頭、連鎖の構造(空でないパーツの前は満杯)、同期済みの大きさ <= メモリ上の大きさ、`uploading` の `received` = メモリ上の連鎖の長さ、
-`incomplete` の `received` <= 連鎖の長さ(取り消せなかったときは、確認済みの値で、連鎖より小さい側)、**空でないパーツの前に欠けたパーツがない**、`ready` の SHA-256 = ソースから別に計算した値、`ready` の `meta` との一致、枠は 1 つ以下、ハンドルの数 = 枠の持ち主の 1 つ。
+`incomplete` の `received` <= 連鎖の長さ(取り消せなかったときは、書く前の値で、連鎖より小さい側)、**空でないパーツの前に欠けたパーツがない**、`ready` の SHA-256 = ソースから別に計算した値、`ready` の `meta` との一致、枠は 1 つ以下、ハンドルの数 = 枠の持ち主の 1 つ。
 `finish` の結果は予測する(宣言値が違えば `checksum_mismatch`、署名が悪ければ `not_iso`、それ以外は `ready`)。実行時に集計を表示する(固定シードなので毎回同じ)。
 
 ## 3. ミューテーションテスト
@@ -74,18 +74,23 @@ python3 tools/test/mutate_iso_upload.py <repo> <スクラッチ> tools/test/iso_
 ミュータントのコンパイラの警告(括弧の省略、未使用の変数など)は、ミュータントごとの `#pragma` で無効にして、**ビルドエラーを、コンパイラが範囲外などの誤りとして検出したものだけにした**。最後に、ソースから作り直した 740 個を、**最初から全数**実行した。
 
 PR #155 のレビュー(取り消せなかった `truncate` の保留、`FINISH` の `epoch` の確認、`IDLE_CLOSE` の取り消しのフック、再開のときのビュー更新)でコードを変えた後、ミュータントをソースから作り直し(816 個)、**最初から全数**実行した。
-途中の実行(818 個)では、生き残りが 79 あり、同値でないものにテストを足した: 保留の一覧の溢れの守り(`pend_add`)、複数のイメージの保留を飛ばして自分の分だけを行うこと(`pend_settle`)、`finish` の受付が保留を先に行い、失敗したら止めること、
-再開の訂正のときのビュー更新(`offset_mismatch` / `exceeds_size` / `insufficient_storage` の 3 つの分岐。進行中の `uploading` の拒否では更新しないこと)、合わなくなった SHA-256 の状態を次の `PUT` が捨てること、`chunk_accepted` フックの呼び出し(受理のときだけ)。
-**実装も 1 か所単純にした**: `fail_write` の `out->received` の代入は、`received` を変えなくなったので、冗長になり(同値のミュータントになった)、取り除いた。
-最後の全数の結果は、前の 65 個の同値のものがそのまま残り(理由は同じ)、新しいコードの同値のものが 4 個(`F001`、`U200`、`U201`、`U231`)増えた。
+途中の実行では、同値でないものにテストを足した: 保留の一覧の溢れの守り、複数のイメージの保留、`finish` の受付が保留を先に行うこと、再開の訂正のときのビュー更新(3 つの分岐)、合わなくなった SHA-256 の状態の破棄、`chunk_accepted` フックの呼び出し。
+**実装も 1 か所単純にした**: `fail_write` の `out->received` の代入は、冗長になったので取り除いた。
+
+**再レビュー(同じ PR の 58bffcf に対する 8 件)の後の再実行**(最終): 前の結果で同値としていたものの、**U231(`pend_settle` の詰め直しの `<=`)は、同値ではなかった**(保留が末尾の要素のとき、配列の外を読む)。
+同じ理由で、満杯の入れ物(カタログ 16 個、保留 256 件)で、配列の外を読む `<=` のミュータントを、テストで殺せるものは殺した:
+U231(`test_a_new_pending_truncate_is_never_dropped_even_when_the_list_is_nearly_full`)、`pending_bytes` の走査(`test_the_storage_check_and_reinit_scan_a_full_catalog_without_reading_past_it`)、保留の守り(U196 / U198。`test_the_guard_of_a_full_pending_list_never_writes_past_the_array`)。
+**そのために、`iso_upload` と `iso_core` のホストのビルドに `-fno-sanitize-recover=undefined` を足した**(それまでは、部品の側の UBSan の検出は、表示されるだけで、テストの失敗にならなかった。テスト側のコンパイルには付いていた)。
+**検出できないもの**: アドレスを取る形(`&images[i]`、`strcmp(index_ids[i], ...)`、`memcpy` の引数)は、UBSan が 1 つ先を許すので、満杯のときの範囲外の読み出しを検出できない(U492)。これらは、同値と言わず、理由に「範囲外の読み出しだけが違う」と書いた。
+結果は、前の 69 個から 67 個になった: U078(`pending_bytes` の走査)と U231 を殺し、前の 65 個のうち 64 個が同じ理由で残り、理由が新しいものが 3 個(F001、U200、U201)。
 
 **結果**(ミュータントを入れる前のベースラインは、全テスト成功):
 
 | 実行した数 | 殺した数 | 生き残った数(すべて同値と判断) | ビルドエラー(コンパイラが検出) |
 |---|---|---|---|
-| 816 | 740 | 69 | 7 |
+| 816 | 742 | 67 | 7 |
 
-### 3.1 同値のミュータント(69 個)
+### 3.1 同値のミュータント(67 個)
 
 生き残ったものは、1 つずつ、変更の前後の挙動が同じ理由を確かめた。同じ理由のものは、まとめた。
 
@@ -96,7 +101,8 @@ PR #155 のレビュー(取り消せなかった `truncate` の保留、`FINISH`
 | F011, X010, X053, X055 | ジョブの初期化で、`memset` 済み(0)の欄を、もう一度 0 にする(`FP_START` と `IX_INIT` は 0、`pool_used` と `part` も 0) |
 | U055, U056, U062, U063 | `iso_up_force_incomplete`: `iso_catalog_apply` が成功(0)したときは、状態はすでに `incomplete` で、後ろの分岐も `ISO_OK` を返す。`rc == 0` の扱いを変えても、結果は同じ |
 | U070, U071 | `iso_upload_refresh_free` の `mount_info` の出力の `memset`: `mount_info` は、すべての欄を埋める(契約)。失敗したときは、読まない |
-| U078, U089, U492 | カタログの走査で `<=` / `received <= size`: `images[count]` は 0 で埋まっていて(`meta_valid` が偽・状態なし)、読み飛ばされる。`received == size` の差分は 0 |
+| U089 | `received < size` → `<=`(`pending_bytes`): 等しいときの差分は 0 |
+| U492 | `iso_upload_reinit` の走査の `<` → `<=`: カタログが満杯(`count == ISO_MAX_IMAGES`)のときだけ、`images[count]`(配列の外。`count`、`hidden` と、構造体の外)の `state` を読む。**範囲外の読み出しだけが違い、サニタイザーは検出しない**(`&images[i]` のアドレスを取る形は、1 つ先を許す)。満杯のカタログのテスト(`test_the_storage_check_and_reinit_scan_a_full_catalog_without_reading_past_it`)は通り、結果は変わらない。範囲外の値に依存するので、厳密な同値とは言わない(検出手段がない) |
 | U096, U098 | 空き容量の推定: キャッシュ未採取なら `free_bytes` は 0 なので、早期の return がなくても 0。`free_bytes > used` と `>=` は、等しいとき両方 0 |
 | U104, U105, U106 | 関数の定義の配列引数の大きさ(`char out_id[ISO_ID_LEN + 1]` の大きさ)は、ポインターに読み替えられ、意味を持たない |
 | F049, F084, F176, U166, X073 | 初期値が、直後の呼び出しで必ず上書きされる(`r`、`n`、`got`、`ok`)。失敗の戻り値のときは読まない |
@@ -107,7 +113,6 @@ PR #155 のレビュー(取り消せなかった `truncate` の保留、`FINISH`
 | F167, F168 | `FP_VERIFY` で `have_digest` を立てても、その後は読まれない |
 | X040 | `n == 0 \|\| n > ISO_MAX_PARTS` は、`n != part_count`(meta の検査で 1〜16)の検査に含まれる(配列の範囲の防御として残している) |
 | F001 | `cur_epoch` の、`bdev` がないときの値(0 → 1): 開始のときの記録(`epoch0`)と、`ready` の前の確認は、同じ関数を呼ぶので、同じ値を比べる(結果は変わらない。`bdev` は必須の欄で、`NULL` の分岐は防御) |
-| U231 | `pend_settle` の保留の詰め直しの `k < pend_n` → `<=`: 1 つ余分に、`pend[pend_n]`(使われない末尾の要素。`pend_n` が `ISO_MAX_PARTS` のときは、配列の直後の欄)を前へ詰めるだけ。値は、直後の `pend_n--` の後で、どこからも読まれない |
 
 ### 3.2 ビルドエラー(7 個。コンパイラが検出するので、殺したものとして数えない)
 
@@ -123,7 +128,7 @@ PR #155 のレビュー(取り消せなかった `truncate` の保留、`FINISH`
 | F104 | L115: const 1+1 -> 2 |
 | F106 | L115: const 5+1 -> 6 |
 
-### 3.3 殺したミュータントの一覧(740 個)
+### 3.3 殺したミュータントの一覧(742 個)
 
 「殺したテスト」は、失敗したテストのうち先頭の 2 つ(最初に落ちたテストの実行ファイルで止める)。
 
@@ -193,6 +198,7 @@ PR #155 のレビュー(取り消せなかった `truncate` の保留、`FINISH`
 | U075 | L70: delete statement | `test_refresh_free_reads_mount_info_and_keeps_the_cache_on_error` |
 | U076 | L71: delete statement | `test_refresh_free_reads_mount_info_and_keeps_the_cache_on_error` |
 | U077 | L77: const 0+1 -> 1 | `test_storage_boundary_is_size_plus_64_mib`, `test_storage_formula_design_example` |
+| U078 | L78: < -> <= | `test_up_write:crash/rc=1` |
 | U079 | L78: const 0+1 -> 1 | `test_storage_formula_design_example`, `test_storage_counts_uploading_and_incomplete_but_not_ready_or_invalid` |
 | U080 | L80: == -> != | `test_storage_formula_design_example`, `test_storage_counts_uploading_and_incomplete_but_not_ready_or_invalid` |
 | U081 | L80: \|\| -> && | `test_resume_storage_check_needs_remaining_plus_reserve`, `test_resume_storage_check_counts_other_images_but_not_itself` |
@@ -308,14 +314,14 @@ PR #155 のレビュー(取り消せなかった `truncate` の保留、`FINISH`
 | U203 | L189: delete statement | `test_stray_bytes_after_a_failed_cross_part_rollback_are_not_counted_for_finish` |
 | U204 | L190: delete statement | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`, `test_a_pending_truncate_that_fails_again_refuses_the_resume_and_changes_nothing` |
 | U205 | L191: delete statement | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`, `test_a_pending_truncate_that_fails_again_refuses_the_resume_and_changes_nothing` |
-| U206 | L195: const 0+1 -> 1 | `test_abort_and_reinit_forget_the_pending_truncates` |
-| U207 | L196: < -> <= | `test_abort_and_reinit_forget_the_pending_truncates` |
-| U208 | L196: const 0+1 -> 1 | `test_abort_and_reinit_forget_the_pending_truncates` |
-| U209 | L197: != -> == | `test_abort_and_reinit_forget_the_pending_truncates` |
-| U210 | L197: negate if condition | `test_abort_and_reinit_forget_the_pending_truncates` |
-| U211 | L197: const 0+1 -> 1 | `test_abort_and_reinit_forget_the_pending_truncates` |
-| U212 | L197: delete statement | `test_abort_and_reinit_forget_the_pending_truncates` |
-| U213 | L199: delete statement | `test_abort_and_reinit_forget_the_pending_truncates` |
+| U206 | L195: const 0+1 -> 1 | `test_up_failures:crash/rc=1` |
+| U207 | L196: < -> <= | `test_up_failures:crash/rc=1` |
+| U208 | L196: const 0+1 -> 1 | `test_abort_and_reinit_forget_the_pending_truncates`, `test_the_pending_list_holds_every_part_of_every_image` |
+| U209 | L197: != -> == | `test_abort_and_reinit_forget_the_pending_truncates`, `test_the_pending_list_holds_every_part_of_every_image` |
+| U210 | L197: negate if condition | `test_abort_and_reinit_forget_the_pending_truncates`, `test_the_pending_list_holds_every_part_of_every_image` |
+| U211 | L197: const 0+1 -> 1 | `test_abort_and_reinit_forget_the_pending_truncates`, `test_the_pending_list_holds_every_part_of_every_image` |
+| U212 | L197: delete statement | `test_abort_and_reinit_forget_the_pending_truncates`, `test_the_pending_list_holds_every_part_of_every_image` |
+| U213 | L199: delete statement | `test_abort_and_reinit_forget_the_pending_truncates`, `test_the_pending_list_holds_every_part_of_every_image` |
 | U214 | L206: const 0+1 -> 1 | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`, `test_a_pending_truncate_that_fails_again_refuses_the_resume_and_changes_nothing` |
 | U215 | L207: < -> <= | `test_up_failures:crash/rc=1` |
 | U216 | L208: != -> == | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`, `test_a_pending_truncate_that_fails_again_refuses_the_resume_and_changes_nothing` |
@@ -333,11 +339,12 @@ PR #155 のレビュー(取り消せなかった `truncate` の保留、`FINISH`
 | U228 | L215: negate if condition | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`, `test_a_pending_truncate_that_fails_again_refuses_the_resume_and_changes_nothing` |
 | U229 | L215: const 0+1 -> 1 | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`, `test_a_pending_truncate_that_fails_again_refuses_the_resume_and_changes_nothing` |
 | U230 | L215: delete statement | `test_a_pending_truncate_that_fails_again_refuses_the_resume_and_changes_nothing`, `test_finish_begin_settles_the_pending_truncates_first_and_stops_when_that_fails` |
-| U232 | L216: + -> - | `test_stray_bytes_after_a_failed_cross_part_rollback_are_not_counted_for_finish`, `test_pending_truncates_of_two_images_are_kept_apart` |
+| U231 | L216: < -> <= | `test_up_failures:crash/rc=1` |
+| U232 | L216: + -> - | `test_stray_bytes_after_a_failed_cross_part_rollback_are_not_counted_for_finish` |
 | U233 | L216: - -> + | `test_stray_bytes_after_a_failed_cross_part_rollback_are_not_counted_for_finish` |
 | U234 | L216: const 1+1 -> 2 | `test_stray_bytes_after_a_failed_cross_part_rollback_are_not_counted_for_finish` |
-| U235 | L216: const 1-1 -> 0 | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`, `test_a_pending_truncate_that_fails_again_refuses_the_resume_and_changes_nothing` |
-| U236 | L216: const 1+1 -> 2 | `test_stray_bytes_after_a_failed_cross_part_rollback_are_not_counted_for_finish` |
+| U235 | L216: const 1-1 -> 0 | `test_up_failures:crash/rc=1` |
+| U236 | L216: const 1+1 -> 2 | `test_up_failures:crash/rc=1` |
 | U237 | L216: const 1-1 -> 0 | `test_stray_bytes_after_a_failed_cross_part_rollback_are_not_counted_for_finish` |
 | U238 | L217: delete statement | `test_up_failures:timeout` |
 | U239 | L226: false -> true | `test_first_write_failure_is_rolled_back_and_the_upload_becomes_incomplete`, `test_partial_write_with_no_space_is_truncated_back_and_reports_507` |
@@ -348,10 +355,10 @@ PR #155 のレビュー(取り消せなかった `truncate` の保留、`FINISH`
 | U244 | L229: < -> <= | `test_first_write_failure_is_rolled_back_and_the_upload_becomes_incomplete`, `test_resume_after_a_failed_first_write_reuses_the_empty_part_file` |
 | U245 | L229: \|\| -> && | `test_first_write_failure_is_rolled_back_and_the_upload_becomes_incomplete`, `test_partial_write_with_no_space_is_truncated_back_and_reports_507` |
 | U246 | L229: negate if condition | `test_first_write_failure_is_rolled_back_and_the_upload_becomes_incomplete`, `test_resume_after_a_failed_first_write_reuses_the_empty_part_file` |
-| U247 | L229: - -> + | `test_failure_in_the_second_part_rolls_back_the_whole_chunk`, `test_the_end_of_a_part_reports_a_failing_close` |
+| U247 | L229: - -> + | `test_failure_in_the_second_part_rolls_back_the_whole_chunk` |
 | U248 | L229: - -> + | `test_partial_write_with_no_space_is_truncated_back_and_reports_507`, `test_failure_in_the_second_part_rolls_back_the_whole_chunk` |
 | U249 | L229: const 1+1 -> 2 | `test_up_write:crash/rc=1` |
-| U250 | L229: const 1-1 -> 0 | `test_failure_in_the_second_part_rolls_back_the_whole_chunk`, `test_the_end_of_a_part_reports_a_failing_close` |
+| U250 | L229: const 1-1 -> 0 | `test_failure_in_the_second_part_rolls_back_the_whole_chunk` |
 | U251 | L229: const 0+1 -> 1 | `test_first_write_failure_is_rolled_back_and_the_upload_becomes_incomplete`, `test_resume_after_a_failed_first_write_reuses_the_empty_part_file` |
 | U252 | L229: const 1+1 -> 2 | `test_up_write:crash/rc=1` |
 | U253 | L229: const 1-1 -> 0 | `test_partial_write_with_no_space_is_truncated_back_and_reports_507`, `test_failure_in_the_second_part_rolls_back_the_whole_chunk` |
@@ -364,10 +371,10 @@ PR #155 のレビュー(取り消せなかった `truncate` の保留、`FINISH`
 | U260 | L232: const 1-1 -> 0 | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`, `test_a_pending_truncate_that_fails_again_refuses_the_resume_and_changes_nothing` |
 | U261 | L232: delete statement | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`, `test_a_pending_truncate_that_fails_again_refuses_the_resume_and_changes_nothing` |
 | U262 | L233: - -> + | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`, `test_stray_bytes_after_a_failed_cross_part_rollback_are_not_counted_for_finish` |
-| U263 | L233: += -> -= | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`, `test_the_pending_list_does_not_overflow` |
+| U263 | L233: += -> -= | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume` |
 | U264 | L233: const 1+1 -> 2 | `test_up_failures:crash/rc=1` |
 | U265 | L233: const 1-1 -> 0 | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`, `test_stray_bytes_after_a_failed_cross_part_rollback_are_not_counted_for_finish` |
-| U266 | L233: delete statement | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`, `test_the_pending_list_does_not_overflow` |
+| U266 | L233: delete statement | `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume` |
 | U267 | L236: delete statement | `test_first_write_failure_is_rolled_back_and_the_upload_becomes_incomplete`, `test_partial_write_with_no_space_is_truncated_back_and_reports_507` |
 | U268 | L237: delete statement | `test_chunk_accepted_hook_is_called_once_per_accepted_chunk_only` |
 | U269 | L238: delete statement | `test_a_clean_rollback_does_not_read_the_disk_again` |
@@ -511,7 +518,7 @@ PR #155 のレビュー(取り消せなかった `truncate` の保留、`FINISH`
 | U412 | L349: delete statement | `test_state_changes_notify_the_view` |
 | U413 | L350: < -> <= | `test_idle_close_meta_failure_still_frees_the_slot`, `test_resume_after_a_failed_idle_close_works` |
 | U414 | L350: const 0+1 -> 1 | `test_idle_close_meta_failure_still_frees_the_slot`, `test_resume_after_a_failed_idle_close_works` |
-| U415 | L354: delete statement | `test_abort_and_reinit_forget_the_pending_truncates` |
+| U415 | L354: delete statement | `test_abort_and_reinit_forget_the_pending_truncates`, `test_the_pending_list_holds_every_part_of_every_image` |
 | U416 | L355: != -> == | `test_begin_size_boundaries` |
 | U417 | L355: \|\| -> && | `test_abort_closes_the_file_drops_sha_and_frees_the_slot`, `test_state_changes_notify_the_view` |
 | U418 | L355: negate if condition | `test_begin_size_boundaries` |
@@ -584,11 +591,11 @@ PR #155 のレビュー(取り消せなかった `truncate` の保留、`FINISH`
 | U490 | L421: delete statement | `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
 | U491 | L422: delete statement | `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
 | U493 | L424: const 0+1 -> 1 | `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
-| U494 | L426: == -> != | `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
+| U494 | L426: == -> != | `test_the_storage_check_and_reinit_scan_a_full_catalog_without_reading_past_it`, `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
 | U495 | L426: == -> != | `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
-| U496 | L426: \|\| -> && | `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
-| U497 | L426: negate if condition | `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
-| U498 | L426: delete statement | `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
+| U496 | L426: \|\| -> && | `test_the_storage_check_and_reinit_scan_a_full_catalog_without_reading_past_it`, `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
+| U497 | L426: negate if condition | `test_the_storage_check_and_reinit_scan_a_full_catalog_without_reading_past_it`, `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
+| U498 | L426: delete statement | `test_the_storage_check_and_reinit_scan_a_full_catalog_without_reading_past_it`, `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
 | F002 | L18: \|\| -> && | `test_up_index:crash/rc=1` |
 | F003 | L18: negate if condition | `test_up_index:crash/rc=1` |
 | F004 | L18: delete statement | `test_up_index:crash/rc=1` |
@@ -831,7 +838,7 @@ PR #155 のレビュー(取り消せなかった `truncate` の保留、`FINISH`
 | X067 | L80: < -> <= | `test_index_builds_the_table_part_by_part`, `test_index_step_count_is_init_plus_parts_plus_build` |
 | X068 | L80: negate if condition | `test_index_builds_the_table_part_by_part`, `test_index_step_count_is_init_plus_parts_plus_build` |
 | X069 | L80: const 0+1 -> 1 | `test_index_builds_the_table_part_by_part`, `test_index_step_count_is_init_plus_parts_plus_build` |
-| X070 | L80: delete statement | `test_stat_io_error_during_index` |
+| X070 | L80: delete statement | `test_up_finish:crash/rc=1` |
 | X071 | L81: negate if condition | `test_index_builds_the_table_part_by_part`, `test_index_step_count_is_init_plus_parts_plus_build` |
 | X072 | L81: delete statement | `test_part_that_is_a_directory_is_part_mismatch` |
 | X074 | L83: + -> - | `test_up_index:crash/rc=1` |
@@ -889,9 +896,9 @@ PR #155 のレビュー(取り消せなかった `truncate` の保留、`FINISH`
 13. **既定の 1 GiB のパーツの境界のテストは、中身を捨てるモード**で行う(1 GiB を持てない)。パーツの境界の分割は、17 ブロックのパーツで網羅し、既定の大きさは、1 GiB ちょうどの 1 バイト手前、境界をまたぐチャンクだけ。
 14. **取り消せなかった `truncate` は、メモリに保留し、次の操作の前にもう一度行う(PR #155 のレビュー。設計 3.1 へ反映済み)**: 書き込みの失敗の後の取り消し(`truncate`)も失敗すると、ディスクには、確認していない(同期の済んでいない)バイトが、パーツの末尾や、**パーツをまたぐチャンクの後ろのパーツ**に残りうる。
    以前の実装は、ここで `received` を実ファイルの大きさから決め直していたため、**受け取っていない分まで数え、`finish` が、クライアントが確認していないデータで `ready` を受理しうる**(例: 35816 バイトのイメージ、パーツ 34816 バイト。チャンクが 2 つ目のパーツに 1000 バイト書いて失敗し、2 つ目の `truncate` も失敗すると、`received` が `size` と同じになる)。
-   **修正**: `received` は確認済みの値のまま。取り消せなかった(イメージ、パーツ、書く前の大きさ)を、メモリに保留する(`pend`、最大 `ISO_MAX_PARTS`)。**再開の最初の `PUT` と、`incomplete` の `finish` の受付は、先にそれらをもう一度 `truncate` する**(`ISO_ERR_INVALID`(すでに小さい)と `NOT_FOUND` は済んだものとする。失敗したらそのエラーを返し、何も変えず、保留は残す)。`abort`、`iso_upload_reinit` は保留を捨てる(消す、または SD が替わった)。`finish` は、成功するまで、受け取っていない分を数えない。
+   **修正**: `received` は、書く前の値のまま(直前に成功した PUT までのメモリ上の値。同期済みとは限らない)。取り消せなかった(イメージ、パーツ、書く前の大きさ)を、メモリに保留する(`pend`)。**保留は、全イメージで共有し、捨てない**: 1 つのイメージの保留は、1 つのチャンクが触るパーツの数(`ISO_MAX_PARTS` 以下)で、そのイメージの次の再開が先に片づける(片づけられなければ、書かずに断る)ので、イメージごとに `ISO_MAX_PARTS` 件以下。イメージは `ISO_MAX_IMAGES` 個以下なので、`ISO_PEND_MAX`(= 16 × 16 = 256 件、1 件 24 バイトで 6144 バイト。以前の 16 件(384 バイト)から増える)で足りる。(別案: 書く前に、保存できる空きを確かめ、足りなければ先に全部片づける。メモリは少ないが、書き込みの前の処理が増え、片づけの失敗で PUT が断られる場面が増えるので、採らなかった)。以前の実装は、16 件が埋まると新しい保留を捨てていた(捨てると、そのイメージの次の再開と `finish` が、`truncate` をせずに、残った未受理のバイトを数える)ので、やめた。**再開の最初の `PUT` と、`incomplete` の `finish` の受付は、先にそれらをもう一度 `truncate` する**(`ISO_ERR_INVALID`(すでに小さい)と `NOT_FOUND` は済んだものとする。失敗したらそのエラーを返し、何も変えず、保留は残す)。`abort`、`iso_upload_reinit` は保留を捨てる(消す、または SD が替わった)。`finish` は、成功するまで、受け取っていない分を数えない。
    **再起動すると、保留は失われる(メモリだけ)**。ディスクに残った分は、再起動後のスキャンで、実ファイルの大きさとして `received` に数えられる。それは、クライアントが送ったチャンクの先頭で、続きの `PUT` と同じデータであり(連鎖は途切れない: 空でないパーツの前に欠けたパーツや、満杯でないパーツは、ファズが毎回確かめる)、`finish` は、全パーツを読み直して SHA-256 を計算し、宣言値と照合する。電源断で未同期の分が残るのと同じ扱いで、設計 3.4 の「`received` の正は、パーツのファイルの大きさ」と矛盾しない。
-   テスト: `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`、`test_a_pending_truncate_that_fails_again_refuses_the_resume_and_changes_nothing`、`test_stray_bytes_after_a_failed_cross_part_rollback_are_not_counted_for_finish`(CodeRabbit の例そのもの)、`test_abort_and_reinit_forget_the_pending_truncates`、`test_finish_after_a_reboot_with_stray_bytes_from_an_unrolled_write_recomputes_the_sha`。
+   テスト: `test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resume`、`test_a_pending_truncate_that_fails_again_refuses_the_resume_and_changes_nothing`、`test_pending_truncates_of_two_images_are_kept_apart`、`test_a_new_pending_truncate_is_never_dropped_even_when_the_list_is_nearly_full`(保留が `ISO_PEND_MAX - 1` 件あっても、新しい保留を末尾に覚え、再開の `pend_settle` の詰め直しが配列の外を読まない。U231 を殺す)、`test_stray_bytes_after_a_failed_cross_part_rollback_are_not_counted_for_finish`(CodeRabbit の例そのもの)、`test_abort_and_reinit_forget_the_pending_truncates`、`test_finish_after_a_reboot_with_stray_bytes_from_an_unrolled_write_recomputes_the_sha`。
 15. **`FINISH` は、`ready` を書く前に `epoch` を確かめる(レビュー)**: `FINISH` は開始のときの `epoch`(`iso_blockdev_t.epoch`)を `iso_finish_job_t.epoch0` に記録し、**`meta` を `ready` で書く直前に、もう一度読んで比べる**。違えば `ISO_ERR_EPOCH` の `ERROR` で、`incomplete`(表は引き渡さない。作業領域と表は放す。ディスク上の `meta` は `ready` にならない)。SD が替わった後に、古いカードの検査の結果で `ready` を書かない。`INDEX` が作る表の `epoch` は、`INDEX` の開始のときの値(これは変えていない)。
    テスト: `test_card_change_after_the_indexing_started_makes_the_finish_incomplete`、`test_card_change_before_the_indexing_started_makes_the_finish_incomplete`(`BDEV.epoch_bump` を `FINISH` の途中で呼ぶ)、`test_finish_started_after_the_card_change_is_not_affected`。これまでの `test_table_epoch_is_read_when_the_indexing_starts` は、同じ仮定(`INDEX` の途中で `epoch` を変えても `ready` になる)に立っていたので、置き換えた。
 16. **`IDLE_CLOSE` と `PUT` の競合は、`iso_core` で取り除く(レビュー)**: `iso_upload_write_chunk` が成功したとき、**`chunk_accepted` フック**を呼ぶ。`iso_core` は、キューに待っている同じイメージの `IDLE_CLOSE` を取り除き、選ばれた後(実行前)のものには中止の印を立てる(`docs/ISO_CORE_TESTS.md` §4)。`iso_upload_idle_close` 自体は、強制の閉じ(SD のエラーからの復帰など)のままで、経過時間を見ない。

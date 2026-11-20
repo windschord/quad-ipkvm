@@ -144,6 +144,13 @@ static void check_all(void) {
         if (s.meta[s.adopted].state == ISO_META_READY) TEST_ASSERT_EQUAL_INT(ISO_STATE_READY, e->state);
     }
     TEST_ASSERT_TRUE(active <= 1);
+    /* 取り消せなかった truncate の保留: 全体で ISO_PEND_MAX 件以下、イメージごとに ISO_MAX_PARTS 件以下(捨てずに済む上限) */
+    TEST_ASSERT_TRUE(UP.pend_n <= ISO_PEND_MAX);
+    for (size_t i = 0; i < UP.pend_n; i++) {
+        unsigned same = 0;
+        for (size_t k = 0; k < UP.pend_n; k++) same += strcmp(UP.pend[i].id, UP.pend[k].id) == 0;
+        TEST_ASSERT_TRUE(same <= ISO_MAX_PARTS);
+    }
     TEST_ASSERT_EQUAL_INT(active, UP.slot_active ? 1 : 0);
     TEST_ASSERT_EQUAL_INT(UP.f ? 1 : 0, FS.open_files);
     TEST_ASSERT_TRUE(FS.open_dirs == 0);

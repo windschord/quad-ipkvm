@@ -488,6 +488,22 @@ void test_mark_unindexed_marks_ready_images_without_a_table(void) {
 
 /* ---- 不正な呼び出し ------------------------------------------------------------------------- */
 
+/* キューが満杯(ISO_WORKER_QUEUE 件)のときに、受理された PUT が IDLE_CLOSE を取り除こうとしても、配列の外を読まない */
+void test_a_put_with_a_full_queue_leaves_the_other_jobs_alone(void) {
+    make_ten_incomplete();
+    scan();
+    for (int i = 0; i < (int)ISO_WORKER_QUEUE; i++) {
+        char qid[9];
+        snprintf(qid, sizeof(qid), "000001%02d", i);
+        TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit(&CORE, ISO_JOB_IDLE_CLOSE, qid));
+    }
+    TEST_ASSERT_EQUAL_UINT(ISO_WORKER_QUEUE, iso_core_queue_len(&CORE));
+    char id[9];
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_begin(up(), "live", 4, 34816, NULL, id));
+    put_all(id, 0, 3000, 3000);
+    TEST_ASSERT_EQUAL_UINT(ISO_WORKER_QUEUE, iso_core_queue_len(&CORE)); /* 別のイメージのジョブは、そのまま */
+}
+
 void test_step_with_a_wrong_job_pointer_is_an_error(void) {
     iso_job_t other;
     memset(&other, 0, sizeof(other));
@@ -607,6 +623,7 @@ int main(void) {
     RUN_TEST(test_index_submission_requires_a_ready_image);
     RUN_TEST(test_index_pick_skips_images_that_are_no_longer_ready);
     RUN_TEST(test_mark_unindexed_marks_ready_images_without_a_table);
+    RUN_TEST(test_a_put_with_a_full_queue_leaves_the_other_jobs_alone);
     RUN_TEST(test_step_with_a_wrong_job_pointer_is_an_error);
     RUN_TEST(test_step_with_a_foreign_pointer_does_not_touch_the_running_job);
     RUN_TEST(test_submit_of_an_unknown_kind_is_invalid);

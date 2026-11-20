@@ -376,7 +376,7 @@ void test_finish_after_a_reboot_with_stray_bytes_from_an_unrolled_write_recomput
     TEST_ASSERT_EQUAL_INT(ISO_RES_INSUFFICIENT_STORAGE, put_range(ID, 20000, 20000, &w));
     mock_fs_fail_write(&FS, 0, 0, 0);
     mock_fs_reset_counter(&FS);
-    TEST_ASSERT_EQUAL_UINT64(20000, w.received); /* 確認済みの値 */
+    TEST_ASSERT_EQUAL_UINT64(20000, w.received); /* 書く前の値 */
     reboot(); /* 再起動すると、保留の truncate は忘れる。ディスクには、取り消せなかった 100 バイトが残っていて、received はそれを数える */
     TEST_ASSERT_EQUAL_UINT64(20100, entry()->received);
     put_all(ID, 20100, SZ, 20000);

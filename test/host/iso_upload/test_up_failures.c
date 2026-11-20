@@ -1,6 +1,6 @@
 /*
  * iso_upload_write_chunk / idle_close の失敗(設計 3.1、3.4、WEB_API 8.3): 書き込み・sync・open の失敗は、チャンク全体を truncate で取り消して
- * incomplete にする。truncate 自体の失敗では、received は確認済みの値のまま、取り消せなかった分は保留して、次の再開と finish の受付の前に、もう一度 truncate する。
+ * incomplete にする。truncate 自体の失敗では、received は書く前の値のまま、取り消せなかった分は保留して、次の再開と finish の受付の前に、もう一度 truncate する。
  * 空きなし(ISO_ERR_NO_SPACE)は 507 相当。
  * 失敗の注入は、モックの write の失敗(mock_fs_fail_write)と、書き込みの通し番号によるエラー(mock_fs_error_at)。期待値は手書き。
  * 電源断は test_up_powercut.c。
@@ -209,7 +209,7 @@ void test_truncate_failure_keeps_the_confirmed_received_and_retries_at_the_resum
     mock_fs_error_at(&FS, 3, ISO_ERR_IO); /* write(1)、close(2)、truncate(3) */
     iso_upload_write_t w;
     TEST_ASSERT_EQUAL_INT(ISO_RES_INSUFFICIENT_STORAGE, put_range(ID, 2000, 1000, &w));
-    /* 取り消せなかった: ディスクには、確認していない 300 バイトが残る。received は、確認済みの 2000 のまま */
+    /* 取り消せなかった: ディスクには、確認していない 300 バイトが残る。received は、書く前の 2000 のまま */
     TEST_ASSERT_EQUAL_UINT64(2000, w.received);
     expect_incomplete_and_free(2000);
     TEST_ASSERT_EQUAL_INT64(2300, mock_fs_size(&FS, P0));
@@ -377,7 +377,7 @@ void test_a_failed_rollback_does_not_read_the_disk_and_is_kept_pending(void) {
     mock_fs_error_at(&FS, 3, ISO_ERR_IO);
     iso_upload_write_t w;
     TEST_ASSERT_EQUAL_INT(ISO_RES_INSUFFICIENT_STORAGE, put_range(ID, 2000, 1000, &w));
-    TEST_ASSERT_EQUAL_INT(0, FS.n_stat); /* 大きさは読まない(確認済みの received を使う) */
+    TEST_ASSERT_EQUAL_INT(0, FS.n_stat); /* 大きさは読まない(書く前の received を使う) */
     TEST_ASSERT_EQUAL_UINT(1, UP.pend_n);
 }
 
@@ -442,25 +442,66 @@ void test_pending_truncates_of_two_images_are_kept_apart(void) {
     TEST_ASSERT_EQUAL_INT64(2500, mock_fs_size(&FS, P0)); /* 2000 に戻してから、500 バイト追記 */
 }
 
-void test_the_pending_list_does_not_overflow(void) {
-    begin_small(SZ);
-    put_all(ID, 0, 2000, 2000);
-    /* 別のイメージの保留が、満杯(ISO_MAX_PARTS)になっている */
-    for (size_t i = 0; i < ISO_MAX_PARTS; i++) {
-        memcpy(UP.pend[i].id, "deadbeef", 9);
-        UP.pend[i].part = (uint32_t)i;
+/* 保留は、全イメージで共有する。他のイメージの保留が、ISO_PEND_MAX - 1 件(= 全イメージ × 全パーツから、1 件を引いた数)あっても、
+ * 新しい保留は捨てない(捨てると、そのイメージの次の再開と finish が、truncate をせずに、残った未受理のバイトを数える) */
+static void fill_pending_with_other_images(size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        snprintf(UP.pend[i].id, sizeof(UP.pend[i].id), "dead%04u", (unsigned)(i / ISO_MAX_PARTS));
+        UP.pend[i].part = (uint32_t)(i % ISO_MAX_PARTS);
         UP.pend[i].size = 0;
     }
-    UP.pend_n = ISO_MAX_PARTS;
+    UP.pend_n = n;
+}
+
+void test_a_new_pending_truncate_is_never_dropped_even_when_the_list_is_nearly_full(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 2000, 2000);
+    fill_pending_with_other_images(ISO_PEND_MAX - 1);
     failed_put_with_a_failed_rollback(ID);
-    TEST_ASSERT_EQUAL_UINT(ISO_MAX_PARTS, UP.pend_n); /* 溢れる分は、覚えない(次の再開が、ディスクの大きさから決める) */
-    for (size_t i = 0; i < UP.pend_n; i++) TEST_ASSERT_EQUAL_STRING("deadbeef", UP.pend[i].id);
+    TEST_ASSERT_EQUAL_UINT(ISO_PEND_MAX, UP.pend_n);
+    TEST_ASSERT_EQUAL_STRING(ID, UP.pend[ISO_PEND_MAX - 1].id); /* 末尾に、覚えている */
+    TEST_ASSERT_EQUAL_UINT32(0, UP.pend[ISO_PEND_MAX - 1].part);
+    TEST_ASSERT_EQUAL_UINT64(2000, UP.pend[ISO_PEND_MAX - 1].size);
     expect_incomplete_and_free(2000);
-    TEST_ASSERT_EQUAL_UINT64(3000, UP.consumed_since); /* 空き容量の計上には、足す */
-    /* 覚えていないので、再開は、ディスクの 2300 から続ける */
+    TEST_ASSERT_EQUAL_INT64(2300, mock_fs_size(&FS, P0));
+    /* 再開は、先に truncate して(末尾の保留を、他のイメージの保留の後ろから見つけて)、2000 から続けられる。pend_settle の詰め直しは、配列の外を読まない */
     iso_upload_write_t w;
-    TEST_ASSERT_EQUAL_INT(ISO_RES_OFFSET_MISMATCH, put_range(ID, 2000, 100, &w));
-    TEST_ASSERT_EQUAL_UINT64(2300, w.received);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(ID, 2000, 500, &w));
+    TEST_ASSERT_EQUAL_UINT64(2500, w.received);
+    TEST_ASSERT_EQUAL_UINT(ISO_PEND_MAX - 1, UP.pend_n);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
+    TEST_ASSERT_EQUAL_INT64(2500, mock_fs_size(&FS, P0));
+    UP.pend_n = 0;
+}
+
+/* 防御の確認: 到達しない状態(保留が満杯)でも、配列の外には書かない。正常な動作では、イメージごとに ISO_MAX_PARTS 件以下で、満杯にならない */
+void test_the_guard_of_a_full_pending_list_never_writes_past_the_array(void) {
+    begin_small(SZ);
+    put_all(ID, 0, 2000, 2000);
+    fill_pending_with_other_images(ISO_PEND_MAX);
+    failed_put_with_a_failed_rollback(ID);
+    TEST_ASSERT_EQUAL_UINT(ISO_PEND_MAX, UP.pend_n);
+    for (size_t i = 0; i < UP.pend_n; i++) TEST_ASSERT_TRUE(strncmp(UP.pend[i].id, "dead", 4) == 0);
+    expect_incomplete_and_free(2000);
+    UP.pend_n = 0;
+}
+
+void test_the_pending_list_holds_every_part_of_every_image(void) {
+    /* 全イメージ(ISO_MAX_IMAGES)× 全パーツ(ISO_MAX_PARTS)の保留が、そろっても、どれも捨てない */
+    begin_small(SZ);
+    put_all(ID, 0, 2000, 2000);
+    fill_pending_with_other_images(ISO_PEND_MAX - ISO_MAX_PARTS);
+    /* 1 つのチャンクで、ISO_MAX_PARTS 個のパーツを触って、全部の取り消しが失敗する、ことを、保留を直接足して表す */
+    for (size_t k = 0; k < ISO_MAX_PARTS; k++) {
+        snprintf(UP.pend[UP.pend_n].id, sizeof(UP.pend[0].id), "%s", ID);
+        UP.pend[UP.pend_n].part = (uint32_t)k;
+        UP.pend[UP.pend_n].size = 0;
+        UP.pend_n++;
+    }
+    TEST_ASSERT_EQUAL_UINT(ISO_PEND_MAX, UP.pend_n);
+    TEST_ASSERT_EQUAL_UINT(ISO_MAX_IMAGES * ISO_MAX_PARTS, ISO_PEND_MAX);
+    iso_upload_abort(&UP, ID);
+    TEST_ASSERT_EQUAL_UINT(ISO_PEND_MAX - ISO_MAX_PARTS, UP.pend_n); /* このイメージの分だけ、捨てる */
     UP.pend_n = 0;
 }
 
@@ -568,7 +609,9 @@ int main(void) {
     RUN_TEST(test_a_failed_rollback_does_not_read_the_disk_and_is_kept_pending);
     RUN_TEST(test_abort_and_reinit_forget_the_pending_truncates);
     RUN_TEST(test_pending_truncates_of_two_images_are_kept_apart);
-    RUN_TEST(test_the_pending_list_does_not_overflow);
+    RUN_TEST(test_a_new_pending_truncate_is_never_dropped_even_when_the_list_is_nearly_full);
+    RUN_TEST(test_the_guard_of_a_full_pending_list_never_writes_past_the_array);
+    RUN_TEST(test_the_pending_list_holds_every_part_of_every_image);
     RUN_TEST(test_finish_begin_settles_the_pending_truncates_first_and_stops_when_that_fails);
     RUN_TEST(test_idle_close_when_sync_and_close_both_fail_takes_received_from_the_disk);
     RUN_TEST(test_idle_close_reports_a_failing_close_after_a_good_sync);

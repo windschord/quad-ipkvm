@@ -184,7 +184,7 @@ typedef struct {
 /* ---- 取り消せなかった truncate(設計 3.1。次の操作で、もう一度行う) --------------------------------- */
 
 static void pend_add(iso_upload_t *u, const char *id, uint32_t part, uint64_t size) {
-    if (u->pend_n >= ISO_MAX_PARTS) return; /* 1 つのチャンクが触るパーツは 16 以下で、再開のたびに片づけるので、溢れない */
+    if (u->pend_n >= ISO_PEND_MAX) return; /* 到達しない(防御): イメージごとに ISO_MAX_PARTS 件以下で、イメージは ISO_MAX_IMAGES 個以下。保留を、正常には捨てない */
     memcpy(u->pend[u->pend_n].id, id, ISO_ID_LEN + 1);
     u->pend[u->pend_n].part = part;
     u->pend[u->pend_n].size = size;
@@ -227,7 +227,7 @@ static int fail_write(iso_upload_t *u, iso_catalog_entry_t *e, const touched_t *
     for (size_t k = nt; k > 0; k--) {
         char path[ISO_PATH_MAX];
         if (iso_up_part_path(path, sizeof(path), e->id, t[k - 1].part) < 0 || fs->truncate(fs->ctx, path, t[k - 1].before) < 0) {
-            /* 取り消せなかった: ディスクには、クライアントがまだ確認していないバイトが残りうる。received は、確認済みの値(書く前)のままにし、
+            /* 取り消せなかった: ディスクには、クライアントがまだ確認していないバイトが残りうる。received は、書く前の値(直前に成功した PUT までのメモリ上の値。同期済みとは限らない)のままにし、
              * 次の操作(再開、finish の受付)の最初に、もう一度 truncate する。残りうるバイトの分は、空き容量の計上に足す(上限) */
             pend_add(u, e->id, t[k - 1].part, t[k - 1].before);
             u->consumed_since += t[k - 1].seg;

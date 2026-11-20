@@ -99,7 +99,8 @@ const iso_view_t *iso_core_view(const iso_core_t *c) { return &c->view; }
 
 static void on_view_changed(void *ctx) { iso_core_publish((iso_core_t *)ctx); }
 
-/* チャンクを受理した: IDLE_CLOSE を積んだ後、実行の前に PUT が成功したなら、閉じない(待っているものは取り消し、選ばれた後のものは中止の印) */
+/* チャンクを受理した、または時計が巻き戻って基準を引き直した: IDLE_CLOSE を積んだ後、実行の前なら、閉じない(待っているものは取り消し、選ばれた後のものは中止の印)。
+ * 直接の iso_upload_idle_close(強制の閉じ)は、これでは止めない */
 static void queue_drop(iso_core_t *c, iso_job_kind_t kind, const char *id);
 static void on_chunk_accepted(void *ctx, const char *id) {
     iso_core_t *c = (iso_core_t *)ctx;
@@ -476,7 +477,10 @@ void iso_upload_tick(iso_core_t *c, uint64_t now_ms) {
         if (c->pub_act != ISO_UP_ACT_FINALIZING) publish_at(c, now_ms);
         return;
     }
-    if (now_ms < u->last_put_ms) u->last_put_ms = now_ms; /* 巻き戻り: 経過 0。基準を引き直す */
+    if (now_ms <= u->last_put_ms) {
+        u->last_put_ms = now_ms; /* 巻き戻り(または、最後の PUT と同じ時刻): 経過 0。基準を引き直す */
+        on_chunk_accepted(c, u->slot_id); /* 巻き戻る前の時計で積んだ IDLE_CLOSE(待っているもの、選ばれた後のもの)は、取り消す */
+    }
     uint64_t elapsed = now_ms - u->last_put_ms;
     if (elapsed >= (uint64_t)ISO_UPLOAD_IDLE_S * 1000u) (void)iso_core_submit(c, ISO_JOB_IDLE_CLOSE, u->slot_id);
     if (iso_upload_activity(u, now_ms) != c->pub_act) publish_at(c, now_ms);

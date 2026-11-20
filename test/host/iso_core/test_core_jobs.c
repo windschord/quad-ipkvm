@@ -606,6 +606,7 @@ void test_sixteen_images_all_get_tables_and_each_can_be_removed(void) {
         TEST_ASSERT_NOT_NULL(iso_core_table(&CORE, id));
     }
     TEST_ASSERT_EQUAL_UINT(16, CORE.table_n);
+    TEST_ASSERT_NULL(iso_core_table(&CORE, "00000499")); /* 表が満杯でも、ない id の検索は、配列の外を読まない */
     /* 先頭、真ん中、末尾を消す */
     TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit_delete(&CORE, "00000400"));
     TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit_delete(&CORE, "00000407"));

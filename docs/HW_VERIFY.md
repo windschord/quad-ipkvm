@@ -334,7 +334,7 @@ ISO をアップロードして microSD に保存し、USB の仮想 CD-ROM と�
 | I8 | **HID + 仮想 CD-ROM の複合デバイスを、ターゲットの BIOS / UEFI が認識すること**。**Linux の ISO と Windows の ISO の、CD としての起動**（El Torito）。ターゲット OS（Linux、Windows）での、CD-ROM としての認識と読み出し | 実機（ターゲット PC。オーナーの物理作業を含む） | **[未確認]**（A-14） |
 | I9 | **READ TOC / GET CONFIGURATION のプロファイル**（DVD-ROM）が、Windows、Linux、UEFI で問題ないこと | 実機 | **[未確認]**（A-14） |
 | I10 | **アップロード中の入力（`/ws`）と HID の遅延（平均と最悪値）**（`esp_http_server` が 1 スレッドで、チャンク 128 KiB の処理中は他の要求が待つ）と、アップロードの実効速度（Ethernet 100 Mbps、TLS、SD の書き込み）。`DELETE`、`finalizing`（`iso_worker`）の最中の入力の遅延。`PUT` の拒否時の `Connection: close` が効くこと。**アップロードとターゲットの読み出しを同時にしたときの HID の遅延**（`iso_msc_task`）。**ワーカーの稼働中（`DELETE`、`finalizing`、`INDEX`）の `PUT` の遅延と、httpd が `iso_op_mutex` を待った時間・`503 busy` の頻度。`rescan` の 1 回の所要時間（httpd を止める時間）** | 実機。アップロードしながら、キーボードとマウスの入力の遅延を測る | **[未確認]**（A-15）。許容できなければ、アップロード専用のサーバーに移す |
-| I11 | **電源断・SD の抜き取りのとき**、アップロードが `incomplete` として復帰し、再開できること。壊れた `meta` を `invalid` として扱うこと。**`import` の `rename` の途中の電源断（クロスリンクの検出）、`DELETE` の途中の電源断（`deleting` の再開）** | 実機（書き込み中に電源を切る。カードを抜く） | **[未確認]**（A-13、A-15） |
+| I11 | **電源断・SD の抜き取りのとき**、アップロードが `incomplete` として復帰し、再開できること。壊れた `meta` を `invalid` として扱うこと。**`import` の `rename` の途中の電源断（クロスリンクの検出）、`DELETE` の途中の電源断（`deleting` の再開）**。**`FINISH` の最中の SD の差し替え（`epoch_bump` の直後の書き込みが `ISO_ERR_EPOCH` で失敗し、替わった後のカードに何も書かれないこと。`ISO_MOUNT_DESIGN.md` §3.4）** | 実機（書き込み中に電源を切る。カードを抜く） | **[未確認]**（A-13、A-15） |
 | I12 | **ターゲットが取り外しを防止している間の Web の取り外し・差し替え**（`locked_by_target`）、ターゲットの START STOP UNIT による取り外し | 実機（Linux の `eject`、BIOS / OS のドアロック） | **[未確認]**（A-14） |
 
 ## Z. WS /video タスク未確認一覧

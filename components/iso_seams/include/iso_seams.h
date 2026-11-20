@@ -129,7 +129,9 @@ typedef struct {
     int (*open_for_read)(void *ctx, const char *path, iso_file_t **out);
     /* 読んだバイト数を *got に入れる。EOF は *got < len。 */
     int (*read)(void *ctx, iso_file_t *f, void *buf, size_t len, size_t *got);
-    /* 位置を指定した読み出し（f_lseek + f_read。open_for_read のハンドルで使う。順次読みの位置は変えない）。
+    /* 位置を指定した読み出し（f_lseek + f_read。open_for_read のハンドルで使う）。
+     * **同じハンドルで `read` と `read_at` を混ぜない。`read_at` の後の `read` の位置は未定義**（位置を保存して戻す実装は、後ろ向きの seek になり、
+     * FatFs が 1 GiB パーツ（約 65536 クラスタ）のチェーンを毎回先頭からたどり直して、1 MiB ずつ読む FINISH が極端に遅くなるため）。
      * 読んだバイト数を *got に入れる。EOF は *got < len（offset が EOF 以降なら *got = 0）。 */
     int (*read_at)(void *ctx, iso_file_t *f, uint64_t offset, void *buf, size_t len, size_t *got);
 
