@@ -248,3 +248,202 @@ button:disabled {
         border: 1px solid #666;
     }
 }
+
+/* The ISO (virtual media) screen: a panel on the right of the window, over the page (it does not change the layout of
+   the video). No inline styles anywhere (CSP style-src 'self'): app.js only switches the classes below. */
+.iso-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    box-sizing: border-box;
+    width: min(560px, 100%);
+    padding: 12px 14px;
+    overflow-y: auto;
+    color: #222;
+    background-color: #fff;
+    border-left: 1px solid #aaa;
+    box-shadow: -2px 0 8px rgba(0, 0, 0, 0.25);
+}
+.iso-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.iso-head h2 {
+    margin: 0;
+    font-size: 1.1em;
+}
+.iso-panel h3 {
+    margin: 12px 0 6px;
+    font-size: 1em;
+}
+.iso-panel button {
+    padding: 4px 10px;
+    font-size: 0.9em;
+}
+.iso-line {
+    margin: 6px 0;
+    font-size: 0.9em;
+}
+.iso-mount-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+}
+.iso-message {
+    margin: 8px 0;
+    padding: 8px 10px;
+    font-size: 0.9em;
+    color: #084298;
+    background-color: #cfe2ff;
+    border: 1px solid #9ec5fe;
+    border-radius: 4px;
+    overflow-wrap: anywhere;
+}
+.iso-message.iso-message-error {
+    color: #842029;
+    background-color: #f8d7da;
+    border-color: #f1aeb5;
+}
+.iso-message.iso-message-ok {
+    color: #0f5132;
+    background-color: #d1e7dd;
+    border-color: #a3cfbb;
+}
+.iso-list {
+    margin: 8px 0;
+    padding: 0;
+    list-style: none;
+}
+.iso-row {
+    margin: 0 0 8px;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-left-width: 4px;
+    border-radius: 4px;
+}
+.iso-row.iso-state-ready {
+    border-left-color: #198754;
+}
+.iso-row.iso-state-uploading,
+.iso-row.iso-state-finalizing {
+    border-left-color: #0d6efd;
+}
+.iso-row.iso-state-incomplete {
+    border-left-color: #fd7e14;
+}
+.iso-row.iso-state-invalid {
+    border-left-color: #dc3545;
+}
+.iso-row.iso-state-deleting {
+    border-left-color: #6c757d;
+    opacity: 0.7;
+}
+.iso-row-main {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+}
+.iso-name {
+    font-weight: bold;
+    overflow-wrap: anywhere;
+}
+.iso-size {
+    font-size: 0.85em;
+    color: #555;
+}
+.iso-badge {
+    padding: 1px 6px;
+    font-size: 0.8em;
+    background-color: #e0e0e0;
+    border-radius: 3px;
+}
+.iso-badge-mounted {
+    color: #fff;
+    background-color: #198754;
+}
+.iso-row-note {
+    margin-top: 4px;
+    font-size: 0.85em;
+    color: #555;
+    overflow-wrap: anywhere;
+}
+.iso-row progress,
+.iso-upload progress {
+    display: block;
+    width: 100%;
+    margin: 6px 0;
+}
+.iso-row-actions,
+.iso-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+.iso-upload {
+    margin-top: 12px;
+    padding-top: 6px;
+    border-top: 1px solid #ccc;
+}
+.iso-upload label {
+    display: block;
+    margin: 8px 0 3px;
+    font-size: 0.9em;
+}
+.iso-upload .iso-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+}
+.iso-upload input[type="text"] {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 6px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+.iso-import {
+    margin-top: 12px;
+    padding-top: 6px;
+    border-top: 1px solid #ccc;
+}
+#view-dashboard.is-fullscreen .iso-panel {
+    display: none;
+}
+@media (prefers-color-scheme: dark) {
+    .iso-panel {
+        color: #eee;
+        background-color: #222;
+        border-left-color: #666;
+    }
+    .iso-row {
+        border-color: #555;
+    }
+    .iso-size,
+    .iso-row-note {
+        color: #bbb;
+    }
+    .iso-badge {
+        color: #eee;
+        background-color: #444;
+    }
+    .iso-upload,
+    .iso-import {
+        border-top-color: #555;
+    }
+    .iso-upload input[type="text"] {
+        color: #eee;
+        background-color: #333;
+        border-color: #666;
+    }
+}
+/* Last, so that it wins over the display set by the rules above. */
+.iso-hidden {
+    display: none !important;
+}
