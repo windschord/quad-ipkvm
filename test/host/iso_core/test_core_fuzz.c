@@ -110,6 +110,7 @@ static void check_images(void) {
         if (!e->meta_valid) continue;
         iso_slots_t s;
         TEST_ASSERT_EQUAL_INT(ISO_OK, iso_slots_read(&IFS, e->id, &s));
+        TEST_ASSERT_TRUE(s.adopted >= 0);
         switch (e->state) {
         case ISO_STATE_UPLOADING: {
             active++;

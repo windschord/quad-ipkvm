@@ -9,9 +9,11 @@ else()
     target_include_directories(iso_core PUBLIC include ${CMAKE_CURRENT_LIST_DIR}/../iso_seams/include)
     target_link_libraries(iso_core PUBLIC iso_upload)
 
-    # Enforce C11, ASan, UBSan, and warnings
+    # Enforce C11. The standard is set by the target property, not by -std=...: the parent project sets CMAKE_C_STANDARD=99,
+    # and CMake adds its own -std=c99 to the command line (a hand-written -std=c11 only wins by its position).
+    set_target_properties(iso_core PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    # ASan, UBSan, and warnings
     target_compile_options(iso_core PRIVATE
-        -std=c11
         -Wall -Wextra -Werror
         -fsanitize=address -fsanitize=undefined
         -fno-sanitize-recover=undefined # UBSan の検出で、テストを失敗させる(変異テストの検出にも使う)

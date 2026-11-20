@@ -136,6 +136,7 @@ static void finish_and_check(iso_catalog_entry_t *e) {
     TEST_ASSERT_EQUAL_INT(ISO_STATE_READY, e->state);
     iso_slots_t s;
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_slots_read(&IFS, ID, &s));
+    TEST_ASSERT_TRUE(s.adopted >= 0);
     TEST_ASSERT_EQUAL_UINT8(ISO_META_READY, s.meta[s.adopted].state);
     TEST_ASSERT_EQUAL_UINT8(ISO_SHA_COMPUTED, s.meta[s.adopted].sha_flag);
     uint8_t want[32];

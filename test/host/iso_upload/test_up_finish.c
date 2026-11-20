@@ -67,6 +67,7 @@ static void expect_ready(const char *sha_hex, uint16_t parts) {
     TEST_ASSERT_EQUAL_UINT64(e->meta.size_bytes, e->received);
     iso_slots_t s;
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_slots_read(&IFS, ID, &s));
+    TEST_ASSERT_TRUE(s.adopted >= 0);
     const iso_meta_t *m = &s.meta[s.adopted];
     TEST_ASSERT_EQUAL_UINT8(ISO_META_READY, m->state);
     TEST_ASSERT_EQUAL_UINT8(ISO_SHA_COMPUTED, m->sha_flag);

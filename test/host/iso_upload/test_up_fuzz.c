@@ -112,6 +112,7 @@ static void check_all(void) {
         if (!e->meta_valid || e->state == ISO_STATE_DELETING) continue;
         iso_slots_t s;
         TEST_ASSERT_EQUAL_INT(ISO_OK, iso_slots_read(&IFS, e->id, &s));
+        TEST_ASSERT_TRUE(s.adopted >= 0);
         switch (e->state) {
         case ISO_STATE_UPLOADING: {
             active++;

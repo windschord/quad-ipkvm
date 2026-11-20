@@ -369,19 +369,25 @@ int iso_upload_finish_begin(iso_upload_t *u, const char *id, uint64_t *out_recei
     case ISO_STATE_INVALID: return ISO_RES_INVALID_IMAGE;
     default: break;
     }
+    bool corrected = false; /* ディスクの大きさで、received を訂正した(拒否するときも、ビューを更新する) */
     if (e->state == ISO_STATE_INCOMPLETE) {
         int rc = pend_settle(u, id);
         if (rc < 0) return rc;
+        uint64_t prev = e->received;
         rc = iso_upload_reload_received(u, e);
         if (rc < 0) return rc;
+        corrected = (e->received != prev);
     }
     if (out_received) *out_received = e->received;
     iso_trans_ctx_t tc = {.slot_free = !u->slot_active};
     int rc = iso_catalog_apply(cat, e, ISO_EV_FINISH, &tc, NULL);
     if (rc < 0) return rc;
-    if (rc == (int)ISO_TR_REJECT_SIZE_MISMATCH) return ISO_RES_SIZE_MISMATCH;
-    if (rc == (int)ISO_TR_REJECT_UPLOAD_IN_PROGRESS) return ISO_RES_UPLOAD_IN_PROGRESS;
-    if (rc > 0) return ISO_RES_NOT_UPLOADING;
+    if (rc > 0) {
+        if (corrected) iso_up_notify(u);
+        if (rc == (int)ISO_TR_REJECT_SIZE_MISMATCH) return ISO_RES_SIZE_MISMATCH;
+        if (rc == (int)ISO_TR_REJECT_UPLOAD_IN_PROGRESS) return ISO_RES_UPLOAD_IN_PROGRESS;
+        return ISO_RES_NOT_UPLOADING;
+    }
     take_slot(u, id, true);
     iso_up_notify(u);
     return ISO_OK;
