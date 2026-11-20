@@ -812,7 +812,8 @@ async function checkAll(source, o) {
         h.iso.refreshList();
         await h.idle();
         eq('row shows resume', h.rows().map((r) => [r.badge, r.buttons]), [['中断（再開できます）', ['再開', '削除']]]);
-        h.clickRow('myiso', '再開'); // 同じ画面では、元のファイルを覚えている(選び直さなくてよい)
+        h.E['iso-file'].files = null; // 選び直さない: 同じ画面では、元のファイルを覚えている
+        h.clickRow('myiso', '再開');
         ok('ready after resume', await h.run(() => READY1(h)));
         eq('PUTs continue from the server received', offs(h.puts()), ['0', '32768', '65536', '98304']);
         ok('bytes intact', server.images[0].data.equals(f._b));
@@ -873,6 +874,38 @@ async function checkAll(source, o) {
         await upload(h2, fileOf(SIZE + 7), 'win11');
         await h2.idle();
         eq('name exists', [h2.msg().includes('同じ名前'), h2.posts().length], [true, 0]);
+    });
+    await guard('resume: the file chosen for a resume is remembered for the next resume (pause, then resume without choosing again)', async () => {
+        stats.scenarios++;
+        const f = fileOf(SIZE);
+        const server = makeServer();
+        const im = server.add({ name: 'win11', size: SIZE, state: 'incomplete', data: Buffer.from(f._b.subarray(0, 32768)) });
+        const h = boot(Iso, server);
+        let paused = false;
+        server.hooks.push((req) => { if (req.method === 'PUT' && !paused) { paused = true; h.E['iso-pause'].click(); } return undefined; });
+        await started(h);
+        h.E['iso-file'].files = [f];
+        h.clickRow('win11', '再開');
+        ok('paused', await h.run(() => h.msg().includes('一時停止しました') && h.iso._state.job === null));
+        h.E['iso-file'].files = null;
+        im.state = 'incomplete';
+        h.iso.refreshList();
+        await h.idle();
+        h.clickRow('win11', '再開');
+        ok('ready', await h.run(() => READY1(h)));
+        eq('offsets', offs(h.puts()), ['32768', '65536', '98304']);
+        ok('bytes intact', im.data.equals(f._b));
+    });
+    await guard('resume: same name but another size is not resumed', async () => {
+        stats.scenarios++;
+        const f = fileOf(SIZE);
+        const server = makeServer();
+        server.add({ name: 'win11', size: SIZE, state: 'incomplete', data: Buffer.from(f._b.subarray(0, 32768)) });
+        const h = boot(Iso, server);
+        await started(h);
+        await upload(h, fileOf(SIZE + 7), 'win11');
+        await h.idle();
+        eq('name exists, nothing sent', [h.msg().includes('同じ名前'), h.msgError(), h.puts().length, h.posts().length], [true, true, 0, 0]);
     });
     await guard('resume: another image is finalizing (the slot is used): wait, then go on', async () => {
         stats.scenarios++;
@@ -1918,6 +1951,8 @@ async function bootApp(source, statusValue, opts) {
 const EQUIVALENT = new Set([
     // サーバーは、受理した PUT に、必ず offset + n を返す(docs/WEB_API.md 8.3: 一部だけ受理することはない)。応答の値を使うのは、念のため。
     'upload: received from response ignored',
+    // 書き込みの失敗の後、ここで SD を待たなくても、直後の resync が(SD が使えなければ)同じ待ちをする。
+    'upload: sd error does not wait for the SD',
 ]);
 
 function mutants(source) {
@@ -1960,12 +1995,13 @@ function mutants(source) {
         ['upload: slow threshold never', 'if (dt >= SLOW_MS && job.chunk > MIN_CHUNK)', 'if (false)'],
         ['upload: fast never grows', 'else if (dt < FAST_MS && job.chunk < job.chunkMax)', 'else if (false)'],
         ['upload: net error does not shrink', 'if (job.chunk > MIN_CHUNK) job.chunk = Math.max(MIN_CHUNK, job.chunk >> 1);\n                    await sleep(Math.min(1000 * netFails, 5000));', 'await sleep(Math.min(1000 * netFails, 5000));'],
-        ['upload: net error does not re-sync', "const s = await resync(job);\n                    if (s === 'stop') return 'failed';\n                    if (s === 'complete') return 'done';\n                    reportProgress(job);\n                    continue;", 'continue;'],
+        ['upload: net error does not re-sync', "const s = await resync(job);\n                    reachable = s !== 'retry';\n                    if (s === 'stop') return 'failed';\n                    if (s === 'complete') return 'done';\n                    reportProgress(job);\n                    continue;", 'continue;'],
         ['upload: net error retries forever', 'if (netFails > MAX_NET_FAILS) {', 'if (netFails > 1e9) {'],
         ['upload: mismatch loop unbounded', 'if (sameMismatch > 3) {', 'if (sameMismatch > 1e9) {'],
         ['upload: 413 does not shrink', "if (r.status === 413 && code === 'payload_too_large' && job.chunk > MIN_CHUNK) {", 'if (false) {'],
         ['upload: busy ignores Retry-After', "await sleep((r.retryAfter || 1) * 1000);\n                    continue;\n                }\n                if (r.status === 503 && (code === 'not_ready'", "await sleep(0);\n                    continue;\n                }\n                if (r.status === 503 && (code === 'not_ready'"],
-        ['upload: upload_in_progress never waits', "list.upload.state === 'finalizing' && ++waits <= MAX_WAIT_STEPS", 'false'],
+        ['upload: upload_in_progress never waits for finalizing', "holder.state === 'finalizing' && ++waits <= MAX_WAIT_STEPS", 'false'],
+        ['upload: reachable message always the connection one', 'setMessage(reachable', 'setMessage(false'],
         ['upload: sd error does not wait for the SD', "if (!(await waitSdReady(job))) {\n                        if (alive(job)) setMessage(describeError(r.status, r.data), 'error');", "if (false) {\n                        if (alive(job)) setMessage(describeError(r.status, r.data), 'error');"],
         ['upload: error message not shown', "setMessage(describeError(r.status, r.data), 'error');\n                if (r.status === 404) S.listSig = null;", 'if (r.status === 404) S.listSig = null;'],
         ['upload: hash declared only when off', "if (sha !== null) body.sha256 = sha;", "if (sha === null) body.sha256 = '';"],
