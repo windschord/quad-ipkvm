@@ -312,3 +312,94 @@ bool usb_hid_sink_init(hid_sink_t *out_sink, usb_hid_sink_ctx_t *ctx_storage,
     out_sink->send_rel = sink_send_rel;
     return true;
 }
+
+#define USB_HID_GATE_ACTIVE_BIT (1u << 31)
+#define USB_HID_GATE_CLOSED_BIT (1u << 30)
+#define USB_HID_GATE_COUNT_MASK 0x3FFFFFFFu
+
+void usb_hid_gate_init(usb_hid_gate_t *gate) {
+    if (!gate) {
+        return;
+    }
+    __atomic_store_n(&gate->state, 0u, __ATOMIC_RELEASE);
+}
+
+bool usb_hid_gate_activate(usb_hid_gate_t *gate) {
+    if (!gate) {
+        return false;
+    }
+    uint32_t expected = 0u;
+    return __atomic_compare_exchange_n(&gate->state, &expected, USB_HID_GATE_ACTIVE_BIT,
+                                       false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+}
+
+bool usb_hid_gate_enter(usb_hid_gate_t *gate) {
+    if (!gate) {
+        return false;
+    }
+    uint32_t cur = __atomic_load_n(&gate->state, __ATOMIC_RELAXED);
+    for (;;) {
+        if ((cur & USB_HID_GATE_ACTIVE_BIT) == 0u ||
+            (cur & USB_HID_GATE_CLOSED_BIT) != 0u ||
+            (cur & USB_HID_GATE_COUNT_MASK) == USB_HID_GATE_COUNT_MASK) {
+            return false;
+        }
+        uint32_t next = cur + 1u;
+        if (__atomic_compare_exchange_n(&gate->state, &cur, next, true,
+                                        __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            return true;
+        }
+    }
+}
+
+void usb_hid_gate_leave(usb_hid_gate_t *gate) {
+    if (!gate) {
+        return;
+    }
+    uint32_t cur = __atomic_load_n(&gate->state, __ATOMIC_RELAXED);
+    for (;;) {
+        if ((cur & USB_HID_GATE_COUNT_MASK) == 0u) {
+            return;
+        }
+        uint32_t next = cur - 1u;
+        if (__atomic_compare_exchange_n(&gate->state, &cur, next, true,
+                                        __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+            return;
+        }
+    }
+}
+
+uint32_t usb_hid_gate_begin_teardown(usb_hid_gate_t *gate) {
+    if (!gate) {
+        return 0u;
+    }
+    uint32_t cur = __atomic_load_n(&gate->state, __ATOMIC_RELAXED);
+    for (;;) {
+        uint32_t next = (cur & ~USB_HID_GATE_ACTIVE_BIT) | USB_HID_GATE_CLOSED_BIT;
+        if (__atomic_compare_exchange_n(&gate->state, &cur, next, true,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            return cur & USB_HID_GATE_COUNT_MASK;
+        }
+    }
+}
+
+uint32_t usb_hid_gate_in_flight(const usb_hid_gate_t *gate) {
+    if (!gate) {
+        return 0u;
+    }
+    return __atomic_load_n(&gate->state, __ATOMIC_ACQUIRE) & USB_HID_GATE_COUNT_MASK;
+}
+
+bool usb_hid_gate_is_active(const usb_hid_gate_t *gate) {
+    if (!gate) {
+        return false;
+    }
+    return (__atomic_load_n(&gate->state, __ATOMIC_ACQUIRE) & USB_HID_GATE_ACTIVE_BIT) != 0u;
+}
+
+bool usb_hid_gate_is_closed(const usb_hid_gate_t *gate) {
+    if (!gate) {
+        return false;
+    }
+    return (__atomic_load_n(&gate->state, __ATOMIC_ACQUIRE) & USB_HID_GATE_CLOSED_BIT) != 0u;
+}

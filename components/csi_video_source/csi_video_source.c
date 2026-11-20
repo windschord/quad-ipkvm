@@ -50,6 +50,7 @@ static csi_capture_handle_t s_active_cap = NULL;
 static csi_video_seq_t s_seq_status;
 
 #if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
+static video_source_t s_csi_video_source;
 static csi_h264_ctrl_t s_h264_ctrl;
 
 static int csi_video_source_set_codec(const video_source_t *source, video_codec_t codec)
@@ -540,7 +541,7 @@ static void csi_video_task(void *arg)
     size_t max_buf_cap = pool_st.buffer_bytes;
 
 #if defined(CONFIG_CSI_H264_ENABLE) && CONFIG_CSI_H264_ENABLE
-    if (s_h264_ctrl.h264_capable) {
+    if (__atomic_load_n(&s_h264_ctrl.h264_capable, __ATOMIC_ACQUIRE)) {
         csi_h264_config_t h264_cfg = {
             .max_width = s_cfg.max_width,
             .max_height = s_cfg.max_height,
@@ -554,8 +555,11 @@ static void csi_video_task(void *arg)
         };
         esp_err_t h_err = csi_h264_create(&h264_cfg, &h264);
         if (h_err != ESP_OK) {
-            ESP_LOGE(TAG, "csi_h264_create failed (%s); continuing in MJPEG-only mode",
+            ESP_LOGE(TAG, "csi_h264_create failed (%s); disabling H.264 capability and continuing in MJPEG-only mode",
                      esp_err_to_name(h_err));
+            csi_h264_ctrl_disable_h264(&s_h264_ctrl);
+            // Keep set_codec intact so an in-flight switch sees -1 cleanly while stopping new advertisements.
+            __atomic_store_n(&s_csi_video_source.supported_codecs, 0u, __ATOMIC_RELEASE);
             h264 = NULL;
         }
     }

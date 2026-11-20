@@ -191,8 +191,49 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE usb_vbus_ctrl)
     endif()
 
+    if (test_source MATCHES "/iso_media/")
+        target_link_libraries(${test_name} PRIVATE iso_media)
+    endif()
+
+    if (test_source MATCHES "/mmc_scsi/")
+        target_link_libraries(${test_name} PRIVATE mmc_scsi iso_media)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/iso_seams/include)
+    endif()
+
     if (test_source MATCHES "/kvm_api/")
         target_link_libraries(${test_name} PRIVATE kvm_api kvm_ctrl kvm_board_mock http_guard auth_logic)
+    endif()
+
+    # ホストテストのディレクトリからの相対パスで選ぶ（チェックアウト先の絶対パスに /msc_bot/ や /iso_catalog/ が含まれても、他のテストにはリンクしない）
+    file(RELATIVE_PATH test_rel_path ${CMAKE_CURRENT_SOURCE_DIR} ${test_source})
+
+    if (test_rel_path MATCHES "^iso_extent/")
+        target_link_libraries(${test_name} PRIVATE iso_extent pthread)
+    endif()
+
+    if (test_rel_path MATCHES "^iso_catalog/")
+        target_link_libraries(${test_name} PRIVATE iso_catalog iso_mock_fs)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/iso_catalog)
+    endif()
+
+    # iso_upload / iso_core のテスト(相対パスで判定する)
+    file(RELATIVE_PATH test_rel_path_iso ${CMAKE_CURRENT_SOURCE_DIR} ${test_source})
+    if (test_rel_path_iso MATCHES "^iso_upload/")
+        target_link_libraries(${test_name} PRIVATE iso_upload iso_catalog iso_mock_fs iso_up_support)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/iso_catalog ${CMAKE_SOURCE_DIR}/iso_upload ${CMAKE_SOURCE_DIR}/../../components/iso_upload)
+    endif()
+    if (test_rel_path_iso MATCHES "^iso_core/")
+        target_link_libraries(${test_name} PRIVATE iso_core iso_upload iso_catalog iso_mock_fs iso_up_support)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/iso_catalog ${CMAKE_SOURCE_DIR}/iso_upload ${CMAKE_SOURCE_DIR}/../../components/iso_upload)
+    endif()
+
+    # msc_bot のテストだけ
+    if (test_rel_path MATCHES "^msc_bot/")
+        target_link_libraries(${test_name} PRIVATE msc_bot)
+    endif()
+
+    if (test_rel_path MATCHES "^iso_sd/")
+        target_link_libraries(${test_name} PRIVATE iso_sd_logic)
     endif()
 
 
@@ -256,6 +297,34 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/usb_vbus_ctrl ${CMAKE_BINA
 # kvm_api (HTTP API of KVM/ATX: strict body parser, JSON, result -> HTTP mapping, pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/kvm_api ${CMAKE_BINARY_DIR}/kvm_api)
 
+# iso_extent (P8: CD block -> SD sector spans, extent table with refcount; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_extent ${CMAKE_BINARY_DIR}/iso_extent)
+
+# iso_catalog (P8: meta codec, 2 slots, name rule, scan, import, delete steps; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_catalog ${CMAKE_BINARY_DIR}/iso_catalog)
+
+# In-memory iso_fs_t with power-cut injection (for the iso_catalog host tests)
+add_library(iso_mock_fs STATIC ${CMAKE_SOURCE_DIR}/iso_catalog/iso_mock_fs.c)
+target_include_directories(iso_mock_fs PUBLIC ${CMAKE_SOURCE_DIR}/iso_catalog ${CMAKE_SOURCE_DIR}/../../components/iso_seams/include)
+target_compile_options(iso_mock_fs PRIVATE ${TEST_COMPILE_OPTIONS})
+target_link_options(iso_mock_fs PRIVATE ${TEST_LINK_OPTIONS})
+
+# iso_upload (P8: upload state machine, FINISH / INDEX steps; pure C) and iso_core (worker job contract, view, tick, SD reinit; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_upload ${CMAKE_BINARY_DIR}/iso_upload)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_core ${CMAKE_BINARY_DIR}/iso_core)
+
+# SHA-256 reference implementation and fixtures for the iso_upload / iso_core host tests
+add_library(iso_up_support STATIC ${CMAKE_SOURCE_DIR}/iso_upload/up_sha256.c)
+target_include_directories(iso_up_support PUBLIC ${CMAKE_SOURCE_DIR}/iso_upload ${CMAKE_SOURCE_DIR}/../../components/iso_seams/include)
+target_compile_options(iso_up_support PRIVATE ${TEST_COMPILE_OPTIONS})
+target_link_options(iso_up_support PRIVATE ${TEST_LINK_OPTIONS})
+
+# iso_media (virtual CD-ROM media state: EMPTY/LOADED, unit attention, prevent removal; docs/ISO_MOUNT_DESIGN.md 5.5; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_media ${CMAKE_BINARY_DIR}/iso_media)
+
+# mmc_scsi (CD-ROM SCSI/MMC commands for the virtual drive; docs/ISO_MOUNT_DESIGN.md 5.4; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/mmc_scsi ${CMAKE_BINARY_DIR}/mmc_scsi)
+
 # Mock kvm_board_hal_t (reproduces the board-side obligations of docs/INTERFACES.md 6.2)
 add_library(kvm_board_mock STATIC ${CMAKE_SOURCE_DIR}/kvm_board/kvm_board_mock.c)
 target_include_directories(kvm_board_mock PUBLIC ${CMAKE_SOURCE_DIR}/kvm_board)
@@ -267,6 +336,14 @@ target_link_options(kvm_board_mock PRIVATE ${TEST_LINK_OPTIONS})
 find_program(NODE_EXECUTABLE node)
 if(NODE_EXECUTABLE)
     add_test(NAME check_video_viewer COMMAND ${NODE_EXECUTABLE} ${CMAKE_SOURCE_DIR}/../../tools/test/check_video_viewer.js)
+    # The ISO (virtual media) screen of the same app.js (docs/WEB_API.md 8; fake DOM / fetch / timers)
+    add_test(NAME check_iso_viewer COMMAND ${NODE_EXECUTABLE} ${CMAKE_SOURCE_DIR}/../../tools/test/check_iso_viewer.js)
 else()
-    message(STATUS "node not found: check_video_viewer is not registered")
+    message(STATUS "node not found: check_video_viewer and check_iso_viewer are not registered")
 endif()
+
+# msc_bot (USB Mass Storage Bulk-Only Transport state machine, docs/MSC_BOT_TESTS.md; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/msc_bot ${CMAKE_BINARY_DIR}/msc_bot)
+
+# iso_sd_logic (A-13: microSD path validation, FAT32 mount policy, CLMT->extents, atomic state; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_sd ${CMAKE_BINARY_DIR}/iso_sd)

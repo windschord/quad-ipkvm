@@ -113,13 +113,14 @@ csi_h264_frame_err_t csi_h264_check_frame(const uint8_t *data, size_t len,
             return CSI_H264_FRAME_ERR_FORMAT;
         }
         bool found_idr = false;
+        size_t scan_end = (len < CSI_H264_KEY_SCAN_LIMIT) ? len : CSI_H264_KEY_SCAN_LIMIT;
         size_t i = 5u;
-        while (i + 3u < len) {
+        while (i + 3u < scan_end) {
             if (data[i] == 0x00u && data[i + 1u] == 0x00u) {
                 size_t hdr_idx = 0u;
-                if (data[i + 2u] == 0x01u && (i + 3u < len)) {
+                if (data[i + 2u] == 0x01u && (i + 3u < scan_end)) {
                     hdr_idx = i + 3u;
-                } else if (data[i + 2u] == 0x00u && (i + 4u < len) && data[i + 3u] == 0x01u) {
+                } else if (data[i + 2u] == 0x00u && (i + 4u < scan_end) && data[i + 3u] == 0x01u) {
                     hdr_idx = i + 4u;
                 }
                 if (hdr_idx != 0u) {
@@ -129,6 +130,7 @@ csi_h264_frame_err_t csi_h264_check_frame(const uint8_t *data, size_t len,
                     }
                     if ((nh & 0x1Fu) == 5u) {
                         found_idr = true;
+                        break;
                     }
                     i = hdr_idx + 1u;
                     continue;
@@ -151,7 +153,7 @@ void csi_h264_ctrl_init(csi_h264_ctrl_t *c, bool h264_capable, uint8_t gop)
     if (!c) {
         return;
     }
-    c->h264_capable = h264_capable;
+    __atomic_store_n(&c->h264_capable, h264_capable, __ATOMIC_SEQ_CST);
     c->gop = (gop < CSI_H264_MIN_GOP) ? CSI_H264_MIN_GOP : gop;
     __atomic_store_n(&c->requested_codec, (uint32_t)CSI_H264_CODEC_MJPEG, __ATOMIC_SEQ_CST);
     __atomic_store_n(&c->requested_epoch, 0u, __ATOMIC_SEQ_CST);
@@ -174,6 +176,20 @@ void csi_h264_ctrl_init(csi_h264_ctrl_t *c, bool h264_capable, uint8_t gop)
     c->self_idr_recoveries = 0u;
 }
 
+void csi_h264_ctrl_disable_h264(csi_h264_ctrl_t *c)
+{
+    if (!c) {
+        return;
+    }
+    __atomic_store_n(&c->h264_capable, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&c->active_codec, (uint32_t)CSI_H264_CODEC_MJPEG, __ATOMIC_RELEASE);
+    (void)__atomic_exchange_n(&c->keyframe_req, 0u, __ATOMIC_ACQ_REL);
+    c->need_idr = false;
+    c->frames_since_idr = 0u;
+    c->oom_cooldown_frames = 0u;
+    c->consec_failures = 0u;
+}
+
 int csi_h264_ctrl_set_codec(csi_h264_ctrl_t *c, csi_h264_codec_t codec)
 {
     if (!c) {
@@ -184,7 +200,7 @@ int csi_h264_ctrl_set_codec(csi_h264_ctrl_t *c, csi_h264_codec_t codec)
         __atomic_fetch_add(&c->requested_epoch, 1u, __ATOMIC_RELEASE);
         return 0;
     }
-    if (codec == CSI_H264_CODEC_H264 && c->h264_capable) {
+    if (codec == CSI_H264_CODEC_H264 && __atomic_load_n(&c->h264_capable, __ATOMIC_ACQUIRE)) {
         __atomic_store_n(&c->requested_codec, (uint32_t)CSI_H264_CODEC_H264, __ATOMIC_RELEASE);
         __atomic_fetch_add(&c->requested_epoch, 1u, __ATOMIC_RELEASE);
         return 0;
@@ -194,7 +210,7 @@ int csi_h264_ctrl_set_codec(csi_h264_ctrl_t *c, csi_h264_codec_t codec)
 
 void csi_h264_ctrl_request_keyframe(csi_h264_ctrl_t *c)
 {
-    if (!c || !c->h264_capable) {
+    if (!c || !__atomic_load_n(&c->h264_capable, __ATOMIC_ACQUIRE)) {
         return;
     }
     // Wait-free / lock-free check: in MJPEG mode request_keyframe is strictly a no-op
@@ -269,7 +285,8 @@ bool csi_h264_ctrl_begin_frame(csi_h264_ctrl_t *c, uint32_t width, uint32_t heig
 
     uint32_t prev_active = __atomic_load_n(&c->active_codec, __ATOMIC_RELAXED);
     bool res_ok = csi_h264_check_resolution(width, height);
-    bool want_h264 = c->h264_capable && res_ok &&
+    bool h264_capable = __atomic_load_n(&c->h264_capable, __ATOMIC_ACQUIRE);
+    bool want_h264 = h264_capable && res_ok &&
                      (req == (uint32_t)CSI_H264_CODEC_H264) && !cooling_down;
 
     if (!want_h264) {

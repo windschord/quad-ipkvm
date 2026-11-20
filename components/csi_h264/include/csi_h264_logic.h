@@ -33,6 +33,9 @@ extern "C" {
 #define CSI_H264_OOM_RETRY_FRAMES    60u
 // Consecutive non-OOM encode/oversize failure frames before falling back to MJPEG.
 #define CSI_H264_MAX_CONSEC_FAILURES 5u
+// Max leading byte span scanned in csi_h264_check_frame() when locating the first IDR slice (type 5).
+// Prevents scanning hundreds of KB of IDR slice entropy payload byte-by-byte.
+#define CSI_H264_KEY_SCAN_LIMIT      4096u
 
 typedef enum {
     CSI_H264_CODEC_MJPEG = 0,
@@ -55,7 +58,7 @@ typedef enum {
 } csi_h264_frame_outcome_t;
 
 typedef struct {
-    bool h264_capable;
+    bool h264_capable;         // accessed via __atomic_* so runtime init failure can disable H.264 safely
     uint8_t gop;
 
     // Cross-task lock-free fields (accessed with __atomic_* builtins).
@@ -110,13 +113,19 @@ bool csi_h264_validate_enc_params(uint32_t w, uint32_t h, uint8_t gop, uint8_t f
                                   uint32_t bitrate_bps, uint8_t qp_min, uint8_t qp_max);
 
 // Validates an Annex B H.264 access unit and Frame Hub size bound.
-// When expect_key is true, verifies the leading NAL unit is SPS (type 7) and the access
-// unit also contains an IDR slice (type 5).
+// When expect_key is true, verifies the leading NAL unit is SPS (type 7), checks
+// forbidden_zero_bit == 0 on prefix NAL headers within CSI_H264_KEY_SCAN_LIMIT bytes,
+// and stops as soon as a valid IDR slice (type 5) is found.
 csi_h264_frame_err_t csi_h264_check_frame(const uint8_t *data, size_t len,
                                           bool expect_key, size_t max_frame_bytes);
 
 // ---- Lock-free codec & keyframe coordinator ----
 void csi_h264_ctrl_init(csi_h264_ctrl_t *c, bool h264_capable, uint8_t gop);
+
+// Permanently disables H.264 capability at runtime (e.g. if csi_h264_create() fails),
+// resetting active_codec to MJPEG and discarding any pending keyframe request.
+// Thread-safe with concurrent set_codec() / request_keyframe() callers.
+void csi_h264_ctrl_disable_h264(csi_h264_ctrl_t *c);
 
 // Safe to call concurrently from any task (non-blocking, asynchronous).
 // Returns 0 if accepted, -1 if invalid or unsupported.
@@ -141,6 +150,9 @@ bool csi_h264_ctrl_begin_frame(csi_h264_ctrl_t *c, uint32_t width, uint32_t heig
 
 // Called in the publisher task after finishing one H.264 frame attempt.
 // Latches self-IDR recovery on publish failure / oversize / encode error and updates GOP state.
+// After CSI_H264_MAX_CONSEC_FAILURES (5) consecutive non-OOM failures (ENCODE_ERR, OVERSIZE, or
+// unexpected non-IDR when IDR was required; PUBLISH_BUSY excluded), automatically falls back to
+// MJPEG for CSI_H264_OOM_RETRY_FRAMES (60) frames and discards any pending keyframe request.
 void csi_h264_ctrl_end_frame(csi_h264_ctrl_t *c, csi_h264_frame_outcome_t outcome,
                              bool actual_is_idr);
 
