@@ -163,8 +163,12 @@ static void test_check_frame_key_and_oversize(void)
     };
     const uint8_t sps_bad_inner_fzb[14] = {
         0x00, 0x00, 0x00, 0x01, 0x67, 0x42,
+        0x00, 0x00, 0x01, 0xE8, // corrupted PPS forbidden_zero_bit before IDR
         0x00, 0x00, 0x01, 0x65,
-        0x00, 0x00, 0x01, 0xE5,
+    };
+    const uint8_t sps_bad_idr_fzb[10] = {
+        0x00, 0x00, 0x00, 0x01, 0x67, 0x42,
+        0x00, 0x00, 0x01, 0xE5, // corrupted IDR forbidden_zero_bit
     };
     const uint8_t p_slc[5] = {0x00, 0x00, 0x00, 0x01, 0x41}; // NAL type 1 (non-IDR slice)
     const uint8_t p_slc_noref[5] = {0x00, 0x00, 0x00, 0x01, 0x01};
@@ -182,6 +186,8 @@ static void test_check_frame_key_and_oversize(void)
                           csi_h264_check_frame(sps_pps_only, sizeof(sps_pps_only), true, 1024u));
     TEST_ASSERT_EQUAL_INT(CSI_H264_FRAME_ERR_FORMAT,
                           csi_h264_check_frame(sps_bad_inner_fzb, sizeof(sps_bad_inner_fzb), true, 1024u));
+    TEST_ASSERT_EQUAL_INT(CSI_H264_FRAME_ERR_FORMAT,
+                          csi_h264_check_frame(sps_bad_idr_fzb, sizeof(sps_bad_idr_fzb), true, 1024u));
     TEST_ASSERT_EQUAL_INT(CSI_H264_FRAME_ERR_FORMAT, csi_h264_check_frame(p_slc, 5u, true, 1024u));
     TEST_ASSERT_EQUAL_INT(CSI_H264_FRAME_ERR_FORMAT, csi_h264_check_frame(pps_only, 5u, true, 1024u));
 
@@ -193,6 +199,48 @@ static void test_check_frame_key_and_oversize(void)
     TEST_ASSERT_EQUAL_INT(CSI_H264_FRAME_ERR_OVERSIZE, csi_h264_check_frame(p_slc, 5u, false, 4u));
     TEST_ASSERT_EQUAL_INT(CSI_H264_FRAME_ERR_OVERSIZE,
                           csi_h264_check_frame(sps_pps_idr, sizeof(sps_pps_idr), true, 0u));
+
+    // Prefix scan stops after valid IDR and obeys CSI_H264_KEY_SCAN_LIMIT boundaries.
+    uint8_t big_au[CSI_H264_KEY_SCAN_LIMIT + 1024u];
+    for (size_t i = 0; i < sizeof(big_au); i++) {
+        big_au[i] = 0x5Au;
+    }
+    big_au[0] = 0x00u; big_au[1] = 0x00u; big_au[2] = 0x00u; big_au[3] = 0x01u; big_au[4] = 0x67u;
+    big_au[5] = 0x42u;
+    big_au[6] = 0x00u; big_au[7] = 0x00u; big_au[8] = 0x01u; big_au[9] = 0x65u;
+    // Early exit after valid IDR: bytes after IDR within CSI_H264_KEY_SCAN_LIMIT are not scanned.
+    big_au[64] = 0x00u;
+    big_au[65] = 0x00u;
+    big_au[66] = 0x01u;
+    big_au[67] = 0xE5u;
+    // Emulation-like invalid pattern deep in payload after valid IDR must not fail check_frame.
+    big_au[CSI_H264_KEY_SCAN_LIMIT + 100u] = 0x00u;
+    big_au[CSI_H264_KEY_SCAN_LIMIT + 101u] = 0x00u;
+    big_au[CSI_H264_KEY_SCAN_LIMIT + 102u] = 0x01u;
+    big_au[CSI_H264_KEY_SCAN_LIMIT + 103u] = 0xE5u;
+    TEST_ASSERT_EQUAL_INT(CSI_H264_FRAME_OK,
+                          csi_h264_check_frame(big_au, sizeof(big_au), true, sizeof(big_au)));
+
+    // Boundary: IDR header byte at CSI_H264_KEY_SCAN_LIMIT - 1 succeeds; at CSI_H264_KEY_SCAN_LIMIT fails.
+    uint8_t lim_au[CSI_H264_KEY_SCAN_LIMIT + 64u];
+    for (size_t i = 0; i < sizeof(lim_au); i++) {
+        lim_au[i] = 0x11u;
+    }
+    lim_au[0] = 0x00u; lim_au[1] = 0x00u; lim_au[2] = 0x00u; lim_au[3] = 0x01u; lim_au[4] = 0x67u;
+    lim_au[CSI_H264_KEY_SCAN_LIMIT - 4u] = 0x00u;
+    lim_au[CSI_H264_KEY_SCAN_LIMIT - 3u] = 0x00u;
+    lim_au[CSI_H264_KEY_SCAN_LIMIT - 2u] = 0x01u;
+    lim_au[CSI_H264_KEY_SCAN_LIMIT - 1u] = 0x65u;
+    TEST_ASSERT_EQUAL_INT(CSI_H264_FRAME_OK,
+                          csi_h264_check_frame(lim_au, sizeof(lim_au), true, sizeof(lim_au)));
+
+    lim_au[CSI_H264_KEY_SCAN_LIMIT - 4u] = 0x11u;
+    lim_au[CSI_H264_KEY_SCAN_LIMIT - 3u] = 0x00u;
+    lim_au[CSI_H264_KEY_SCAN_LIMIT - 2u] = 0x00u;
+    lim_au[CSI_H264_KEY_SCAN_LIMIT - 1u] = 0x01u;
+    lim_au[CSI_H264_KEY_SCAN_LIMIT] = 0x65u;
+    TEST_ASSERT_EQUAL_INT(CSI_H264_FRAME_ERR_FORMAT,
+                          csi_h264_check_frame(lim_au, sizeof(lim_au), true, sizeof(lim_au)));
 }
 
 // --- 3. Coordinator state machine (set_codec, request_keyframe, GOP, self-IDR recovery) ---
@@ -663,8 +711,11 @@ static void test_ctrl_consec_failures_fallback_and_reset(void)
     csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_OVERSIZE, false); // #4
     TEST_ASSERT_EQUAL_INT(CSI_H264_CODEC_H264, csi_h264_ctrl_get_active_codec(&c));
 
-    csi_h264_ctrl_request_keyframe(&c);
+    // 5th consecutive failure with a pending keyframe_req AFTER begin_frame must fall back and clear keyframe_req.
+    uint64_t reqs_before = c.keyframe_reqs_applied;
     csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr);
+    csi_h264_ctrl_request_keyframe(&c);
+    TEST_ASSERT_EQUAL_UINT(1u, c.keyframe_req);
     csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_ENCODE_ERR, false); // #5 -> fallback
     TEST_ASSERT_EQUAL_UINT(0u, c.consec_failures);
     TEST_ASSERT_EQUAL_UINT(0u, c.keyframe_req);
@@ -680,6 +731,55 @@ static void test_ctrl_consec_failures_fallback_and_reset(void)
     TEST_ASSERT_TRUE(csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr));
     TEST_ASSERT_TRUE(use_h264);
     TEST_ASSERT_TRUE(force_idr);
+    TEST_ASSERT_EQUAL_UINT64(reqs_before, c.keyframe_reqs_applied);
+
+    // Verify immediate mode reset after a 5th-failure fallback also does not apply a stale keyframe_req.
+    for (uint32_t i = 0u; i < CSI_H264_MAX_CONSEC_FAILURES; i++) {
+        csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr);
+        if (i + 1u == CSI_H264_MAX_CONSEC_FAILURES) {
+            csi_h264_ctrl_request_keyframe(&c);
+            TEST_ASSERT_EQUAL_UINT(1u, c.keyframe_req);
+        }
+        csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_ENCODE_ERR, false);
+    }
+    TEST_ASSERT_EQUAL_UINT(0u, c.keyframe_req);
+    csi_h264_ctrl_on_mode_reset(&c);
+    TEST_ASSERT_TRUE(csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr));
+    TEST_ASSERT_TRUE(use_h264);
+    TEST_ASSERT_EQUAL_UINT64(reqs_before, c.keyframe_reqs_applied);
+}
+
+static void test_ctrl_runtime_disable_h264(void)
+{
+    csi_h264_ctrl_t c;
+    bool use_h264 = false;
+    bool force_idr = false;
+
+    csi_h264_ctrl_disable_h264(NULL);
+
+    csi_h264_ctrl_init(&c, true, 30u);
+    TEST_ASSERT_EQUAL_INT(0, csi_h264_ctrl_set_codec(&c, CSI_H264_CODEC_H264));
+    TEST_ASSERT_TRUE(csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr));
+    TEST_ASSERT_TRUE(use_h264);
+    csi_h264_ctrl_end_frame(&c, CSI_H264_OUTCOME_PUBLISHED, true);
+    csi_h264_ctrl_request_keyframe(&c);
+    TEST_ASSERT_EQUAL_UINT(1u, c.keyframe_req);
+
+    // Runtime disable (e.g. csi_h264_create() failed): switches to MJPEG and prevents re-enabling.
+    csi_h264_ctrl_disable_h264(&c);
+    TEST_ASSERT_FALSE(c.h264_capable);
+    TEST_ASSERT_EQUAL_INT(CSI_H264_CODEC_MJPEG, csi_h264_ctrl_get_active_codec(&c));
+    TEST_ASSERT_EQUAL_UINT(0u, c.keyframe_req);
+    TEST_ASSERT_EQUAL_INT(-1, csi_h264_ctrl_set_codec(&c, CSI_H264_CODEC_H264));
+    TEST_ASSERT_EQUAL_INT(0, csi_h264_ctrl_set_codec(&c, CSI_H264_CODEC_MJPEG));
+    csi_h264_ctrl_request_keyframe(&c);
+    TEST_ASSERT_EQUAL_UINT(0u, c.keyframe_req);
+
+    use_h264 = true;
+    force_idr = true;
+    TEST_ASSERT_FALSE(csi_h264_ctrl_begin_frame(&c, 1280u, 720u, &use_h264, &force_idr));
+    TEST_ASSERT_FALSE(use_h264);
+    TEST_ASSERT_FALSE(force_idr);
 }
 
 int main(void)
@@ -698,6 +798,7 @@ int main(void)
     RUN_TEST(test_ctrl_consec_failures_fallback_and_reset);
     RUN_TEST(test_ctrl_downgrade_clears_pending_request);
     RUN_TEST(test_ctrl_oom_fallback_and_retry);
+    RUN_TEST(test_ctrl_runtime_disable_h264);
     RUN_TEST(test_ctrl_fuzz_invariants);
     return UNITY_END();
 }
