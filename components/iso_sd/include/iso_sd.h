@@ -20,17 +20,30 @@ extern "C" {
 typedef void (*iso_sd_event_cb_t)(void *ctx);
 
 typedef struct {
-    /* Invoked (with NO iso_sd locks held) when card enters error/removal reinit.
-     * Caller should wire this to iso_media_force_eject(). May be NULL. */
+    /* Legacy unmanaged mode (managed_reinit == false): invoked with NO iso_sd locks held
+     * when card enters error/removal reinit. May be NULL. */
     iso_sd_event_cb_t on_force_eject;
     void *on_force_eject_ctx;
-    /* Invoked (with NO iso_sd locks held) when card mounts cleanly as FAT32. May be NULL. */
+    /* Legacy unmanaged mode: invoked with NO iso_sd locks held when card mounts cleanly. May be NULL. */
     iso_sd_event_cb_t on_ready;
     void *on_ready_ctx;
+
+    /* Managed mode (for iso_worker): delegate unmount/remount to on_fault / on_reprobe
+     * callbacks so iso_worker executes docs/ISO_MOUNT_DESIGN.md §3.4 steps (1)-(7). */
+    bool managed_reinit;
+    iso_sd_event_cb_t on_fault;
+    void *on_fault_ctx;
+    iso_sd_event_cb_t on_reprobe;
+    void *on_reprobe_ctx;
 } iso_sd_config_t;
 
 esp_err_t iso_sd_init(const iso_sd_config_t *cfg);
 void iso_sd_deinit(void);
+
+/* Explicit mount/unmount/state helpers for managed iso_worker §3.4 sequences. */
+int iso_sd_remount(void);
+void iso_sd_unmount(void);
+void iso_sd_set_state(iso_sd_state_t st);
 
 const iso_blockdev_t *iso_sd_blockdev(void);
 const iso_fs_t *iso_sd_fs(void);

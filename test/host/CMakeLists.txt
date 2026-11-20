@@ -236,6 +236,11 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE iso_sd_logic)
     endif()
 
+    if (test_rel_path MATCHES "^iso_worker/")
+        target_link_libraries(${test_name} PRIVATE iso_worker_logic iso_core iso_upload iso_catalog iso_mock_fs iso_up_support)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/iso_catalog ${CMAKE_SOURCE_DIR}/iso_upload ${CMAKE_SOURCE_DIR}/../../components/iso_upload)
+    endif()
+
 
 
     target_compile_options(${test_name} PRIVATE ${TEST_COMPILE_OPTIONS})
@@ -345,5 +350,8 @@ endif()
 # msc_bot (USB Mass Storage Bulk-Only Transport state machine, docs/MSC_BOT_TESTS.md; pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/msc_bot ${CMAKE_BINARY_DIR}/msc_bot)
 
-# iso_sd_logic (A-13: microSD path validation, FAT32 mount policy, CLMT->extents, atomic state; pure C)
+# iso_sd_logic (A-13: microSD path validation, FAT32 mount policy, cycle-guarded FAT32 walk, atomic state; pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_sd ${CMAKE_BINARY_DIR}/iso_sd)
+
+# iso_worker_logic (A-13 part 2: coordinator gluing iso_core/iso_media/iso_catalog/iso_upload; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_worker ${CMAKE_BINARY_DIR}/iso_worker)
