@@ -23,7 +23,7 @@
 | `test/host/iso_core/test_core_fuzz.c` | **固定シードのファズ**(下記) | 1 |
 | `test/host/iso_core/core_common.h` | 共通の部品(`iso_core` の設定、フック、ワーカーのループの代わりの `drive()` / `run_job()`) | - |
 
-合計 97 件(`test/host/CMakeLists.txt` の既存の自動発見で、ctest の実行ファイルが 5 個増える)。期待値は手書き。
+合計 98 件(`test/host/CMakeLists.txt` の既存の自動発見で、ctest の実行ファイルが 5 個増える)。期待値は手書き。
 
 ### ファズ(`test_core_fuzz.c`。固定シード、ASan / UBSan)
 
@@ -52,7 +52,7 @@ python3 tools/test/mutate_iso_core.py <repo> <スクラッチ> tools/test/iso_co
 PR #155 のレビュー(`IDLE_CLOSE` の取り消しのフック `on_chunk_accepted`、ヘッダーの文言)でコードを変えた後、ミュータントをソースから作り直し、**最初から全数**実行した。
 `iso_job_step` の検査の `||` → `&&` の 2 つのミュータントは、前の結果では、どちらも「終わったジョブを渡しても `default` の分岐が同じ結果を返す」として同値としていたが、
 **そのうち `!c->cur_active || job != &c->cur` の方は、同値ではなかった**: 動いているジョブがあるときに、別のオブジェクトを渡すと、検査をすり抜け、別のオブジェクトのジョブを動かしてしまう。
-`test_step_with_a_foreign_pointer_does_not_touch_the_running_job` を足して、殺した。残る 1 つ(`!job || !c->cur_active` → `&&`、K459)は、NULL が `job != &c->cur` で弾かれ、終わったジョブの渡しは `default` が同じ結果を返すので、同値。
+`test_step_with_a_foreign_pointer_does_not_touch_the_running_job` を足して、殺した。残る 1 つ(`!job || !c->cur_active` → `&&`、K459)も、**同値ではなかった**(第 3 回の再レビュー): 終わったジョブの `&c->cur`(`cur_active` が偽)を渡すと、戻り値は `default` の分岐が同じ `ERROR(INVALID)` を返すが、`end_job` を通って**ビューを通知し直す**(副作用が違う)。`test_step_with_a_finished_job_pointer_does_nothing`(戻り値と、ビューの通知が増えないこと)を足して、殺した(K459 は §3.3)。
 `on_chunk_accepted` の `cur_active || ...`(K090)は、選ばれた `INDEX` を中止してしまうので、テスト `test_a_put_does_not_abort_a_picked_index_job` で殺した。
 
 **再レビュー(同じ PR の 58bffcf に対する 8 件)の後の再実行**(最終、493 個): 前の結果で「配列の次の要素は 0 で埋まっている」として同値にまとめていた `<` → `<=`(`table_clear_all` の K036 など)は、**表が満杯(16 個)のときは、配列の外を読むので、同値ではなかった**。
@@ -61,15 +61,15 @@ PR #155 のレビュー(`IDLE_CLOSE` の取り消しのフック `on_chunk_accep
 UBSan が検出できないもの(アドレスを取る形: `index_ids[i]`、`&images[i]`)は、同値にまとめず、理由に「範囲外の読み出しだけが違う」と書いた(K185、K210、K323)。K171 / K179 / K007 は、満杯のときに、その id を探すことが起きないので、同値。
 `on_chunk_accepted` を時計の巻き戻しにも使うようにした(`now_ms <= last_put_ms`)ので、`K480` 相当(`<` と `<=`)は、境界のテスト `test_a_clock_rewound_exactly_to_the_last_put_cancels_a_queued_idle_close` で殺した。
 
-**第 3 回の再レビューの後の再実行**(最終、493 個): iso_core のコードは変えていない(CMakeLists の C 標準の指定だけ)ので、結果は、第 2 回と同じ(433 / 59 / 1)。
+**第 3 回の再レビューの後の再実行**(最終、493 個): iso_core のコードは変えていない(CMakeLists の C 標準の指定だけ)ので、結果は、第 2 回と同じ(433 / 59 / 1)。**その後、K459 を殺すテストを足した(第 4 回の再レビュー)ので、最終は 434 / 58 / 1。**
 
 **結果**(ミュータントを入れる前のベースラインは、全テスト成功):
 
 | 実行した数 | 殺した数 | 生き残った数(すべて同値と判断) | ビルドエラー(コンパイラが検出) |
 |---|---|---|---|
-| 493 | 433 | 59 | 1 |
+| 493 | 434 | 58 | 1 |
 
-### 3.1 同値のミュータント(59 個)
+### 3.1 同値のミュータント(58 個)
 
 生き残ったものは、1 つずつ、変更の前後の挙動が同じ理由を確かめた。同じ理由のものは、まとめた。
 
@@ -86,7 +86,6 @@ UBSan が検出できないもの(アドレスを取る形: `index_ids[i]`、`&i
 | K412, K414, K419, K421, K466, K468 | `rc == 0` の扱い: `iso_catalog_apply` / `iso_upload_idle_close` が成功(0)なら、`rc != 0 && 状態が ready` は偽(状態は invalid になっている)、`rc < 0 ? rc : ISO_OK` は、`rc <= 0` でも同じ値 |
 | K448, K449, K450 | `del.phase = 1` は、参照待ちを終えた印だが、`phase == 0` のまま次のステップに入っても、表はすでに取り除かれていて(参照待ちは起きない)、同じ処理をもう一度するだけ |
 | K434 | 時刻の巻き戻りの基準の引き直しの `<` → `<=`: 等しいときは、基準を同じ値で上書きするだけ |
-| K459 | `iso_job_step` の検査の `!job \|\| !c->cur_active` → `&&`: NULL は、続く `job != &c->cur` で弾かれる。終わったジョブの `&c->cur`(`cur_active` が偽)を渡しても、`end_job` が `cur` を 0 にしてあり、種類は NONE なので、`default` の分岐が `ISO_ERR_INVALID` を返す。結果は同じ。(同じ行の `!cur_active \|\| job != &cur` → `&&` は、動いているジョブと同じ中身の別のオブジェクトを渡すテスト `test_step_with_a_foreign_pointer_does_not_touch_the_running_job` で殺した) |
 | K475, K479 | `iso_upload_tick` の早期の return と、`finalizing` のときの `publish`: 枠がなければ、`IDLE_CLOSE` は NOT_FOUND で積まれず、表示は枠を空けたときに更新済み。`finalizing` の表示は、`finish` の受付で更新済み |
 | K335 | `iso_catalog_scan` が、失敗する前に `count = 0` にしている(`rebuild` の失敗の分岐の重複) |
 | K091 | `on_chunk_accepted` の `cur_active && kind == IDLE_CLOSE && id が同じ` の 2 つ目の `&&` → `\|\|`(`(cur_active && kind == IDLE_CLOSE) \|\| id が同じ`): 受理された `PUT` と同じ id の、別の種類の動いているジョブは存在しない(`FINISH` は枠を持ち、`PUT` は枠で拒否される。`INDEX` は `ready`、`DELETE` は `deleting` のイメージで、`PUT` は拒否される)。動いていないとき(`cur_active` が偽)の `aborted` は、読まれない(次の `pick` が `cur` を 0 にする) |
@@ -99,7 +98,7 @@ UBSan が検出できないもの(アドレスを取る形: `index_ids[i]`、`&i
 |---|---|
 | K192 | L196: const 1-1 -> 0 |
 
-### 3.3 殺したミュータントの一覧(433 個)
+### 3.3 殺したミュータントの一覧(434 個)
 
 「殺したテスト」は、失敗したテストのうち先頭の 2 つ(最初に落ちたテストの実行ファイルで止める)。
 
@@ -508,6 +507,7 @@ UBSan が検出できないもの(アドレスを取る形: `index_ids[i]`、`&i
 | K456 | L446: delete statement | `test_delete_job_removes_the_image_and_refreshes_the_free_space` |
 | K457 | L451: != -> == | `test_priority_is_delete_finish_idle_close_index`, `test_pick_returns_the_running_job_until_it_ends` |
 | K458 | L451: \|\| -> && | `test_core_queue:crash/rc=1` |
+| K459 | L451: \|\| -> && | `test_step_with_a_finished_job_pointer_does_nothing` |
 | K460 | L451: \|\| -> && | `test_core_queue:crash/rc=1` |
 | K461 | L451: negate if condition | `test_priority_is_delete_finish_idle_close_index`, `test_pick_returns_the_running_job_until_it_ends` |
 | K462 | L451: delete statement | `test_core_queue:crash/rc=1` |

@@ -533,6 +533,23 @@ void test_step_with_a_foreign_pointer_does_not_touch_the_running_job(void) {
     TEST_ASSERT_EQUAL_INT(ISO_STATE_READY, find("000000a1")->state);
 }
 
+/* 終わったジョブのポインタ(`&CORE.cur`。`cur_active` は偽)を渡しても、何もしない: `ERROR(INVALID)` を返すだけで、ビューも通知しない(K459) */
+void test_step_with_a_finished_job_pointer_does_nothing(void) {
+    make_image("000000a1", "x1", SZ, PB_SMALL, ISO_META_READY, SZ);
+    scan();
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit(&CORE, ISO_JOB_INDEX, "000000a1"));
+    iso_job_t *j = iso_core_pick(&CORE);
+    TEST_ASSERT_NOT_NULL(j);
+    iso_step_result_t r = run_job(j, 0, 1000, 100, NULL);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_FALSE(CORE.cur_active);
+    int updates = VIEW_UPDATES;
+    r = iso_job_step(&CORE, &CORE.cur, 0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, r.err);
+    TEST_ASSERT_EQUAL_INT(updates, VIEW_UPDATES); /* 終わったジョブを、もう一度終えて、通知し直さない */
+}
+
 void test_submit_of_an_unknown_kind_is_invalid(void) {
     TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_core_submit(&CORE, ISO_JOB_NONE, "000000a1"));
     TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_core_submit(&CORE, (iso_job_kind_t)99, "000000a1"));
@@ -626,6 +643,7 @@ int main(void) {
     RUN_TEST(test_a_put_with_a_full_queue_leaves_the_other_jobs_alone);
     RUN_TEST(test_step_with_a_wrong_job_pointer_is_an_error);
     RUN_TEST(test_step_with_a_foreign_pointer_does_not_touch_the_running_job);
+    RUN_TEST(test_step_with_a_finished_job_pointer_does_nothing);
     RUN_TEST(test_submit_of_an_unknown_kind_is_invalid);
     RUN_TEST(test_waiting_flag_of_a_null_job_is_false);
     RUN_TEST(test_a_finalizing_image_without_a_job_gets_a_job_again);
