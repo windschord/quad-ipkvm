@@ -1,3 +1,1285 @@
+// ==== ISO viewer (begin) ====
+// ISO の仮想メディアの画面（docs/WEB_API.md 8、docs/ISO_MOUNT_DESIGN.md 6）。ブラウザ側だけのコードで、
+// tools/test/check_iso_viewer.js が、偽の DOM / fetch / タイマーの中で動かして検査する。
+// ここは DOM の外に出る値を `deps`（document、fetch、setTimeout など）で受け取る。ブラウザのログ出力は使わない
+// （名前、セッション、データを残さないため）。名前は textContent だけで表示する（HTML として解釈させない）。
+const IsoViewer = (function () {
+    'use strict';
+
+    const API = '/api/v1/iso';
+
+    // ---- SHA-256（FIPS 180-4。逐次。ブラウザの crypto.subtle.digest は一括で、数 GiB のファイルに使えないため自前）----
+    // 定数は、素数の平方根・立方根の小数部の上位 32 ビット（FIPS 180-4 4.2.2、5.3.3）。
+    const SHA_K = new Uint32Array([
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+    ]);
+    const SHA_H0 = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+
+    function Sha256() {
+        this.h = new Uint32Array(SHA_H0);
+        this.block = new Uint8Array(64);
+        this.blockLen = 0;
+        this.length = 0; // bytes so far (a double: exact up to 2^53)
+        this.w = new Uint32Array(64);
+        this.finished = false;
+    }
+
+    Sha256.prototype.compress = function (data, off) {
+        const w = this.w;
+        const h = this.h;
+        for (let i = 0; i < 16; i++) {
+            const j = off + i * 4;
+            w[i] = (data[j] << 24) | (data[j + 1] << 16) | (data[j + 2] << 8) | data[j + 3];
+        }
+        for (let i = 16; i < 64; i++) {
+            const x = w[i - 15];
+            const y = w[i - 2];
+            const s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3);
+            const s1 = ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        let a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], k = h[7];
+        for (let i = 0; i < 64; i++) {
+            const big1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+            const ch = (e & f) ^ (~e & g);
+            const t1 = (k + big1 + ch + SHA_K[i] + w[i]) | 0;
+            const big0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+            const maj = (a & b) ^ (a & c) ^ (b & c);
+            const t2 = (big0 + maj) | 0;
+            k = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+        }
+        h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e; h[5] += f; h[6] += g; h[7] += k;
+    };
+
+    Sha256.prototype.update = function (data) {
+        if (this.finished) throw new Error('sha256: already finished');
+        const n = data.length;
+        let pos = 0;
+        this.length += n;
+        if (this.blockLen > 0) {
+            const take = Math.min(64 - this.blockLen, n);
+            this.block.set(data.subarray(0, take), this.blockLen);
+            this.blockLen += take;
+            pos = take;
+            if (this.blockLen === 64) {
+                this.compress(this.block, 0);
+                this.blockLen = 0;
+            }
+        }
+        while (pos + 64 <= n) {
+            this.compress(data, pos);
+            pos += 64;
+        }
+        if (pos < n) {
+            this.block.set(data.subarray(pos), 0);
+            this.blockLen = n - pos;
+        }
+        return this;
+    };
+
+    Sha256.prototype.digest = function () {
+        const bits = this.length * 8;
+        const padLen = (this.blockLen < 56 ? 56 : 120) - this.blockLen;
+        const pad = new Uint8Array(padLen + 8);
+        pad[0] = 0x80;
+        const hi = Math.floor(bits / 4294967296);
+        const lo = bits % 4294967296;
+        for (let i = 0; i < 4; i++) {
+            pad[padLen + i] = (hi >>> (24 - 8 * i)) & 0xff;
+            pad[padLen + 4 + i] = (lo >>> (24 - 8 * i)) & 0xff;
+        }
+        this.update(pad);
+        this.finished = true;
+        let out = '';
+        for (let i = 0; i < 8; i++) out += ('00000000' + (this.h[i] >>> 0).toString(16)).slice(-8);
+        return out;
+    };
+
+    function sha256Hex(bytes) {
+        return new Sha256().update(bytes).digest();
+    }
+
+    // ---- 表示用の純関数 ----
+    function formatBytes(n) {
+        if (typeof n !== 'number' || !isFinite(n) || n < 0) return '?';
+        if (n < 1024) return n + ' B';
+        const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+        let v = n;
+        let u = -1;
+        do {
+            v /= 1024;
+            u++;
+        } while (v >= 1024 && u < units.length - 1);
+        return v.toFixed(v >= 100 ? 0 : (v >= 10 ? 1 : 2)) + ' ' + units[u];
+    }
+
+    // UTF-8 のバイト数（TextEncoder に頼らない。対になっていないサロゲートは 3 バイト（U+FFFD）として数える）
+    function utf8Length(s) {
+        let n = 0;
+        for (let i = 0; i < s.length; i++) {
+            const c = s.charCodeAt(i);
+            if (c < 0x80) n += 1;
+            else if (c < 0x800) n += 2;
+            else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length && s.charCodeAt(i + 1) >= 0xdc00 && s.charCodeAt(i + 1) <= 0xdfff) {
+                n += 4;
+                i++;
+            } else n += 3;
+        }
+        return n;
+    }
+
+    // 名前の規則（docs/WEB_API.md 8 の基本方針）。規則に合えば null、合わなければ理由の文。
+    function nameProblem(name) {
+        if (typeof name !== 'string' || name.length === 0) return '名前を入力してください。';
+        const bytes = utf8Length(name);
+        if (bytes < 1 || bytes > 63) return '名前は UTF-8 で 1〜63 バイトにしてください（今は ' + bytes + ' バイト）。';
+        if (/[\u0000-\u001f\u007f-\u009f]/.test(name)) return '名前に制御文字は使えません。';
+        if (/[/\\]/.test(name)) return '名前に / と \\ は使えません。';
+        if (name.charAt(0) === ' ' || name.charAt(name.length - 1) === ' ') return '名前の前後に空白は使えません。';
+        if (/[\ud800-\udbff](?![\udc00-\udfff])|(?:^|[^\ud800-\udbff])[\udc00-\udfff]/.test(name)) return '名前に不正な文字が含まれています。';
+        return null;
+    }
+
+    // ファイル名から、名前の初期値を作る（拡張子 .iso を除き、使えない文字を _ にし、63 バイトに切る）
+    function defaultName(fileName) {
+        let s = String(fileName || '').replace(/\.iso$/i, '');
+        s = s.replace(/[\u0000-\u001f\u007f-\u009f/\\]/g, '_').replace(/^ +| +$/g, '');
+        let out = '';
+        let bytes = 0;
+        for (const ch of s) {
+            const b = utf8Length(ch);
+            if (bytes + b > 63) break;
+            out += ch;
+            bytes += b;
+        }
+        out = out.replace(/ +$/, '');
+        return out.length > 0 ? out : 'image';
+    }
+
+    // ---- エラーの文言（docs/WEB_API.md 8 の各表） ----
+    const ERROR_TEXT = {
+        invalid_request: 'リクエストの内容が正しくありません（名前、サイズ、位置などを確認してください）。',
+        not_found: 'そのイメージが見つかりません（削除された可能性があります）。',
+        unsupported_media_type: 'リクエストの形式（Content-Type）が受け付けられません。ページを再読み込みしてください。',
+        length_required: 'リクエストの長さ（Content-Length）がありません。ブラウザが対応していない可能性があります。',
+        payload_too_large: '1 回に送る大きさが上限を超えています。',
+        not_ready: 'SD カードの準備ができていません。カードの状態を確認してください。',
+        sd_unavailable: 'SD カードの読み書きでエラーが起きました。カードが戻るまで待ってください。',
+        busy: '機器が別の処理をしています。しばらくしてからやり直してください。',
+        upload_in_progress: '別のイメージのアップロード、または最終処理が進んでいます。終わってからやり直してください。',
+        name_exists: '同じ名前のイメージがあります。別の名前にしてください。',
+        too_many_images: 'イメージの数が上限に達しています。不要なものを削除してください。',
+        not_uploading: 'そのイメージは、受信できる状態ではありません（完了済み、最終処理中、または無効）。',
+        image_not_ready: 'そのイメージは、まだ使えません（最終処理中、無効、またはアップロード未完了）。',
+        mounted: 'マウント中のイメージは削除できません。先に取り外してください。',
+        crosslinked: '取り込み中のファイルと領域が重なっています。削除できません。PC で SD カードのチェックディスクを実行してください。',
+        locked_by_target: 'ターゲットが、メディアの取り外しを防止しています。',
+        offset_mismatch: '送信位置がサーバーと合いません。',
+        size_mismatch: 'アップロードがまだ最後まで届いていません。',
+        insufficient_storage: 'SD カードの空き容量が足りません。',
+        checksum_mismatch: 'SHA-256 が、アップロード時に申告した値と一致しません。ファイルが壊れた可能性があります。',
+        not_iso: 'ISO イメージではありません（ISO 9660 / UDF の署名が見つかりません）。',
+        too_fragmented: 'SD カード上のファイルが断片化しすぎていて、マウントできません。SD カードを整理（再フォーマット）してください。',
+        part_mismatch: '保存されたパーツが欠けているか、サイズが合いません。削除して、アップロードし直してください。',
+        meta_corrupt: 'イメージの管理情報が壊れています。削除してください。'
+    };
+    const STATUS_TEXT = {
+        400: 'リクエストが正しくありません (400)。',
+        401: 'ログインの有効期限が切れました。ログインし直してください (401)。',
+        403: 'リクエストが拒否されました (403)。ページを再読み込みしてください。',
+        404: '見つかりません (404)。',
+        405: 'この操作は許可されていません (405)。',
+        409: '現在の状態では実行できません (409)。',
+        411: 'リクエストの長さ（Content-Length）がありません (411)。',
+        413: 'リクエストが大きすぎます (413)。',
+        415: 'リクエストの形式が受け付けられません (415)。',
+        422: 'イメージの検査に失敗しました (422)。',
+        503: '機器が使えない状態です (503)。しばらく待ってください。',
+        507: 'SD カードの空き容量が足りません (507)。'
+    };
+    const REASON_TEXT = {
+        checksum_mismatch: ERROR_TEXT.checksum_mismatch,
+        not_iso: ERROR_TEXT.not_iso,
+        too_fragmented: ERROR_TEXT.too_fragmented,
+        part_mismatch: ERROR_TEXT.part_mismatch,
+        meta_corrupt: ERROR_TEXT.meta_corrupt
+    };
+    const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
+    // status: HTTP ステータス、data: 応答の JSON（なければ null）。表示する日本語の文を返す。
+    function describeError(status, data) {
+        const code = data && typeof data === 'object' && typeof data.error === 'string' ? data.error : null;
+        let text;
+        if (code !== null && has(ERROR_TEXT, code)) text = ERROR_TEXT[code];
+        else if (has(STATUS_TEXT, status)) text = STATUS_TEXT[status] + (code !== null ? '（' + code + '）' : '');
+        else text = 'エラー (' + status + ')' + (code !== null ? '：' + code : '');
+        if (data && typeof data === 'object') {
+            if (code === 'insufficient_storage' && Number.isSafeInteger(data.free_bytes) && data.free_bytes >= 0) {
+                text += '（空き: ' + formatBytes(data.free_bytes) + '）';
+            }
+            if (code === 'size_mismatch' && Number.isSafeInteger(data.received) && Number.isSafeInteger(data.size)) {
+                text += '（受信済み: ' + formatBytes(data.received) + ' / ' + formatBytes(data.size) + '）';
+            }
+        }
+        return text;
+    }
+
+    const STATE_TEXT = {
+        uploading: '受信中',
+        incomplete: '中断（再開できます）',
+        finalizing: '最終処理中',
+        ready: '利用可能',
+        invalid: '無効',
+        deleting: '削除中'
+    };
+    const SD_TEXT = {
+        ready: 'SD カード: 使えます',
+        no_card: 'SD カード: ありません（または初期化できません）',
+        unsupported_fs: 'SD カード: FAT32 ではありません（FAT32 で再フォーマットしてください）',
+        error: 'SD カード: 読み書きでエラーが起きています'
+    };
+
+    // ---- GET /api/v1/iso の応答を、検査して整える（形が違えば null） ----
+    const isCount = (v) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+    function normalizeList(d) {
+        if (!d || typeof d !== 'object' || !d.sd || typeof d.sd !== 'object' || typeof d.sd.state !== 'string') return null;
+        const images = [];
+        if (Array.isArray(d.images)) {
+            for (const im of d.images) {
+                if (!im || typeof im !== 'object' || typeof im.id !== 'string' || typeof im.name !== 'string' || typeof im.state !== 'string') continue;
+                images.push({
+                    id: im.id,
+                    name: im.name,
+                    state: im.state,
+                    size: isCount(im.size) ? im.size : null,
+                    received: isCount(im.received) ? im.received : null,
+                    reason: typeof im.invalid_reason === 'string' ? im.invalid_reason : null
+                });
+            }
+        }
+        const up = d.upload && typeof d.upload === 'object' && typeof d.upload.id === 'string'
+            ? { id: d.upload.id, state: typeof d.upload.state === 'string' ? d.upload.state : '' } : null;
+        return {
+            sd: { state: d.sd.state, total: isCount(d.sd.total_bytes) ? d.sd.total_bytes : null, free: isCount(d.sd.free_bytes) ? d.sd.free_bytes : null },
+            images,
+            mounted: d.mounted && typeof d.mounted === 'object' && typeof d.mounted.id === 'string' ? d.mounted.id : null,
+            locked: !!(d.target && d.target.locked === true),
+            ejectedByTarget: !!(d.target && d.target.ejected_by_target === true),
+            chunk: isCount(d.chunk_size) && d.chunk_size > 0 ? d.chunk_size : 16384,
+            hidden: isCount(d.hidden_images) ? d.hidden_images : 0,
+            upload: up
+        };
+    }
+
+    // ---- 定数 ----
+    const MIN_CHUNK = 4096;
+    const SLOW_MS = 1500; // 1 回の PUT がこれ以上かかったら、次から半分にする（サーバーは 2 秒で打ち切る）
+    const FAST_MS = 500; // これ未満なら、倍にする（chunk_size まで）
+    const HASH_SLICE = 1048576;
+    const MAX_NET_FAILS = 6; // 進まないまま続けて失敗した回数の上限
+    const MAX_WAIT_STEPS = 120; // 待ちの上限（1 回 1〜2 秒）
+    const MAX_FINISH_ROUNDS = 5;
+    const MAX_RESCAN_ROUNDS = 70000; // cursor は 0〜65535 で、各回で進む
+
+    function create(deps) {
+        const doc = deps.document;
+        const $ = (id) => doc.getElementById(id);
+        const ui = {
+            toggle: $('btn-iso'), panel: $('iso-panel'), close: $('btn-iso-close'),
+            sd: $('iso-sd'), target: $('iso-target'), mounted: $('iso-mounted'), eject: $('iso-eject'),
+            message: $('iso-message'), list: $('iso-list'), hiddenNote: $('iso-hidden-note'),
+            file: $('iso-file'), name: $('iso-name'), hash: $('iso-hash'), upload: $('iso-upload'), pause: $('iso-pause'),
+            progress: $('iso-progress'), progressText: $('iso-progress-text'), rescan: $('iso-rescan')
+        };
+        const now = deps.now || (() => Date.now());
+        const S = {
+            running: false, gen: 0, disabled: false, panelVisible: false,
+            list: null, listSig: null, pollTimer: null, refreshing: null,
+            job: null, starting: null, opBusy: false, autoDone: new Set(), lastFile: null, lastFileId: null,
+            message: null, rendered: []
+        };
+
+        const sleep = (ms) => new Promise((resolve) => { deps.setTimeout(resolve, ms); });
+        const alive = (job) => S.gen === job.gen && !job.abort;
+
+        // ---- 画面の小さな部品 ----
+        function show(elm, on) {
+            if (!elm) return;
+            if (on) elm.classList.remove('iso-hidden');
+            else elm.classList.add('iso-hidden');
+        }
+        function setMessage(text, kind) {
+            S.message = text ? { text, kind: kind || 'info' } : null;
+            ui.message.textContent = text || '';
+            ui.message.classList.remove('iso-message-error', 'iso-message-ok');
+            if (text && kind === 'error') ui.message.classList.add('iso-message-error');
+            if (text && kind === 'ok') ui.message.classList.add('iso-message-ok');
+            show(ui.message, !!text);
+        }
+        function setProgress(text, value, max) {
+            ui.progressText.textContent = text || '';
+            if (value === null || value === undefined) {
+                show(ui.progress, false);
+            } else {
+                ui.progress.max = max;
+                ui.progress.value = value;
+                show(ui.progress, true);
+            }
+        }
+        // ジョブの実行中、または、アップロードの準備（一覧の取得）中。準備中も、新しい開始を受け付けない
+        function fileBusy() { return S.job !== null || S.starting !== null; }
+        function sdReady() { return !!(S.list && S.list.sd.state === 'ready'); }
+        function updateControls() {
+            const busy = fileBusy();
+            const ok = sdReady();
+            ui.file.disabled = busy;
+            ui.name.disabled = busy;
+            ui.hash.disabled = busy;
+            ui.upload.disabled = busy || S.opBusy || !ok;
+            ui.rescan.disabled = busy || S.opBusy || !ok;
+            ui.eject.disabled = S.opBusy;
+            show(ui.pause, S.job !== null && S.job.kind === 'upload' && (S.job.phase === 'uploading' || S.job.phase === 'hashing'));
+        }
+
+        // ---- 通信 ----
+        // 戻り値: { status, data, retryAfter, net }（net: ネットワークエラーで応答が読めなかった）
+        async function request(method, url, opts) {
+            opts = opts || {};
+            const init = { method, credentials: 'same-origin', headers: {} };
+            if (opts.json !== undefined) {
+                init.headers['Content-Type'] = 'application/json';
+                init.body = JSON.stringify(opts.json);
+            }
+            if (opts.chunk !== undefined) {
+                init.headers['Content-Type'] = 'application/octet-stream';
+                init.headers['X-Upload-Offset'] = String(opts.offset);
+                init.body = opts.chunk;
+            }
+            let timer = null;
+            if (opts.timeoutMs && deps.AbortController) {
+                const ctl = new deps.AbortController();
+                init.signal = ctl.signal;
+                timer = deps.setTimeout(() => ctl.abort(), opts.timeoutMs);
+            }
+            const gen = S.gen; // 世代: この要求を出した時点の画面（stop() の後の古い応答で、新しい画面を止めない）
+            try {
+                const res = await deps.fetch(url, init);
+                let data = null;
+                try { data = await res.json(); } catch (e) { data = null; }
+                let retryAfter = 0;
+                try {
+                    const ra = res.headers && res.headers.get ? Number(res.headers.get('Retry-After')) : NaN;
+                    if (isFinite(ra) && ra > 0) retryAfter = Math.min(ra, 30);
+                } catch (e) { retryAfter = 0; }
+                if (res.status === 401 && deps.onUnauthorized && S.gen === gen) deps.onUnauthorized();
+                return { status: res.status, data, retryAfter, net: false };
+            } catch (e) {
+                return { status: 0, data: null, retryAfter: 0, net: true };
+            } finally {
+                if (timer !== null && deps.clearTimeout) deps.clearTimeout(timer);
+            }
+        }
+
+        // ---- 一覧の取得と表示 ----
+        function schedulePoll() {
+            if (S.pollTimer !== null) {
+                deps.clearTimeout(S.pollTimer);
+                S.pollTimer = null;
+            }
+            if (!S.running || S.disabled) return;
+            const transient = S.job !== null || (S.list !== null && S.list.images.some((i) => i.state === 'finalizing' || i.state === 'deleting' || i.state === 'uploading'));
+            if (!S.panelVisible && !transient) return;
+            const gen = S.gen;
+            S.pollTimer = deps.setTimeout(() => {
+                S.pollTimer = null;
+                if (S.gen !== gen) return;
+                // 自分の PUT の最中は、一覧を取らない（進み具合は PUT の応答で分かる。単一スレッドのサーバーを空ける）
+                if (S.job !== null && S.job.phase === 'uploading') {
+                    schedulePoll();
+                    return;
+                }
+                refreshList();
+            }, transient ? 1000 : 3000);
+        }
+
+        // 一覧を取る（同時に 1 つだけ）。成功したら整えた一覧、失敗したら null。
+        function refreshList() {
+            if (S.refreshing) return S.refreshing;
+            const gen = S.gen;
+            const p = (async () => {
+                const r = await request('GET', API);
+                if (S.gen !== gen) return null;
+                if (r.status === 404) {
+                    // ISO_ENABLE が無効のビルド: 画面ごと隠す
+                    S.disabled = true;
+                    show(ui.toggle, false);
+                    show(ui.panel, false);
+                    return null;
+                }
+                if (r.status === 401) return null;
+                show(ui.toggle, true);
+                const list = r.status === 200 ? normalizeList(r.data) : null;
+                if (list === null) {
+                    if (S.list === null) setMessage('ISO の状態を取得できません。' + (r.net ? 'ネットワークを確認してください。' : describeError(r.status, r.data)), 'error');
+                    return null;
+                }
+                S.list = list;
+                const sig = JSON.stringify(list);
+                if (sig !== S.listSig) {
+                    S.listSig = sig;
+                    render();
+                }
+                updateControls();
+                maybeAutoFinish();
+                return list;
+            })().finally(() => {
+                if (S.refreshing === p) S.refreshing = null;
+                if (S.gen === gen) schedulePoll();
+            });
+            S.refreshing = p;
+            return p;
+        }
+
+        function imageById(id) {
+            if (!S.list) return null;
+            for (const im of S.list.images) if (im.id === id) return im;
+            return null;
+        }
+
+        function badgeClass(state) {
+            return has(STATE_TEXT, state) ? 'iso-state-' + state : 'iso-state-unknown';
+        }
+
+        function button(label, key, handler, disabled) {
+            const b = doc.createElement('button');
+            b.setAttribute('type', 'button');
+            b.setAttribute('data-key', key);
+            b.textContent = label;
+            if (disabled) b.disabled = true;
+            b.addEventListener('click', handler);
+            S.rendered.push(b);
+            return b;
+        }
+
+        function activeKey() {
+            const a = doc.activeElement;
+            return a && a.getAttribute ? a.getAttribute('data-key') : null;
+        }
+
+        function render() {
+            const list = S.list;
+            const focusKey = activeKey();
+            S.rendered = [];
+            // SD、ターゲット、マウント
+            ui.sd.textContent = (has(SD_TEXT, list.sd.state) ? SD_TEXT[list.sd.state] : 'SD カード: 不明な状態 (' + list.sd.state + ')') +
+                (list.sd.state === 'ready' && list.sd.free !== null && list.sd.total !== null ? '（空き ' + formatBytes(list.sd.free) + ' / ' + formatBytes(list.sd.total) + '）' : '');
+            const parts = [];
+            if (list.locked) parts.push('ターゲットが取り外しを防止しています');
+            if (list.ejectedByTarget) parts.push('ターゲットが取り外しました');
+            ui.target.textContent = parts.join('。');
+            show(ui.target, parts.length > 0);
+            const mountedImage = list.mounted !== null ? list.images.find((i) => i.id === list.mounted) : null;
+            ui.mounted.textContent = list.mounted !== null ? 'マウント中: ' + (mountedImage ? mountedImage.name : list.mounted) : 'マウント中のイメージはありません';
+            show(ui.eject, list.mounted !== null);
+            // イメージの一覧
+            ui.list.textContent = '';
+            for (const im of list.images) ui.list.appendChild(renderRow(im, list));
+            ui.hiddenNote.textContent = list.hidden > 0 ? '一覧に表示されていないイメージが ' + list.hidden + ' 個あります（上限を超えています）。' : '';
+            show(ui.hiddenNote, list.hidden > 0);
+            if (focusKey !== null) {
+                const again = S.rendered.find((b) => b.getAttribute('data-key') === focusKey);
+                if (again && again.focus) again.focus();
+            }
+        }
+
+        function renderRow(im, list) {
+            const li = doc.createElement('li');
+            li.className = 'iso-row ' + badgeClass(im.state);
+            const main = doc.createElement('div');
+            main.className = 'iso-row-main';
+            const nm = doc.createElement('span');
+            nm.className = 'iso-name';
+            nm.textContent = im.name; // 名前は textContent だけ（HTML として解釈させない）
+            const sz = doc.createElement('span');
+            sz.className = 'iso-size';
+            sz.textContent = im.size !== null ? formatBytes(im.size) : '';
+            const badge = doc.createElement('span');
+            badge.className = 'iso-badge';
+            badge.textContent = has(STATE_TEXT, im.state) ? STATE_TEXT[im.state] : im.state;
+            main.appendChild(nm);
+            main.appendChild(sz);
+            main.appendChild(badge);
+            if (list.mounted === im.id) {
+                const mt = doc.createElement('span');
+                mt.className = 'iso-badge iso-badge-mounted';
+                mt.textContent = 'マウント中';
+                main.appendChild(mt);
+            }
+            li.appendChild(main);
+            const local = S.job !== null && S.job.id === im.id;
+            const note = doc.createElement('div');
+            note.className = 'iso-row-note';
+            let noteText = '';
+            if (im.state === 'invalid') {
+                noteText = im.reason !== null ? (has(REASON_TEXT, im.reason) ? REASON_TEXT[im.reason] : '理由: ' + im.reason) : '';
+            } else if ((im.state === 'incomplete' || im.state === 'uploading') && im.size !== null && im.received !== null) {
+                noteText = formatBytes(im.received) + ' / ' + formatBytes(im.size) + ' を受信済み';
+                if (im.state === 'incomplete' && !local && im.received < im.size) noteText += '。元のファイルを選んで「再開」を押してください。';
+            }
+            note.textContent = noteText;
+            if (noteText !== '') li.appendChild(note);
+            if ((im.state === 'incomplete') && im.size !== null && im.received !== null && im.size > 0) {
+                const pr = doc.createElement('progress');
+                pr.max = im.size;
+                pr.value = im.received;
+                li.appendChild(pr);
+            }
+            const actions = doc.createElement('div');
+            actions.className = 'iso-row-actions';
+            const dis = S.opBusy;
+            if (im.state === 'ready') {
+                if (list.mounted === im.id) actions.appendChild(button('取り外し', 'eject:' + im.id, () => doEject(), dis));
+                else actions.appendChild(button('マウント', 'mount:' + im.id, () => doMount(im.id), dis));
+            }
+            if (im.state === 'incomplete' && !local) {
+                if (im.size !== null && im.received === im.size) actions.appendChild(button('完了処理', 'finish:' + im.id, () => doResume(im.id), fileBusy()));
+                else actions.appendChild(button('再開', 'resume:' + im.id, () => doResume(im.id), fileBusy()));
+            }
+            if (im.state !== 'deleting') actions.appendChild(button('削除', 'delete:' + im.id, () => doDelete(im.id), dis));
+            li.appendChild(actions);
+            return li;
+        }
+
+        // ---- ジョブ（アップロード、完了処理の待ち）。同時に 1 つだけ ----
+        function startJob(kind, id, file, body) {
+            const job = { kind, id, file, gen: S.gen, abort: false, slotWaits: 0, phase: kind === 'upload' ? 'hashing' : 'waiting', received: 0, size: file ? file.size : 0 };
+            S.job = job;
+            if (id !== null) S.autoDone.add(id); // この画面が扱ったイメージには、自動の finish を送らない
+            updateControls();
+            render2();
+            (async () => {
+                try {
+                    await body(job);
+                } catch (e) {
+                    if (alive(job)) setMessage('予期しないエラーが起きました。ページを再読み込みしてください。', 'error');
+                } finally {
+                    if (S.job === job) S.job = null;
+                    if (S.gen === job.gen) {
+                        setProgress('', null);
+                        updateControls();
+                        S.listSig = null; // 行を描き直す（進行中の印が変わる）
+                        refreshList();
+                    }
+                }
+            })();
+            return job;
+        }
+        function render2() {
+            if (S.list) {
+                S.listSig = null;
+                render();
+            }
+        }
+
+        async function waitSdReady(job) {
+            for (let i = 0; i < MAX_WAIT_STEPS && alive(job); i++) {
+                const list = await refreshList();
+                if (!alive(job)) return false;
+                if (list && list.sd.state === 'ready') return true;
+                await sleep(2000);
+            }
+            return false;
+        }
+
+        // アップロードが続けられるかを、一覧で調べる。'go'（received を更新した）、'complete'（全部届いている）、'stop'（理由は表示済み）、'retry'（一覧が取れなかった）
+        async function resync(job) {
+            const list = await refreshList();
+            if (!alive(job)) return 'stop';
+            if (list === null) return 'retry';
+            if (list.sd.state !== 'ready') {
+                if (!(await waitSdReady(job))) {
+                    if (alive(job)) setMessage(describeError(503, { error: 'not_ready' }), 'error');
+                    return 'stop';
+                }
+            }
+            const im = imageById(job.id);
+            if (im === null || im.state === 'deleting') {
+                setMessage(describeError(404, { error: 'not_found' }), 'error');
+                return 'stop';
+            }
+            if (im.state !== 'uploading' && im.state !== 'incomplete') {
+                setMessage(describeError(409, { error: 'not_uploading' }), 'error');
+                return 'stop';
+            }
+            if (S.list.upload !== null && S.list.upload.id !== job.id) {
+                // 別のイメージが枠を使っている。最終処理（finalizing）なら、終わるのを待つ。受信中なら、続けられない
+                if (S.list.upload.state === 'finalizing' && ++job.slotWaits <= MAX_WAIT_STEPS) {
+                    await sleep(1000);
+                    return alive(job) ? resync(job) : 'stop';
+                }
+                setMessage(describeError(409, { error: 'upload_in_progress' }), 'error');
+                return 'stop';
+            }
+            if (im.received === null || im.size === null || im.received > job.size) {
+                setMessage('サーバーの受信済みの大きさが、選んだファイルと合いません。', 'error');
+                return 'stop';
+            }
+            job.received = im.received;
+            job.chunkMax = list.chunk;
+            if (job.chunk > job.chunkMax) job.chunk = job.chunkMax;
+            return im.received >= job.size ? 'complete' : 'go';
+        }
+
+        function reportProgress(job) {
+            const pct = job.size > 0 ? (job.received / job.size * 100) : 0;
+            const secs = (now() - job.startedAt) / 1000;
+            const speed = secs > 0 ? (job.received - job.startReceived) / secs : 0;
+            setProgress(
+                pct.toFixed(1) + '%（' + formatBytes(job.received) + ' / ' + formatBytes(job.size) + '）' + (speed > 0 ? '、' + formatBytes(speed) + '/秒' : ''),
+                job.received, job.size);
+        }
+
+        // PUT のループ。戻り値: 'done'（全部届いた）、'stopped'（一時停止、または画面を離れた）、'failed'（理由は表示済み）
+        async function uploadLoop(job) {
+            job.phase = 'uploading';
+            job.startedAt = now();
+            job.startReceived = job.received;
+            updateControls();
+            let netFails = 0;
+            let sameMismatch = 0;
+            let waits = 0;
+            let reachable = false; // 直前の一覧の取得が成功したか
+            let freed = 0; // 409 upload_in_progress なのに、一覧では枠が空いている（直前に空いた）ときの再試行
+            while (alive(job) && job.received < job.size) {
+                const offset = job.received;
+                const n = Math.min(job.chunk, job.size - offset);
+                const t0 = now();
+                const r = await request('PUT', API + '/' + job.id, { chunk: job.file.slice(offset, offset + n), offset, timeoutMs: 60000 });
+                if (!alive(job)) return job.received >= job.size ? 'done' : 'stopped';
+                const dt = now() - t0;
+                if (r.status === 200 && r.data && Number.isSafeInteger(r.data.received) && r.data.received > offset && r.data.received <= job.size) {
+                    job.received = r.data.received;
+                    netFails = 0;
+                    sameMismatch = 0;
+                    waits = 0;
+                    if (dt >= SLOW_MS && job.chunk > MIN_CHUNK) job.chunk = Math.max(MIN_CHUNK, job.chunk >> 1);
+                    else if (dt < FAST_MS && job.chunk < job.chunkMax) job.chunk = Math.min(job.chunkMax, job.chunk * 2);
+                    reportProgress(job);
+                    continue;
+                }
+                if (r.net || r.status === 200) {
+                    // 応答が読めない、または形の違う応答: 小さくして、一覧で received を取り直して続ける
+                    netFails++;
+                    if (job.chunk > MIN_CHUNK) job.chunk = Math.max(MIN_CHUNK, job.chunk >> 1);
+                    await sleep(Math.min(1000 * netFails, 5000));
+                    if (!alive(job)) return 'stopped';
+                    const before = job.received;
+                    const s = await resync(job);
+                    reachable = s !== 'retry';
+                    if (s === 'stop') return 'failed';
+                    if (s === 'complete') return 'done';
+                    if (job.received > before) {
+                        netFails = 0; // 応答は失われたが、サーバーには届いている（位置が進んだ）: 失敗の数に入れない
+                    } else if (netFails > MAX_NET_FAILS) {
+                        // 位置が進まないまま続く。一覧は取れる（機器には届く）のに、チャンクだけが失敗し続けるときは、別の文にする
+                        // （拒否のときに接続を閉じるため、理由の応答が読めないことがある。docs/WEB_API.md 8.3）
+                        setMessage(reachable
+                            ? '機器には接続できますが、チャンクの送信が繰り返し失敗します（空き容量不足、回線が遅すぎる、または機器が拒否している可能性があります）。しばらくしてから「再開」を押してください。'
+                            : 'サーバーに接続できません。ネットワークを確認して、「再開」を押してください。', 'error');
+                        return 'failed';
+                    }
+                    reportProgress(job);
+                    continue;
+                }
+                const code = r.data && typeof r.data.error === 'string' ? r.data.error : null;
+                if (r.status === 409 && code === 'offset_mismatch') {
+                    const rec = r.data.received;
+                    if (!Number.isSafeInteger(rec) || rec < 0 || rec > job.size) {
+                        setMessage(describeError(409, r.data), 'error');
+                        return 'failed';
+                    }
+                    sameMismatch = rec === offset ? sameMismatch + 1 : 0;
+                    if (sameMismatch > 3) {
+                        setMessage('送信位置がサーバーと合わないままです。ページを再読み込みして、再開してください。', 'error');
+                        return 'failed';
+                    }
+                    job.received = rec;
+                    reportProgress(job);
+                    continue;
+                }
+                if (r.status === 409 && code === 'upload_in_progress') {
+                    // 別のイメージが枠を使っている。最終処理（finalizing）なら、終わるのを待つ
+                    const list = await refreshList();
+                    if (!alive(job)) return 'stopped';
+                    const holder = list && list.upload && list.upload.id !== job.id ? list.upload : null;
+                    // 枠が空いた（holder がない）か、最終処理中なら、待ってやり直す。受信中の別のアップロードなら、続けられない
+                    if (list !== null && (holder === null ? ++freed <= 5 : holder.state === 'finalizing' && ++waits <= MAX_WAIT_STEPS)) {
+                        await sleep(1000);
+                        continue;
+                    }
+                    setMessage(describeError(409, r.data), 'error');
+                    return 'failed';
+                }
+                if (r.status === 409 && code === 'not_uploading') {
+                    const s = await resync(job);
+                    if (s === 'stop') return 'failed';
+                    if (s === 'complete') return 'done';
+                    setMessage(describeError(409, r.data), 'error');
+                    return 'failed';
+                }
+                if (r.status === 413 && code === 'payload_too_large' && job.chunk > MIN_CHUNK) {
+                    job.chunk = Math.max(MIN_CHUNK, job.chunk >> 1);
+                    job.chunkMax = Math.min(job.chunkMax, job.chunk);
+                    continue;
+                }
+                if (r.status === 503 && code === 'busy' && ++waits <= MAX_WAIT_STEPS) {
+                    await sleep((r.retryAfter || 1) * 1000);
+                    continue;
+                }
+                if (r.status === 503 && (code === 'not_ready' || code === 'sd_unavailable') && ++waits <= 10) {
+                    // SD の復帰を待つ。書き込みの失敗は、チャンクが取り消されて incomplete になっている（received から再開できる）
+                    if (!(await waitSdReady(job))) {
+                        if (alive(job)) setMessage(describeError(r.status, r.data), 'error');
+                        return 'failed';
+                    }
+                    const s = await resync(job);
+                    if (s === 'stop') return 'failed';
+                    if (s === 'complete') return 'done';
+                    continue;
+                }
+                setMessage(describeError(r.status, r.data), 'error');
+                if (r.status === 404) S.listSig = null;
+                return 'failed';
+            }
+            return job.received >= job.size ? 'done' : 'stopped';
+        }
+
+        // 完了処理（finish）と、その待ち。戻り値: 'ready' / 'invalid' / 'failed'（理由は表示済み）/ 'stopped' / 'resume'（アップロードを続ける必要がある）
+        async function finishFlow(job) {
+            job.phase = 'finishing';
+            updateControls();
+            let rounds = 0;
+            let waits = 0;
+            let netFails = 0;
+            setProgress('完了処理を始めています…', null);
+            while (alive(job)) {
+                const r = await request('POST', API + '/' + job.id + '/finish', { json: {} });
+                if (!alive(job)) return 'stopped';
+                if (r.status === 200) {
+                    setMessage('アップロードが完了しました（利用可能）。', 'ok');
+                    return 'ready';
+                }
+                if (r.status === 202) {
+                    job.phase = 'waiting';
+                    setProgress('最終処理中です（SHA-256 の確認、SD 上の配置の作成、署名の検査）。しばらくお待ちください…', null);
+                    const w = await waitFinalize(job);
+                    if (w === 'ready') {
+                        setMessage('アップロードが完了しました（利用可能）。', 'ok');
+                        return 'ready';
+                    }
+                    if (w === 'invalid') {
+                        const im = imageById(job.id);
+                        setMessage(describeError(422, { error: im && im.reason ? im.reason : 'invalid' }), 'error');
+                        return 'invalid';
+                    }
+                    if (w === 'gone') {
+                        setMessage(describeError(404, { error: 'not_found' }), 'error');
+                        return 'failed';
+                    }
+                    if (w !== 'incomplete') return 'stopped';
+                    // 最終処理中の SD のエラー: SD の復帰を待って、received で分ける
+                    if (++rounds > MAX_FINISH_ROUNDS) {
+                        setMessage('最終処理が完了しません。SD カードを確認して、「完了処理」または「再開」を押してください。', 'error');
+                        return 'failed';
+                    }
+                    if (!(await waitSdReady(job))) {
+                        if (alive(job)) setMessage(describeError(503, { error: 'not_ready' }), 'error');
+                        return 'failed';
+                    }
+                    const im = imageById(job.id);
+                    if (im === null) {
+                        setMessage(describeError(404, { error: 'not_found' }), 'error');
+                        return 'failed';
+                    }
+                    job.phase = 'finishing';
+                    if (im.state === 'ready') {
+                        setMessage('アップロードが完了しました（利用可能）。', 'ok');
+                        return 'ready';
+                    }
+                    if (im.received !== null && im.size !== null && im.received < im.size) {
+                        job.received = im.received;
+                        return 'resume';
+                    }
+                    continue; // received == size: finish を送り直す
+                }
+                if (r.status === 422) {
+                    setMessage(describeError(422, r.data), 'error');
+                    return 'invalid';
+                }
+                const code = r.data && typeof r.data.error === 'string' ? r.data.error : null;
+                if (r.status === 409 && code === 'size_mismatch') {
+                    if (Number.isSafeInteger(r.data.received) && r.data.received >= 0 && r.data.received < job.size) {
+                        job.received = r.data.received;
+                        return 'resume';
+                    }
+                    setMessage(describeError(409, r.data), 'error');
+                    return 'failed';
+                }
+                if (r.status === 409 && code === 'upload_in_progress' && !job.auto && ++waits <= MAX_WAIT_STEPS) {
+                    await sleep(1000);
+                    continue;
+                }
+                if (r.status === 503 && code === 'busy' && !job.auto && ++waits <= MAX_WAIT_STEPS) {
+                    await sleep((r.retryAfter || 1) * 1000);
+                    continue;
+                }
+                if (r.status === 503 && (code === 'not_ready' || code === 'sd_unavailable') && !job.auto && ++rounds <= MAX_FINISH_ROUNDS) {
+                    if (!(await waitSdReady(job))) {
+                        if (alive(job)) setMessage(describeError(503, r.data), 'error');
+                        return 'failed';
+                    }
+                    continue;
+                }
+                if (r.net && ++netFails <= MAX_NET_FAILS) {
+                    // 応答が読めない: 一覧で状態を見る（finalizing なら、始まっている）
+                    await sleep(1000 * netFails);
+                    const list = await refreshList();
+                    if (!alive(job)) return 'stopped';
+                    const im = list ? imageById(job.id) : null;
+                    if (im && im.state === 'ready') {
+                        setMessage('アップロードが完了しました（利用可能）。', 'ok');
+                        return 'ready';
+                    }
+                    if (im && im.state === 'finalizing') {
+                        job.phase = 'waiting';
+                        const w = await waitFinalize(job);
+                        if (w === 'ready') {
+                            setMessage('アップロードが完了しました（利用可能）。', 'ok');
+                            return 'ready';
+                        }
+                        if (w === 'invalid') {
+                            setMessage(describeError(422, { error: (imageById(job.id) || {}).reason || 'invalid' }), 'error');
+                            return 'invalid';
+                        }
+                        if (w !== 'incomplete') return w === 'gone' ? 'failed' : 'stopped';
+                    }
+                    if (job.auto) {
+                        setMessage('完了処理の結果を確認できません。一覧の「完了処理」を押してください。', 'error');
+                        return 'failed';
+                    }
+                    continue;
+                }
+                setMessage(r.net ? 'サーバーに接続できません。ネットワークを確認してください。' : describeError(r.status, r.data), 'error');
+                return 'failed';
+            }
+            return 'stopped';
+        }
+
+        // finalizing が終わる（ready / invalid / incomplete）まで、一覧を見て待つ。戻り値: 'ready' / 'invalid' / 'incomplete' / 'gone' / 'stopped'
+        async function waitFinalize(job) {
+            let misses = 0;
+            let sdMisses = 0;
+            for (let i = 0; i < 100000 && alive(job); i++) {
+                await sleep(1000);
+                if (!alive(job)) return 'stopped';
+                const list = await refreshList();
+                if (!alive(job)) return 'stopped';
+                if (list === null) {
+                    if (++misses > 60) return 'stopped';
+                    continue;
+                }
+                misses = 0;
+                if (list.sd.state !== 'ready') {
+                    // SD が使えない間は、一覧にイメージが出ない（docs/WEB_API.md 8.1）。「ない」ではなく、戻るのを待つ
+                    if (++sdMisses > 600) return 'stopped';
+                    continue;
+                }
+                sdMisses = 0;
+                const im = imageById(job.id);
+                if (im === null || im.state === 'deleting') return 'gone';
+                if (im.state === 'ready') return 'ready';
+                if (im.state === 'invalid') return 'invalid';
+                if (im.state === 'incomplete') return 'incomplete';
+                // finalizing（または、続いている uploading）: 待つ
+            }
+            return 'stopped';
+        }
+
+        // アップロードの後ろ（PUT のループ → finish）を、必要なだけ繰り返す
+        async function uploadAndFinish(job) {
+            for (let round = 0; round < MAX_FINISH_ROUNDS + 2 && alive(job); round++) {
+                if (job.received < job.size) {
+                    const u = await uploadLoop(job);
+                    if (job.deleted) return;
+                    if (u === 'stopped') {
+                        if (S.gen === job.gen) setMessage('一時停止しました。「再開」で続きから送れます（約 5 分以内なら、サーバーの状態は保たれます）。', 'info');
+                        return;
+                    }
+                    if (u === 'failed') return;
+                }
+                const f = await finishFlow(job);
+                if (f !== 'resume') return;
+            }
+        }
+
+        // ---- 操作: アップロード ----
+        async function doUpload() {
+            if (fileBusy() || S.opBusy) return;
+            const file = ui.file.files && ui.file.files[0];
+            if (!file) {
+                setMessage('アップロードする ISO ファイルを選んでください。', 'error');
+                return;
+            }
+            const name = ui.name.value;
+            const bad = nameProblem(name);
+            if (bad !== null) {
+                setMessage(bad, 'error');
+                return;
+            }
+            if (!(file.size >= 34816)) {
+                setMessage('ファイルが小さすぎます（ISO は 34,816 バイト以上です）。', 'error');
+                return;
+            }
+            setMessage('', null);
+            // 開始権: 一覧の取得を待つ間も、他の開始（もう一度の押下、自動の finish）を入れない。準備に失敗したら、必ず放す
+            const token = {};
+            const gen = S.gen;
+            S.starting = token;
+            updateControls();
+            try {
+                const list = await refreshList();
+                if (S.gen !== gen) return; // 待つ間に、ログアウトした
+                if (list === null) {
+                    setMessage('ISO の状態を取得できません。ネットワークを確認してください。', 'error');
+                    return;
+                }
+                if (list.sd.state !== 'ready') {
+                    setMessage(describeError(503, { error: 'not_ready' }), 'error');
+                    return;
+                }
+                // 同じ名前で、同じ大きさの中断中のイメージがあれば、新しく作らず、その続きから送る
+                const same = list.images.find((i) => i.name === name);
+                if (same) {
+                    if ((same.state === 'incomplete' || same.state === 'uploading') && same.size === file.size) {
+                        resumeWith(same.id, file);
+                        return;
+                    }
+                    setMessage(describeError(409, { error: 'name_exists' }), 'error');
+                    return;
+                }
+                startNewUpload(file, name, list);
+            } finally {
+                if (S.starting === token) S.starting = null;
+                if (S.gen === gen) updateControls();
+            }
+        }
+
+        function startNewUpload(file, name, list) {
+            startJob('upload', null, file, async (job) => {
+                let sha = null;
+                if (ui.hash.checked) {
+                    job.phase = 'hashing';
+                    updateControls();
+                    sha = await hashFile(job);
+                    if (sha === null) {
+                        if (alive(job) || S.gen === job.gen) setMessage('SHA-256 の計算を中止しました。', 'info');
+                        return;
+                    }
+                }
+                job.phase = 'creating';
+                updateControls();
+                setProgress('アップロードを始めています…', null);
+                const body = { name, size: file.size };
+                if (sha !== null) body.sha256 = sha;
+                const r = await request('POST', API, { json: body });
+                if (!alive(job)) return;
+                if (r.status !== 201 || !r.data || typeof r.data.id !== 'string' || !/^[0-9a-f]{8}$/.test(r.data.id)) {
+                    setMessage(r.net ? 'サーバーに接続できません。ネットワークを確認してください。' : describeError(r.status, r.data), 'error');
+                    return;
+                }
+                job.id = r.data.id;
+                S.autoDone.add(job.id);
+                // 再開用のファイルと id は、id が決まってから、組で更新する（begin が失敗したときは、前の組を保つ）
+                S.lastFile = file;
+                S.lastFileId = job.id;
+                job.received = 0;
+                job.chunkMax = Number.isSafeInteger(r.data.chunk_size) && r.data.chunk_size > 0 ? r.data.chunk_size : list.chunk;
+                job.chunk = job.chunkMax;
+                await uploadAndFinish(job);
+            });
+        }
+
+        async function hashFile(job) {
+            const sha = new Sha256();
+            const size = job.file.size;
+            for (let off = 0; off < size; off += HASH_SLICE) {
+                if (!alive(job)) return null;
+                const buf = await job.file.slice(off, Math.min(size, off + HASH_SLICE)).arrayBuffer();
+                if (!alive(job)) return null;
+                sha.update(new Uint8Array(buf));
+                const done = Math.min(size, off + HASH_SLICE);
+                setProgress('SHA-256 を計算中… ' + (done / size * 100).toFixed(1) + '%', done, size);
+            }
+            return sha.digest();
+        }
+
+        // 中断中のイメージ（id）を、選んだファイルで続ける
+        function resumeWith(id, file) {
+            S.lastFile = file;
+            S.lastFileId = id;
+            setMessage('', null);
+            startJob('upload', id, file, async (job) => {
+                job.phase = 'creating';
+                updateControls();
+                setProgress('サーバーの受信済みの大きさを確認しています…', null);
+                job.chunk = 131072;
+                job.chunkMax = 131072;
+                const s = await resync(job); // received と chunk_size を取り直す（chunkMax と chunk を更新する）
+                if (s === 'stop') return;
+                await uploadAndFinish(job); // 'complete'（全部届いている）のときは、PUT をせずに finish だけになる
+            });
+        }
+
+        async function doResume(id) {
+            if (fileBusy()) return;
+            const im = imageById(id);
+            if (!im || im.size === null) return;
+            // 全部届いている中断中のイメージは、ファイルが要らない（完了処理だけ）
+            if (im.received !== null && im.received === im.size) {
+                setMessage('', null);
+                startJob('finish', id, null, async (job) => {
+                    job.size = im.size;
+                    job.received = im.size;
+                    const f = await finishFlow(job);
+                    if (f === 'resume') setMessage('アップロードが途中までです。元のファイルを選んで「再開」を押してください。', 'error');
+                });
+                return;
+            }
+            let file = ui.file.files && ui.file.files[0];
+            if (!file || file.size !== im.size) file = S.lastFileId === id && S.lastFile && S.lastFile.size === im.size ? S.lastFile : null;
+            if (!file) {
+                setMessage('再開するには、元のファイル（' + formatBytes(im.size) + '、' + im.size + ' バイト）を選んでください。', 'error');
+                if (ui.file.focus) ui.file.focus();
+                return;
+            }
+            resumeWith(id, file);
+        }
+
+        // 再読み込みの後: incomplete で received == size のものに、finish を 1 回だけ自動で送る
+        function maybeAutoFinish() {
+            if (S.job !== null || S.starting !== null || S.opBusy || !S.list || S.list.sd.state !== 'ready' || S.list.upload !== null) return;
+            for (const im of S.list.images) {
+                if (im.state === 'incomplete' && im.size !== null && im.size > 0 && im.received === im.size && !S.autoDone.has(im.id)) {
+                    S.autoDone.add(im.id);
+                    startJob('finish', im.id, null, async (job) => {
+                        job.size = im.size;
+                        job.received = im.size;
+                        job.auto = true; // 自動の経路: finish の POST は 1 回（失敗しても、勝手に再送しない）
+                        const f = await finishFlow(job);
+                        if (f === 'resume') setMessage('アップロードが途中までです。元のファイルを選んで「再開」を押してください。', 'error');
+                    });
+                    return;
+                }
+            }
+        }
+
+        // ---- 操作: マウント、取り外し、削除、取り込み ----
+        async function runOp(fn) {
+            if (S.opBusy) return;
+            S.opBusy = true;
+            S.listSig = null;
+            if (S.list) render();
+            updateControls();
+            const gen = S.gen;
+            try {
+                await fn();
+            } finally {
+                if (S.gen === gen) {
+                    S.opBusy = false;
+                    S.listSig = null;
+                    await refreshList();
+                    if (S.listSig === null && S.list) render(); // 一覧が取れなかったとき、ボタンの無効を戻す
+                    updateControls();
+                }
+            }
+        }
+
+        function netOrError(r) {
+            return r.net ? 'サーバーに接続できません。ネットワークを確認してください。' : describeError(r.status, r.data);
+        }
+
+        function doMount(id) {
+            return runOp(async () => {
+                setMessage('', null);
+                let r = await request('POST', API + '/mount', { json: { id } });
+                if (r.status === 409 && r.data && r.data.error === 'locked_by_target') {
+                    if (!deps.confirm('ターゲットが、メディアの取り外しを防止しています。強制的に差し替えると、ターゲット側でディスクの内容が失われる恐れがあります。差し替えますか？')) {
+                        setMessage('マウントを取りやめました。', 'info');
+                        return;
+                    }
+                    r = await request('POST', API + '/mount', { json: { id, force: true } });
+                }
+                if (r.status === 200 && r.data && (r.data.result === 'mounted' || r.data.result === 'already_mounted')) {
+                    setMessage(r.data.result === 'mounted' ? 'マウントしました。ターゲットの BIOS / OS で、USB の CD-ROM が見えるか確認してください。' : 'すでにマウント中です。', 'ok');
+                } else {
+                    setMessage(netOrError(r), 'error');
+                }
+            });
+        }
+
+        function doEject() {
+            return runOp(async () => {
+                setMessage('', null);
+                let r = await request('POST', API + '/eject', { json: {} });
+                if (r.status === 409 && r.data && r.data.error === 'locked_by_target') {
+                    if (!deps.confirm('ターゲットが、メディアの取り外しを防止しています。強制的に取り外すと、ターゲット側でデータが失われる恐れがあります。取り外しますか？')) {
+                        setMessage('取り外しを取りやめました。', 'info');
+                        return;
+                    }
+                    r = await request('POST', API + '/eject', { json: { force: true } });
+                }
+                if (r.status === 200 && r.data && r.data.result === 'ejected') setMessage('取り外しました。', 'ok');
+                else if (r.status === 200 && r.data && r.data.result === 'not_mounted') setMessage('マウントされていません。', 'info');
+                else setMessage(netOrError(r), 'error');
+            });
+        }
+
+        function doDelete(id) {
+            const im = imageById(id);
+            const label = im ? im.name : id;
+            if (!deps.confirm('「' + label + '」を削除しますか？（元に戻せません）')) return undefined;
+            return runOp(async () => {
+                setMessage('', null);
+                const r = await request('DELETE', API + '/' + id);
+                if (r.status === 202) {
+                    if (S.job !== null && S.job.id === id) {
+                        // その受信（PUT のループ、待ち）をやめる
+                        S.job.abort = true;
+                        S.job.deleted = true;
+                    }
+                    setMessage('削除を始めました。', 'info');
+                } else {
+                    setMessage(netOrError(r), 'error');
+                }
+            });
+        }
+
+        function doRescan() {
+            if (fileBusy()) return undefined;
+            const gen = S.gen; // 操作を始めたときの世代: ログアウトの後は、次のバッチを送らない
+            return runOp(async () => {
+                setMessage('取り込み中…', 'info');
+                let cursor = null;
+                let imported = 0;
+                let skipped = 0;
+                let busyTries = 0;
+                for (let i = 0; i < MAX_RESCAN_ROUNDS; i++) {
+                    if (S.gen !== gen) return;
+                    const r = await request('POST', API + '/rescan', { json: cursor === null ? {} : { cursor } });
+                    if (S.gen !== gen) return;
+                    if (r.status === 503 && r.data && r.data.error === 'busy' && ++busyTries <= 30) {
+                        await sleep((r.retryAfter || 1) * 1000);
+                        i--;
+                        continue;
+                    }
+                    const d = r.data;
+                    const next = d ? d.next_cursor : undefined;
+                    if (r.status !== 200 || !d || !isCount(d.imported) || !isCount(d.skipped) || !(next === null || (Number.isSafeInteger(next) && next >= 0 && next <= 65535))) {
+                        setMessage((imported + skipped > 0 ? '取り込みを途中でやめました（取り込み ' + imported + ' 件、スキップ ' + skipped + ' 件）。' : '') + (r.status === 200 ? '応答の形が正しくありません。' : netOrError(r)), 'error');
+                        return;
+                    }
+                    imported += d.imported;
+                    skipped += d.skipped;
+                    busyTries = 0;
+                    if (next === null) {
+                        setMessage('取り込みが終わりました（取り込み ' + imported + ' 件、スキップ ' + skipped + ' 件）。', 'ok');
+                        return;
+                    }
+                    if (next === cursor) {
+                        setMessage('取り込みが進みません（cursor ' + next + '）。取り込み ' + imported + ' 件、スキップ ' + skipped + ' 件。', 'error');
+                        return;
+                    }
+                    cursor = next;
+                }
+                setMessage('取り込みの回数が多すぎるため、やめました（取り込み ' + imported + ' 件、スキップ ' + skipped + ' 件）。', 'error');
+            });
+        }
+
+        // ---- 開閉と、開始・終了 ----
+        function setPanel(on) {
+            if (S.disabled) return;
+            S.panelVisible = on;
+            show(ui.panel, on);
+            if (ui.toggle) ui.toggle.setAttribute('aria-expanded', on ? 'true' : 'false');
+            if (on) refreshList();
+            else schedulePoll();
+        }
+
+        ui.toggle.addEventListener('click', () => setPanel(!S.panelVisible));
+        ui.close.addEventListener('click', () => setPanel(false));
+        ui.upload.addEventListener('click', () => { doUpload(); });
+        ui.pause.addEventListener('click', () => {
+            if (S.job !== null && S.job.kind === 'upload' && (S.job.phase === 'uploading' || S.job.phase === 'hashing')) S.job.abort = true;
+        });
+        ui.rescan.addEventListener('click', () => { doRescan(); });
+        ui.eject.addEventListener('click', () => { doEject(); });
+        ui.file.addEventListener('change', () => {
+            const f = ui.file.files && ui.file.files[0];
+            if (f) ui.name.value = defaultName(f.name);
+        });
+
+        function start() {
+            if (S.running) return;
+            S.running = true;
+            S.gen++;
+            S.disabled = false;
+            refreshList();
+        }
+
+        // ログアウト、セッション切れ: 進行中の通信と待ちをやめ、画面を隠す
+        function stop() {
+            S.running = false;
+            S.gen++;
+            if (S.job !== null) S.job.abort = true;
+            S.job = null;
+            S.opBusy = false;
+            S.refreshing = null;
+            if (S.pollTimer !== null) {
+                deps.clearTimeout(S.pollTimer);
+                S.pollTimer = null;
+            }
+            S.list = null;
+            S.listSig = null;
+            S.autoDone = new Set();
+            S.lastFile = null;
+            S.lastFileId = null;
+            S.starting = null;
+            ui.file.value = ''; // ログアウト: 選んだファイルと名前を残さない（パネルを閉じるだけなら、残す）
+            ui.name.value = '';
+            S.panelVisible = false;
+            show(ui.panel, false);
+            show(ui.toggle, false);
+            if (ui.toggle) ui.toggle.setAttribute('aria-expanded', 'false');
+            ui.list.textContent = '';
+            setMessage('', null);
+            setProgress('', null);
+            updateControls();
+        }
+
+        return { start, stop, refreshList, setPanel, _state: S };
+    }
+
+    return { create, Sha256, sha256Hex, formatBytes, utf8Length, nameProblem, defaultName, describeError, normalizeList };
+})();
+// ==== ISO viewer (end) ====
+
 document.addEventListener('DOMContentLoaded', () => {
     const elError = document.getElementById('error-message');
     const viewSetup = document.getElementById('view-setup');
@@ -29,6 +1311,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const elVideoTrustHint = document.getElementById('video-trust-hint');
     const elVideoTrustLink = document.getElementById('video-trust-link');
     const elVideoOverlay = document.getElementById('video-overlay');
+
+    // The ISO (virtual media) screen. It is started when the dashboard is shown and stopped on any other view.
+    const iso = IsoViewer.create({
+        document: document,
+        fetch: (url, init) => fetch(url, init),
+        setTimeout: (fn, ms) => setTimeout(fn, ms),
+        clearTimeout: (id) => clearTimeout(id),
+        confirm: (msg) => window.confirm(msg),
+        AbortController: typeof AbortController === 'function' ? AbortController : null,
+        now: () => Date.now(),
+        onUnauthorized: () => {
+            // The session ended: stop at once and look at the status again (after a moment, so that a server that keeps
+            // saying "authenticated" but answering 401 cannot make this a tight loop).
+            iso.stop();
+            setTimeout(fetchStatus, 1000);
+        }
+    });
 
     let ws = null;
     let videoTarget = null; // result of VideoTarget.resolve, set from the status response
@@ -1237,7 +2536,9 @@ document.addEventListener('DOMContentLoaded', () => {
             // The dashboard has the whole window; the card (title and forms) is only for the setup and the login.
             elAuthCard.classList.add('view-hidden');
             updateVideoLayout();
+            iso.start();
         } else {
+            iso.stop();
             elAuthCard.classList.remove('view-hidden');
             if (isFullscreen()) {
                 // e.g. the session ended while the video was full screen
