@@ -2037,7 +2037,7 @@ function runMutantChild(n, name) {
         const { spawn } = require('child_process');
         const child = spawn(process.execPath, [__filename, '--mutant', String(n)], { stdio: 'ignore' });
         let timedOut = false;
-        const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 90000);
+        const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 60000);
         child.on('exit', (code) => {
             clearTimeout(timer);
             if (timedOut) resolve('killed');
@@ -2057,7 +2057,7 @@ function runMutantChild(n, name) {
         const n = Number(args[mc + 1]);
         const [name, mutated] = mutants(source)[n - 1];
         if (mutated === null) process.exit(4);
-        DEADLINE = Date.now() + 30000;
+        DEADLINE = Date.now() + 20000;
         let killed = false;
         try {
             const r = await checkAll(mutated, { big: name.includes('bit length'), failFast: true });
@@ -2082,6 +2082,7 @@ function runMutantChild(n, name) {
                 const name = list[k][0];
                 if (only.size && !only.has(String(n)) && !only.has(name)) { results[k] = 'skipped'; continue; }
                 results[k] = list[k][1] === null ? 'nomatch' : await runMutantChild(n, name);
+                if (process.env.ISO_TEST_PROGRESS) console.log('  done ' + n + ' ' + results[k]);
             }
         };
         await Promise.all(Array.from({ length: Math.min(4, require('os').cpus().length || 1) }, worker));
