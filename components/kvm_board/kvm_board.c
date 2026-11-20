@@ -43,23 +43,27 @@ static kvm_board_hw_t s_hw = {
     .spinlock = portMUX_INITIALIZER_UNLOCKED,
 };
 
-/* Keep ISR path in internal IRAM with direct LL register writes and zero function-pointer jumps. */
+static inline __attribute__((always_inline)) void isr_gpio_set_high(int gpio)
+{
+    gpio_ll_set_level(&GPIO, (uint32_t)gpio, 1u);
+}
+
+/* Keep ISR path in internal IRAM with always_inline LL register writes and zero flash calls. */
 static bool IRAM_ATTR on_timer_alarm(gptimer_handle_t timer,
                                      const gptimer_alarm_event_data_t *edata,
                                      void *user_ctx)
 {
     (void)timer;
     kvm_board_hw_t *hw = (kvm_board_hw_t *)user_ctx;
-    if (!hw || !edata || edata->count_value < edata->alarm_value) {
+    if (!hw || !edata) {
         return false;
     }
 
     int release_gpio = -1;
     portENTER_CRITICAL_ISR(&hw->spinlock);
-    if (hw->drv.ready &&
-        kvm_board_logic_on_timer_alarm(&hw->drv.logic, edata->alarm_value, &release_gpio) &&
-        release_gpio >= 0) {
-        gpio_ll_set_level(&GPIO, (uint32_t)release_gpio, 1u);
+    if (kvm_board_drv_eval_alarm(&hw->drv, edata->count_value, edata->alarm_value,
+                                 &release_gpio)) {
+        isr_gpio_set_high(release_gpio);
     }
     portEXIT_CRITICAL_ISR(&hw->spinlock);
     return false;

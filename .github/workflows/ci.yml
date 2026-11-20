@@ -39,3 +39,26 @@ jobs:
           grep -E '^CONFIG_IDF_TARGET="esp32p4"' sdkconfig
           grep '^CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y' sdkconfig
           grep '^CONFIG_ESP32P4_REV_MIN_100=y' sdkconfig
+
+  idf-build-kvm-board:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.0.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build IDF Project with KVM_BOARD_ENABLE=y
+        run: |
+          . $IDF_PATH/export.sh
+          printf 'CONFIG_KVM_BOARD_ENABLE=y\n' > sdkconfig.ci_kvm_board
+          idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.ci_kvm_board" set-target esp32p4
+          idf.py build
+      - name: Verify sdkconfig and kvm_board ISR IRAM placement
+        run: |
+          . $IDF_PATH/export.sh
+          grep -E '^CONFIG_IDF_TARGET="esp32p4"' sdkconfig
+          grep '^CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y' sdkconfig
+          grep '^CONFIG_ESP32P4_REV_MIN_100=y' sdkconfig
+          grep '^CONFIG_KVM_BOARD_ENABLE=y' sdkconfig
+          grep '^CONFIG_GPTIMER_ISR_CACHE_SAFE=y' sdkconfig
+          grep '^CONFIG_GPTIMER_CTRL_FUNC_IN_IRAM=y' sdkconfig
+          python3 tools/test/check_kvm_board_iram.py build/quad-ipkvm.elf
