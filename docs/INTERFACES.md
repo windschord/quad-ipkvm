@@ -301,6 +301,7 @@ typedef struct {
 - INQUIRY の応答の全体（種別 5 のバイトを含む）は、`mmc_scsi` が作る。
 
 ### 7.4 HTTP（`iso_api`）
+- **実装（C-12a、`components/iso_api/include/iso_api.h`）**: `iso_api_handle(env, rq, rsp)`（PUT 以外の全部。段 3〜13）、`iso_api_headers_check(rq, rsp)`（段 3〜5。本体を読む前）、`iso_api_put_precheck(env, rq, rsp)`（PUT の段 3〜12。真 = 受理、`rsp->put` に id / offset / len）、`iso_api_put_commit(env, put, data, len, rsp)`（本体の受信の後。`iso_op_mutex` を try-lock で取って `iso_upload_write_chunk`）、`iso_api_route` / `iso_api_allow_for_path`（405 の `Allow`）、`iso_api_snapshot_update`（公開ビューのコピー）。`iso_api_env_t` は、`state_lock` / `state_unlock`（`iso_state_mutex`）、`op_trylock` / `op_unlock`（`iso_op_mutex`）、`snapshot`、`media`（`iso_media_t`）、`core`（`iso_core_t`）を持つ。**段 1・2（認証、Origin）は `web_server_iso_guard`（`http_guard_decide`。GET は GET、POST / PUT / DELETE は POST、パスは `HTTP_GUARD_PATH_OTHER`）**。結線は `components/web_server/web_iso.c`（`ISO_ENABLE` のときだけ）。A-13 / A-14 は `web_iso_set_env()`、A-15 は `web_iso_set_put_hooks()`（`recv_chunk` / `release_chunk`）を呼ぶ。テストは `docs/ISO_API_TESTS.md`。
 - **`iso_api_put_precheck(ctx, hdr)`**: `PUT` の、本体を読む前の判定（`WEB_API.md` §8 の判定の順序の 3〜12。空き容量のキャッシュ値の 507 を含む）。結果は「受理して本体を読む」か「エラーの応答（ステータスとコード）」。**エラーのときは、グルーは本体を読まずに応答して、`Connection: close` を付ける**（A-15 が最初に、これが実際にソケットを閉じることを確認する）。受理したら、グルーは、**チャンクの全体を、`ISO_PUT_RECV_TIMEOUT_S` 以内にバッファに受信してから**、`iso_upload` の書き込みを呼ぶ。
 - **ワイルドカードの URI 照合**（`/api/v1/iso/*`）、`max_uri_handlers` の増加、`http_guard` に `PUT` / `DELETE` と `application/octet-stream` を許可すること（既存は `GET` / `POST` と JSON だけ）、ハンドラーのスタックの実測（A-15）。**定義していないメソッドは 405**。
 
