@@ -9,8 +9,9 @@
  *   - Strict volume-root path validation & FatFs "<drv>:<path>" formatting
  *   - Directory + entry joining without buffer truncation (ISO_PATH_MAX)
  *   - FAT32 + cluster-size (>= 2048 B) mount policy validation
- *   - FatFs CREATE_LINKMAP (CLMT) array -> contiguous 512B SD sector spans
- *   - Numeric FRESULT -> iso_err_t mapping
+ *   - FAT32 chain walk -> contiguous 512B SD sector spans with cycle guard
+ *   - Write-fence epoch checks & numeric FRESULT -> iso_err_t mapping
+ *   - Monitor probe backoff scheduling
  *   - Lock-free C11 _Atomic epoch / sd_state / io_fault state tracker
  */
 
@@ -61,6 +62,15 @@ typedef struct {
 /* Map FatFs FRESULT (0..19) to iso_err_t. */
 int iso_sd_fresult_to_err(int fresult);
 
+/* Return true iff write-fence permits diskio write/sync/trim (mount_epoch != 0 && mount_epoch == current_epoch). */
+bool iso_sd_write_fence_allow(uint32_t mount_epoch, uint32_t current_epoch);
+
+/* Map FatFs FRESULT after a filesystem call, preferring ISO_ERR_EPOCH if an epoch change occurred during failure. */
+int iso_sd_map_fresult_with_epoch(int fresult, uint32_t expected_epoch, uint32_t current_epoch);
+
+/* Compute monitor re-probe backoff interval in ms (doubles per failure from base_ms [default 2000], capped at 30000). */
+uint32_t iso_sd_probe_backoff_ms(uint32_t base_ms, uint32_t consec_failures);
+
 /* Format a volume-root path (e.g. "/iso/a1b2c3d4/p000") into "<drive_digit>:<path>".
  * Rejects NULL, relative paths, control chars, '\', "..", and paths >= ISO_PATH_MAX without truncation. */
 int iso_sd_format_fatfs_path(char drive_digit, const char *path, char *out, size_t out_cap);
@@ -72,17 +82,12 @@ int iso_sd_join_path(const char *dir_path, const char *name, char *out, size_t o
 int iso_sd_validate_mount(bool is_fat32, uint32_t sector_size, uint32_t sectors_per_cluster,
                           uint32_t *out_cluster_bytes);
 
-/* Convert a FatFs CLMT array (created by f_lseek(CREATE_LINKMAP)) into contiguous 512B SD extents.
- * If fragment count > max_out, writes required count into *out_n and returns ISO_ERR_TOO_FRAGMENTED. */
-int iso_sd_clmt_to_extents(const uint32_t *cltbl, size_t cltbl_cap,
-                           uint64_t database_sector, uint32_t sectors_per_cluster,
-                           iso_extent_t *out, size_t max_out, size_t *out_n);
-
 /* Callback that reads one 32-bit raw FAT32 entry for @p cluster (lower 28 bits are cluster value). */
 typedef int (*iso_sd_fat32_read_entry_fn)(void *ctx, uint32_t cluster, uint32_t *out_entry);
 
 /* Walk a FAT32 cluster chain with cycle detection (Brent's algorithm) and cluster bound checks.
- * Rejects cycles, bad clusters (0x0FFFFFF7), and out-of-range entries with ISO_ERR_IO instead of spinning. */
+ * Rejects cycles, bad clusters (0x0FFFFFF7), and out-of-range entries with ISO_ERR_IO instead of spinning.
+ * On ISO_ERR_TOO_FRAGMENTED, stops when exceeding max_out; *out_n holds the count accumulated up to overflow. */
 int iso_sd_walk_fat32_extents(uint32_t start_cluster,
                               uint32_t n_fatent,
                               uint64_t database_sector,

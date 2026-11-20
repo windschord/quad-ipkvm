@@ -1,0 +1,49 @@
+menu "ISO Virtual Media: Background Worker (P8 / A-13)"
+
+    config SD_WORKER_ENABLE
+        bool "Enable ISO background worker task (iso_worker)"
+        default n
+        depends on SD_ENABLE
+        help
+            Enable the FreeRTOS background worker task that serializes
+            iso_core / iso_upload / iso_catalog jobs (FINISH, INDEX, DELETE,
+            IDLE_CLOSE), drives idle timeouts via iso_upload_tick(), and
+            coordinates managed microSD fault/reprobe recovery per
+            docs/ISO_MOUNT_DESIGN.md sections 3.4 and 4.2.
+
+    config SD_WORKER_TASK_STACK_SIZE
+        int "iso_worker task stack size (bytes)"
+        default 8192
+        range 4096 16384
+        depends on SD_WORKER_ENABLE
+        help
+            TODO(hw-verify): measure FreeRTOS stack high-water mark (HW_VERIFY I10).
+
+    config SD_WORKER_TASK_PRIO
+        int "iso_worker FreeRTOS task priority"
+        default 3
+        range 1 10
+        depends on SD_WORKER_ENABLE
+
+    config SD_WORKER_BUDGET_KIB
+        int "iso_worker step budget (KiB)"
+        default 1024
+        range 64 4096
+        depends on SD_WORKER_ENABLE
+        help
+            Maximum read/re-hash budget per iso_job_step() before yielding
+            iso_op_mutex so HTTP requests can preempt or proceed.
+
+    config SD_WORKER_IO_BUF_KB
+        int "iso_worker SHA-256 re-hash read buffer size (KiB)"
+        default 32
+        range 4 128
+        depends on SD_WORKER_ENABLE
+
+    config SD_WORKER_DELETE_POLL_MS
+        int "iso_worker poll delay while DELETE waits for MSC refs (ms)"
+        default 50
+        range 10 500
+        depends on SD_WORKER_ENABLE
+
+endmenu
