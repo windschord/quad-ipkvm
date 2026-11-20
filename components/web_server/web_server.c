@@ -13,7 +13,6 @@
 #include "kvm_service.h"
 #if CONFIG_ISO_ENABLE
 #include "web_iso.h"
-#include "iso_api.h"
 #endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -966,9 +965,6 @@ static esp_err_t err_405_handler(httpd_req_t *req, httpd_err_code_t err) {
     add_security_headers(req, NULL);
     httpd_resp_set_type(req, "application/json");
     const char *allow = web_headers_allow_for_uri(req->uri);
-#if CONFIG_ISO_ENABLE
-    if (!allow) allow = iso_api_allow_for_path(req->uri);
-#endif
     if (allow) {
         httpd_resp_set_hdr(req, "Allow", allow);
     }
@@ -1958,7 +1954,17 @@ static esp_err_t power_force_handler(httpd_req_t *req) {
 // close_on_deny (PUT): the body is not read, so the connection is closed after the error response.
 bool web_server_iso_guard(httpd_req_t *req, bool mutating, bool close_on_deny) {
     add_security_headers(req, NULL);
-    bool host_ok = check_host_origin(req, mutating);
+    // Host and Origin are checked separately and passed separately (decision order: Host -> setup -> authentication -> Origin).
+    // Same checks as check_host_origin(); the Origin is read only for the changing requests (GET needs none).
+    char host_buf[128] = {0};
+    const bool host_ok = check_allowed_host_header(req, host_buf, sizeof(host_buf));
+    bool origin_ok = false;
+    if (host_ok && mutating) {
+        char origin_buf[128] = {0};
+        if (httpd_req_get_hdr_value_str(req, "Origin", origin_buf, sizeof(origin_buf)) == ESP_OK) {
+            origin_ok = http_guard_origin_ok(origin_buf, strlen(origin_buf), host_buf, strlen(host_buf));
+        }
+    }
 
     uint8_t token[32];
     bool has_token = get_session_token(req, token);
@@ -1971,7 +1977,7 @@ bool web_server_iso_guard(httpd_req_t *req, bool mutating, bool close_on_deny) {
     xSemaphoreGive(s_auth_mutex);
 
     http_guard_action_e action = http_guard_decide(state, mutating ? HTTP_GUARD_METHOD_POST : HTTP_GUARD_METHOD_GET, HTTP_GUARD_PATH_OTHER,
-                                                   valid, host_ok, true, host_ok);
+                                                   valid, origin_ok, true, host_ok);
     if (action == HTTP_GUARD_ACTION_ALLOW) return true;
     if (close_on_deny) {
         httpd_resp_set_hdr(req, "Connection", "close");
@@ -2088,9 +2094,8 @@ esp_err_t web_server_start(frame_hub_t *hub) {
     // 3 static + 4 auth + /video + /ws + 5 KVM/ATX (status, select, power press/reset/force) = 14 (<= 17)
     conf.httpd.max_uri_handlers = 17; // Increased for WS and the KVM/ATX API
 #if CONFIG_ISO_ENABLE
-    // + /api/v1/iso (GET, POST) and /api/v1/iso/ * (GET, POST, PUT, DELETE) = 6 (docs/WEB_API.md 8). The wildcard matcher is server-wide;
+    // + /api/v1/iso and /api/v1/iso/ *, both HTTP_ANY (docs/WEB_API.md 8) = 16 (<= 17). The wildcard matcher is server-wide;
     // the other URIs have no '*' or '?', so they still match exactly. TODO(A-15 / hw-verify): confirm on the device.
-    conf.httpd.max_uri_handlers = 24;
     conf.httpd.uri_match_fn = httpd_uri_match_wildcard;
 #endif
     conf.httpd.send_wait_timeout = CONFIG_WEB_SERVER_SEND_WAIT_TIMEOUT;
