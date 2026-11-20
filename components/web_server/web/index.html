@@ -44,6 +44,7 @@
                 <button type="button" id="btn-view-actual" aria-pressed="false">実寸 (100%)</button>
             </div>
             <button type="button" id="btn-fullscreen">全画面</button>
+            <button type="button" id="btn-iso" class="iso-hidden" aria-expanded="false" aria-controls="iso-panel">ISO</button>
             <button type="button" id="btn-logout">ログアウト</button>
         </div>
         <div class="video-wrap" id="video-wrap">
@@ -56,6 +57,41 @@
             <p id="video-trust-hint" class="trust-hint trust-hint-hidden" role="alert">映像用の接続の証明書を、まだ受け入れていない可能性があります。<a id="video-trust-link" target="_blank" rel="noopener noreferrer"></a> を開いて証明書を受け入れてから、このページを再読み込みしてください。</p>
             <p class="hint video-hint">入力を無効にするには Esc キーを約 1 秒長押しするか、ボタンを押してください。全画面の終了は、映像の右上の「全画面を終了」ボタンか、ブラウザの操作（Esc キーなど）で行います。入力が有効な間は、キーボードの操作は対象に送られるので、このページのボタンはマウスで押してください。</p>
         </div>
+        <section id="iso-panel" class="iso-panel iso-hidden" aria-labelledby="iso-title">
+            <div class="iso-head">
+                <h2 id="iso-title">ISO 仮想メディア</h2>
+                <button type="button" id="btn-iso-close">閉じる</button>
+            </div>
+            <p id="iso-sd" class="iso-line"></p>
+            <p id="iso-target" class="iso-line iso-hidden"></p>
+            <div class="iso-line iso-mount-line">
+                <span id="iso-mounted">マウント中のイメージはありません</span>
+                <button type="button" id="iso-eject" class="iso-hidden">取り外し</button>
+            </div>
+            <div id="iso-message" class="iso-message iso-hidden" role="status" aria-live="polite"></div>
+            <ul id="iso-list" class="iso-list"></ul>
+            <p id="iso-hidden-note" class="hint iso-hidden"></p>
+            <div class="iso-upload">
+                <h3>アップロード</h3>
+                <label for="iso-file">ISO ファイル</label>
+                <input type="file" id="iso-file" accept=".iso">
+                <label for="iso-name">名前（UTF-8 で 1〜63 バイト。/ と \ は使えません）</label>
+                <input type="text" id="iso-name" autocomplete="off">
+                <label class="iso-check"><input type="checkbox" id="iso-hash" checked> SHA-256 を計算して、アップロードの最後に検証する（大きなファイルは時間がかかります）</label>
+                <div class="iso-actions">
+                    <button type="button" id="iso-upload">アップロード</button>
+                    <button type="button" id="iso-pause" class="iso-hidden">一時停止</button>
+                </div>
+                <label for="iso-progress" class="iso-sr">アップロードの進捗</label>
+                <progress id="iso-progress" class="iso-hidden" max="1" value="0"></progress>
+                <p id="iso-progress-text" class="hint"></p>
+                <p class="hint">途中で止まったときは、一覧の「再開」を押すか、同じ名前で同じファイルを選んでもう一度アップロードすると、続きから送ります。名前を入力するときは、入力を無効にしてください（有効な間は、キー操作がターゲットに送られます）。</p>
+            </div>
+            <div class="iso-import">
+                <button type="button" id="iso-rescan">取り込み（import/）</button>
+                <p class="hint">PC で SD カードの /iso/import/ にコピーした ISO（4 GiB 弱まで）を、イメージとして取り込みます。</p>
+            </div>
+        </section>
     </div>
     <script src="app.js"></script>
 </body>
