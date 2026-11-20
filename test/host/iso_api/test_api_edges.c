@@ -497,6 +497,174 @@ void test_finish_that_finds_the_image_ready_reports_the_computed_sha_only(void) 
     expect_rsp(200, "{\"state\":\"ready\",\"sha256\":null}");
 }
 
+/* ---- CodeRabbit #158 の指摘(1, 2, 3, 7, 8) ------------------------------------------------------- */
+
+/* 1: 500 の短い本体が入る最小の cap は 27(26 文字 + NUL)。それ未満は、status 500 と空の本体 */
+void test_the_short_internal_error_body_needs_a_cap_of_27(void) {
+    iso_api_request_t rq;
+    api_rq(&rq, ISO_API_M_GET, "/api/v1/iso", NULL, NULL);
+    char b[64];
+    memset(b, 'X', sizeof(b));
+    iso_api_response_init(&RSP, b, 27);
+    iso_api_handle(&ENV, &rq, &RSP);
+    TEST_ASSERT_EQUAL_INT(500, RSP.status);
+    TEST_ASSERT_EQUAL_STRING("{\"error\":\"internal_error\"}", RSP.body);
+    TEST_ASSERT_EQUAL_UINT(26, RSP.body_len);
+    TEST_ASSERT_EQUAL_UINT8('X', (uint8_t)b[27]); /* cap を超えて書かない */
+    memset(b, 'X', sizeof(b));
+    iso_api_response_init(&RSP, b, 26);
+    iso_api_handle(&ENV, &rq, &RSP);
+    TEST_ASSERT_EQUAL_INT(500, RSP.status);
+    TEST_ASSERT_EQUAL_UINT(0, RSP.body_len);
+    TEST_ASSERT_EQUAL_STRING("", RSP.body);
+    TEST_ASSERT_EQUAL_UINT8('X', (uint8_t)b[26]);
+    memset(b, 'X', sizeof(b));
+    iso_api_response_init(&RSP, b, 1);
+    iso_api_handle(&ENV, &rq, &RSP);
+    TEST_ASSERT_EQUAL_INT(500, RSP.status);
+    TEST_ASSERT_EQUAL_UINT(0, RSP.body_len);
+    TEST_ASSERT_EQUAL_UINT8(0, (uint8_t)b[0]);
+}
+
+/* 2: SD が使えない間の eject も、ターゲットの取り外しの印(ejected_by_target)を戻す */
+static void make_ejected_by_target(void) {
+    api_add_ready(A, "alpha", SZ2);
+    api_boot();
+    api_post_json("/api/v1/iso/mount", "{\"id\":\"" A "\"}");
+    TEST_ASSERT_EQUAL_INT(ISO_MEDIA_EJECTED, iso_media_target_eject(&MEDIA));
+    iso_media_status_t st;
+    iso_media_get_status(&MEDIA, &st);
+    TEST_ASSERT_TRUE(st.ejected_by_target);
+}
+
+static bool ejected_flag(void) {
+    iso_media_status_t st;
+    iso_media_get_status(&MEDIA, &st);
+    return st.ejected_by_target;
+}
+
+void test_eject_while_the_sd_is_unusable_clears_ejected_by_target(void) {
+    make_ejected_by_target();
+    api_set_sd(ISO_SD_NO_CARD);
+    OL_TRY_CALLS = 0;
+    api_post_empty("/api/v1/iso/eject");
+    expect_rsp(200, "{\"result\":\"not_mounted\"}");
+    TEST_ASSERT_FALSE(ejected_flag());
+    TEST_ASSERT_EQUAL_INT(0, OL_TRY_CALLS); /* SD がなければ、op_lock も取らない */
+    TEST_ASSERT_EQUAL_INT(0, SL_DEPTH);
+    /* 処理の側の再検査(判定の後に SD が消えた)でも */
+    api_set_sd(ISO_SD_READY);
+    api_post_json("/api/v1/iso/mount", "{\"id\":\"" A "\"}");
+    TEST_ASSERT_EQUAL_INT(ISO_MEDIA_EJECTED, iso_media_target_eject(&MEDIA));
+    TEST_ASSERT_TRUE(ejected_flag());
+    OL_HOOK = hook_sd_gone;
+    api_post_empty("/api/v1/iso/eject");
+    expect_rsp(200, "{\"result\":\"not_mounted\"}");
+    TEST_ASSERT_FALSE(ejected_flag());
+    TEST_ASSERT_EQUAL_INT(0, SL_DEPTH);
+    /* メディアがあるときは、触らない(SD の状態が先に変わっただけで、強制取り外しがまだ、の窓) */
+    OL_HOOK = NULL;
+    api_set_sd(ISO_SD_READY);
+    api_post_json("/api/v1/iso/mount", "{\"id\":\"" A "\"}");
+    TEST_ASSERT_TRUE(iso_media_is_loaded(&MEDIA));
+    OL_HOOK = hook_sd_gone;
+    api_post_empty("/api/v1/iso/eject");
+    expect_rsp(200, "{\"result\":\"not_mounted\"}");
+    TEST_ASSERT_TRUE(iso_media_is_loaded(&MEDIA));
+}
+
+/* 3: rsp->put を、そのまま put_commit に渡しても、受理の結果が残る */
+void test_commit_accepts_the_put_stored_in_the_same_response(void) {
+    char id[9];
+    api_post_json("/api/v1/iso", "{\"name\":\"img\",\"size\":100000}");
+    memcpy(id, RSP.log_id, sizeof(id));
+    TEST_ASSERT_TRUE(api_put_pre(&ENV, id, OCTET_CT, true, 100, "0"));
+    uint8_t data[100];
+    gen_fill(data, 0, sizeof(data));
+    iso_api_put_commit(&ENV, &RSP.put, data, sizeof(data), &RSP); /* rsp と put が同じ構造体 */
+    expect_rsp(200, "{\"received\":100}");
+    TEST_ASSERT_EQUAL_UINT64(100, api_find(id)->received);
+}
+
+/* 7: 受理の後にカードが替わったら、古いチャンクを書かない。同じカードなら、書く */
+void test_commit_refuses_a_chunk_accepted_on_another_card(void) {
+    api_add_incomplete(A, "alpha", SZ2, PART_SMALL);
+    api_boot();
+    TEST_ASSERT_TRUE(api_put_pre(&ENV, A, OCTET_CT, true, 100, "34816"));
+    TEST_ASSERT_TRUE(RSP.put.has_epoch);
+    TEST_ASSERT_EQUAL_UINT32(EPOCH, RSP.put.epoch);
+    iso_api_put_t put = RSP.put;
+    uint8_t data[100];
+    gen_fill(data, 34816, sizeof(data));
+    EPOCH++; /* 受信の間に、カードが替わった(同じ id の、received が一致する incomplete が、新しいカードにある) */
+    iso_api_response_init(&RSP, RBUF, sizeof(RBUF));
+    iso_api_put_commit(&ENV, &put, data, sizeof(data), &RSP);
+    expect_err(503, "sd_unavailable");
+    TEST_ASSERT_EQUAL_UINT64(34816, api_find(A)->received); /* 何も書かない */
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_INCOMPLETE, api_find(A)->state);
+    TEST_ASSERT_EQUAL_INT(0, OL_DEPTH);
+    /* 新しいカードの世代で受理し直せば、書ける */
+    TEST_ASSERT_TRUE(api_put_pre(&ENV, A, OCTET_CT, true, 100, "34816"));
+    put = RSP.put;
+    iso_api_response_init(&RSP, RBUF, sizeof(RBUF));
+    iso_api_put_commit(&ENV, &put, data, sizeof(data), &RSP);
+    expect_rsp(200, "{\"received\":34916}");
+    /* 世代を持たない受理(bdev なし)は、比べない */
+    put.has_epoch = false;
+    put.offset = 34916;
+    EPOCH++;
+    iso_api_response_init(&RSP, RBUF, sizeof(RBUF));
+    iso_api_put_commit(&ENV, &put, data, sizeof(data), &RSP);
+    expect_rsp(200, "{\"received\":35016}");
+}
+
+/* 8: ヘッダーの取得結果(完全な値 / ない / 切り詰め・失敗)と、検査に渡す値 */
+void test_header_status_and_value(void) {
+    TEST_ASSERT_EQUAL_INT(ISO_API_HDR_OK, iso_api_hdr_status(true, false));
+    TEST_ASSERT_EQUAL_INT(ISO_API_HDR_OK, iso_api_hdr_status(true, true)); /* ok が先 */
+    TEST_ASSERT_EQUAL_INT(ISO_API_HDR_ABSENT, iso_api_hdr_status(false, true));
+    TEST_ASSERT_EQUAL_INT(ISO_API_HDR_INVALID, iso_api_hdr_status(false, false)); /* 切り詰め、その他の失敗 */
+    const char *v = "0";
+    TEST_ASSERT_EQUAL_PTR(v, iso_api_hdr_value(ISO_API_HDR_OK, v));
+    TEST_ASSERT_NULL(iso_api_hdr_value(ISO_API_HDR_ABSENT, v));
+    TEST_ASSERT_EQUAL_STRING(ISO_API_HDR_INVALID_VALUE, iso_api_hdr_value(ISO_API_HDR_INVALID, v));
+    TEST_ASSERT_NULL(iso_api_hdr_value(ISO_API_HDR_OK, NULL));
+    /* 切り詰めた値(INVALID)は、どの検査にも合わない */
+    uint64_t off = 5;
+    TEST_ASSERT_EQUAL_INT(-1, iso_api_parse_u64(ISO_API_HDR_INVALID_VALUE, strlen(ISO_API_HDR_INVALID_VALUE), &off));
+    TEST_ASSERT_EQUAL_INT(ISO_API_CT_OTHER, iso_api_ctype_parse(ISO_API_HDR_INVALID_VALUE));
+}
+
+void test_a_truncated_header_is_rejected_at_its_own_step(void) {
+    api_add_incomplete(A, "alpha", SZ2, PART_SMALL);
+    api_boot();
+    iso_api_request_t rq;
+    api_rq(&rq, ISO_API_M_PUT, "/api/v1/iso/" A, OCTET_CT, NULL);
+    rq.has_content_length = true;
+    rq.content_length = 100;
+    /* X-Upload-Offset が切り詰められた: 400(正しい値の "34816" と見なさない) */
+    rq.upload_offset = iso_api_hdr_value(iso_api_hdr_status(false, false), "34816");
+    iso_api_response_init(&RSP, RBUF, sizeof(RBUF));
+    TEST_ASSERT_FALSE(iso_api_put_precheck(&ENV, &rq, &RSP));
+    expect_err(400, "invalid_request");
+    /* Content-Type が切り詰められた: 415(application/octet-stream と見なさない) */
+    rq.upload_offset = "34816";
+    rq.content_type = iso_api_hdr_value(iso_api_hdr_status(false, false), OCTET_CT);
+    iso_api_response_init(&RSP, RBUF, sizeof(RBUF));
+    TEST_ASSERT_FALSE(iso_api_put_precheck(&ENV, &rq, &RSP));
+    expect_err(415, "unsupported_media_type");
+    /* ない: offset は 400、Content-Type は 415 */
+    rq.content_type = OCTET_CT;
+    rq.upload_offset = iso_api_hdr_value(iso_api_hdr_status(false, true), "34816");
+    iso_api_response_init(&RSP, RBUF, sizeof(RBUF));
+    TEST_ASSERT_FALSE(iso_api_put_precheck(&ENV, &rq, &RSP));
+    expect_err(400, "invalid_request");
+    /* 完全な値は通る */
+    rq.upload_offset = iso_api_hdr_value(iso_api_hdr_status(true, false), "34816");
+    iso_api_response_init(&RSP, RBUF, sizeof(RBUF));
+    TEST_ASSERT_TRUE(iso_api_put_precheck(&ENV, &rq, &RSP));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_response_init_clears_the_response_and_the_first_byte);
@@ -516,5 +684,11 @@ int main(void) {
     RUN_TEST(test_mount_that_finds_the_image_already_mounted_reports_it);
     RUN_TEST(test_mount_of_an_image_without_a_table_is_refused_even_if_the_view_says_ready);
     RUN_TEST(test_finish_that_finds_the_image_ready_reports_the_computed_sha_only);
+    RUN_TEST(test_the_short_internal_error_body_needs_a_cap_of_27);
+    RUN_TEST(test_eject_while_the_sd_is_unusable_clears_ejected_by_target);
+    RUN_TEST(test_commit_accepts_the_put_stored_in_the_same_response);
+    RUN_TEST(test_commit_refuses_a_chunk_accepted_on_another_card);
+    RUN_TEST(test_header_status_and_value);
+    RUN_TEST(test_a_truncated_header_is_rejected_at_its_own_step);
     return UNITY_END();
 }

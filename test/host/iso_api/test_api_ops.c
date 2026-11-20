@@ -210,10 +210,12 @@ void test_commit_maps_the_upload_results_when_the_state_changed_after_the_preche
     iso_api_response_init(&RSP, RBUF, sizeof(RBUF));
     iso_api_put_commit(&ENV, &put, data, 100, &RSP);
     expect_rsp(409, "{\"error\":\"offset_mismatch\",\"received\":500}");
-    /* not_uploading: finish が先に受理された */
-    put_all(id, 500, 34816, 20000);
+    /* not_uploading: 先に、残り 100 バイトの PUT が、事前判定を通る。別の書き込みで末尾が確定し、finish が受理された */
+    put_all(id, 500, 34716, 20000);
+    TEST_ASSERT_TRUE(api_put_pre(&ENV, id, OCTET_CT, true, 100, "34716"));
+    put = RSP.put; /* 変更せずに使う */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, put_range(id, 34716, 100, NULL));
     TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit_finish(&CORE, id, NULL));
-    put.offset = 34816;
     iso_api_response_init(&RSP, RBUF, sizeof(RBUF));
     iso_api_put_commit(&ENV, &put, data, 100, &RSP);
     expect_err(409, "not_uploading");
@@ -858,6 +860,27 @@ void test_rescan_io_error_is_503_but_keeps_what_was_imported(void) {
     TEST_ASSERT_EQUAL_INT(0, OL_DEPTH);
 }
 
+void test_rescan_failing_on_the_second_import_keeps_the_first_and_can_be_retried(void) {
+    api_boot();
+    add_import("one.iso");
+    add_import("two.iso");
+    /* 1 件目の取り込みは 3 回の書き込み(mkdir、meta、rename)。4 回目(2 件目の mkdir)を失敗させる */
+    mock_fs_reset_counter(&FS);
+    mock_fs_error_at(&FS, 4, ISO_ERR_IO);
+    api_post_empty("/api/v1/iso/rescan");
+    expect_err(503, "sd_unavailable");
+    TEST_ASSERT_EQUAL_UINT(1, CAT.count); /* 1 件目は取り込まれている */
+    api_get();
+    TEST_ASSERT_NOT_NULL(strstr(RSP.body, "\"name\":\"one\""));
+    TEST_ASSERT_NULL(strstr(RSP.body, "\"name\":\"two\""));
+    TEST_ASSERT_EQUAL_UINT(1, iso_core_index_pending(&CORE)); /* 取り込んだ 1 件は、表の作成へ */
+    mock_fs_error_at(&FS, 0, 0);
+    mock_fs_reset_counter(&FS);
+    api_post_empty("/api/v1/iso/rescan"); /* 再試行: 1 件目を重複させず、残りを取り込む */
+    expect_rsp(200, "{\"imported\":1,\"skipped\":0,\"next_cursor\":null}");
+    TEST_ASSERT_EQUAL_UINT(2, CAT.count);
+}
+
 /* ---- 応答の置き場が小さいとき ------------------------------------------------------------------- */
 
 void test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty(void) {
@@ -931,6 +954,7 @@ int main(void) {
     RUN_TEST(test_rescan_imports_and_reports);
     RUN_TEST(test_rescan_continues_with_the_cursor);
     RUN_TEST(test_rescan_io_error_is_503_but_keeps_what_was_imported);
+    RUN_TEST(test_rescan_failing_on_the_second_import_keeps_the_first_and_can_be_retried);
     RUN_TEST(test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty);
     return UNITY_END();
 }

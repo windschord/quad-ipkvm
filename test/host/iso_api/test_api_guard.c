@@ -5,6 +5,7 @@
  */
 #include "unity.h"
 #include "http_guard.h"
+#include <stdio.h>
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -35,9 +36,44 @@ void test_step2_origin_is_required_for_changing_requests_only(void) {
     TEST_ASSERT_EQUAL_INT(HTTP_GUARD_ACTION_ALLOW, decide(AUTH_STATE_READY, HTTP_GUARD_METHOD_POST, true, true, true));
 }
 
+/* Host と Origin は、別々の入力(web_server_iso_guard は、別々に検査して渡す)。全部の組み合わせ(GET / POST × 認証 × Origin × Host)の期待値を、手書きで固定する。
+ * 優先: Host(403 forbidden_host) → 初期設定(403 setup_required) → 認証(401) → Origin(403 forbidden_origin。POST だけ) */
+void test_every_combination_of_host_session_and_origin(void) {
+    static const struct {
+        http_guard_method_e m;
+        bool session, origin_ok, host_ok;
+        http_guard_action_e want;
+    } T[] = {
+        /* GET: Origin は見ない */
+        {HTTP_GUARD_METHOD_GET, true, true, true, HTTP_GUARD_ACTION_ALLOW},
+        {HTTP_GUARD_METHOD_GET, true, false, true, HTTP_GUARD_ACTION_ALLOW},
+        {HTTP_GUARD_METHOD_GET, false, true, true, HTTP_GUARD_ACTION_401},
+        {HTTP_GUARD_METHOD_GET, false, false, true, HTTP_GUARD_ACTION_401},
+        {HTTP_GUARD_METHOD_GET, true, true, false, HTTP_GUARD_ACTION_403_HOST},
+        {HTTP_GUARD_METHOD_GET, true, false, false, HTTP_GUARD_ACTION_403_HOST},
+        {HTTP_GUARD_METHOD_GET, false, true, false, HTTP_GUARD_ACTION_403_HOST},
+        {HTTP_GUARD_METHOD_GET, false, false, false, HTTP_GUARD_ACTION_403_HOST},
+        /* POST(PUT / DELETE も、POST として判定) */
+        {HTTP_GUARD_METHOD_POST, true, true, true, HTTP_GUARD_ACTION_ALLOW},
+        {HTTP_GUARD_METHOD_POST, true, false, true, HTTP_GUARD_ACTION_403_ORIGIN}, /* 有効なセッションで、Origin だけが不正: forbidden_origin */
+        {HTTP_GUARD_METHOD_POST, false, true, true, HTTP_GUARD_ACTION_401},
+        {HTTP_GUARD_METHOD_POST, false, false, true, HTTP_GUARD_ACTION_401},      /* 許可された Host の未認証 POST で Origin がない: 401(forbidden_host ではない) */
+        {HTTP_GUARD_METHOD_POST, true, true, false, HTTP_GUARD_ACTION_403_HOST},
+        {HTTP_GUARD_METHOD_POST, true, false, false, HTTP_GUARD_ACTION_403_HOST},
+        {HTTP_GUARD_METHOD_POST, false, true, false, HTTP_GUARD_ACTION_403_HOST},
+        {HTTP_GUARD_METHOD_POST, false, false, false, HTTP_GUARD_ACTION_403_HOST},
+    };
+    for (size_t i = 0; i < sizeof(T) / sizeof(T[0]); i++) {
+        char msg[48];
+        snprintf(msg, sizeof(msg), "row %zu", i);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(T[i].want, decide(AUTH_STATE_READY, T[i].m, T[i].session, T[i].origin_ok, T[i].host_ok), msg);
+    }
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_step1_host_then_setup_then_authentication);
     RUN_TEST(test_step2_origin_is_required_for_changing_requests_only);
+    RUN_TEST(test_every_combination_of_host_session_and_origin);
     return UNITY_END();
 }

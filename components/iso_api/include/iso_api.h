@@ -50,9 +50,16 @@ extern "C" {
 /* 経路の接頭辞 */
 #define ISO_API_PATH_PREFIX "/api/v1/iso"
 
-#ifndef ISO_OP_LOCK_WAIT_MS
-#define ISO_OP_LOCK_WAIT_MS 20u /* Kconfig ISO_OP_LOCK_WAIT_MS。iso_op_mutex を待つ上限(これを超えたら 503 busy) */
+#if defined(ESP_PLATFORM)
+#include "sdkconfig.h" /* IDF のビルドでは、Kconfig(CONFIG_ISO_OP_LOCK_WAIT_MS)を既定値にする。ホストのビルドでは、下の既定値(20) */
 #endif
+#ifndef ISO_OP_LOCK_WAIT_MS
+#ifdef CONFIG_ISO_OP_LOCK_WAIT_MS
+#define ISO_OP_LOCK_WAIT_MS ((uint32_t)CONFIG_ISO_OP_LOCK_WAIT_MS) /* Kconfig ISO_OP_LOCK_WAIT_MS */
+#else
+#define ISO_OP_LOCK_WAIT_MS 20u
+#endif
+#endif /* iso_op_mutex を待つ上限(これを超えたら 503 busy)。iso_api_env_t の op_lock_wait_ms が 0 のときの値 */
 
 /* ---- 要求 ----------------------------------------------------------------------- */
 
@@ -130,11 +137,19 @@ typedef struct {
 
 /* ---- 応答 ----------------------------------------------------------------------- */
 
+/*
+ * iso_api_put_precheck が受理した結果。iso_api_put_commit に、そのまま渡す(変更しない)。
+ * has_epoch / epoch: **受理したときのカードの世代**(iso_blockdev_t.epoch。env->core の cfg.bdev から読む。bdev がなければ has_epoch = false)。
+ * 本体の受信(ISO_PUT_RECV_TIMEOUT_S まで)の間に SD が替わると、新しいカードに同じ id の incomplete のイメージがあり、received が offset と一致する、
+ * ということが起きうる。iso_api_put_commit は、書く前に現在の世代と比べ、違えば書かずに 503 sd_unavailable にする(同じカードでの再開は、従来どおり受理する)。
+ */
 typedef struct {
     bool accepted;
     char id[ISO_ID_LEN + 1];
     uint64_t offset;
     uint32_t len;
+    bool has_epoch;
+    uint32_t epoch;
 } iso_api_put_t;
 
 typedef struct {
@@ -157,7 +172,12 @@ typedef struct {
     uint64_t log_size;           /* begin の size */
 } iso_api_response_t;
 
-/* buf / cap は、本体の置き場(ISO_API_RESPONSE_MAX バイト以上を勧める)。cap が足りなくなると、500 internal_error の短い本体になる。 */
+/*
+ * buf / cap は、本体の置き場(ISO_API_RESPONSE_MAX バイト以上を勧める)。
+ * 本体が cap に入らないとき、応答は 500 `{"error":"internal_error"}` の短い本体になる。**これが入る最小の cap は 27 バイト**(26 文字 + 終端の NUL)。
+ * **cap が 27 未満(0 を含む)だと、この短い本体も入らず、status = 500、body_len = 0、body は空の文字列(cap が 1 以上のとき。0 や NULL のときは書かない)**。
+ * グルーは、ISO_API_RESPONSE_MAX を渡すこと(これ未満の cap は、テスト用)。
+ */
 void iso_api_response_init(iso_api_response_t *rsp, char *buf, size_t cap);
 
 /* ---- 公開ビュー(GET と段 7〜12 の判定の元) ----------------------------------------------- */
@@ -214,6 +234,22 @@ bool iso_api_put_precheck(const iso_api_env_t *env, const iso_api_request_t *rq,
  * data / len: チャンクの全体(len == put->len)。応答は rsp(200 {"received":N}、または対応する拒否)。
  */
 void iso_api_put_commit(const iso_api_env_t *env, const iso_api_put_t *put, const void *data, size_t len, iso_api_response_t *rsp);
+
+/* ---- ヘッダーの取得結果(グルーの esp_http_server の戻り値を、検査に渡す値にする。ホストでテストする) ----------------------- */
+
+typedef enum {
+    ISO_API_HDR_OK = 0,   /* 完全な値が取れた */
+    ISO_API_HDR_ABSENT,   /* ヘッダーがない(ESP_ERR_NOT_FOUND) */
+    ISO_API_HDR_INVALID   /* 取得に失敗した、または領域が足りず、値が切り詰められた(ESP_ERR_HTTPD_RESULT_TRUNC など) */
+} iso_api_hdr_status_t;
+
+/* esp_http_server の httpd_req_get_hdr_value_str の戻り値から: ok = (戻り値 == ESP_OK)、absent = (戻り値 == ESP_ERR_NOT_FOUND)。 */
+iso_api_hdr_status_t iso_api_hdr_status(bool ok, bool absent);
+
+/* 検査に渡すヘッダーの値の文字列。OK = value、ABSENT = NULL、INVALID = ISO_API_HDR_INVALID_VALUE(制御文字で始まる、どの検査にも合わない文字列:
+ * Content-Type は ISO_API_CT_OTHER = 415、X-Upload-Offset は不正な数 = 400)。切り詰めた値を、検査に渡さない。 */
+#define ISO_API_HDR_INVALID_VALUE "\x01invalid-header"
+const char *iso_api_hdr_value(iso_api_hdr_status_t st, const char *value);
 
 /* ---- 部品(テスト用に公開) ----------------------------------------------------------------- */
 

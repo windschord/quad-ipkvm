@@ -776,6 +776,17 @@ void test_get_and_put_precheck_do_not_take_the_op_lock(void) {
     TEST_ASSERT_EQUAL_INT(0, SL_DEPTH);
 }
 
+/* PUT の事前判定は、処理ロックを要求しない(取れない状態でも、受理される) */
+void test_put_precheck_is_accepted_even_when_the_op_lock_cannot_be_taken(void) {
+    api_add_incomplete(B, "beta", SZ2, PART_SMALL);
+    api_boot();
+    OL_FAIL = true;
+    TEST_ASSERT_TRUE(put_pre(B, OCTET_CT, true, 100, "34816"));
+    TEST_ASSERT_EQUAL_INT(0, RSP.status);
+    TEST_ASSERT_TRUE(RSP.put.accepted);
+    TEST_ASSERT_EQUAL_INT(0, OL_TRY_CALLS);
+}
+
 /* ---- 起動していないサービス ------------------------------------------------------------------ */
 
 void test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks(void) {
@@ -876,6 +887,7 @@ int main(void) {
     RUN_TEST(test_step13_busy_for_finish_and_put_commit);
     RUN_TEST(test_the_op_lock_wait_can_be_configured);
     RUN_TEST(test_get_and_put_precheck_do_not_take_the_op_lock);
+    RUN_TEST(test_put_precheck_is_accepted_even_when_the_op_lock_cannot_be_taken);
     RUN_TEST(test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks);
     return UNITY_END();
 }

@@ -158,6 +158,16 @@ iso_api_ctype_t iso_api_ctype_parse(const char *value) {
     return (*p == '\0' || *p == ';') ? t : ISO_API_CT_OTHER;
 }
 
+iso_api_hdr_status_t iso_api_hdr_status(bool ok, bool absent) {
+    if (ok) return ISO_API_HDR_OK;
+    return absent ? ISO_API_HDR_ABSENT : ISO_API_HDR_INVALID;
+}
+
+const char *iso_api_hdr_value(iso_api_hdr_status_t st, const char *value) {
+    if (st == ISO_API_HDR_OK) return value;
+    return st == ISO_API_HDR_ABSENT ? NULL : ISO_API_HDR_INVALID_VALUE;
+}
+
 /* ---- 応答の組み立て ----------------------------------------------------------------------- */
 
 void iso_api_response_init(iso_api_response_t *rsp, char *buf, size_t cap) {
@@ -491,8 +501,14 @@ static bool check_mount(const vctx_t *vc, const char *id, uint32_t id_u32, bool 
     return true;
 }
 
+/* eject が、メディアなしで答えるとき: ターゲットの取り外しの印(ejected_by_target)を戻す(WEB_API.md 8.6)。state_lock を持って呼ぶ。
+ * メディアがあれば(あってはならない: SD の再初期化は、sd.state の更新と同じ区間で強制的に外す)、何もしない。 */
+static void clear_ejected_flag(const iso_api_env_t *env) {
+    if (!iso_media_is_loaded(env->media)) (void)iso_media_eject(env->media, false);
+}
+
 static bool check_eject(const vctx_t *vc, bool force, iso_api_response_t *rsp) {
-    if (!sd_ready(vc)) { /* 例外: eject は、SD が使えなくても 200 not_mounted */
+    if (!sd_ready(vc)) { /* 例外: eject は、SD が使えなくても 200 not_mounted(印の解除は、呼び出し側が、state_lock の下で行う) */
         set_result(rsp, 200, "result", "not_mounted");
         return false;
     }
@@ -625,6 +641,7 @@ static bool op_enter(const iso_api_env_t *env, iso_api_response_t *rsp, bool eje
     }
     env->state_lock(env->ctx);
     bool ready = (env->snapshot->view.sd_state == ISO_SD_READY);
+    if (!ready && eject) clear_ejected_flag(env);
     env->state_unlock(env->ctx);
     if (!ready) {
         env->op_unlock(env->ctx);
@@ -851,6 +868,9 @@ static bool put_precheck_routed(const iso_api_env_t *env, const iso_api_request_
     memcpy(rsp->put.id, rt->id, ISO_ID_LEN + 1);
     rsp->put.offset = offset;
     rsp->put.len = (uint32_t)rq->content_length;
+    const iso_blockdev_t *bd = usable ? env->core->cfg.bdev : NULL; /* 受理したときのカードの世代 */
+    rsp->put.has_epoch = (bd != NULL);
+    rsp->put.epoch = bd ? bd->epoch(bd->ctx) : 0;
     return true;
 }
 
@@ -875,8 +895,10 @@ bool iso_api_put_precheck(const iso_api_env_t *env, const iso_api_request_t *rq,
 
 void iso_api_put_commit(const iso_api_env_t *env, const iso_api_put_t *put, const void *data, size_t len, iso_api_response_t *rsp) {
     if (!rsp) return;
+    /* rsp_reset が、put(rsp->put を直接渡されても)を消す前に、コピーを取る */
+    const iso_api_put_t pt = put ? *put : (iso_api_put_t){0};
     rsp_reset(rsp);
-    if (!put || !put->accepted || !data || len == 0 || len != put->len) {
+    if (!put || !pt.accepted || !data || len == 0 || len != pt.len) {
         set_error(rsp, 400, "invalid_request");
         return;
     }
@@ -886,9 +908,15 @@ void iso_api_put_commit(const iso_api_env_t *env, const iso_api_put_t *put, cons
     }
     if (!op_enter(env, rsp, false)) return;
     iso_upload_t *up = iso_core_upload(env->core);
+    const iso_blockdev_t *bd = env->core->cfg.bdev;
+    if (pt.has_epoch && (!bd || bd->epoch(bd->ctx) != pt.epoch)) { /* 受理の後に、カードが替わった: 古いチャンクを、新しいカードに書かない */
+        set_error(rsp, 503, "sd_unavailable");
+        op_leave(env);
+        return;
+    }
     iso_upload_write_t out;
     memset(&out, 0, sizeof(out));
-    int rc = iso_upload_write_chunk(up, put->id, put->offset, data, len, &out);
+    int rc = iso_upload_write_chunk(up, pt.id, pt.offset, data, len, &out);
     if (rc == ISO_OK) {
         iso_w_t w;
         iso_w_init(&w, rsp->body, rsp->body_cap);
@@ -984,6 +1012,7 @@ void iso_api_handle(const iso_api_env_t *env, const iso_api_request_t *rq, iso_a
         }
         view_enter(env, usable, &vc);
         bool go = check_eject(&vc, b.force, rsp);
+        if (!go && usable && !sd_ready(&vc)) clear_ejected_flag(env); /* SD が使えない間の eject */
         view_leave(env, usable);
         if (!proceed(go, usable, rsp)) return;
         exec_eject(env, b.force, rsp);
