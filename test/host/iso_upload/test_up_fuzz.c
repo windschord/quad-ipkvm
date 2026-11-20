@@ -47,6 +47,7 @@ static bool delete_to_the_end(iso_catalog_entry_t *e) {
         TEST_ASSERT_TRUE(++guard < 1000);
     } while (r.kind == ISO_STEP_CONTINUE);
     if (r.kind == ISO_STEP_ERROR) TEST_ASSERT_TRUE_MESSAGE(FS.dead, "a delete failed without a power cut and left the image deleting");
+    if (r.kind == ISO_STEP_DONE) TEST_ASSERT_NULL_MESSAGE(iso_catalog_find(&CAT, dj.id), "a finished delete left the image in the catalog");
     return r.kind == ISO_STEP_DONE;
 }
 
