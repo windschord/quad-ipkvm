@@ -279,7 +279,7 @@ typedef struct {
 | `iso_api`、`iso_catalog`、`iso_upload`、`iso_media`、`iso_extent`、`mmc_scsi`、`msc_bot`（純 C） | Claude（C-10〜C-13） | 要求の検査、メタデータ、受信の状態機械、仮想ドライブの状態、CD のブロック → SD のセクタ、CD-ROM の SCSI コマンド（**全コマンド**）、BOT の状態機械 |
 | `iso_blockdev_t`、`iso_fs_t`、`iso_clock_t`、`iso_sha256_t`、`iso_random_t`、`iso_sd_status_t`（実装） | Antigravity（A-13。SHA-256 と乱数は A-15） | SD の直接読み出し、FAT32 のファイル操作、時刻、SHA-256（mbedTLS）、乱数、`sd.state` の供給（SD の監視） |
 | ワーカータスク（`iso_worker`）、ロック（`iso_op_mutex`、`iso_state_mutex`、`sd_io_lock`）、自前の diskio | Antigravity（A-13） | 長い処理の実行、排他（`ISO_MOUNT_DESIGN.md` §4） |
-| MSC クラスと `iso_msc_task`、`mmc_scsi` への結線 | Antigravity（A-14） | **自前の BOT（アプリのクラスドライバ）または、パッチした TinyUSB**。**USB のタスクで SD を読まない**。**受け取った全ての CDB を `mmc_scsi_execute` に渡す**。記述子 |
+| MSC クラスと `iso_msc_task`、`mmc_scsi` への結線 | Antigravity（A-14） | **自前の BOT（`usbd_app_driver_get_cb` によるアプリのクラスドライバ、手段 1 確定 2026-11-19）**。**USB のタスクで SD を読まない**。**受け取った全ての CDB を `mmc_scsi_execute` に渡す**。記述子 |
 | HTTP のハンドラー | Antigravity（A-15）+ Claude（C-12） | 受信 → バッファ → SD、`/api/v1/iso/*` の結線（ワイルドカードの URI 照合、`http_guard` の `PUT` / `DELETE`） |
 
 ### 7.2 シーム（`iso_seams.h` が正）
@@ -289,12 +289,12 @@ typedef struct {
 - **`iso_clock_t`**（`now_ms`。単調増加）、**`iso_random_t`**（`next`）、**`iso_sha256_t`**（`state_size` と `init` / `update` / `final`。状態は呼び出し側が確保）、**`iso_sd_status_t`**（`sd.state`）。
 
 ### 7.3 MSC（USB）、`mmc_scsi`、`msc_bot`
-- **標準の TinyUSB の MSC は、契約を満たさない**（INQUIRY は種別 0 で固定、MODE SENSE(6) はヘッダーだけ、READ のエラーのセンスが「メディアなし」に上書き、READ(12) が別経路。`ISO_MOUNT_DESIGN.md` §5.1）。**MSC の層は、手段によらず、受け取った全ての CDB（最大 16 バイト）を `mmc_scsi_execute` に渡し、その結果（データ、センス、ステータス）を、そのまま返す**。手段は A-14 の調査で決める（手段 1 = アプリのクラスドライバで BOT を自前で実装、手段 2 = `msc_device.c` へのパッチ）。
+- **標準の TinyUSB の MSC は、契約を満たさない**: `espressif/tinyusb 0.21.0~6` では `tud_msc_inquiry2_cb`（INQUIRY 種別 5 指定可）と `tud_msc_async_io_done` / `TUD_MSC_RET_ASYNC`（READ/WRITE(10) 非同期）が追加されたものの、残る 4 点（MODE SENSE(6) が 4 バイト固定ヘッダーのみ、READ FORMAT CAPACITY が固定形式、READ エラー時のセンスが「メディアなし」に上書き、READ(12) が非ストリーミング経路）により契約を満たせない（`ISO_MOUNT_DESIGN.md` §5.1）。**手段 1（`usbd_app_driver_get_cb` によるアプリのクラスドライバ + 純 C `msc_bot`）を採用確定**（2026-11-19）。**MSC の層は、受け取った全ての CDB（最大 16 バイト）を `mmc_scsi_execute` に渡し、その結果（データ、センス、ステータス）を、そのまま返す**。
 - **`mmc_scsi_execute(ctx, cdb, cdb_len, dir, expected_len, out, out_cap, result)`**: `dir` と `expected_len` は、CBW の方向と `dCBWDataTransferLength`。`result` は `{status（GOOD / CHECK CONDITION）、sense{key, asc, ascq}、data_len、read{is_read, lba, blocks}}`。**READ(10)/READ(12) のときは、`data_len` は 0 で、`read` に範囲が入る**。**`msc_bot`（C-13）は、READ の転送長として `read.blocks × 2048` を `expected_len` と比べ、`data_len` を転送長の判定に使わない**（C-13 のテストに「READ(10)、`blocks = 1`、`expected_len = 2048`、`data_len = 0` が、データ IN として完了する」を含める）。**OUT のデータを受け取るコマンド（WRITE、MODE SELECT）は、データを受け取らず、失敗にする**。
 - **`mmc_scsi_read_blocks(ctx, lba, blocks, buf, cap)`**: MSC の転送の大きさごとに呼ぶ（先読みしない）。**`read_sectors` に渡す `epoch` は、コマンドの開始時の値ではなく、エクステントの表が作られたとき（`INDEX`）に記録した、カードの `epoch`**（ISO_MOUNT_DESIGN.md §4.1）。**ゼロ埋め（`size_bytes` 以降）はここで行う**。I/O のエラーは **MEDIUM ERROR（03h/11h/00h）**、`ISO_ERR_EPOCH` も同じ。
 - **`mmc_scsi_command_done(ctx)`**: **コマンドの終わり（正常、STALL、リセット、切断のどれでも）に、必ず 1 回呼ぶ**。`execute` が取った、エクステントの表への参照を放す（**参照を放すのは、これだけ**。冪等）。
-- **`msc_bot`（C-13、純 C）**: BOT の状態機械（CBW の検証、13 のケース、データ IN / OUT / なし、STALL、CSW、リセット回復）。USB のハードウェアの転送（`xfer`）は、関数ポインタで注入する。手段 2 のときは、CBW/CSW の部分は TinyUSB が持ち、`msc_bot` は、13 のケースの判定と `command_done` の保証に使う。
-- **`msc_bot` のスレッドモデル**: **`msc_bot` の状態は、USB のタスクだけが触る**。`iso_msc_task` は、実行と読み出しだけを担い、完了をキューで返す。Reset が実行中に来たら、中止の印を立て、完了を待ってから `command_done`（`ISO_MOUNT_DESIGN.md` §5.1）。手段 2（パッチ）では、非 READ(10) の非同期化に拡張が要る。
+- **`msc_bot`（C-13、純 C）**: BOT の状態機械（CBW の検証、13 のケース、データ IN / OUT / なし、STALL、CSW、リセット回復）。USB のハードウェアの転送（`xfer`）は、関数ポインタで注入する（手段 1 確定済み）。
+- **`msc_bot` のスレッドモデル**: **`msc_bot` の状態は、USB のタスクだけが触る**。`iso_msc_task` は、実行と読み出しだけを担い、完了をキュー（`usbd_defer_func()`）で返す。Reset が実行中に来たら、中止の印を立て、完了を待ってから `command_done`（`ISO_MOUNT_DESIGN.md` §5.1）。
 - **`iso_msc_task`（A-14）**: **`mmc_scsi_execute` と `mmc_scsi_read_blocks` は、USB のタスク（`tud_task`。HID も処理する）ではなく、MSC 専用のタスクが呼ぶ**。USB のタスクは、CBW を渡し、ダブルバッファで転送を発行する（ブロックしない）。
 - **ブロック長は 2048**。バッファの大きさは、2048 の倍数にする（A-14）。**LUN は 1 つ**。`USB_MSC_ENABLE` が無効なら、記述子に MSC を入れない（今の構成のまま）。**MSC のインターフェース番号は 3**（HID の後）。
 - **メディアの状態は `iso_media` が持つ**（`mmc_scsi` から参照する）。Web の `mount` / `eject` は、`iso_media` に対する操作で、次のコマンドの応答と、GET EVENT STATUS NOTIFICATION に反映される。**USB のバスリセット・切断では、グルーが `iso_media_bus_reset()` を呼ぶ**（`prevent_removal` の解除と、進行中のコマンドへの中止の印。**参照は放さない**。`command_done` は、BOT 層が、`iso_msc_task` の完了を待ってから呼ぶ）。**SD の再初期化（抜き取り、I/O エラー）では、SD の監視タスク（ロックを持たない文脈）が `iso_media_force_eject()` を呼ぶ**（`prevent_removal` を無視して `EMPTY` にし、`epoch` を進める）。**`force_eject()` と `bus_reset()` を、`sd_io_lock` を持つ文脈（diskio の中）から呼ばない**。
@@ -311,6 +311,6 @@ typedef struct {
 - **ワーカー**: 1 つのタスク、`ISO_WORKER_QUEUE`（既定 8）の FIFO と、**`INDEX` が必要なイメージの集合**（キューに積まない）。ジョブは `FINISH` / `INDEX` / `DELETE` / `IDLE_CLOSE`（同じイメージには 1 つ。優先順位は `DELETE`（割り込み、中止の印）、`FINISH`、`IDLE_CLOSE`、`INDEX`。あふれたら `ISO_ERR_BUSY` → API は `503 busy`）。**ステップ関数**（純 C。スレッドは作らないが、`FINISH` のステップの `open_for_read` / `read_at` / `close` や、`IDLE_CLOSE` の `sync` / `close` / `meta` の書き込みなどの**同期 I/O でブロックし得る**。1 回のステップに、複数の I/O が入りうる）: `iso_job_step(ctx, job, budget_bytes)` が `CONTINUE` / `DONE` / `ERROR(iso_err_t)` を返す。`budget_bytes` の既定は `ISO_WORKER_BUDGET_KIB`（1024 KiB）。**`budget_bytes` は処理量の目安で、実行時間の上限ではない**。**中止の印は、ステップの先頭で見る**。アイドルのタイムアウトは、ワーカーが 1 秒ごとに `iso_upload_tick(ctx, now_ms)` を呼んで判定し、`IDLE_CLOSE` を投入する。
 
 ### 7.6 Antigravity への依頼
-- **A-13**（SD）、**A-14**（USB MSC。**最初に MSC の実装の手段を調査し、結果を `ISO_MOUNT_DESIGN.md` §5.1 に反映**）、**A-15**（HTTP）。範囲と完了条件は `ISO_MOUNT_DESIGN.md` §8、未確認の項目は同 §10 と `HW_VERIFY.md` I 章。**A-13 は、`iso_seams.h` の合意（この PR のマージ）の後に始める**。
+- **A-13**（SD）、**A-14**（USB MSC。**手段 1（`usbd_app_driver_get_cb`）確定済み（2026-11-19、`ISO_MOUNT_DESIGN.md` §5.1）**）、**A-15**（HTTP）。範囲と完了条件は `ISO_MOUNT_DESIGN.md` §8、未確認の項目は同 §10 と `HW_VERIFY.md` I 章。**A-13 は、`iso_seams.h` の合意（#135 マージ済み）の後に進める**。
 - **共有ファイル**（`main/main.c`、`main/Kconfig.projbuild`、`main/CMakeLists.txt`、`test/host/CMakeLists.txt`）は、自分の接頭辞の差分だけを小さく（§3）。
 - 実機の確認（BIOS / UEFI での CD の起動、Windows の ISO）は、オーナーの物理作業を含む。Antigravity がまとめて具体的に依頼する（Issue #71 の運用ルール 1）。

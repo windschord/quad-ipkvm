@@ -24,11 +24,11 @@
 **確認した（一次情報）**
 - **microSD の結線**（回路図 `docs/ESP32-P4-ETH-schematic.pdf` 1 ページ「MicroSD Card」を目視。2026-11-18）: D0=GPIO39、D1=GPIO40、D2=GPIO41、D3(CD)=GPIO42、CLK=GPIO43、CMD=GPIO44（4 ビットのモード）。**データ線（D0〜D3）と CMD は 51kΩ（R8〜R12）で `ESP_LDO_VO4` にプルアップ**（CLK にはない）。CD2 も 51kΩ（R13）でプルアップされているだけで、GPIO には接続されていない。**カードの電源**は `ESP_3V3` から PMOS（Q1、SI2301CDS）経由で、ゲートは **GPIO45**（10kΩ で GND にプルダウン: GPIO45 が Low または未設定で**電源 ON**、High で OFF）。**カード検出の GPIO はない**。
 - ESP-IDF v6.0.1 の FatFs（`components/fatfs/src/ffconf.h`、`Kconfig`）: R0.15。**`FF_FS_EXFAT 0` で固定**（menuconfig に項目がない）。`FF_USE_EXPAND 1`（使わない。§3.1）、`FF_USE_MKFS 1`（使わない）。**`FF_USE_FASTSEEK` は `CONFIG_FATFS_USE_FASTSEEK` に従い、既定は `n`**。**IDF の VFS 側の説明では、fast-seek と CLMT は読み取りモードのファイルだけ**（FatFs の `f_lseek` 自体にモードの検査はなく、呼び出し側が `fp->cltbl` を設定する。§3.1）。`f_lseek(CREATE_LINKMAP)` は、表が小さいと `FR_NOT_ENOUGH_CORE` を返し、`cltbl[0]` に必要な数を入れる。**`f_rename` は、宛先が存在すると `FR_EXIST` で失敗する**（上書きできない。原子的な置換ではない）。`FF_LBA64` は無効（`LBA_t` は 32 ビット）。`FF_FS_REENTRANT 1`。`fs->database` は絶対 LBA で、`クラスタのセクタ = database + csize × (クラスタ番号 − 2)`。
-- **esp_tinyusb と TinyUSB の構成**（Managed Component キャッシュを一次情報で確認、2026-11-19、Antigravity）: **`espressif/esp_tinyusb 2.4.0`**（commit `7963dbeaddee8798cae953cbcd2f1dc48c7589bf`）は **`espressif/tinyusb 0.21.0~6`**（commit `ab2826e0a23c14545e82aba1f3d4c68828937d91`）に依存する。
-  - **標準の `msc_device.c`（`0.21.0~6`）**: `0.18.0` 以降で `tud_msc_inquiry2_cb` と `tud_msc_async_io_done` が追加されたものの、**`proc_builtin_scsi()`（`msc_device.c:684-840`）が 8 コマンドを内蔵処理で捕捉する構造は変わらない**。具体的には、`SCSI_CMD_MODE_SENSE_6`（`:805`）が 4 バイトの固定ヘッダー（`data_len=3, block_descriptor_len=0`）のみ返して Mode Page（`2Ah` 等）を返せず `tud_msc_scsi_cb` を呼ばない、`SCSI_CMD_READ_FORMAT_CAPACITY`（`:756`）が `descriptor_type=2` の 12 バイト固定形式を返す、`proc_read_io_data()`（`:878-883`）が `TUD_MSC_RET_ERROR`（`-1`）時に無条件で `set_sense_medium_not_present(lun)`（`02h/3Ah/00h`）を上書きする、`SCSI_CMD_READ_12`（`0xA8`）がストリーミング経路（`:327, 637` は `READ_10`/`WRITE_10` のみ）に乗らず `CFG_TUD_MSC_EP_BUFSIZE` 制限の `tud_msc_scsi_cb` に落ちる。→ **最新の `0.21.0~6` でも仮想 CD-ROM の契約（§5）を満たさない**。
+- **esp_tinyusb と TinyUSB の構成**（Managed Component キャッシュを一次情報で確認、2026-11-19、Antigravity、`esp_tinyusb 2.4.0` / `tinyusb ab2826e0a` 時点）: **`espressif/esp_tinyusb 2.4.0`**（commit `7963dbeaddee8798cae953cbcd2f1dc48c7589bf`）は **`espressif/tinyusb >=0.17.0~2`** に依存しており、検証時点で **`0.21.0~6`**（commit `ab2826e0a23c14545e82aba1f3d4c68828937d91`）が解決される（A-14 本体実装時に `dependencies` で `0.21.0~6` を明示固定する方針）。
+  - **標準の `msc_device.c`（`0.21.0~6`、`ab2826e0a` 時点）**: `0.18.0` 以降で `tud_msc_inquiry2_cb`（デバイス種別 5 の指定可）と `tud_msc_async_io_done` / `TUD_MSC_RET_ASYNC`（`READ/WRITE(10)` の非同期 I/O）が追加されたため、INQUIRY は `inquiry2_cb` で解決でき、`READ(10)` の非同期も API がある。残る不適合は以下の 4 点であり、依然として **`proc_builtin_scsi()`（`msc_device.c:677-840`）** を中心とする内蔵処理により仮想 CD-ROM の契約（§5）を満たさない。具体的には、`SCSI_CMD_MODE_SENSE_6`（`:805`）が 4 バイトの固定ヘッダー（`data_len=3, block_descriptor_len=0`）のみ返して Mode Page（`2Ah` 等）を返せず `tud_msc_scsi_cb` を呼ばない、`SCSI_CMD_READ_FORMAT_CAPACITY`（`:756`）が `descriptor_type=2` の 12 バイト固定形式を返す、`proc_read_io_data()`（`:878-883`）が `TUD_MSC_RET_ERROR`（`-1`）時に無条件で `set_sense_medium_not_present(lun)`（`02h/3Ah/00h`）を上書きする、`SCSI_CMD_READ_12`（`0xA8`）がストリーミング経路（`:327, 637` は `READ_10`/`WRITE_10` のみ）に乗らず `CFG_TUD_MSC_EP_BUFSIZE` 制限の `tud_msc_scsi_cb` に落ちる。
   - **アプリのクラスドライバのフックと共存**: `usbd.c:457` は弱シンボル `TU_ATTR_WEAK usbd_class_driver_t const* usbd_app_driver_get_cb(uint8_t* driver_count)` を公開しており、`esp_tinyusb 2.4.0` 側はこれを定義しない（競合ゼロ）。`usbd.c:393-406, 584-593` で自前ドライバを内蔵ドライバの前に登録でき、`device/usbd_pvt.h:50-60` の `init`/`deinit`/`reset`/`open`/`control_xfer_cb`/`xfer_cb`/`xfer_isr`/`sof` を受けられる。また、`CONFIG_TINYUSB_MSC_ENABLED=n`（既定）で `CFG_TUD_MSC == 0`（`tusb_config.h:47-48, 261`、`CMakeLists.txt:38`、`tinyusb.c:17, 64, 88`）となり、`msc_device.c` / `tinyusb_msc.c` を無効化したまま、`CONFIG_TINYUSB_HID_COUNT=3`（`CFG_TUD_HID=3`）および `descriptors_control.c` の独自記述子（`usb_hid_logic.c`）と共存できる。さらに `usbd_defer_func(func, param, false)`（`usbd.c:1527`、`usbd_pvt.h:131`）の `USBD_EVENT_FUNC_CALL` は `usbd.c:801-806` で `rhport` 検査なしに `tud_task` で実行されるため、ESP32-P4 の `rhport=1`（OTG_HS）でも `iso_msc_task` からの非同期復帰に使える。
-- **ESP32-P4 の USB OTG HS（`dwc2_esp32.h:89`, `dcd_dwc2.c:262-330`、TinyUSB `0.21.0~6`）**: Port 1（OTG_HS）は `ep_count=16`、`ep_in_count=8`、`otg_dfifo_depth=1024`（32-bit word = `4096 B`）。HID×3（`0x81..0x83`）+ MSC（`0x84`/`0x04`）+ EP0 で IN `5/8`、OUT `2/16`。Buffer DMA での FIFO 消費は epinfo `32`（`2*16`）+ 共有 `GRXFSIZ`（`calc_device_grxfsiz(512, 16) = 304`）+ TX FIFO（`16 [EP0 64B] + 2 [0x81 8B] + 2 [0x82 6B] + 1 [0x83 4B] + 128 [0x84 512B] = 149`）= **`485 / 1024` words**（残 **`539` words = `2,156 B`**、Bulk IN ダブルバッファ時でも `613 / 1024` words・残 `1,644 B`）で余裕がある（実機列挙は未確認）。
-- **TinyUSB タスクの優先度とスタック（`esp_tinyusb 2.4.0`）**: `tinyusb_default_config.h:70-85` で既定の `TinyUSB` タスクは優先度 `5`、スタック `4096 B`、アフィニティ CPU1（マルチコア時）。`usb_vbus`（優先度 `5`）・`csi_video`（`5`）・`ws_input`/`kvm_service`（`4`）と整合するよう、`iso_msc_task` は `TinyUSB` より低い優先度 **`4`**（プロビジョナル、`CONFIG_ISO_MSC_*` で設定可）、スタック **`4096 B`**（暫定、実機 HWM で確認）とする。
+- **ESP32-P4 の USB OTG HS（`dwc2_esp32.h:89`, `dcd_dwc2.c:262-330`、TinyUSB `0.21.0~6`、`ab2826e0a` 時点）**: Port 1（OTG_HS）は `ep_count=16`、`ep_in_count=8`、`otg_dfifo_depth=1024`（32-bit word = `4096 B`）。HID×3（`0x81..0x83`）+ MSC（`0x84`/`0x04`）+ EP0 で IN `5/8`、OUT `2/16`。Buffer DMA での FIFO 消費は epinfo `32`（`2*16`）+ 共有 `GRXFSIZ`（`calc_device_grxfsiz(512, 16) = 304`）+ TX FIFO（`16 [EP0 64B] + 2 [0x81 8B] + 2 [0x82 6B] + 1 [0x83 4B] + 128 [0x84 512B] = 149`）= **`485 / 1024` words**（残 **`539` words = `2,156 B`**、Bulk IN ダブルバッファ時でも `613 / 1024` words・残 `1,644 B`）で余裕がある（実機列挙は未確認）。
+- **TinyUSB タスクの優先度とスタック（`esp_tinyusb 2.4.0` 時点）**: `tinyusb_default_config.h:70-85` で既定の `TinyUSB` タスクは優先度 `5`、スタック `4096 B`、アフィニティ CPU1（マルチコア時）。`iso_msc_task` の初期値（`CONFIG_USB_MSC_TASK_PRIO` = `4`、`CONFIG_USB_MSC_TASK_STACK_SIZE` = `4096 B` 以上）は暫定であり、最終的な優先度・スタックは実機の HWM と HID 遅延実測（`HW_VERIFY.md` I6 / I10）で決める。
 - 32GB のカードは、SD の規格上 SDHC で、FAT32 で出荷されるのが標準。セクタは 512 バイト。
 - `esp_http_server` は **1 つのタスク**で、`select` → 1 つの要求の処理 → 次、と回る（`httpd_main.c`）。**1 つの要求の処理中は、同じサーバーの他の要求（`/ws` の入力を含む）が待つ**。
 
@@ -52,8 +52,8 @@
                     └──── iso_fs_t ───┘                  ▼
                          （FAT32 のファイル操作。   mmc_scsi（純 C: CD-ROM の SCSI コマンド。
                           IDF = FatFs）                  **全コマンドを持つ**。§5.1）
-   USB のターゲット PC ◀── MSC（自前の BOT または         │
-                          パッチした TinyUSB）◀───────────┘
+   USB のターゲット PC ◀── MSC（アプリのクラスドライバ: ◀───────────┘
+                          usbd_app_driver_get_cb）
                                                           │
                                                    iso_extent（純 C: CD のブロック → SD のセクタ）
                                                           │
@@ -233,28 +233,30 @@
 
 ## 5. USB: 仮想 CD-ROM
 
-### 5.1 MSC の実装の方針（A-14 調査結果: 手段 1 を採用確定）
-**一次情報（`espressif/esp_tinyusb 2.4.0` + `espressif/tinyusb 0.21.0~6`）をソースで確認した結果（2026-11-19、Antigravity）**:
-`0.21.0~6` の `msc_device.c` では `tud_msc_inquiry2_cb`（`:50, 796`）と `tud_msc_async_io_done`（`:344`）が追加されたものの、依然として `proc_builtin_scsi()`（`:684-840`）が 8 コマンドを内蔵処理で捕捉するため仮想 CD-ROM の契約を満たせない。
-- **`SCSI_CMD_MODE_SENSE_6`（`:805`）**: 4 バイト固定ヘッダー（`data_len=3, block_descriptor_len=0`）のみを返し、Mode Page（`2Ah` 等）を返せず `tud_msc_scsi_cb` も呼ばれない。
-- **`SCSI_CMD_READ_FORMAT_CAPACITY`（`:756`）**: `descriptor_type=2` 固定の 12 バイト形式を返す。
-- **`proc_read_io_data()`（`:878-883`）**: コールバックが `TUD_MSC_RET_ERROR`（`-1`）を返すと無条件で `set_sense_medium_not_present(lun)`（`02h/3Ah/00h`）を呼び、SD I/O エラーの `MEDIUM ERROR`（`03h/11h/00h`）を上書きする。
-- **`SCSI_CMD_READ_12`（`A8h`）**: ストリーミング経路（`:327, 637` は `READ_10`/`WRITE_10` のみ）に乗らず、非 READ/WRITE コマンドは `CFG_TUD_MSC_EP_BUFSIZE` 制限の `tud_msc_scsi_cb` 経由になる。
+### 5.1 MSC の実装の方針（A-14 調査結果: 手段 1 を採用確定、2026-11-19）
+**一次情報（`espressif/esp_tinyusb 2.4.0` / `espressif/tinyusb 0.21.0~6`、`ab2826e0a` 時点）をソースで確認した結果（2026-11-19、Antigravity）**:
+前提の変更: `0.21.0~6` には `tud_msc_inquiry2_cb`（`:50, 796`）と `tud_msc_async_io_done` / `TUD_MSC_RET_ASYNC`（`:344`）が備わったため、`INQUIRY` は `inquiry2_cb` で解決でき、`READ/WRITE(10)` の非同期は API がある。残る不適合は **`proc_builtin_scsi()`（`msc_device.c:677-840`）等に含まれる次の 4 点**である。
+- **`SCSI_CMD_MODE_SENSE_6`（`msc_device.c:805`、`ab2826e0a` 時点）**: 4 バイト固定ヘッダー（`data_len=3, block_descriptor_len=0`）のみを返し、Mode Page（`2Ah` 等）を返せず `tud_msc_scsi_cb` も呼ばれない。
+- **`SCSI_CMD_READ_FORMAT_CAPACITY`（`msc_device.c:756`、`ab2826e0a` 時点）**: `descriptor_type=2` 固定の 12 バイト形式を返す。
+- **`proc_read_io_data()`（`msc_device.c:878-883`、`ab2826e0a` 時点）**: コールバックが `TUD_MSC_RET_ERROR`（`-1`）を返すと無条件で `set_sense_medium_not_present(lun)`（`02h/3Ah/00h`）を呼び、SD I/O エラーの `MEDIUM ERROR`（`03h/11h/00h`）を上書きする。
+- **`SCSI_CMD_READ_12`（`A8h`）**: ストリーミング経路（`msc_device.c:327, 637` は `READ_10`/`WRITE_10` のみ、`ab2826e0a` 時点）に乗らず、非 READ/WRITE コマンドは `CFG_TUD_MSC_EP_BUFSIZE` 制限の `tud_msc_scsi_cb` 経由になる。
 
-→ **標準の MSC のままでは、仮想 CD-ROM の契約（デバイス種別 5、MODE SENSE のページ、READ のエラー、READ(12)、READ TOC など）を満たせない**。**契約: 「USB の MSC の層は、受け取った全ての CDB を `mmc_scsi_execute` に渡し、その応答（データ、センス、ステータス）を、そのまま返す」**。次の比較により **手段 1 を採用確定**とする（**C-13 `#143` の純 C `msc_bot` を使用**）。
+なお、`espressif/esp_tinyusb 2.4.0` のマニフェスト上の依存は `espressif/tinyusb >=0.17.0~2` であり、単体では `0.21.0~6` 固定ではないため、A-14 実装側の `idf_component.yml` で `0.21.0~6` を固定する。
 
-| 順 | 手段 | 実装量 | 保守の負担 | 共存・技術根拠 | 判定 |
+→ **標準の MSC のままでは、仮想 CD-ROM の契約（MODE SENSE のページ、READ FORMAT CAPACITIES、READ のエラーセンス、READ(12)、READ TOC など）を満たせない**。**契約: 「USB の MSC の層は、受け取った全ての CDB を `mmc_scsi_execute` に渡し、その応答（データ、センス、ステータス）を、そのまま返す」**。次の比較により **手段 1 を採用確定**とする（**C-13 の純 C `msc_bot` を使用**）。
+
+| 順 | 手段 | 実装量（見積もり） | 保守の負担 | 共存・技術根拠 | 判定 |
 |---|---|---|---|---|---|
-| 1 | **アプリのクラスドライバ（`usbd_app_driver_get_cb`）+ 純 C `msc_bot`（C-13）** | **中（約 300〜450 行）**（BOT 状態機械は C-13 で純 C 実装・単体検証、IDF 側はグルーと `iso_msc_task` のみ） | **小**（TinyUSB / `esp_tinyusb` を一切改変・フォークしない） | `usbd.c:457` は `TU_ATTR_WEAK usbd_class_driver_t const* usbd_app_driver_get_cb(uint8_t*)` を公開、`esp_tinyusb 2.4.0` 側は未定義で競合なし。`CONFIG_TINYUSB_MSC_ENABLED=n` で `CFG_TUD_MSC==0` となり内蔵 MSC を無効化したまま `HID×3`（`descriptors_control.c` の独自記述子）と共存可。`usbd_defer_func()`（`usbd.c:1527`）は `rhport` を絞らない `USBD_EVENT_FUNC_CALL`（`usbd.c:801-806`）を積むため ESP32-P4 OTG_HS（`rhport=1`）で `iso_msc_task` 完了通知にそのまま使える | **採用（確定）** |
-| 2 | **TinyUSB の `msc_device.c` にパッチ**（`components/` 上書きまたは `override_path`） | 中〜大（8 個の内蔵ハンドラ改変、エラーセンス上書き除去、`READ(12)` ストリーミング追加、非同期 Reset/STALL 時 `command_done` 保証） | **大**（上流 `espressif/tinyusb` 更新のたびに全変更の追従・検証が必須、ビルド時も `override_path` / コンポーネント複製管理が要る） | TinyUSB の非 READ(10) IN コマンドが同期 `tud_msc_scsi_cb` 前提であり、`iso_msc_task` 非同期化・中断時 `command_done` 保証のために大規模改造が必要 | **不採用** |
+| 1 | **アプリのクラスドライバ（`usbd_app_driver_get_cb`）+ 純 C `msc_bot`（C-13）** | **中（見積もり: 約 300〜450 行）**（BOT 状態機械は C-13 で純 C 実装・単体検証、IDF 側はグルーと `iso_msc_task` のみ） | **小**（TinyUSB / `esp_tinyusb` を一切改変・フォークしない） | `usbd.c:457` は `TU_ATTR_WEAK usbd_class_driver_t const* usbd_app_driver_get_cb(uint8_t*)` を公開、`esp_tinyusb 2.4.0` 側は未定義で競合なし（`2.4.0` / `ab2826e0a` 時点）。`CONFIG_TINYUSB_MSC_ENABLED=n` で `CFG_TUD_MSC==0` となり内蔵 MSC を無効化したまま `HID×3`（`descriptors_control.c` の独自記述子）と共存可。`usbd_defer_func()`（`usbd.c:1527`）は `rhport` を絞らない `USBD_EVENT_FUNC_CALL`（`usbd.c:801-806`）を積むため ESP32-P4 OTG_HS（`rhport=1`）で `iso_msc_task` 完了通知にそのまま使える | **採用（確定）** |
+| 2 | **TinyUSB の `msc_device.c` にパッチ**（`components/` 上書きまたは `override_path`） | 中〜大（残る 4 点の不適合解消、`READ(12)` ストリーミング追加、非 `READ(10)` コマンドの非同期化、非同期 Reset/STALL 時 `command_done` 保証のフック追加） | **大**（上流 `espressif/tinyusb` 更新のたびに全変更の追従・検証が必須、ビルド時も `override_path` / コンポーネント複製管理が要る） | TinyUSB の非 READ(10) IN コマンドが同期 `tud_msc_scsi_cb` 前提であり、`iso_msc_task` 非同期化・中断時 `command_done` 保証のために大規模改造が必要 | **不採用** |
 | × | 標準の MSC + コールバックだけ | — | — | `MODE SENSE(6)` が 4 バイト固定、`READ_FORMAT_CAPACITY` が固定形式、`READ` エラー時に `02h/3Ah/00h` へ上書き、`READ(12)` 非ストリーミングのため契約違反 | **不採用** |
 
 **MSC の読み出しを、USB のタスクで行わない（重要）**: `tud_task` は 1 つのタスクで、**HID の IN（キーボードとマウス）も同じタスクで処理する**。そこで `sd_io_lock` を待つ、または SD を読むと、アップロードの書き込みやカードの内部処理（数百 ms）の間、**キーボードとマウスが止まる**（本機の主機能）。→ **MSC 専用の I/O タスク（`iso_msc_task`）を置く**: USB のタスクは、CBW を受け取って `iso_msc_task` に渡し、**`mmc_scsi_execute` と `mmc_scsi_read_blocks`（ブロックする）は `iso_msc_task` が呼ぶ**。データは、2 つのバッファの交互（ダブルバッファ）で、USB のタスクが転送を発行し、`iso_msc_task` 完了時は `usbd_defer_func()` で `tud_task` を起こして CSW/次転送へ進む（**USB のタスクはブロックしない**）。
-- **`iso_msc_task` の優先度とスタック**: `esp_tinyusb 2.4.0` の既定 `TinyUSB` タスクが優先度 `5`・スタック `4096 B`（`tinyusb_default_config.h:81-85`）であるため、`iso_msc_task` は `TinyUSB` より低い **優先度 `4`**（`ws_input` / `kvm_service` と同等、HID の `tud_task`・`usb_vbus` が常に優先される）、**スタック `4096 B`**（暫定。`mmc_scsi` + `iso_extent` + `sdmmc` + ログ分の余裕を `HW_VERIFY` I6 / I10 の実機 HWM で確定）とする。**`HW_VERIFY` I10 で、アップロードとターゲットの読み出しを同時にしたときの、HID の遅延を測る**。
+- **`iso_msc_task` の優先度とスタック**: `esp_tinyusb 2.4.0` 時点の既定 `TinyUSB` タスクが優先度 `5`・スタック `4096 B`（`tinyusb_default_config.h:81-85`）であることから、初期の暫定値として優先度 `4`（`CONFIG_USB_MSC_TASK_PRIO`）・スタック `4096 B` 以上（`CONFIG_USB_MSC_TASK_STACK_SIZE`）を置くが、最終的な優先度とスタックは **`HW_VERIFY.md` I6 / I10 の実機 HWM・HID 遅延の実測で確定**する。
 
 **`msc_bot` のスレッドモデル**: **`msc_bot` の状態は、USB のタスクだけが触る**。`iso_msc_task` は「`mmc_scsi_execute` + `mmc_scsi_read_blocks`（ブロックする）」だけを担い、**完了を `usbd_defer_func()` / イベント経由で USB のタスクへ返す**。**BOT の Reset、`CLEAR_FEATURE(HALT)`、切断が、`iso_msc_task` の実行中に来たとき**: USB のタスクは、中止の印を立て、**`iso_msc_task` の完了イベントを待ってから**、`mmc_scsi_command_done` を呼ぶ（参照を放すのは、`command_done` だけ。§4.1）。C-13 のテストに「実行中の Reset」を含める。
 
-（A-14 §1 の事前調査は 2026-11-19 完了・手段 1 確定。`C-13` `#143` の `msc_bot` 実装へ進む。）
+（A-14 §5.1 の事前調査は 2026-11-19 完了・手段 1 確定。`USB_MSC_*` Kconfig 接頭辞は §8 に従う。）
 
 ### 5.2 デバイスの構成
 - 今の複合デバイス（HID ×3、記述子 84 バイト）に、**MSC のインターフェースを 1 つ足す**。**インターフェース番号は、HID の後（3）に置く**（BIOS は、インターフェース 0 のブートキーボードを使う。今の動作を変えない）。クラス 0x08、サブクラス 0x06 = SCSI、プロトコル 0x50 = BOT。バルク IN/OUT の 2 本（HS は 512 バイト、FS は 64 バイト）。記述子は `usb_hid_logic`（純 C）で作っていて、ホストテストがある。MSC を足すと、**FS と HS の両方の設定記述子（+23 バイト）と、インターフェース数が変わる**ので、テストも直す。
@@ -343,7 +345,7 @@ El Torito のブートは、ISO の中身（ブートカタログ）が持つ。
 | **C-11**（#140） | 純 C: `mmc_scsi`（§5.4。**全コマンド**）と `iso_media`（§5.5）。MMC / SPC の文書と照合。ホストテスト、ファズ、変異テスト | Claude | A-14 と並行 |
 | **C-12**（#141） | 純 C: `iso_api`（要求の検査、`iso_api_put_precheck`、判定の順序、状態遷移）と `web_server` の結線の一部、ビューアの画面（一覧、アップロードの進捗と再開、マウント、取り外し、削除） | Claude | C-10、C-11 の後 |
 | **A-13**（#137） | SD（**`iso_worker` の実装は、C-10 が `iso_core.h`（ジョブの型、ステップ関数、`iso_upload_tick`、ビュー更新のコールバック、`iso_media_force_eject` / `bus_reset` のプロトタイプ）を出した後の、A-13 の後半**。**前半は SD、FatFs、diskio、`epoch`、ロック**。**`CONFIG_FATFS_API_ENCODING_UTF_8`**、`epoch`、`iso_fs_t.truncate` の定義（§3.1）を含む）: SDMMC（スロット 0、GPIO39〜44、`ESP_LDO_VO4`、電源スイッチ GPIO45）、FAT32 のマウントと検査（§3）、**自前の diskio（`sd_io_lock`）**、`iso_blockdev_t`（`epoch` / `epoch_bump`。**SD の再初期化と `force_eject` が `epoch_bump` を呼ぶ。実行中の `FINISH` は、開始のときの `epoch` と、`ready` を書く前の `epoch` を比べ、違えば `ready` にせず `incomplete` にする**）と `iso_fs_t` の実装（`truncate`、**`read_at`**（`f_lseek` + `f_read`。読み取りのハンドルも `close` で閉じる。**同じハンドルで `read` と `read_at` を混ぜない。`read_at` の後の `read` の位置は未定義**: 位置を戻す実装は後ろ向きの seek で、1 GiB パーツのチェーンを毎回たどり直す）、**書き込み系の diskio は、マウントの `epoch` と現在の `epoch` が違えば `ISO_ERR_EPOCH` で失敗する（§3.4 の柵）**、`get_extents`、**【実装上のリスク: `read_at` のコスト】`FINISH` の再ハッシュは、ステップごとに読み取りハンドルを開き直す（ステップの間はハンドルを保持しない制約。`iso_job_step` は `iso_op_mutex` をステップごとに放すため）ので、`read_at` の `f_lseek` が、毎ステップ、1 GiB パーツのクラスタ連鎖（約 65536 クラスタ）を先頭から走査し直す。位置合わせの走査は、ステップのオフセットが大きいほど長く(そのステップの走査量はオフセットに比例)、1 つのパーツを読み切るまでの**走査量の合計は、おおむね `budget`（既定 1 MiB）に反比例して増える**(ステップ数が `budget` に反比例するため)。軽減策: (a) `FINISH` の `budget` を大きくする（例: 8 MiB。`iso_op_mutex` の保持時間が延びる）、(b) `read_at` で `CLMT`（`CREATE_LINKMAP`）を使う（開くたびに 1 回、連鎖を走査するので、同じ O(n)。単独では解決しない）、(c) ジョブの間だけ glue が読み取りハンドルを保持する（`iso_op_mutex` と `epoch` の扱いの設計し直しが要る）。実機で測る（`HW_VERIFY` I4）まで、方式を確定しない】**、`CONFIG_FATFS_USE_FASTSEEK=y`）、`iso_worker`（§4.2）。電圧・速度の実測 | Antigravity | |
-| **A-14**（#136） | USB MSC: **最初に、§5.1 の調査（手段 1 か 2）**。**`iso_msc_task`（USB のタスクで SD を読まない）**。MSC の記述子（インターフェース 3）、`mmc_scsi` への結線（全コマンド）、`usb_hid_logic` のテストの更新。BIOS / UEFI での確認 | Antigravity | 調査の結果を、この文書 §5.1 に反映する |
+| **A-14**（#136） | USB MSC: **手段 1 確定済み（2026-11-19、`usbd_app_driver_get_cb` + 純 C `msc_bot`、§5.1）**。**`iso_msc_task`（USB のタスクで SD を読まない）**。MSC の記述子（インターフェース 3）、`mmc_scsi` への結線（全コマンド）、`usb_hid_logic` のテストの更新。BIOS / UEFI での確認 | Antigravity | 調査結果は §5.1 に反映済み（Kconfig 接頭辞は `USB_MSC_*`） |
 | **C-13**（#143） | 純 C: **`msc_bot`**（BOT の状態機械: CBW の検証、13 のケース、データ IN / OUT / なし、STALL、CSW、リセット、`mmc_scsi_command_done` の確実な呼び出し）。ホストテスト、ファズ、変異テスト | Claude | A-14 の手段 1 のときに使う（手段 2 のときは、一部だけ） |
 | **A-15**（#138） | HTTP: アップロードのハンドラー（受信 → バッファ → SD、mbedTLS の SHA-256、拒否時の `Connection: close`）、`/api/v1/iso*` の結線（**ワイルドカードの URI 照合、`max_uri_handlers`、`http_guard` に `PUT` / `DELETE` と `application/octet-stream`、ハンドラーのスタックの実測**）。入力の遅延と転送速度の実測 | Antigravity | C-12 と協調 |
 
@@ -369,7 +371,7 @@ El Torito のブートは、ISO の中身（ブートカタログ）が持つ。
 | I3 | microSD の 4 ビットのモードの速度（40 MHz）、FAT32 の読み書きの実効速度 | A-13 |
 | I4 | **FAT のチェーンの走査によるエクステントの取得**（`get_extents`。読み取りモードで開いて開始クラスタを得る）が動くこと。断片化したときの挙動（`too_fragmented`）。**`FINISH` の再ハッシュの全体の所要時間と、ステップごとの `f_lseek` の時間**（§8 の A-13 のリスク） | A-13 |
 | I5 | SD の直列化（自前の diskio）で、アップロードと MSC の読み出しが同時に動くこと | A-13、A-15 |
-| I6 | **MSC の実装の手段**（アプリのクラスドライバ、または TinyUSB のパッチ）。esp_tinyusb 2.4.0 が持つ TinyUSB の版。`iso_msc_task` の優先度とスタック | A-14（最初の調査） |
+| I6 | **MSC の実装の手段**: **手段 1（アプリのクラスドライバ `usbd_app_driver_get_cb` + 純 C `msc_bot`）を採用確定**（2026-11-19、§5.1）。A-14 実装で `espressif/tinyusb` 版固定および `iso_msc_task` の優先度（`USB_MSC_TASK_PRIO`）とスタック（`USB_MSC_TASK_STACK_SIZE`）の実機 HWM・遅延確定を行う | A-14 |
 | I7 | USB OTG HS の FIFO の割り当て（HID ×3 の IN + MSC の IN/OUT。合計 4096 バイト）が足りること | A-14 |
 | I8 | HID + 仮想 CD-ROM の複合デバイスを、BIOS / UEFI が認識すること。Linux の ISO と Windows の ISO の起動 | A-14、オーナー |
 | I9 | READ TOC / GET CONFIGURATION のプロファイル（DVD-ROM）が、Windows、Linux、UEFI で問題ないこと | A-14 |
