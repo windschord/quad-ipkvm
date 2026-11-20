@@ -39,13 +39,31 @@
 #define USB_HID_VBUS_TASK_STACK_SIZE 3072u
 #define USB_HID_VBUS_TASK_PRIO       5u
 #define USB_HID_VBUS_LOG_INTERVAL_MS 10000u
+#define USB_HID_FORCE_OFF_DRAIN_US   200000LL
 
 static const char *TAG = "usb_hid";
 
 static usb_hid_mounted_cb_t s_on_mounted = NULL;
 static bool s_initialized = false;
 static bool s_force_uninstalled = false;
+static usb_hid_gate_t s_hid_gate = {0};
 static hid_sink_t s_sink;
+
+static bool is_initialized(void) {
+    return __atomic_load_n(&s_initialized, __ATOMIC_ACQUIRE);
+}
+
+static void set_initialized(bool val) {
+    __atomic_store_n(&s_initialized, val, __ATOMIC_RELEASE);
+}
+
+static bool is_force_uninstalled(void) {
+    return __atomic_load_n(&s_force_uninstalled, __ATOMIC_ACQUIRE);
+}
+
+static void set_force_uninstalled(bool val) {
+    __atomic_store_n(&s_force_uninstalled, val, __ATOMIC_RELEASE);
+}
 static usb_hid_sink_ctx_t s_sink_ctx;
 static char s_serial_str[17] = "QUADIPKVM0001";
 static usb_vbus_ctrl_t s_vbus_ctrl;
@@ -121,21 +139,32 @@ static void log_dwc_hs_regs(const char *stage) {
 
 static bool hw_mounted(void *hw_ctx) {
     (void)hw_ctx;
-    return s_initialized && tud_mounted();
+    if (!usb_hid_gate_enter(&s_hid_gate)) {
+        return false;
+    }
+    bool mounted = is_initialized() && tud_mounted();
+    usb_hid_gate_leave(&s_hid_gate);
+    return mounted;
 }
 
 static bool hw_itf_ready(void *hw_ctx, uint8_t itf) {
     (void)hw_ctx;
-    return s_initialized && (itf < USB_HID_ITF_COUNT) && tud_hid_n_ready(itf);
+    if (itf >= USB_HID_ITF_COUNT || !usb_hid_gate_enter(&s_hid_gate)) {
+        return false;
+    }
+    bool ready = is_initialized() && tud_hid_n_ready(itf);
+    usb_hid_gate_leave(&s_hid_gate);
+    return ready;
 }
 
 static bool hw_send_report(void *hw_ctx, uint8_t itf, uint8_t report_id,
                            const void *data, uint16_t len) {
     (void)hw_ctx;
-    if (!s_initialized || !data || itf >= USB_HID_ITF_COUNT) {
+    if (!data || itf >= USB_HID_ITF_COUNT || !usb_hid_gate_enter(&s_hid_gate)) {
         return false;
     }
-    bool sent = tud_hid_n_report(itf, report_id, data, len);
+    bool sent = is_initialized() && tud_hid_n_report(itf, report_id, data, len);
+    usb_hid_gate_leave(&s_hid_gate);
     if (!sent) {
         return false;
     }
@@ -287,7 +316,7 @@ static void log_vbus_stats(const char *reason, bool is_err) {
         " disconnects=%" PRIu32 " force_off=%" PRIu32
         " disc_fail=%" PRIu32 " failures=%" PRIu32 " stack_hwm=%u",
         reason, usb_vbus_ctrl_is_connected(&s_vbus_ctrl) ? 1 : 0,
-        s_force_uninstalled ? 1 : 0, st.connects, st.disconnects,
+        is_force_uninstalled() ? 1 : 0, st.connects, st.disconnects,
         st.force_off_count, st.disconnect_failure_count, st.failures,
         (unsigned)hwm);
 }
@@ -295,7 +324,7 @@ static void log_vbus_stats(const char *reason, bool is_err) {
 static bool vbus_apply_action(usb_vbus_ctrl_action_t action) {
     switch (action) {
         case USB_VBUS_CTRL_ACTION_CONNECT: {
-            if (s_force_uninstalled) {
+            if (is_force_uninstalled() || usb_hid_gate_is_closed(&s_hid_gate)) {
                 s_uninstalled_connect_err_count++;
                 if (s_uninstalled_connect_err_count == 1u ||
                     (s_uninstalled_connect_err_count % 100u) == 0u) {
@@ -317,8 +346,11 @@ static bool vbus_apply_action(usb_vbus_ctrl_action_t action) {
             return true;
         }
         case USB_VBUS_CTRL_ACTION_DISCONNECT: {
-            if (s_force_uninstalled) {
+            if (is_force_uninstalled()) {
                 return true;
+            }
+            if (usb_hid_gate_is_closed(&s_hid_gate)) {
+                return false;
             }
             bool call_ok = tud_disconnect();
             bool reg_ok = (USB_DWC_HS.dctl_reg.sftdiscon == 1);
@@ -331,7 +363,7 @@ static bool vbus_apply_action(usb_vbus_ctrl_action_t action) {
             return true;
         }
         case USB_VBUS_CTRL_ACTION_FORCE_OFF: {
-            if (s_force_uninstalled) {
+            if (is_force_uninstalled()) {
                 usb_phy_status_t phy_st = USB_PHY_STATUS_FREE;
                 esp_err_t phy_err = ESP_OK;
                 bool phy_stopped = is_utmi_phy_stopped(&phy_err, &phy_st);
@@ -343,24 +375,40 @@ static bool vbus_apply_action(usb_vbus_ctrl_action_t action) {
                 }
                 return phy_stopped;
             }
-            usb_dwc_dctl_reg_t dctl = USB_DWC_HS.dctl_reg;
-            dctl.sftdiscon = 1;
-            USB_DWC_HS.dctl_reg.val = dctl.val;
-            bool stage1_ok = (USB_DWC_HS.dctl_reg.sftdiscon == 1);
-            log_dwc_hs_regs("vbus-force-off-stage1");
-            if (stage1_ok) {
-                ESP_LOGE(TAG, "VBUS FORCE_OFF stage-1 succeeded via direct DCTL.sftdiscon=1");
-                return true;
+            if (!usb_hid_gate_is_closed(&s_hid_gate)) {
+                usb_dwc_dctl_reg_t dctl = USB_DWC_HS.dctl_reg;
+                dctl.sftdiscon = 1;
+                USB_DWC_HS.dctl_reg.val = dctl.val;
+                bool stage1_ok = (USB_DWC_HS.dctl_reg.sftdiscon == 1);
+                log_dwc_hs_regs("vbus-force-off-stage1");
+                if (stage1_ok) {
+                    ESP_LOGE(TAG, "VBUS FORCE_OFF stage-1 succeeded via direct DCTL.sftdiscon=1");
+                    return true;
+                }
+                ESP_LOGE(TAG,
+                         "VBUS FORCE_OFF stage-1 failed (sftdiscon=%u); uninstalling TinyUSB + UTMI PHY",
+                         (unsigned)USB_DWC_HS.dctl_reg.sftdiscon);
             }
-            ESP_LOGE(TAG, "VBUS FORCE_OFF stage-1 failed (sftdiscon=%u); uninstalling TinyUSB + UTMI PHY",
-                     (unsigned)USB_DWC_HS.dctl_reg.sftdiscon);
+            /* Block all new external tud_* callers and drain active ones BEFORE uninstalling TinyUSB. */
+            uint32_t inflight = usb_hid_gate_begin_teardown(&s_hid_gate);
+            set_initialized(false);
+            const int64_t drain_deadline = esp_timer_get_time() + USB_HID_FORCE_OFF_DRAIN_US;
+            while (inflight > 0u && esp_timer_get_time() < drain_deadline) {
+                vTaskDelay(1);
+                inflight = usb_hid_gate_in_flight(&s_hid_gate);
+            }
+            if (inflight > 0u) {
+                ESP_LOGE(TAG,
+                         "VBUS FORCE_OFF stage-2 deferred: %" PRIu32 " in-flight HID call(s) active",
+                         inflight);
+                return false;
+            }
             esp_err_t uninst_err = tinyusb_driver_uninstall();
             usb_phy_status_t phy_st = USB_PHY_STATUS_FREE;
             esp_err_t phy_err = ESP_OK;
             bool phy_stopped = is_utmi_phy_stopped(&phy_err, &phy_st);
             if (uninst_err == ESP_OK) {
-                s_force_uninstalled = true;
-                s_initialized = false;
+                set_force_uninstalled(true);
             }
             bool stage2_ok = (uninst_err == ESP_OK) && phy_stopped;
             ESP_LOGE(TAG,
@@ -398,7 +446,8 @@ static void usb_vbus_task(void *pvParameters) {
             bool ok = vbus_apply_action(action);
             usb_vbus_ctrl_applied(&s_vbus_ctrl, action, ok);
             bool suppress_uninstalled_repeat =
-                (action == USB_VBUS_CTRL_ACTION_CONNECT) && s_force_uninstalled &&
+                (action == USB_VBUS_CTRL_ACTION_CONNECT) &&
+                (is_force_uninstalled() || usb_hid_gate_is_closed(&s_hid_gate)) &&
                 (s_uninstalled_connect_err_count > 1u) &&
                 ((s_uninstalled_connect_err_count % 100u) != 0u);
             if (!suppress_uninstalled_repeat) {
@@ -419,7 +468,7 @@ static void usb_vbus_task(void *pvParameters) {
 #endif /* CONFIG_USB_DEVICE_VBUS_SENSE_GPIO >= 0 */
 
 esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
-    if (s_initialized || s_force_uninstalled) {
+    if (is_initialized() || is_force_uninstalled() || usb_hid_gate_is_closed(&s_hid_gate)) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -478,6 +527,8 @@ esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
     tusb_cfg.descriptor.full_speed_config = fs_cfg;
     tusb_cfg.descriptor.high_speed_config = hs_cfg;
 
+    usb_hid_gate_init(&s_hid_gate);
+
     ESP_RETURN_ON_ERROR(tinyusb_driver_install(&tusb_cfg), TAG,
                         "tinyusb_driver_install failed");
     log_dwc_hs_regs("post-install");
@@ -527,18 +578,25 @@ esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
     log_dwc_hs_regs("vbus-wait-disconnected");
     ESP_LOGI(TAG, "USB soft-disconnected at boot; VBUS sense on GPIO %d (poll=%d ms)",
              CONFIG_USB_DEVICE_VBUS_SENSE_GPIO, CONFIG_USB_DEVICE_VBUS_POLL_MS);
-    s_initialized = true;
+    ESP_RETURN_ON_FALSE(usb_hid_gate_activate(&s_hid_gate), ESP_ERR_INVALID_STATE,
+                        TAG, "usb_hid_gate_activate failed");
+    set_initialized(true);
     if (xTaskCreate(usb_vbus_task, "usb_vbus", USB_HID_VBUS_TASK_STACK_SIZE, NULL,
                     USB_HID_VBUS_TASK_PRIO, &s_vbus_task) != pdPASS) {
-        s_initialized = false;
+        (void)usb_hid_gate_begin_teardown(&s_hid_gate);
+        set_initialized(false);
         s_vbus_task = NULL;
         (void)tinyusb_driver_uninstall();
+        usb_hid_gate_init(&s_hid_gate);
         return ESP_ERR_NO_MEM;
     }
 #else
     (void)boot_reg_ok;
     vbus_cfg.enabled = false;
     usb_vbus_ctrl_init(&s_vbus_ctrl, &vbus_cfg);
+    ESP_RETURN_ON_FALSE(usb_hid_gate_activate(&s_hid_gate), ESP_ERR_INVALID_STATE,
+                        TAG, "usb_hid_gate_activate failed");
+    set_initialized(true);
 #if CONFIG_USB_DEVICE_START_DISCONNECTED
     log_dwc_hs_regs("start-disconnected");
     ESP_LOGI(TAG, "USB soft-disconnected at boot (USB_DEVICE_START_DISCONNECTED=y)");
@@ -546,7 +604,6 @@ esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
     tud_connect();
     log_dwc_hs_regs("post-config-connect");
 #endif
-    s_initialized = true;
 #endif
 
     ESP_LOGI(TAG,
@@ -569,11 +626,12 @@ esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
 }
 
 const hid_sink_t *usb_hid_get_sink(void) {
-    return s_initialized ? &s_sink : NULL;
+    return is_initialized() ? &s_sink : NULL;
 }
 
 esp_err_t usb_hid_set_connected(bool connected) {
-    ESP_RETURN_ON_FALSE(s_initialized && !s_force_uninstalled,
+    ESP_RETURN_ON_FALSE(is_initialized() && !is_force_uninstalled() &&
+                        !usb_hid_gate_is_closed(&s_hid_gate),
                         ESP_ERR_INVALID_STATE, TAG, "not initialized");
 #if CONFIG_USB_DEVICE_VBUS_SENSE_GPIO >= 0
     (void)connected;
@@ -582,11 +640,12 @@ esp_err_t usb_hid_set_connected(bool connected) {
     return ESP_ERR_INVALID_STATE;
 #else
     xSemaphoreTake(s_usb_ctrl_mux, portMAX_DELAY);
-    if (s_force_uninstalled) {
+    if (!is_initialized() || is_force_uninstalled() || !usb_hid_gate_enter(&s_hid_gate)) {
         xSemaphoreGive(s_usb_ctrl_mux);
         return ESP_ERR_INVALID_STATE;
     }
     bool ok = connected ? tud_connect() : tud_disconnect();
+    usb_hid_gate_leave(&s_hid_gate);
     log_dwc_hs_regs(connected ? "connect" : "disconnect");
     xSemaphoreGive(s_usb_ctrl_mux);
     return ok ? ESP_OK : ESP_FAIL;

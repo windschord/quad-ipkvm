@@ -329,11 +329,77 @@ void test_sink_nonblocking_ready_and_routing(void) {
     TEST_ASSERT_FALSE(sink.send_rel(sink.ctx, NULL));
 }
 
+void test_teardown_gate_lifecycle_and_drain(void) {
+    usb_hid_gate_t gate;
+
+    /* NULL pointer safety */
+    usb_hid_gate_init(NULL);
+    TEST_ASSERT_FALSE(usb_hid_gate_activate(NULL));
+    TEST_ASSERT_FALSE(usb_hid_gate_enter(NULL));
+    usb_hid_gate_leave(NULL);
+    TEST_ASSERT_EQUAL_UINT32(0u, usb_hid_gate_begin_teardown(NULL));
+    TEST_ASSERT_EQUAL_UINT32(0u, usb_hid_gate_in_flight(NULL));
+    TEST_ASSERT_FALSE(usb_hid_gate_is_active(NULL));
+    TEST_ASSERT_FALSE(usb_hid_gate_is_closed(NULL));
+
+    /* Freshly initialized gate rejects enter until activated */
+    usb_hid_gate_init(&gate);
+    TEST_ASSERT_FALSE(usb_hid_gate_is_active(&gate));
+    TEST_ASSERT_FALSE(usb_hid_gate_is_closed(&gate));
+    TEST_ASSERT_EQUAL_UINT32(0u, usb_hid_gate_in_flight(&gate));
+    TEST_ASSERT_FALSE(usb_hid_gate_enter(&gate));
+
+    /* Activate once; duplicate activate fails */
+    TEST_ASSERT_TRUE(usb_hid_gate_activate(&gate));
+    TEST_ASSERT_TRUE(usb_hid_gate_is_active(&gate));
+    TEST_ASSERT_FALSE(usb_hid_gate_is_closed(&gate));
+    TEST_ASSERT_FALSE(usb_hid_gate_activate(&gate));
+
+    /* Nested callers enter/leave cleanly; extra leave does not underflow */
+    TEST_ASSERT_TRUE(usb_hid_gate_enter(&gate));
+    TEST_ASSERT_TRUE(usb_hid_gate_enter(&gate));
+    TEST_ASSERT_EQUAL_UINT32(2u, usb_hid_gate_in_flight(&gate));
+    usb_hid_gate_leave(&gate);
+    TEST_ASSERT_EQUAL_UINT32(1u, usb_hid_gate_in_flight(&gate));
+    usb_hid_gate_leave(&gate);
+    TEST_ASSERT_EQUAL_UINT32(0u, usb_hid_gate_in_flight(&gate));
+    usb_hid_gate_leave(&gate);
+    TEST_ASSERT_EQUAL_UINT32(0u, usb_hid_gate_in_flight(&gate));
+
+    /* Two callers active when stage-2 teardown starts */
+    TEST_ASSERT_TRUE(usb_hid_gate_enter(&gate));
+    TEST_ASSERT_TRUE(usb_hid_gate_enter(&gate));
+    TEST_ASSERT_EQUAL_UINT32(2u, usb_hid_gate_begin_teardown(&gate));
+    TEST_ASSERT_FALSE(usb_hid_gate_is_active(&gate));
+    TEST_ASSERT_TRUE(usb_hid_gate_is_closed(&gate));
+
+    /* New callers are immediately rejected while in-flight callers drain to 0 */
+    TEST_ASSERT_FALSE(usb_hid_gate_enter(&gate));
+    TEST_ASSERT_EQUAL_UINT32(2u, usb_hid_gate_in_flight(&gate));
+    usb_hid_gate_leave(&gate);
+    TEST_ASSERT_EQUAL_UINT32(1u, usb_hid_gate_in_flight(&gate));
+    usb_hid_gate_leave(&gate);
+    TEST_ASSERT_EQUAL_UINT32(0u, usb_hid_gate_in_flight(&gate));
+
+    /* Idempotent teardown retry while closed returns 0 and stays un-activatable until init */
+    TEST_ASSERT_EQUAL_UINT32(0u, usb_hid_gate_begin_teardown(&gate));
+    TEST_ASSERT_FALSE(usb_hid_gate_activate(&gate));
+    TEST_ASSERT_FALSE(usb_hid_gate_enter(&gate));
+
+    /* Explicit init resets closed state so activation works again */
+    usb_hid_gate_init(&gate);
+    TEST_ASSERT_FALSE(usb_hid_gate_is_closed(&gate));
+    TEST_ASSERT_TRUE(usb_hid_gate_activate(&gate));
+    TEST_ASSERT_TRUE(usb_hid_gate_enter(&gate));
+    usb_hid_gate_leave(&gate);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_report_descriptors_lengths_and_no_report_ids);
     RUN_TEST(test_config_descriptors_fs_and_hs_structure);
     RUN_TEST(test_pack_keyboard_abs_and_rel_reports);
     RUN_TEST(test_sink_nonblocking_ready_and_routing);
+    RUN_TEST(test_teardown_gate_lifecycle_and_drain);
     return UNITY_END();
 }
