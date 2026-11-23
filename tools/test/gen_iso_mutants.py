@@ -5,7 +5,8 @@ if 条件の否定、文の削除、定数の ±1、真偽値の反転。old の
 (ミュータントは、わざとコードを壊すので、コンパイラの警告でビルドできなくなるものを、ビルドエラーとして数えない)。
 使い方(リポジトリのルートで):
   python3 tools/test/gen_iso_mutants.py upload . > tools/test/iso_upload_mutants.py
-  python3 tools/test/gen_iso_mutants.py core . > tools/test/iso_core_mutants.py"""
+  python3 tools/test/gen_iso_mutants.py core . > tools/test/iso_core_mutants.py
+  python3 tools/test/gen_iso_mutants.py api . > tools/test/iso_api_mutants.py"""
 import re
 import sys
 
@@ -192,11 +193,11 @@ def pragma_header(inc):
     return "INC = %r\nPRAGMAS = %r\n" % (inc, PRAGMAS)
 
 
-USAGE = "usage: gen_iso_mutants.py {upload|core} <repo-root>   (標準出力に、ミュータントの Python ソースを書く)\n"
+USAGE = "usage: gen_iso_mutants.py {upload|core|api} <repo-root>   (標準出力に、ミュータントの Python ソースを書く)\n"
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] not in ("upload", "core"):
+    if len(sys.argv) != 3 or sys.argv[1] not in ("upload", "core", "api"):
         sys.stderr.write(USAGE)
         sys.exit(2)
     mode = sys.argv[1]
@@ -213,6 +214,22 @@ IX = "components/iso_upload/iso_index.c"
 
 
 def M(id, desc, *edits, file=UP):
+    return {"id": id, "desc": desc, "edits": list(edits), "file": file}
+
+
+MUTANTS = [
+'''
+    elif mode == "api":
+        files = [("components/iso_api/iso_api.c", "A", "AP", '#include "iso_api_priv.h"'), ("components/iso_api/iso_api_json.c", "J", "JS", '#include "iso_api_priv.h"'),
+                 ("components/iso_api/iso_api_fmt.c", "M", "FM", '#include "iso_api_priv.h"')]
+        inc_line = '#include "iso_api_priv.h"'
+        header = '''# iso_api.c / iso_api_json.c / iso_api_fmt.c のミュータント。tools/test/gen_iso_mutants.py が、ソースから機械的に作ったもの(iso_upload_mutants.py と同じ方法)。
+AP = "components/iso_api/iso_api.c"
+JS = "components/iso_api/iso_api_json.c"
+FM = "components/iso_api/iso_api_fmt.c"
+
+
+def M(id, desc, *edits, file=AP):
     return {"id": id, "desc": desc, "edits": list(edits), "file": file}
 
 

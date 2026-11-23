@@ -1202,7 +1202,7 @@ const IsoViewer = (function () {
                         setMessage('取り込みが終わりました（取り込み ' + imported + ' 件、スキップ ' + skipped + ' 件）。', 'ok');
                         return;
                     }
-                    if (next === cursor) {
+                    if (next === cursor && d.imported === 0) { // 取り込んだファイルは import/ から移るので、取り込みがあった回は、cursor が同じでもよい
                         setMessage('取り込みが進みません（cursor ' + next + '）。取り込み ' + imported + ' 件、スキップ ' + skipped + ' 件。', 'error');
                         return;
                     }
