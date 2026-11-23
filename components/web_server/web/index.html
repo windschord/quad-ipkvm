@@ -108,6 +108,7 @@
                     <p id="paste-hint" class="hint paste-hint">ASCII 印字可能文字・改行・Tab のみ送信できます（最大 4096 文字、非 ASCII 文字は送信前にエラーになります）。送信中は操作を中断でき、Ctrl+Enter（Mac は Cmd+Enter）でも送信できます。</p>
                     <label for="paste-text" class="paste-label">送信するテキスト</label>
                     <textarea id="paste-text" class="paste-text" rows="6" maxlength="4096" aria-describedby="paste-hint" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"></textarea>
+                    <label class="paste-check" for="paste-clear-after"><input type="checkbox" id="paste-clear-after" checked> 送信完了・中止後にテキストを消去する</label>
                     <div class="paste-actions">
                         <button type="button" id="btn-paste-clipboard">クリップボードから読込</button>
                         <button type="button" id="btn-paste-clear">クリア</button>

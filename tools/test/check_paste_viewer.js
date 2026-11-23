@@ -131,7 +131,7 @@ function checkFiles(source) {
     const css = fs.readFileSync(APP_CSS, 'utf8');
     const infos = parseIndexHtml(html);
 
-    for (const id of ['btn-paste', 'paste-panel', 'btn-paste-close', 'paste-form', 'paste-fields', 'paste-layout-jis', 'paste-layout-us', 'paste-hint', 'paste-text', 'btn-paste-clipboard', 'btn-paste-clear', 'paste-progress-wrap', 'paste-progress', 'btn-paste-cancel', 'paste-status', 'paste-error']) {
+    for (const id of ['btn-paste', 'paste-panel', 'btn-paste-close', 'paste-form', 'paste-fields', 'paste-layout-jis', 'paste-layout-us', 'paste-hint', 'paste-text', 'paste-clear-after', 'btn-paste-clipboard', 'btn-paste-clear', 'paste-progress-wrap', 'paste-progress', 'btn-paste-cancel', 'paste-status', 'paste-error']) {
         if (!infos[id]) problems.push('index.html lacks #' + id);
     }
     if (problems.length) return problems;
@@ -142,6 +142,8 @@ function checkFiles(source) {
     }
     if (!/<button type="submit" class="paste-submit">/.test(html)) problems.push('paste form needs explicit <button type="submit" class="paste-submit">');
     if (infos['paste-layout-jis'].checked !== true || infos['paste-layout-us'].checked !== false) problems.push('default radio must be JIS');
+    if (infos['paste-clear-after'].checked !== true) problems.push('#paste-clear-after must start checked');
+    if (!/for="paste-clear-after"/.test(html)) problems.push('#paste-clear-after needs explicit label');
 
     // Ordering & accessibility checks.
     if (html.indexOf('id="paste-hint"') > html.indexOf('id="paste-text"')) problems.push('#paste-hint must be placed above #paste-text');
@@ -311,7 +313,7 @@ async function bootApp(source, opts) {
     };
     const keyReports = () => wsInput.sent.map((u) => Array.from(u));
 
-    return { elements, winListeners, timers, sockets, wsInput, status, violations, emitClick, emitChange, emitSubmit, stepTimer, keyReports };
+    return { document, docListeners, elements, winListeners, timers, sockets, wsInput, status, violations, emitClick, emitChange, emitSubmit, stepTimer, keyReports };
 }
 
 function makeStorage(init, opts) {
@@ -474,9 +476,10 @@ async function checkBrowser(source) {
             [0x01, 0xE1], [0x01, 0x04], [0x02, 0x04], [0x02, 0xE1],
             [0x01, 0x32], [0x02, 0x32],
         ]);
-        eq('5 fields re-enabled after done', [h.elements['paste-fields'].disabled, h.elements['paste-progress-wrap']._classes.has('paste-hidden'), h.elements['paste-status'].textContent], [false, true, '送信完了: 2 文字']);
+        eq('5 fields re-enabled and text cleared after done', [h.elements['paste-fields'].disabled, h.elements['paste-progress-wrap']._classes.has('paste-hidden'), h.elements['paste-status'].textContent, h.elements['paste-text'].value], [false, true, '送信完了: 2 文字', '']);
 
-        // Mac Cmd+Enter also works in US layout
+        // Unchecked paste-clear-after preserves text after completion; Mac Cmd+Enter also works in US layout
+        h.elements['paste-clear-after'].checked = false;
         h.elements['paste-layout-us'].checked = true;
         h.elements['paste-layout-jis'].checked = false;
         h.emitChange('paste-layout-us');
@@ -485,24 +488,45 @@ async function checkBrowser(source) {
         kd({ key: 'Enter', metaKey: true, isComposing: false, keyCode: 13, preventDefault() {} });
         while (h.stepTimer() !== null) {}
         eq('5 US ] uses 0x30', h.keyReports(), [[0x03], [0x01, 0x30], [0x02, 0x30]]);
+        eq('5 unchecked keeps text after done', h.elements['paste-text'].value, ']');
     });
 
-    // 6. Cancel, Escape, Disconnect, and Logout stop/clear mid-send
-    await guard('browser/cancel disconnect and logout cleanup', async () => {
+    // 6. Cancel, Escape, Background visibilitychange, pagehide, Disconnect, and Logout cleanup
+    await guard('browser/cancel visibilitychange pagehide disconnect and logout', async () => {
         const h = await bootApp(source);
         h.emitClick('btn-paste');
         h.elements['paste-text'].value = 'abcdef';
         h.emitSubmit();
         h.stepTimer();
         h.emitClick('btn-paste-cancel');
-        eq('6 cancel emits releaseAll and clears timers', [h.keyReports().pop(), h.timers.length, h.elements['paste-fields'].disabled, h.elements['paste-progress-wrap']._classes.has('paste-hidden')], [[0x03], 0, false, true]);
+        eq('6 cancel emits releaseAll, clears timers and text', [h.keyReports().pop(), h.timers.length, h.elements['paste-fields'].disabled, h.elements['paste-progress-wrap']._classes.has('paste-hidden'), h.elements['paste-text'].value], [[0x03], 0, false, true, '']);
+
+        // visibilitychange (hidden = true) mid-send even with inputEnabled = false must abort + releaseAll + clear text
+        h.wsInput.sent.length = 0;
+        h.elements['paste-text'].value = 'hide123';
+        h.emitSubmit();
+        h.stepTimer();
+        h.document.hidden = true;
+        h.docListeners.visibilitychange();
+        eq('6 visibilitychange aborts send and emits releaseAll', [h.keyReports().pop(), h.timers.length, h.elements['paste-fields'].disabled, h.elements['paste-text'].value], [[0x03], 0, false, '']);
+        h.document.hidden = false;
+
+        // pagehide mid-send must abort + releaseAll (and preserve text only when unchecked)
+        h.wsInput.sent.length = 0;
+        h.elements['paste-clear-after'].checked = false;
+        h.elements['paste-text'].value = 'hidepage';
+        h.emitSubmit();
+        h.stepTimer();
+        (h.winListeners.pagehide || []).forEach((fn) => fn());
+        eq('6 pagehide aborts send and emits releaseAll (unchecked keeps text)', [h.keyReports().pop(), h.timers.length, h.elements['paste-fields'].disabled, h.elements['paste-text'].value], [[0x03], 0, false, 'hidepage']);
 
         // Escape cancels while sending, closes when idle
+        h.elements['paste-clear-after'].checked = true;
         h.wsInput.sent.length = 0;
         h.emitSubmit();
         let escDef = 0;
         h.elements['paste-panel']._listeners.keydown[0]({ key: 'Escape', isComposing: false, keyCode: 27, preventDefault() { escDef++; } });
-        eq('6 Esc cancels mid-send without closing', [escDef, h.keyReports().pop(), h.elements['paste-panel']._classes.has('paste-hidden')], [1, [0x03], false]);
+        eq('6 Esc cancels mid-send without closing', [escDef, h.keyReports().pop(), h.elements['paste-panel']._classes.has('paste-hidden'), h.elements['paste-text'].value], [1, [0x03], false, '']);
         h.elements['paste-panel']._listeners.keydown[0]({ key: 'Escape', isComposing: false, keyCode: 27, preventDefault() { escDef++; } });
         eq('6 Esc closes when idle', h.elements['paste-panel']._classes.has('paste-hidden'), true);
 
@@ -512,12 +536,12 @@ async function checkBrowser(source) {
         h.emitSubmit();
         h.wsInput.readyState = 3;
         h.wsInput.onclose();
-        // clear reconnect timer before checks
-        eq('6 disconnect stops send and shows error', [h.elements['paste-fields'].disabled, h.elements['paste-error']._classes.has('paste-hidden')], [false, false]);
+        eq('6 disconnect stops send, clears text, and shows error', [h.elements['paste-fields'].disabled, h.elements['paste-error']._classes.has('paste-hidden'), h.elements['paste-text'].value], [false, false, '']);
 
-        // Logout clears textarea and closes panel
+        // Logout always clears textarea even when paste-clear-after is unchecked
         const h2 = await bootApp(source);
         h2.emitClick('btn-paste');
+        h2.elements['paste-clear-after'].checked = false;
         h2.elements['paste-text'].value = 'topsecret';
         h2.emitSubmit();
         h2.status.value = { state: 'ready', authenticated: false };
@@ -561,6 +585,10 @@ function mutantList() {
         M('P18', 'stop does not clear textarea on logout', "            if (sending) abortSend('終了したため送信を中止しました', false);\n            elText.value = '';\n            elStatus.textContent = '';", "            if (sending) abortSend('終了したため送信を中止しました', false);\n            elStatus.textContent = '';"),
         M('P19', 'layout loaded eagerly before panel open', "            if (panelOpen) {\n                ensureLayoutLoaded();", "            if (panelOpen) {"),
         M('P20', 'clipboard error still allows empty silent ok', "showError('クリップボードの読込が拒否されました。下の入力欄に手動で貼り付けてください');", ''),
+        M('P21', 'visibilitychange does not abort HID paste', "        if (document.hidden) {\n            paste.onBackground();", "        if (document.hidden) {"),
+        M('P22', 'pagehide does not abort HID paste', "    window.addEventListener('pagehide', () => {\n        paste.onBackground();", "    window.addEventListener('pagehide', () => {"),
+        M('P23', 'completion does not clear textarea when checked', "finishUi('送信完了: ' + total + ' 文字', true);", "finishUi('送信完了: ' + total + ' 文字', false);"),
+        M('P24', 'abort does not clear textarea when checked', "+ ' 文字送信済み）', true);", "+ ' 文字送信済み）', false);"),
     ];
 }
 

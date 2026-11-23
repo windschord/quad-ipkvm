@@ -1423,6 +1423,7 @@ const PasteViewer = (() => {
         const radioJis = doc.getElementById('paste-layout-jis');
         const radioUs = doc.getElementById('paste-layout-us');
         const elText = doc.getElementById('paste-text');
+        const chkClearAfter = doc.getElementById('paste-clear-after');
         const btnClipboard = doc.getElementById('btn-paste-clipboard');
         const btnClear = doc.getElementById('btn-paste-clear');
         const progressWrap = doc.getElementById('paste-progress-wrap');
@@ -1489,7 +1490,7 @@ const PasteViewer = (() => {
             }
         }
 
-        function finishUi(statusMsg) {
+        function finishUi(statusMsg, clearText) {
             sending = false;
             clearTimer();
             activeSteps = [];
@@ -1497,6 +1498,9 @@ const PasteViewer = (() => {
             fields.disabled = false;
             progressWrap.classList.add('paste-hidden');
             elProgress.textContent = '';
+            if (clearText && (!chkClearAfter || chkClearAfter.checked)) {
+                elText.value = '';
+            }
             if (typeof statusMsg === 'string') elStatus.textContent = statusMsg;
         }
 
@@ -1505,7 +1509,7 @@ const PasteViewer = (() => {
             const sentChars = charIdx;
             const totalChars = activeSteps.length;
             deps.sendReleaseAll();
-            finishUi(isError ? '' : reasonMsg + '（' + sentChars + ' / ' + totalChars + ' 文字送信済み）');
+            finishUi(isError ? '' : reasonMsg + '（' + sentChars + ' / ' + totalChars + ' 文字送信済み）', true);
             if (isError) showError(reasonMsg);
         }
 
@@ -1534,7 +1538,7 @@ const PasteViewer = (() => {
                 charIdx++;
                 if (charIdx >= activeSteps.length) {
                     const total = activeSteps.length;
-                    finishUi('送信完了: ' + total + ' 文字');
+                    finishUi('送信完了: ' + total + ' 文字', true);
                     return;
                 }
                 curEvents = eventsForStep(activeSteps[charIdx]);
@@ -1653,6 +1657,10 @@ const PasteViewer = (() => {
             if (sending) abortSend('入力接続が切断されたため送信を中止しました', true);
         }
 
+        function onBackground() {
+            if (sending) abortSend('タブが背景になったため送信を中止しました', false);
+        }
+
         function stop() {
             if (sending) abortSend('終了したため送信を中止しました', false);
             elText.value = '';
@@ -1669,7 +1677,7 @@ const PasteViewer = (() => {
             return sending;
         }
 
-        return { isOpen, isSending, setPanel, onDisconnect, stop };
+        return { isOpen, isSending, setPanel, onDisconnect, onBackground, stop };
     }
 
     return { create, MAX_CHARS, STEP_MS, SHIFT_USAGE, LAYOUT_KEY, normalizeLayout, normalizeNewlines, planText, eventsForStep };
@@ -2043,12 +2051,14 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     document.addEventListener('visibilitychange', () => {
-        if (document.hidden && inputEnabled) {
-            doReleaseAll();
+        if (document.hidden) {
+            paste.onBackground();
+            if (inputEnabled) doReleaseAll();
         }
     });
 
     window.addEventListener('pagehide', () => {
+        paste.onBackground();
         if (inputEnabled) doReleaseAll();
     });
 

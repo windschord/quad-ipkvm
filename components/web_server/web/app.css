@@ -507,6 +507,13 @@ button:disabled {
     gap: 8px;
     margin-top: 8px;
 }
+.paste-check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    font-size: 0.9em;
+}
 .paste-submit {
     margin-left: auto;
     background-color: #0056b3;
