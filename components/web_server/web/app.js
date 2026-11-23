@@ -1300,6 +1300,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnViewFit = document.getElementById('btn-view-fit');
     const btnViewWidth = document.getElementById('btn-view-width');
     const btnViewActual = document.getElementById('btn-view-actual');
+    const btnCodecMjpeg = document.getElementById('btn-codec-mjpeg');
+    const btnCodecH264 = document.getElementById('btn-codec-h264');
     const btnFullscreen = document.getElementById('btn-fullscreen');
     const btnFullscreenExit = document.getElementById('btn-fullscreen-exit');
     const elVideoStatus = document.getElementById('video-status');
@@ -1341,6 +1343,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let inputGranted = false; // the server accepted this connection as the controller (GRANTED, 0x80)
 
     let isDecoding = false;
+    let pendingMjpegFrame = null;
+    let videoConnGen = 0;
     let ctx = elVideo.getContext('2d');
 
     function updateInputUI() {
@@ -1780,6 +1784,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    const VideoCodec = {
+        MODES: ['mjpeg', 'h264'],
+        normalizeMode(mode) {
+            return this.MODES.indexOf(mode) !== -1 ? mode : 'mjpeg';
+        }
+    };
+
     // ---- View modes and full screen ----
     // The canvas box is set here (CSSOM, never by CSS) to the exact size VideoLayout.fitSize gives: the mouse position
     // is computed from this box (getMousePos), so the box must be the picture itself, with no stretching or black bars.
@@ -1856,6 +1867,69 @@ document.addEventListener('DOMContentLoaded', () => {
     viewModeButtons.forEach((entry) => {
         entry[1].addEventListener('click', () => setViewMode(entry[0]));
     });
+
+    const CODEC_MODE_KEY = 'quadkvm.videoCodec';
+    const codecModeButtons = [['mjpeg', btnCodecMjpeg], ['h264', btnCodecH264]];
+
+    function loadCodecMode() {
+        try {
+            return VideoCodec.normalizeMode(localStorage.getItem(CODEC_MODE_KEY));
+        } catch (err) {
+            return 'mjpeg';
+        }
+    }
+
+    function saveCodecMode(mode) {
+        try {
+            localStorage.setItem(CODEC_MODE_KEY, mode);
+        } catch (err) {
+            // the codec mode is just not kept
+        }
+    }
+
+    let codecMode = loadCodecMode();
+    let codecSwitchPending = false;
+
+    function updateCodecModeUI() {
+        for (let i = 0; i < codecModeButtons.length; i++) {
+            const entry = codecModeButtons[i];
+            entry[1].setAttribute('aria-pressed', entry[0] === codecMode ? 'true' : 'false');
+        }
+    }
+
+    async function setCodecMode(mode) {
+        const next = VideoCodec.normalizeMode(mode);
+        if (next === codecMode && (next !== 'h264' || !h264Failed)) return;
+        codecMode = next;
+        if (next === 'h264') h264Failed = false;
+        saveCodecMode(codecMode);
+        updateCodecModeUI();
+        if (ws || wsReconnectTimer || codecSwitchPending) {
+            codecSwitchPending = true;
+            try {
+                if (wsReconnectTimer) {
+                    clearTimeout(wsReconnectTimer);
+                    wsReconnectTimer = null;
+                }
+                if (ws) {
+                    ws.onclose = null;
+                    ws.close();
+                    ws = null;
+                }
+                resetVideoStatus();
+                wsReconnectDelay = 1000;
+                if (codecMode === 'h264') await waitForProbe();
+            } finally {
+                codecSwitchPending = false;
+            }
+            if (!ws && !viewDashboard.classList.contains('view-hidden')) connectWebSocket();
+        }
+    }
+
+    codecModeButtons.forEach((entry) => {
+        entry[1].addEventListener('click', () => setCodecMode(entry[0]));
+    });
+    updateCodecModeUI();
 
     function swallowRejection(p) {
         if (p && typeof p.catch === 'function') p.catch(() => {});
@@ -2022,6 +2096,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // One place for the reset: a new connection, a disconnect and a logout all end here.
     function resetVideoStatus() {
+        videoConnGen++;
+        pendingMjpegFrame = null;
         if (resolutionNoticeTimer !== null) {
             clearTimeout(resolutionNoticeTimer);
             resolutionNoticeTimer = null;
@@ -2069,7 +2145,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let h264Gen = 0; // bumped by every reset / configure start, so a late isConfigSupported result is ignored
     let h264Pending = 0; // generation of a configure waiting for isConfigSupported (0 = none)
     let h264NeedKey = true; // P frames are dropped until an IDR has been decoded
-    let h264Timestamp = 0;
+    let h264Timestamp = -1;
     let h264Shown = false; // the status line says H.264
 
     // ArrayBuffer (or a view of one) -> Uint8Array; null for anything else. toString, not instanceof: it also works
@@ -2138,6 +2214,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function h264Fallback() {
         if (h264Failed) return;
         h264Failed = true;
+        codecMode = 'mjpeg';
+        updateCodecModeUI();
         resetH264();
         if (ws) ws.close();
     }
@@ -2159,10 +2237,21 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function nextH264Timestamp() {
+        const nowUs = typeof performance !== 'undefined' && typeof performance.now === 'function'
+            ? Math.round(performance.now() * 1000)
+            : -1;
+        if (nowUs >= 0) {
+            h264Timestamp = nowUs > h264Timestamp ? nowUs : h264Timestamp + 1;
+        } else {
+            h264Timestamp = h264Timestamp < 0 ? 0 : h264Timestamp + H264_TIMESTAMP_STEP;
+        }
+        return h264Timestamp;
+    }
+
     function decodeH264(bytes, key) {
         try {
-            const chunk = new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: h264Timestamp, data: bytes });
-            h264Timestamp += H264_TIMESTAMP_STEP;
+            const chunk = new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: nextH264Timestamp(), data: bytes });
             h264Dec.decoder.decode(chunk);
             if (key) h264NeedKey = false;
         } catch (err) {
@@ -2250,10 +2339,47 @@ document.addEventListener('DOMContentLoaded', () => {
         setH264Shown(false);
     }
 
+    // Coalesce MJPEG frames while a decode is in flight: keep only the newest pending frame so delay does not pile up.
+    async function pumpMjpeg(initialFrame) {
+        if (isDecoding) {
+            pendingMjpegFrame = initialFrame;
+            return;
+        }
+        isDecoding = true;
+        let nextFrame = initialFrame;
+        let nextGen = videoConnGen;
+        try {
+            while (nextFrame !== null) {
+                const current = nextFrame;
+                const frameGen = nextGen;
+                nextFrame = null;
+                try {
+                    const bmp = await createImageBitmap(current);
+                    if (frameGen === videoConnGen) {
+                        elVideo.width = bmp.width;
+                        elVideo.height = bmp.height;
+                        noteVideoSize();
+                        ctx.drawImage(bmp, 0, 0);
+                    }
+                    bmp.close();
+                } catch (err) {
+                    // Decode error handled
+                }
+                if (pendingMjpegFrame !== null) {
+                    nextFrame = pendingMjpegFrame;
+                    nextGen = videoConnGen;
+                    pendingMjpegFrame = null;
+                }
+            }
+        } finally {
+            isDecoding = false;
+        }
+    }
+
     function connectWebSocket() {
         if (ws) return;
         resetVideoStatus();
-        const acceptH264 = h264Supported && !h264Failed;
+        const acceptH264 = codecMode === 'h264' && h264Supported && !h264Failed;
         const target = VideoTarget.withAccept(videoTarget || VideoTarget.resolve(location, undefined), acceptH264);
         let opened = false;
         ws = new WebSocket(target.url);
@@ -2281,6 +2407,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const bytes = toBytes(e.data);
                 const kind = bytes === null ? null : H264.classify(bytes);
                 if (kind === 'h264') {
+                    pendingMjpegFrame = null;
                     feedH264(bytes);
                     return;
                 }
@@ -2288,20 +2415,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 noteMjpeg();
                 frameData = new Blob([bytes], { type: 'image/jpeg' });
             }
-            if (isDecoding) return;
-            isDecoding = true;
-            try {
-                const bmp = await createImageBitmap(frameData);
-                elVideo.width = bmp.width;
-                elVideo.height = bmp.height;
-                noteVideoSize();
-                ctx.drawImage(bmp, 0, 0);
-                bmp.close();
-            } catch (err) {
-                // Decode error handled
-            } finally {
-                isDecoding = false;
-            }
+            await pumpMjpeg(frameData);
         };
 
         ws.onclose = () => {
@@ -2563,7 +2677,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (data.authenticated) {
                     showView(viewDashboard);
                     videoTarget = VideoTarget.resolve(location, data.video_port);
-                    await waitForProbe(); // so the first connection already knows whether to send accept=h264
+                    if (codecMode === 'h264') await waitForProbe(); // so the first connection already knows whether to send accept=h264
                     connectWebSocket();
                     connectInputWebSocket();
                 } else {

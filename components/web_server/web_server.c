@@ -107,10 +107,10 @@ static ws_video_ctrl_t s_ws_video_ctrl[CONFIG_WEB_SERVER_WS_MAX_CLIENTS];
 #define CONFIG_VIDEO_CODEC_H264_ALLOWED 0
 #endif
 #ifndef CONFIG_VIDEO_CODEC_UPGRADE_DWELL_MS
-#define CONFIG_VIDEO_CODEC_UPGRADE_DWELL_MS 5000
+#define CONFIG_VIDEO_CODEC_UPGRADE_DWELL_MS 1500
 #endif
 #ifndef CONFIG_VIDEO_CODEC_IDR_MIN_INTERVAL_MS
-#define CONFIG_VIDEO_CODEC_IDR_MIN_INTERVAL_MS 1000
+#define CONFIG_VIDEO_CODEC_IDR_MIN_INTERVAL_MS 250
 #endif
 #ifndef CONFIG_VIDEO_CODEC_KEY_WAIT_MS
 #define CONFIG_VIDEO_CODEC_KEY_WAIT_MS 5000
@@ -250,9 +250,17 @@ static void ws_video_tick_once(void) {
 }
 
 static void ws_video_task(void *pvParameters) {
+    (void)pvParameters;
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_WEB_SERVER_WS_TICK_MS));
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(CONFIG_WEB_SERVER_WS_TICK_MS));
         ws_video_tick_once();
+    }
+}
+
+void web_server_notify_video_frame(void) {
+    TaskHandle_t task = __atomic_load_n(&s_ws_task, __ATOMIC_ACQUIRE);
+    if (task) {
+        xTaskNotifyGive(task);
     }
 }
 
@@ -1078,6 +1086,7 @@ static void ws_video_finish_send(int fd, bool ok) {
     }
     ws_video_core_on_send_done(&s_ws_core, fd, ok);
     xSemaphoreGive(s_ws_mutex);
+    web_server_notify_video_frame();
 }
 
 // Send a single chunk (<= 4096 B mbedTLS record) non-blockingly, retrying briefly up to
@@ -1190,7 +1199,8 @@ static void ws_send_slice_work_cb(void *arg) {
         }
     }
 
-    const size_t slice_limit = (size_t)CONFIG_WEB_SERVER_WS_SLICE_BYTES;
+    const size_t base_slice = (size_t)CONFIG_WEB_SERVER_WS_SLICE_BYTES;
+    const size_t slice_limit = (sending_count <= 1 && base_slice < 65536u) ? 65536u : base_slice;
     size_t slice_sent = 0;
     while (!hdr_blocked && work->hdr_sent == work->hdr_len && work->payload_sent < work->len &&
            slice_sent < slice_limit) {
@@ -1607,6 +1617,7 @@ static esp_err_t ws_video_post_handshake_cb(httpd_req_t *req) {
     }
 
     ESP_LOGI(TAG, "WS video registered fd=%d accept=0x%x (SO_SNDTIMEO=%d ms)", fd, (unsigned)accept_mask, CONFIG_WEB_SERVER_WS_SOCK_SNDTIMEO_MS);
+    web_server_notify_video_frame();
     return ESP_OK;
 }
 
@@ -2278,10 +2289,12 @@ esp_err_t web_server_start(frame_hub_t *hub) {
     }
 
     if (video_server) {
-        if (xTaskCreate(ws_video_task, "ws_video", CONFIG_WEB_SERVER_WS_TASK_STACK_SIZE, NULL, 4, &s_ws_task) != pdPASS) {
+        TaskHandle_t ws_task = NULL;
+        if (xTaskCreate(ws_video_task, "ws_video", CONFIG_WEB_SERVER_WS_TASK_STACK_SIZE, NULL, 4, &ws_task) != pdPASS) {
             ESP_LOGE(TAG, "Failed to create ws_video task");
             goto fail;
         }
+        __atomic_store_n(&s_ws_task, ws_task, __ATOMIC_RELEASE);
         ESP_LOGI(TAG, "Video HTTPS server started on port %d (ctrl_port=%d)",
                  CONFIG_WEB_SERVER_VIDEO_PORT, video_conf.httpd.ctrl_port);
     }

@@ -1,4 +1,5 @@
 #include "frame_hub.h"
+#include <stdbool.h>
 #include <string.h>
 
 #define MAX_POOL_SIZE 32
@@ -185,6 +186,7 @@ void frame_hub_commit_ex(frame_hub_t* hub, video_frame_t* frame, const frame_hub
 
     slot->is_writing = 0;
 
+    bool committed = false;
     if (info->size > hub->config.max_frame_size || info->size == 0) {
         // Discard
         slot->active = 0;
@@ -201,9 +203,13 @@ void frame_hub_commit_ex(frame_hub_t* hub, video_frame_t* frame, const frame_hub
         slot->seq = hub->latest_seq;
         hub->latest_slot = slot;
         hub->stats.published_frames++;
+        committed = true;
     }
 
     if (hub->config.unlock_cb) hub->config.unlock_cb(hub->config.lock_ctx);
+    if (committed && hub->config.on_commit_cb) {
+        hub->config.on_commit_cb(hub->config.on_commit_ctx);
+    }
 }
 
 void frame_hub_abort_publish(frame_hub_t* hub, video_frame_t* frame) {

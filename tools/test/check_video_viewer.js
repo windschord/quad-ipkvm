@@ -833,8 +833,8 @@ async function checkBrowser(source) {
         await h2.msg(frame(320, 240));
         eq('19 bad text first: no overlay, frame drawn', [view(h2), draws(h2)], [[true, '', PLAIN], 1]);
     });
-    // 20. テキストは、復号の途中でも処理される(復号の重複防止の対象ではない)
-    await guard('status/text during decode', async () => {
+    // 20. テキストは、復号の途中でも処理される。復号中の最新フレームは 1 つだけ保持し、古い待ちフレームは捨てる
+    await guard('status/text during decode and coalescing', async () => {
         const h = await open();
         let release;
         const pending = new Promise((r) => { release = r; });
@@ -842,12 +842,29 @@ async function checkBrowser(source) {
         await flush();
         await h.msg(V('no_signal', 0, 0));
         eq('20 status applied while a frame is decoding', view(h), [false, '信号なし', PLAIN]);
-        await h.msg(frame(10, 10)); // 復号中のフレームは捨てる(既存の挙動)
+        await h.msg(frame(10, 10)); // 待ち 1 つ目(次のフレームで上書きされる)
+        await h.msg(frame(20, 20)); // 待ち 2 つ目(最新の 1 つだけ残る)
         release();
         await decoding;
-        eq('20 the decoding frame finishes', [draws(h), h.canvas().width], [1, 320]);
+        await flush();
+        eq('20 decoding frame + coalesced newest frame finish', [draws(h), h.canvas().width], [2, 20]);
         await h.msg(frame(640, 480));
-        eq('20 decoding works again afterwards', draws(h), 2);
+        eq('20 decoding works again afterwards', draws(h), 3);
+
+        // 20b. 再接続をまたいだ復号中フレームは描画せず、新接続で届いたフレームは続けて描く
+        const h2 = await open();
+        let releaseOld;
+        const pendingOld = new Promise((r) => { releaseOld = r; });
+        const decodingOld = h2.msg({ jpeg: true, w: 100, h: 100, pending: pendingOld });
+        await flush();
+        await h2.closeVideo(true);
+        h2.lastVideo().onopen();
+        await h2.msg(frame(200, 200)); // 新接続のフレームが復号中に届く
+        eq('20b nothing drawn before old resolves', draws(h2), 0);
+        releaseOld();
+        await decodingOld;
+        await flush();
+        eq('20b stale frame dropped and new frame drawn', [draws(h2), h2.canvas().width], [1, 200]);
     });
     // 21. innerHTML などへの代入をしない。表示は textContent
     await guard('status/textContent only', async () => {
@@ -1167,10 +1184,14 @@ async function checkH264Browser(source) {
         try { await fn(); } catch (e) { problems.push(name + ': threw ' + (e && e.message)); }
     };
     // 開いた、H.264 を受け取れるページ。opts: makeCodecs の引数、port: video_port、omit: 外すグローバル
-    const page = async (opts, more) => {
+    const page = async (o, more) => {
         more = more || {};
-        const env = makeCodecs(opts);
+        const env = makeCodecs(o);
         const globals = Object.assign({}, env.globals);
+        if (!more.noStorage) {
+            const initStore = more.codecMode === null ? {} : { 'quadkvm.videoCodec': more.codecMode || 'h264' };
+            globals.localStorage = makeStorage(initStore);
+        }
         for (const k of more.omit || []) delete globals[k];
         const st = { value: READY_AUTH(more.port === null ? {} : { video_port: more.port || 8444 }) };
         const h = await boot(source, L('kvm.local', 'kvm.local', ''), st, globals);
@@ -1185,10 +1206,10 @@ async function checkH264Browser(source) {
     const urls = (h) => h.videoSockets().map((s) => s.url);
     const PLAIN = '接続完了 / 受信中';
 
-    // 1. accept=h264 を付ける条件(9.4): VideoDecoder があり、isConfigSupported が真で、このタブで失敗していない
+    // 1. accept=h264 を付ける条件(9.4): H.264 モードが選ばれており、VideoDecoder があり、isConfigSupported が真で、このタブで失敗していない
     await guard('accept/no WebCodecs', async () => {
         const st = { value: READY_AUTH({ video_port: 8444 }) };
-        const h = await boot(source, L('kvm.local', 'kvm.local', ''), st);
+        const h = await boot(source, L('kvm.local', 'kvm.local', ''), st, { localStorage: makeStorage({ 'quadkvm.videoCodec': 'h264' }) });
         eq('1a url', urls(h), ['wss://kvm.local:8444/video']);
         eq('1a binaryType stays blob', h.lastVideo().binaryType, 'blob');
     });
@@ -1232,7 +1253,8 @@ async function checkH264Browser(source) {
             const env = makeCodecs({});
             env.raw = raw === undefined ? Promise.resolve(undefined) : raw;
             const st = { value: READY_AUTH({ video_port: 8444 }) };
-            const h = await boot(source, L('kvm.local', 'kvm.local', ''), st, env.globals);
+            const globals = Object.assign({ localStorage: makeStorage({ [CODEC_KEY]: 'h264' }) }, env.globals);
+            const h = await boot(source, L('kvm.local', 'kvm.local', ''), st, globals);
             eq('1i url for ' + name, urls(h), ['wss://kvm.local:8444/video']);
         });
     }
@@ -1240,7 +1262,7 @@ async function checkH264Browser(source) {
         const gate = deferred();
         const env = makeCodecs({ supported: () => gate.promise });
         const st = { value: READY_AUTH({ video_port: 8444 }) };
-        const h = await boot(source, L('kvm.local', 'kvm.local', ''), st, env.globals);
+        const h = await boot(source, L('kvm.local', 'kvm.local', ''), st, Object.assign({ localStorage: makeStorage({ [CODEC_KEY]: 'h264' }) }, env.globals));
         eq('1j no socket while the probe is pending', h.sockets.length, 0);
         gate.resolve(true);
         await flush();
@@ -1248,7 +1270,7 @@ async function checkH264Browser(source) {
         eq('1j url after the probe', urls(h), ['wss://kvm.local:8444/video?accept=h264']);
         const gate2 = deferred();
         const env2 = makeCodecs({ supported: () => gate2.promise });
-        const h2 = await boot(source, L('kvm.local', 'kvm.local', ''), st, env2.globals);
+        const h2 = await boot(source, L('kvm.local', 'kvm.local', ''), st, Object.assign({ localStorage: makeStorage({ [CODEC_KEY]: 'h264' }) }, env2.globals));
         gate2.resolve(false);
         await flush();
         await flush();
@@ -1257,7 +1279,7 @@ async function checkH264Browser(source) {
     await guard('accept/a probe that never settles', async () => {
         const env = makeCodecs({ supported: () => new Promise(() => {}) });
         const st = { value: READY_AUTH({ video_port: 8444 }) };
-        const h = await boot(source, L('kvm.local', 'kvm.local', ''), st, env.globals);
+        const h = await boot(source, L('kvm.local', 'kvm.local', ''), st, Object.assign({ localStorage: makeStorage({ [CODEC_KEY]: 'h264' }) }, env.globals));
         eq('1l no socket yet, one wait timer of 1500 ms', [h.sockets.length, h.timers.map((t) => t.delay)], [0, [1500]]);
         h.runTimer(1500);
         await flush();
@@ -1877,6 +1899,7 @@ function makeStorage(init, opts) {
 }
 
 const VIEW_KEY = 'quadkvm.viewMode';
+const CODEC_KEY = 'quadkvm.videoCodec';
 
 async function checkLayoutBrowser(source) {
     const problems = [];
@@ -1947,7 +1970,7 @@ async function checkLayoutBrowser(source) {
         eq('1 aria-pressed', h.pressed(), ['true', 'false', 'false']);
         eq('1 dashboard class', classesOf(h), ['fit']);
         eq('1 nothing is written before a choice', h.storage.writes, []);
-        eq('1 the saved mode is read from quadkvm.viewMode', h.storage.reads, [VIEW_KEY]);
+        eq('1 the saved mode is read from storage', h.storage.reads, [VIEW_KEY, CODEC_KEY]);
         eq('1 the dashboard is shown, the card is hidden', [h.dash().has('view-hidden'), h.elements['auth-card']._classes.has('view-hidden')], [false, true]);
         eq('1 full screen is not on', h.dash().has('is-fullscreen'), false);
     });
@@ -2049,7 +2072,7 @@ async function checkLayoutBrowser(source) {
     });
     await guard('layout/H.264 frame', async () => {
         const env = makeCodecs();
-        const globals = Object.assign({ localStorage: makeStorage({}) }, env.globals);
+        const globals = Object.assign({ localStorage: makeStorage({ [CODEC_KEY]: 'h264' }) }, env.globals);
         const st = { value: READY_AUTH() };
         const h = await boot(source, L('kvm.local', 'kvm.local', ''), st, globals, {
             setup(els) { els['video-wrap'].clientWidth = WRAP[0]; els['video-wrap'].clientHeight = WRAP[1]; },
@@ -2456,34 +2479,37 @@ function checkLayoutFiles() {
     const at = (s) => html.indexOf(s);
     // id
     for (const id of ['auth-card', 'view-dashboard', 'video-wrap', 'video', 'video-overlay', 'video-status', 'video-trust-hint', 'btn-input-toggle', 'btn-pointer-lock', 'input-status', 'usb-status',
-        'btn-view-fit', 'btn-view-width', 'btn-view-actual', 'btn-fullscreen', 'btn-fullscreen-exit', 'btn-logout', 'error-message', 'view-setup', 'view-login']) {
+        'btn-view-fit', 'btn-view-width', 'btn-view-actual', 'btn-codec-mjpeg', 'btn-codec-h264', 'btn-fullscreen', 'btn-fullscreen-exit', 'btn-logout', 'error-message', 'view-setup', 'view-login']) {
         if (!info[id]) problems.push('index.html lacks #' + id);
     }
     if (problems.length) return problems;
     // ボタンは <button type="button">(フォームの外で submit にならない。キーボードで操作できる)
-    for (const id of ['btn-input-toggle', 'btn-pointer-lock', 'btn-view-fit', 'btn-view-width', 'btn-view-actual', 'btn-fullscreen', 'btn-fullscreen-exit', 'btn-logout']) {
+    for (const id of ['btn-input-toggle', 'btn-pointer-lock', 'btn-view-fit', 'btn-view-width', 'btn-view-actual', 'btn-codec-mjpeg', 'btn-codec-h264', 'btn-fullscreen', 'btn-fullscreen-exit', 'btn-logout']) {
         if (info[id].tag !== 'button') problems.push('#' + id + ' must be a <button>');
         if (!/\btype="button"/.test(info[id].attrs)) problems.push('#' + id + ' needs type="button"');
         if (/tabindex="-1"/.test(info[id].attrs)) problems.push('#' + id + ' must stay reachable by keyboard');
     }
-    // 表示サイズのグループ
-    const g = /<div\b([^>]*\brole="group"[^>]*)>([\s\S]*?)<\/div>/.exec(html);
-    if (!g) problems.push('index.html lacks the role="group" of the view modes');
+    // 表示サイズと映像モードのグループ
+    const groups = [...html.matchAll(/<div\b([^>]*\brole="group"[^>]*)>([\s\S]*?)<\/div>/g)];
+    if (groups.length < 2) problems.push('index.html needs view-mode and video-mode role="group"');
     else {
-        if (!/aria-label="表示サイズ"/.test(g[1])) problems.push('the view mode group needs aria-label="表示サイズ"');
-        const ids = (g[2].match(/id="[^"]+"/g) || []).join(' ');
-        if (ids !== 'id="btn-view-fit" id="btn-view-width" id="btn-view-actual"') problems.push('the group holds the three mode buttons in order, got: ' + ids);
+        if (!/aria-label="表示サイズ"/.test(groups[0][1])) problems.push('the view mode group needs aria-label="表示サイズ"');
+        const ids0 = (groups[0][2].match(/id="[^"]+"/g) || []).join(' ');
+        if (ids0 !== 'id="btn-view-fit" id="btn-view-width" id="btn-view-actual"') problems.push('the group holds the three mode buttons in order, got: ' + ids0);
+        if (!/aria-label="映像モード"/.test(groups[1][1])) problems.push('the codec mode group needs aria-label="映像モード"');
+        const ids1 = (groups[1][2].match(/id="[^"]+"/g) || []).join(' ');
+        if (ids1 !== 'id="btn-codec-mjpeg" id="btn-codec-h264"') problems.push('the codec group holds mjpeg then h264, got: ' + ids1);
     }
     const label = (id) => new RegExp('id="' + id + '"[^>]*>([^<]*)<').exec(html);
-    for (const [id, text] of [['btn-view-fit', 'ウィンドウに合わせる'], ['btn-view-width', '幅に合わせる'], ['btn-view-actual', '実寸 (100%)'], ['btn-fullscreen', '全画面'], ['btn-fullscreen-exit', '全画面を終了'], ['btn-logout', 'ログアウト']]) {
+    for (const [id, text] of [['btn-view-fit', 'ウィンドウに合わせる'], ['btn-view-width', '幅に合わせる'], ['btn-view-actual', '実寸 (100%)'], ['btn-codec-mjpeg', '低遅延'], ['btn-codec-h264', '低帯域 (H.264)'], ['btn-fullscreen', '全画面'], ['btn-fullscreen-exit', '全画面を終了'], ['btn-logout', 'ログアウト']]) {
         const m = label(id);
         if (!m || m[1] !== text) problems.push('#' + id + ' label: expected ' + text + ', got ' + (m && m[1]));
     }
-    for (const [id, v] of [['btn-view-fit', 'true'], ['btn-view-width', 'false'], ['btn-view-actual', 'false']]) {
+    for (const [id, v] of [['btn-view-fit', 'true'], ['btn-view-width', 'false'], ['btn-view-actual', 'false'], ['btn-codec-mjpeg', 'true'], ['btn-codec-h264', 'false']]) {
         if (!new RegExp('aria-pressed="' + v + '"').test(info[id].attrs)) problems.push('#' + id + ' starts with aria-pressed="' + v + '"');
     }
     // 順序: 操作バー(左から)-> 映像 -> 状態と文言
-    const order = ['class="bar-title"', 'id="btn-input-toggle"', 'id="btn-pointer-lock"', 'id="input-status"', 'id="usb-status"', 'role="group"', 'id="btn-fullscreen"', 'id="btn-logout"',
+    const order = ['class="bar-title"', 'id="btn-input-toggle"', 'id="btn-pointer-lock"', 'id="input-status"', 'id="usb-status"', 'role="group"', 'id="btn-codec-mjpeg"', 'id="btn-fullscreen"', 'id="btn-logout"',
         'class="video-wrap"', '<canvas id="video"', 'id="btn-fullscreen-exit"', 'id="video-overlay"', 'id="video-status"', 'id="video-trust-hint"', 'class="hint video-hint"'];
     let last = -1;
     for (const s of order) {
@@ -2533,6 +2559,8 @@ function checkLayoutFiles() {
     if (bar === null || !/flex-wrap: wrap/.test(bar)) problems.push('.bar must wrap on a narrow window');
     if (!/\.bar-modes button\[aria-pressed="true"\] \{[^}]*background-color/.test(css)) problems.push('the pressed mode button needs its own look');
     if (!/\.bar-modes \{[^}]*margin-left: auto/.test(css)) problems.push('the mode buttons are at the right of the bar');
+    if (!/\.bar-video-mode button\[aria-pressed="true"\] \{[^}]*background-color/.test(css)) problems.push('the pressed codec button needs its own look');
+    if (!/\.bar-video-mode button \{[^}]*min-block-size:\s*24px/.test(css)) problems.push('the codec buttons need at least 24px block size');
     if (!/#view-dashboard:not\(\.view-hidden\) \{[^}]*display: flex/.test(css)) problems.push('the dashboard is a flex column (and stays hidden with .view-hidden)');
     if (/\n#view-dashboard \{[^}]*display/.test(css)) problems.push('a plain #view-dashboard rule with display would show the hidden dashboard');
     const fsHide = /#view-dashboard\.is-fullscreen \.bar,\s*#view-dashboard\.is-fullscreen \.video-info \{[^}]*display: none/.test(css);
@@ -2585,6 +2613,179 @@ function checkLayoutFiles() {
     return problems;
 }
 
+function loadVideoCodec(source) {
+    const m = /const VideoCodec = (\{[\s\S]*?\n    \});/.exec(source);
+    if (!m) throw new Error('VideoCodec not found in app.js');
+    return new Function('return ' + m[1])();
+}
+
+function checkCodecPure(source) {
+    const problems = [];
+    let vc;
+    try { vc = loadVideoCodec(source); } catch (e) { return [String(e.message)]; }
+    for (const [input, want] of [
+        ['mjpeg', 'mjpeg'], ['h264', 'h264'], ['', 'mjpeg'], ['H264', 'mjpeg'], ['MJPEG', 'mjpeg'],
+        ['auto', 'mjpeg'], [' h264', 'mjpeg'], [null, 'mjpeg'], [undefined, 'mjpeg'], [{}, 'mjpeg'], [['h264'], 'mjpeg'],
+    ]) {
+        const got = vc.normalizeMode(input);
+        if (got !== want) problems.push('VideoCodec.normalizeMode ' + JSON.stringify(input) + ': expected ' + want + ', got ' + got);
+    }
+    return problems;
+}
+
+async function checkCodecBrowser(source) {
+    const problems = [];
+    const eq = (name, got, want) => {
+        if (JSON.stringify(got) !== JSON.stringify(want)) problems.push(name + ': expected ' + JSON.stringify(want) + ', got ' + JSON.stringify(got));
+    };
+    const guard = async (name, fn) => {
+        try { await fn(); } catch (e) { problems.push(name + ': threw ' + (e && e.message)); }
+    };
+    const codecPressed = (h) => [h.elements['btn-codec-mjpeg'].getAttribute('aria-pressed'), h.elements['btn-codec-h264'].getAttribute('aria-pressed')];
+    const videoUrls = (h) => h.sockets.filter((s) => /\/video/.test(s.url)).map((s) => s.url);
+    const click = (h, id) => h.elements[id]._listeners.click();
+
+    // 1. Default startup (empty, missing, throwing, invalid): always mjpeg without waiting for probe
+    await guard('codec/default mjpeg skips probe wait', async () => {
+        const env = makeCodecs({ supported: () => deferred().promise });
+        const globals = Object.assign({ localStorage: makeStorage({}) }, env.globals);
+        const h = await boot(source, L('kvm.local', 'kvm.local', ''), { value: READY_AUTH({ video_port: 8444 }) }, globals);
+        eq('1 default pressed', codecPressed(h), ['true', 'false']);
+        eq('1 no wait timer on mjpeg default', h.timers.length, 0);
+        eq('1 default connects mjpeg immediately', videoUrls(h), ['wss://kvm.local:8444/video']);
+        eq('1 binaryType blob', h.lastVideo().binaryType, 'blob');
+    });
+    for (const [label, storage] of [
+        ['missing storage', null],
+        ['getItem throws', makeStorage({ [CODEC_KEY]: 'h264' }, { getThrows: true })],
+        ['bad value', makeStorage({ [CODEC_KEY]: 'bogus' })],
+    ]) {
+        await guard('codec/fallback default (' + label + ')', async () => {
+            const env = makeCodecs();
+            const globals = Object.assign({}, env.globals);
+            if (storage !== null) globals.localStorage = storage;
+            const h = await boot(source, L('kvm.local', 'kvm.local', ''), { value: READY_AUTH({ video_port: 8444 }) }, globals);
+            eq(label + ' pressed', codecPressed(h), ['true', 'false']);
+            eq(label + ' url', videoUrls(h), ['wss://kvm.local:8444/video']);
+        });
+    }
+
+    // 2. Restore saved modes
+    await guard('codec/restore saved h264', async () => {
+        const env = makeCodecs();
+        const stStore = makeStorage({ [CODEC_KEY]: 'h264' });
+        const globals = Object.assign({ localStorage: stStore }, env.globals);
+        const h = await boot(source, L('kvm.local', 'kvm.local', ''), { value: READY_AUTH({ video_port: 8444 }) }, globals);
+        eq('2 h264 pressed', codecPressed(h), ['false', 'true']);
+        eq('2 nothing written', stStore.writes, []);
+        eq('2 h264 url', videoUrls(h), ['wss://kvm.local:8444/video?accept=h264']);
+        eq('2 arraybuffer', h.lastVideo().binaryType, 'arraybuffer');
+    });
+
+    // 3. Switch via toolbar + setItem throws + probe gating + duplicate click
+    await guard('codec/switch mjpeg <-> h264', async () => {
+        const env = makeCodecs();
+        const stStore = makeStorage({});
+        const globals = Object.assign({ localStorage: stStore }, env.globals);
+        const h = await boot(source, L('kvm.local', 'kvm.local', ''), { value: READY_AUTH({ video_port: 8444 }) }, globals);
+        const s0 = h.lastVideo();
+        click(h, 'btn-codec-mjpeg'); // same mode: no reconnect
+        await flush();
+        eq('3 same click does not reconnect', [videoUrls(h).length, s0.readyState], [1, 0]);
+
+        click(h, 'btn-codec-h264');
+        await flush();
+        eq('3 h264 pressed', codecPressed(h), ['false', 'true']);
+        eq('3 h264 saved', stStore.writes, [[CODEC_KEY, 'h264']]);
+        eq('3 old closed and reconnected h264', [s0.readyState, videoUrls(h)], [3, ['wss://kvm.local:8444/video', 'wss://kvm.local:8444/video?accept=h264']]);
+        eq('3 arraybuffer on new ws', h.lastVideo().binaryType, 'arraybuffer');
+
+        click(h, 'btn-codec-mjpeg');
+        await flush();
+        eq('3 mjpeg pressed', codecPressed(h), ['true', 'false']);
+        eq('3 mjpeg saved', stStore.writes[1], [CODEC_KEY, 'mjpeg']);
+        eq('3 reconnected without accept', videoUrls(h), ['wss://kvm.local:8444/video', 'wss://kvm.local:8444/video?accept=h264', 'wss://kvm.local:8444/video']);
+        eq('3 blob on mjpeg', h.lastVideo().binaryType, 'blob');
+    });
+    await guard('codec/setItem throws still switches', async () => {
+        const env = makeCodecs();
+        const globals = Object.assign({ localStorage: makeStorage({}, { setThrows: true }) }, env.globals);
+        const h = await boot(source, L('kvm.local', 'kvm.local', ''), { value: READY_AUTH({ video_port: 8444 }) }, globals);
+        click(h, 'btn-codec-h264');
+        await flush();
+        eq('3b switched even if setItem throws', [codecPressed(h), videoUrls(h)], [['false', 'true'], ['wss://kvm.local:8444/video', 'wss://kvm.local:8444/video?accept=h264']]);
+    });
+    await guard('codec/switch cancels pending reconnect timer and awaits probe', async () => {
+        const gate = deferred();
+        const env = makeCodecs({ supported: () => gate.promise });
+        const globals = Object.assign({ localStorage: makeStorage({}) }, env.globals);
+        const h = await boot(source, L('kvm.local', 'kvm.local', ''), { value: READY_AUTH({ video_port: 8444 }) }, globals);
+        await h.closeVideo(false); // reconnect timer pending
+        eq('3c reconnect timer pending', h.timers.length, 1);
+        click(h, 'btn-codec-h264');
+        await flush();
+        eq('3c reconnect timer cleared while waiting probe', [h.timers.length, videoUrls(h).length], [1, 1]); // waitForProbe 1500ms timer
+        gate.resolve(true);
+        await flush();
+        eq('3c reconnected with accept after probe resolves', videoUrls(h), ['wss://kvm.local:8444/video', 'wss://kvm.local:8444/video?accept=h264']);
+    });
+    await guard('codec/switch aborted on logout during probe wait', async () => {
+        const gate = deferred();
+        const env = makeCodecs({ supported: () => gate.promise });
+        const globals = Object.assign({ localStorage: makeStorage({}) }, env.globals);
+        const st = { value: READY_AUTH({ video_port: 8444 }) };
+        const h = await boot(source, L('kvm.local', 'kvm.local', ''), st, globals);
+        click(h, 'btn-codec-h264');
+        await flush();
+        st.value = { state: 'ready', authenticated: false };
+        h.elements['btn-logout']._listeners.click();
+        await flush();
+        gate.resolve(true);
+        await flush();
+        eq('3d no new socket opened after logout', videoUrls(h).length, 1);
+    });
+
+    // 4. Fallback updates UI to mjpeg without clobbering saved preference, and manual click retries h264
+    await guard('codec/fallback UI and manual retry', async () => {
+        const env = makeCodecs();
+        const stStore = makeStorage({ [CODEC_KEY]: 'h264' });
+        const globals = Object.assign({ localStorage: stStore }, env.globals);
+        const h = await boot(source, L('kvm.local', 'kvm.local', ''), { value: READY_AUTH({ video_port: 8444 }) }, globals);
+        h.lastVideo().onopen();
+        await h.msg(hx(AU_IDR720).buffer);
+        await flush();
+        env.decoders[0].fail();
+        await h.closeVideo(true);
+        await flush();
+        eq('4 fallback pressed mjpeg', codecPressed(h), ['true', 'false']);
+        eq('4 fallback did not overwrite storage', stStore.writes, []);
+        eq('4 reconnected mjpeg', videoUrls(h), ['wss://kvm.local:8444/video?accept=h264', 'wss://kvm.local:8444/video']);
+        click(h, 'btn-codec-h264');
+        await flush();
+        eq('4 manual click retries accept=h264', videoUrls(h), ['wss://kvm.local:8444/video?accept=h264', 'wss://kvm.local:8444/video', 'wss://kvm.local:8444/video?accept=h264']);
+    });
+
+    // 5. performance.now() monotonic microsecond timestamps
+    await guard('codec/performance.now timestamps', async () => {
+        const times = [10.5, 10.5, 25.0];
+        let ti = 0;
+        const env = makeCodecs();
+        const globals = Object.assign({
+            localStorage: makeStorage({ [CODEC_KEY]: 'h264' }),
+            performance: { now: () => times[ti++] },
+        }, env.globals);
+        const h = await boot(source, L('kvm.local', 'kvm.local', ''), { value: READY_AUTH({ video_port: 8444 }) }, globals);
+        h.lastVideo().onopen();
+        await h.msg(hx(AU_IDR720).buffer);
+        await flush();
+        await h.msg(hx(pAu(1)).buffer);
+        await h.msg(hx(pAu(2)).buffer);
+        await flush();
+        eq('5 monotonic us timestamps with tiebreak', env.chunks.map((c) => c.timestamp), [10500, 10501, 25000]);
+    });
+    return problems;
+}
+
 async function checkAll(source) {
     const problems = checkPure(source);
     let browserProblems;
@@ -2593,10 +2794,12 @@ async function checkAll(source) {
     try { h264Problems = await checkH264Browser(source); } catch (e) { h264Problems = ['h264 harness threw: ' + (e && e.message)]; }
     let layoutProblems;
     try { layoutProblems = await checkLayoutBrowser(source); } catch (e) { layoutProblems = ['layout harness threw: ' + (e && e.message)]; }
+    let codecProblems;
+    try { codecProblems = await checkCodecBrowser(source); } catch (e) { codecProblems = ['codec harness threw: ' + (e && e.message)]; }
     await flush();
     await flush();
     const rejected = unhandled.splice(0).map((m) => 'unhandled promise rejection: ' + m);
-    return problems.concat(checkLayoutPure(source), checkLayoutFiles(), browserProblems, h264Problems, layoutProblems, rejected);
+    return problems.concat(checkLayoutPure(source), checkCodecPure(source), checkLayoutFiles(), browserProblems, h264Problems, layoutProblems, codecProblems, rejected);
 }
 
 // ---------- ミュータント(app.js の追加分を 1 か所ずつ変える) ----------
@@ -2841,7 +3044,7 @@ function mutantList() {
         M('D83', 'probe: a missing answer is not handled', 'h264Supported = !!res && res.supported === true;', 'h264Supported = res.supported === true;'),
         M('D84', 'probe: a rejected probe is not handled', "            h264Supported = !!res && res.supported === true;\n        }, () => {});", "            h264Supported = !!res && res.supported === true;\n        });"),
         M('D85', 'probe: not started', '    h264Probe = probeH264();\n', ''),
-        M('D86', 'waitForProbe: probe not awaited by fetchStatus', '                    await waitForProbe();', '                    void waitForProbe();'),
+        M('D86', 'waitForProbe: probe not awaited by fetchStatus', "                    if (codecMode === 'h264') await waitForProbe();", "                    if (codecMode === 'h264') void waitForProbe();"),
         M('D87', 'waitForProbe: no time limit', '            const t = setTimeout(resolve, H264_PROBE_WAIT_MS);', '            const t = 0;'),
         M('D88', 'waitForProbe: the limit is not cancelled when the probe settles', '                clearTimeout(t);\n                resolve();', '                resolve();'),
         M('D89', 'waitForProbe: a settled probe does not release the connection', '                clearTimeout(t);\n                resolve();', '                clearTimeout(t);'),
@@ -2866,7 +3069,7 @@ function mutantList() {
         M('D106', 'h264Fallback: not remembered', '        if (h264Failed) return;\n        h264Failed = true;\n', '        if (h264Failed) return;\n'),
         M('D107', 'h264Fallback: repeat guard removed (the callers cannot reach it twice)', '        if (h264Failed) return;\n        h264Failed = true;\n', '        h264Failed = true;\n',
             '2 回目の呼び出しは、世代の検査(待ちの結果)と、デコーダを忘れた後のエラーの無視で、そもそも来ない。あっても ws.close() が重なるだけ(二重の防御)'),
-        M('D108', 'h264Fallback: decoder not closed', '        h264Failed = true;\n        resetH264();\n', '        h264Failed = true;\n'),
+        M('D108', 'h264Fallback: decoder not closed', "        h264Failed = true;\n        codecMode = 'mjpeg';\n        updateCodecModeUI();\n        resetH264();\n", "        h264Failed = true;\n        codecMode = 'mjpeg';\n        updateCodecModeUI();\n"),
         M('D109', 'h264Fallback: connection not closed', '        if (ws) ws.close();\n    }\n\n    function drawH264Frame', '    }\n\n    function drawH264Frame'),
         M('D110', 'h264Fallback: connection guard removed (never called without one)', '        if (ws) ws.close();\n    }\n\n    function drawH264Frame', '        ws.close();\n    }\n\n    function drawH264Frame',
             '切断するとデコーダも閉じる(世代と「忘れたデコーダ」の検査で古い通知を捨てる)ので、ws が無いときにフォールバックには来ない。ws の検査は二重の防御'),
@@ -2889,12 +3092,12 @@ function mutantList() {
         M('D126', 'drawH264Frame: a drawing error is thrown to the decoder', '        } catch (err) {\n            // a frame that cannot be drawn is dropped\n        } finally {', '        } catch (err) {\n            throw err;\n        } finally {'),
         M('D127', 'decodeH264: chunk types swapped', "type: key ? 'key' : 'delta'", "type: key ? 'delta' : 'key'"),
         M('D128', 'decodeH264: every chunk is a key chunk', "type: key ? 'key' : 'delta'", "type: 'key'"),
-        M('D129', 'decodeH264: no time stamp', 'timestamp: h264Timestamp, data: bytes', 'timestamp: 0, data: bytes'),
-        M('D130', 'decodeH264: the time stamp does not advance', '            h264Timestamp += H264_TIMESTAMP_STEP;\n', ''),
+        M('D129', 'decodeH264: no time stamp', 'timestamp: nextH264Timestamp(), data: bytes', 'timestamp: 0, data: bytes'),
+        M('D130', 'decodeH264: the time stamp does not advance', '            h264Timestamp = h264Timestamp < 0 ? 0 : h264Timestamp + H264_TIMESTAMP_STEP;\n', ''),
         M('D131', 'decodeH264: time stamp step 0', 'const H264_TIMESTAMP_STEP = 33333;', 'const H264_TIMESTAMP_STEP = 0;'),
         M('D132', 'decodeH264: another step (any increasing value works)', 'const H264_TIMESTAMP_STEP = 33333;', 'const H264_TIMESTAMP_STEP = 16667;',
             'ストリームに時刻が無く、B フレームもないので、増える値なら何でもよい'),
-        M('D133', 'decodeH264: another buffer is sent', 'timestamp: h264Timestamp, data: bytes', 'timestamp: h264Timestamp, data: bytes.subarray(4)'),
+        M('D133', 'decodeH264: another buffer is sent', 'timestamp: nextH264Timestamp(), data: bytes', 'timestamp: nextH264Timestamp(), data: bytes.subarray(4)'),
         M('D134', 'decodeH264: a key chunk does not clear need-key', '            if (key) h264NeedKey = false;', '            if (!key) h264NeedKey = false;'),
         M('D135', 'decodeH264: need-key never cleared', '            if (key) h264NeedKey = false;\n', ''),
         M('D136', 'decodeH264: every chunk clears need-key (a delta chunk is sent only when it is already clear)', '            if (key) h264NeedKey = false;', '            h264NeedKey = false;',
@@ -2956,8 +3159,9 @@ function mutantList() {
         M('D186', 'feedH264: a new decoder gets the wrong buffer', 'startH264Decoder(codec, au.sps, bytes);', 'startH264Decoder(codec, au.sps, bytes.subarray(1));'),
         M('D187', 'noteMjpeg: need-key not set', '    function noteMjpeg() {\n        h264NeedKey = true;\n', '    function noteMjpeg() {\n'),
         M('D188', 'noteMjpeg: the label stays', '        setH264Shown(false);\n    }', '    }'),
-        M('D189', 'connect: accept even when not supported', 'const acceptH264 = h264Supported && !h264Failed;', 'const acceptH264 = !h264Failed;'),
-        M('D190', 'connect: accept even after a failure', 'const acceptH264 = h264Supported && !h264Failed;', 'const acceptH264 = h264Supported;'),
+        M('D189', 'connect: accept even when not supported', "const acceptH264 = codecMode === 'h264' && h264Supported && !h264Failed;", "const acceptH264 = codecMode === 'h264' && !h264Failed;"),
+        M('D190', 'connect: accept even after a failure', "const acceptH264 = codecMode === 'h264' && h264Supported && !h264Failed;", "const acceptH264 = codecMode === 'h264' && h264Supported;",
+            'h264Fallback が codecMode を mjpeg に戻すため二重の防御'),
         M('D191', 'connect: accept is never sent', 'VideoTarget.resolve(location, undefined), acceptH264);', 'VideoTarget.resolve(location, undefined), false);'),
         M('D192', 'connect: accept is always sent', 'VideoTarget.resolve(location, undefined), acceptH264);', 'VideoTarget.resolve(location, undefined), true);'),
         M('D193', 'connect: binaryType stays blob when H.264 is accepted', '        if (acceptH264) ws.binaryType = "arraybuffer";', '        if (false) ws.binaryType = "arraybuffer";'),
@@ -2973,7 +3177,7 @@ function mutantList() {
         M('D202', 'onmessage: the Blob has another type', "{ type: 'image/jpeg' }", "{ type: 'image/png' }"),
         M('D203', 'onmessage: a message that is not binary is classified (classify handles null)', "const kind = bytes === null ? null : H264.classify(bytes);", "const kind = H264.classify(bytes);",
             'classify が null を受けて null を返す(D07)ので、bytes の null の検査は二重の防御'),
-        M('D205', 'onmessage: createImageBitmap gets the message, not the Blob', 'const bmp = await createImageBitmap(frameData);', 'const bmp = await createImageBitmap(e.data);'),
+        M('D205', 'onmessage: createImageBitmap gets the message, not the Blob', 'await pumpMjpeg(frameData);', 'await pumpMjpeg(e.data);'),
         M('D206', 'reset: the status reset does not reset H.264', '        resetH264(); // the decoder and the "H.264" label go with the connection\n', ''),
         M('D207', 'status: the label is dropped by the next status', '        if (h264Shown) elVideoStatus.textContent += H264_LABEL;\n', ''),
         M('D208', 'status: the label replaces the resolution', '        if (h264Shown) elVideoStatus.textContent += H264_LABEL;', '        if (h264Shown) elVideoStatus.textContent = STATUS_PLAIN + H264_LABEL;'),
@@ -3053,7 +3257,7 @@ function mutantList() {
         M('L70', 'noteVideoSize: needs both to change', 'if (elVideo.width !== laidOutW || elVideo.height !== laidOutH)', 'if (elVideo.width !== laidOutW && elVideo.height !== laidOutH)'),
         M('L71', 'noteVideoSize: the width is not compared', 'if (elVideo.width !== laidOutW || elVideo.height !== laidOutH)', 'if (elVideo.height !== laidOutH)'),
         M('L72', 'noteVideoSize: the height is not compared', 'if (elVideo.width !== laidOutW || elVideo.height !== laidOutH)', 'if (elVideo.width !== laidOutW)'),
-        M('L73', 'JPEG frame: no layout for a new resolution', '                elVideo.height = bmp.height;\n                noteVideoSize();\n', '                elVideo.height = bmp.height;\n'),
+        M('L73', 'JPEG frame: no layout for a new resolution', '                        elVideo.height = bmp.height;\n                        noteVideoSize();\n', '                        elVideo.height = bmp.height;\n'),
         M('L74', 'H.264 frame: no layout for a new resolution', '            if (elVideo.height !== h) elVideo.height = h;\n            noteVideoSize();\n', '            if (elVideo.height !== h) elVideo.height = h;\n'),
         M('L75', 'isFullscreen: any element counts', 'return document.fullscreenElement === elVideoWrap;', 'return !!document.fullscreenElement;'),
         M('L76', 'isFullscreen: inverted', 'return document.fullscreenElement === elVideoWrap;', 'return document.fullscreenElement !== elVideoWrap;'),
@@ -3100,7 +3304,7 @@ function mutantList() {
         M('L115', 'syncKeyboardLock: navigator is used without the typeof check', "const kb = typeof navigator !== 'undefined' ? navigator.keyboard : undefined;", 'const kb = navigator.keyboard;', 'navigator が無いと ReferenceError を投げ、すぐ外の try/catch が捨てる'),
         M('L116', 'showView: the card is not hidden for the dashboard', "            elAuthCard.classList.add('view-hidden');\n", ''),
         M('L117', 'showView: the card is not shown again', "            elAuthCard.classList.remove('view-hidden');\n", ''),
-        M('L118', 'showView: no layout when the dashboard appears', '            updateVideoLayout();\n        } else {', '        } else {'),
+        M('L118', 'showView: no layout when the dashboard appears', '            updateVideoLayout();\n            iso.start();\n        } else {', '            iso.start();\n        } else {'),
         M('L119', 'showView: the page does not leave full screen', '            if (isFullscreen()) {', 'if (false) {'),
         M('L120', 'showView: the dashboard branch is for every view', 'if (view === viewDashboard) {', 'if (view !== viewDashboard) {'),
         M('L121', 'auth card id renamed', "document.getElementById('auth-card')", "document.getElementById('card')"),
@@ -3122,6 +3326,19 @@ function mutantList() {
         M('N14', 'the exit button requests full screen when it is not in it', "        if (isFullscreen()) toggleFullscreen();\n    });", "        toggleFullscreen();\n    });"),
         M('N15', 'the exit button does nothing in full screen', "        if (isFullscreen()) toggleFullscreen();\n    });", "        if (!isFullscreen()) toggleFullscreen();\n    });"),
         M('N16', 'exit button id renamed in app.js', "document.getElementById('btn-fullscreen-exit')", "document.getElementById('btn-fs-exit')"),
+        M('C01', 'VideoCodec normalizeMode accepts bogus mode', "return this.MODES.indexOf(mode) !== -1 ? mode : 'mjpeg';", 'return mode;'),
+        M('C02', 'VideoCodec default mode changed to h264', "return this.MODES.indexOf(mode) !== -1 ? mode : 'mjpeg';", "return this.MODES.indexOf(mode) !== -1 ? mode : 'h264';"),
+        M('C03', 'codecMode storage key wrong', "const CODEC_MODE_KEY = 'quadkvm.videoCodec';", "const CODEC_MODE_KEY = 'quadkvm.codec';"),
+        M('C04', 'loadCodecMode skips normalizeMode', 'return VideoCodec.normalizeMode(localStorage.getItem(CODEC_MODE_KEY));', 'return localStorage.getItem(CODEC_MODE_KEY);'),
+        M('C05', 'loadCodecMode error falls back to h264', "        } catch (err) {\n            return 'mjpeg';\n        }\n    }\n\n    function saveCodecMode", "        } catch (err) {\n            return 'h264';\n        }\n    }\n\n    function saveCodecMode"),
+        M('C06', 'saveCodecMode error not caught', '            // the codec mode is just not kept\n', '            throw err;\n'),
+        M('C07', 'setCodecMode ignores mode change', "const acceptH264 = codecMode === 'h264' && h264Supported && !h264Failed;", 'const acceptH264 = h264Supported && !h264Failed;'),
+        M('C08', 'setCodecMode does not clear h264Failed on explicit switch', "        if (next === 'h264') h264Failed = false;\n", ''),
+        M('C09', 'h264Fallback leaves h264 button pressed', "        h264Failed = true;\n        codecMode = 'mjpeg';\n        updateCodecModeUI();\n", "        h264Failed = true;\n        updateCodecModeUI();\n"),
+        M('C10', 'mjpeg default blocks on waitForProbe', "if (codecMode === 'h264') await waitForProbe(); // so the first", 'await waitForProbe(); // so the first'),
+        M('C11', 'pumpMjpeg drops frames while decoding instead of coalescing', '        if (isDecoding) {\n            pendingMjpegFrame = initialFrame;\n            return;\n        }', '        if (isDecoding) {\n            return;\n        }'),
+        M('C12', 'pumpMjpeg draws stale frame after reconnect', '                    if (frameGen === videoConnGen) {', '                    if (true) {'),
+        M('C13', 'nextH264Timestamp ignores performance.now tiebreak', '            h264Timestamp = nowUs > h264Timestamp ? nowUs : h264Timestamp + 1;', '            h264Timestamp = nowUs;'),
     ];
 }
 

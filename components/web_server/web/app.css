@@ -131,6 +131,20 @@ button:disabled {
     font-weight: bold;
     box-shadow: inset 0 0 0 2px #fff, 0 0 0 2px #003f8a;
 }
+.bar-video-mode {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 2px;
+}
+.bar-video-mode button {
+    min-inline-size: 24px;
+    min-block-size: 24px;
+}
+.bar-video-mode button[aria-pressed="true"] {
+    background-color: #003f8a;
+    font-weight: bold;
+    box-shadow: inset 0 0 0 2px #fff, 0 0 0 2px #003f8a;
+}
 .video-info {
     font-size: 0.9em;
 }

@@ -47,6 +47,7 @@ struct csi_capture_t {
     uint32_t skip_frames;
     bool create_isp_bypass;
     csi_pixel_format_t pixel_format;
+    bool dma_only_consumer;
     bool enabled;
     bool started;
     csi_pp_t pp;
@@ -186,6 +187,7 @@ esp_err_t csi_capture_open_pool(const csi_capture_config_t *cfg, csi_capture_han
     h->skip_frames = cfg->skip_frames;
     h->create_isp_bypass = cfg->create_isp_bypass;
     h->pixel_format = cfg->pixel_format;
+    h->dma_only_consumer = cfg->dma_only_consumer;
     h->buf_bytes = buf_bytes;
     csi_pp_init(&h->pp, cfg->skip_frames);
 
@@ -298,8 +300,14 @@ esp_err_t csi_capture_acquire(csi_capture_handle_t h, uint32_t timeout_ms,
         int idx = csi_pp_acquire(&h->pp);
         portEXIT_CRITICAL(&h->lock);
         if (idx != CSI_PP_NONE) {
-            // Drop any cache lines covering the buffer so the CPU reads what the DMA wrote.
-            esp_cache_msync(h->buf[idx], h->buf_bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+            if (!h->dma_only_consumer) {
+                // Drop any cache lines covering the active frame so the CPU reads what the DMA wrote.
+                size_t sync_bytes = csi_capture_round_up(h->frame_bytes, CSI_CAPTURE_BUF_ALIGN);
+                if (sync_bytes == 0u || sync_bytes > h->buf_bytes) {
+                    sync_bytes = h->buf_bytes;
+                }
+                esp_cache_msync(h->buf[idx], sync_bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+            }
             *out_data = h->buf[idx];
             *out_len = h->frame_bytes;
             *out_idx = idx;

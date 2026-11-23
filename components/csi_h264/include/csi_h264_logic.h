@@ -22,6 +22,7 @@ extern "C" {
 // Macroblock alignment (16 px) and PSRAM DMA/cache-line alignment (128 B).
 #define CSI_H264_ALIGN_DIM       16u
 #define CSI_H264_DMA_ALIGN       128u
+#define CSI_H264_SPS_HEADROOM    CSI_H264_DMA_ALIGN
 #define CSI_H264_MAX_OUT_BYTES   (4u * 1024u * 1024u)
 
 // esp_h264 HW parameters (gop is uint8_t > 0; qp is 0..51).
@@ -105,8 +106,15 @@ size_t csi_h264_calc_ppa_active_bytes(uint32_t w, uint32_t h);
 size_t csi_h264_calc_output_buf_size(size_t hub_max_frame_bytes);
 
 // Returns nominal rate-control FPS for ESP32-P4 rev v1.3 PPA+H.264 pipeline
-// (~20 fps for <=720p, ~9 fps for >720p up to 1080p).
+// (~20 fps for <=720p, smoothly scaled down to 9 fps for 1080p).
 uint8_t csi_h264_calc_target_fps(uint32_t w, uint32_t h);
+
+// Rewrites a Baseline SPS NAL payload (EBSP without start code, starting at 0x67) to set
+// fixed_frame_rate_flag = 0 (when VUI timing_info is present) and append VUI bitstream_restriction
+// with max_num_reorder_frames = 0, max_dec_frame_buffering = 1 so decoders release frames immediately.
+// Returns rewritten EBSP byte count, or 0 if unsupported/malformed/out_cap too small.
+size_t csi_h264_patch_sps_low_latency(const uint8_t *sps_in, size_t sps_in_len,
+                                      uint8_t *sps_out, size_t sps_out_cap);
 
 // Validates static HW encoder configuration parameters before esp_h264_enc_hw_new().
 bool csi_h264_validate_enc_params(uint32_t w, uint32_t h, uint8_t gop, uint8_t fps,

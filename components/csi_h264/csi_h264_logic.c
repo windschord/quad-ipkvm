@@ -71,9 +71,280 @@ uint8_t csi_h264_calc_target_fps(uint32_t w, uint32_t h)
         return 0u;
     }
     // Measured ESP32-P4 rev v1.3 PPA+H.264 cadence (docs/P7_H264_EVAL.md §3):
-    // 720p ~= 20.5 fps, 1080p ~= 9.1 fps. Used for RC bitrate/frame budgeting & VUI timing.
+    // 720p ~= 20.5 fps, 1080p ~= 9.1 fps. Scale intermediate modes smoothly by pixel area.
     uint64_t pixels = (uint64_t)w * (uint64_t)h;
-    return (pixels > (uint64_t)(1280u * 720u)) ? 9u : 20u;
+    uint64_t ref_pixels = (uint64_t)1280u * 720u;
+    if (pixels <= ref_pixels) {
+        return 20u;
+    }
+    uint64_t scaled = ((uint64_t)20u * ref_pixels + (pixels / 2u)) / pixels;
+    if (scaled < 9u) {
+        return 9u;
+    }
+    if (scaled > 20u) {
+        return 20u;
+    }
+    return (uint8_t)scaled;
+}
+
+typedef struct {
+    const uint8_t *buf;
+    size_t len;
+    size_t bit_pos;
+    bool err;
+} sps_br_t;
+
+typedef struct {
+    uint8_t *out;
+    size_t cap;
+    size_t pos;
+    uint8_t cur_byte;
+    unsigned bits_filled;
+    int zeros;
+    bool err;
+} sps_bw_t;
+
+static uint32_t sps_br_u(sps_br_t *br, unsigned n)
+{
+    uint32_t v = 0u;
+    for (unsigned i = 0u; i < n; i++) {
+        size_t byte_i = br->bit_pos >> 3;
+        if (byte_i >= br->len) {
+            br->err = true;
+            return 0u;
+        }
+        uint32_t bit = (uint32_t)((br->buf[byte_i] >> (7u - (br->bit_pos & 7u))) & 1u);
+        v = (v << 1) | bit;
+        br->bit_pos++;
+    }
+    return v;
+}
+
+static uint32_t sps_br_ue(sps_br_t *br)
+{
+    unsigned zeros = 0u;
+    while (!br->err && sps_br_u(br, 1u) == 0u) {
+        zeros++;
+        if (zeros > 16u) {
+            br->err = true;
+            return 0u;
+        }
+    }
+    if (br->err || zeros == 0u) {
+        return 0u;
+    }
+    uint32_t suffix = sps_br_u(br, zeros);
+    return ((1u << zeros) - 1u) + suffix;
+}
+
+static void sps_bw_emit_byte(sps_bw_t *bw, uint8_t b)
+{
+    if (bw->err) {
+        return;
+    }
+    if (bw->zeros >= 2 && b <= 3u) {
+        if (bw->pos >= bw->cap) {
+            bw->err = true;
+            return;
+        }
+        bw->out[bw->pos++] = 0x03u;
+        bw->zeros = 0;
+    }
+    if (bw->pos >= bw->cap) {
+        bw->err = true;
+        return;
+    }
+    bw->out[bw->pos++] = b;
+    bw->zeros = (b == 0u) ? (bw->zeros + 1) : 0;
+}
+
+static void sps_bw_u1(sps_bw_t *bw, uint32_t bit)
+{
+    bw->cur_byte = (uint8_t)((bw->cur_byte << 1) | (bit & 1u));
+    bw->bits_filled++;
+    if (bw->bits_filled == 8u) {
+        sps_bw_emit_byte(bw, bw->cur_byte);
+        bw->cur_byte = 0u;
+        bw->bits_filled = 0u;
+    }
+}
+
+static void sps_bw_u(sps_bw_t *bw, uint32_t val, unsigned n)
+{
+    for (unsigned i = n; i > 0u; i--) {
+        sps_bw_u1(bw, (val >> (i - 1u)) & 1u);
+    }
+}
+
+static void sps_bw_ue(sps_bw_t *bw, uint32_t val)
+{
+    if (val == 0u) {
+        sps_bw_u1(bw, 1u);
+        return;
+    }
+    uint32_t code = val + 1u;
+    unsigned bits = 0u;
+    for (uint32_t t = code; t > 0u; t >>= 1) {
+        bits++;
+    }
+    sps_bw_u(bw, 0u, bits - 1u);
+    sps_bw_u(bw, code, bits);
+}
+
+static void sps_copy_u(sps_br_t *br, sps_bw_t *bw, unsigned n)
+{
+    sps_bw_u(bw, sps_br_u(br, n), n);
+}
+
+static void sps_copy_ue(sps_br_t *br, sps_bw_t *bw)
+{
+    sps_bw_ue(bw, sps_br_ue(br));
+}
+
+size_t csi_h264_patch_sps_low_latency(const uint8_t *sps_in, size_t sps_in_len,
+                                      uint8_t *sps_out, size_t sps_out_cap)
+{
+    if (!sps_in || !sps_out || sps_in_len < 5u || sps_in_len > 64u || sps_out_cap < 8u) {
+        return 0u;
+    }
+
+    uint8_t rbsp[64];
+    size_t rbsp_len = 0u;
+    int zeros = 0;
+    for (size_t i = 0u; i < sps_in_len; i++) {
+        uint8_t b = sps_in[i];
+        if (zeros >= 2) {
+            if (b == 0x03u) {
+                zeros = 0;
+                continue;
+            }
+            if (b < 0x03u) {
+                return 0u;
+            }
+        }
+        rbsp[rbsp_len++] = b;
+        zeros = (b == 0u) ? (zeros + 1) : 0;
+    }
+    if (rbsp_len < 4u || (rbsp[0] & 0x80u) != 0u || (rbsp[0] & 0x1Fu) != 7u || rbsp[1] != 66u) {
+        return 0u;
+    }
+
+    sps_br_t br = { .buf = rbsp, .len = rbsp_len, .bit_pos = 0u, .err = false };
+    sps_bw_t bw = { .out = sps_out, .cap = sps_out_cap, .pos = 0u, .cur_byte = 0u, .bits_filled = 0u, .zeros = 0, .err = false };
+
+    sps_copy_u(&br, &bw, 32u); /* nal_hdr, profile_idc, constraints, level_idc */
+    sps_copy_ue(&br, &bw);     /* seq_parameter_set_id */
+    sps_copy_ue(&br, &bw);     /* log2_max_frame_num_minus4 */
+    uint32_t poc_type = sps_br_ue(&br);
+    sps_bw_ue(&bw, poc_type);
+    if (poc_type == 0u) {
+        sps_copy_ue(&br, &bw); /* log2_max_pic_order_cnt_lsb_minus4 */
+    } else if (poc_type != 2u) {
+        return 0u;
+    }
+    sps_copy_ue(&br, &bw);     /* max_num_ref_frames */
+    sps_copy_u(&br, &bw, 1u);  /* gaps_in_frame_num_value_allowed_flag */
+    sps_copy_ue(&br, &bw);     /* pic_width_in_mbs_minus1 */
+    sps_copy_ue(&br, &bw);     /* pic_height_in_map_units_minus1 */
+    uint32_t frame_mbs_only = sps_br_u(&br, 1u);
+    sps_bw_u1(&bw, frame_mbs_only);
+    if (frame_mbs_only == 0u) {
+        sps_copy_u(&br, &bw, 1u); /* mb_adaptive_frame_field_flag */
+    }
+    sps_copy_u(&br, &bw, 1u);  /* direct_8x8_inference_flag */
+    uint32_t crop = sps_br_u(&br, 1u);
+    sps_bw_u1(&bw, crop);
+    if (crop != 0u) {
+        for (int c = 0; c < 4; c++) {
+            sps_copy_ue(&br, &bw);
+        }
+    }
+
+    uint32_t vui = sps_br_u(&br, 1u);
+    sps_bw_u1(&bw, 1u); /* vui_parameters_present_flag = 1 */
+    if (vui != 0u) {
+        uint32_t ar = sps_br_u(&br, 1u);
+        sps_bw_u1(&bw, ar);
+        if (ar != 0u) {
+            uint32_t idc = sps_br_u(&br, 8u);
+            sps_bw_u(&bw, idc, 8u);
+            if (idc == 255u) {
+                sps_copy_u(&br, &bw, 32u); /* sar_width + sar_height */
+            }
+        }
+        uint32_t overscan = sps_br_u(&br, 1u);
+        sps_bw_u1(&bw, overscan);
+        if (overscan != 0u) {
+            sps_copy_u(&br, &bw, 1u);
+        }
+        uint32_t vst = sps_br_u(&br, 1u);
+        sps_bw_u1(&bw, vst);
+        if (vst != 0u) {
+            sps_copy_u(&br, &bw, 4u); /* video_format(3) + video_full_range_flag(1) */
+            uint32_t cdesc = sps_br_u(&br, 1u);
+            sps_bw_u1(&bw, cdesc);
+            if (cdesc != 0u) {
+                sps_copy_u(&br, &bw, 24u);
+            }
+        }
+        uint32_t chroma = sps_br_u(&br, 1u);
+        sps_bw_u1(&bw, chroma);
+        if (chroma != 0u) {
+            sps_copy_ue(&br, &bw);
+            sps_copy_ue(&br, &bw);
+        }
+        uint32_t ti = sps_br_u(&br, 1u);
+        sps_bw_u1(&bw, ti);
+        if (ti != 0u) {
+            sps_copy_u(&br, &bw, 32u); /* num_units_in_tick */
+            sps_copy_u(&br, &bw, 32u); /* time_scale */
+            (void)sps_br_u(&br, 1u);   /* original fixed_frame_rate_flag */
+            sps_bw_u1(&bw, 0u);        /* variable cadence -> no decoder VSync pacing buffer */
+        }
+        uint32_t nal_hrd = sps_br_u(&br, 1u);
+        uint32_t vcl_hrd = sps_br_u(&br, 1u);
+        if (nal_hrd != 0u || vcl_hrd != 0u) {
+            return 0u;
+        }
+        sps_bw_u1(&bw, 0u);
+        sps_bw_u1(&bw, 0u);
+        sps_copy_u(&br, &bw, 1u); /* pic_struct_present_flag */
+        if (sps_br_u(&br, 1u) != 0u) {
+            return 0u; /* already has bitstream_restriction_flag */
+        }
+    } else {
+        sps_bw_u(&bw, 0u, 8u); /* ar, overscan, vst, chroma, ti, nal_hrd, vcl_hrd, pic_struct */
+    }
+
+    /* bitstream_restriction_flag = 1 with zero frame reordering and 1-frame DPB */
+    sps_bw_u1(&bw, 1u);
+    sps_bw_u1(&bw, 1u);   /* motion_vectors_over_pic_boundaries_flag */
+    sps_bw_ue(&bw, 0u);   /* max_bytes_per_pic_denom */
+    sps_bw_ue(&bw, 0u);   /* max_bits_per_mb_denom */
+    sps_bw_ue(&bw, 11u);  /* log2_max_mv_length_horizontal */
+    sps_bw_ue(&bw, 11u);  /* log2_max_mv_length_vertical */
+    sps_bw_ue(&bw, 0u);   /* max_num_reorder_frames */
+    sps_bw_ue(&bw, 1u);   /* max_dec_frame_buffering */
+
+    /* Verify exact rbsp_trailing_bits alignment in input */
+    if (sps_br_u(&br, 1u) != 1u) {
+        return 0u;
+    }
+    while ((br.bit_pos & 7u) != 0u) {
+        if (sps_br_u(&br, 1u) != 0u) {
+            return 0u;
+        }
+    }
+    if (br.err || (br.bit_pos >> 3) != rbsp_len) {
+        return 0u;
+    }
+
+    /* Emit rbsp_trailing_bits into output */
+    sps_bw_u1(&bw, 1u);
+    while (bw.bits_filled != 0u) {
+        sps_bw_u1(&bw, 0u);
+    }
+    return bw.err ? 0u : bw.pos;
 }
 
 bool csi_h264_validate_enc_params(uint32_t w, uint32_t h, uint8_t gop, uint8_t fps,

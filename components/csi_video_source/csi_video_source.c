@@ -528,6 +528,7 @@ static void csi_video_task(void *arg)
         .skip_frames = 1u,
         .create_isp_bypass = s_cfg.create_isp_bypass,
         .pixel_format = cap_fmt,
+        .dma_only_consumer = !is_uyvy,
     };
     err = csi_capture_open_pool(&cap_cfg, &cap);
     if (err != ESP_OK) {

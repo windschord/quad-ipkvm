@@ -32,6 +32,7 @@ typedef struct {
     uint32_t skip_frames;         // initial completions to discard (the first may be partial)
     bool create_isp_bypass;       // create an ISP processor with bypass_isp = true (reference config)
     csi_pixel_format_t pixel_format; // CSI_PIXEL_FORMAT_RGB888 (0, default) or CSI_PIXEL_FORMAT_UYVY
+    bool dma_only_consumer;       // consumer reads buffer only via DMA (PPA/HW JPEG), skipping per-frame M2C cache sync
 } csi_capture_config_t;
 
 typedef struct {

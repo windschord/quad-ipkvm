@@ -99,8 +99,10 @@ static void test_target_fps_and_param_validation(void)
     TEST_ASSERT_EQUAL_UINT(0u, csi_h264_calc_target_fps(1282u, 720u));
     TEST_ASSERT_EQUAL_UINT(20u, csi_h264_calc_target_fps(640u, 480u));
     TEST_ASSERT_EQUAL_UINT(20u, csi_h264_calc_target_fps(1280u, 720u));
-    TEST_ASSERT_EQUAL_UINT(9u, csi_h264_calc_target_fps(1296u, 720u));
-    TEST_ASSERT_EQUAL_UINT(9u, csi_h264_calc_target_fps(1280u, 722u));
+    TEST_ASSERT_EQUAL_UINT(20u, csi_h264_calc_target_fps(1296u, 720u));
+    TEST_ASSERT_EQUAL_UINT(20u, csi_h264_calc_target_fps(1280u, 722u));
+    TEST_ASSERT_EQUAL_UINT(14u, csi_h264_calc_target_fps(1440u, 900u));
+    TEST_ASSERT_EQUAL_UINT(13u, csi_h264_calc_target_fps(1600u, 900u));
     TEST_ASSERT_EQUAL_UINT(9u, csi_h264_calc_target_fps(1920u, 1080u));
 
     TEST_ASSERT_TRUE(csi_h264_validate_enc_params(1280u, 720u, 1u, 1u, 1u, 0u, 0u));
@@ -782,6 +784,161 @@ static void test_ctrl_runtime_disable_h264(void)
     TEST_ASSERT_FALSE(force_idr);
 }
 
+typedef struct {
+    const uint8_t *buf;
+    size_t len;
+    size_t bit_pos;
+} test_br_t;
+
+static uint32_t test_br_u(test_br_t *br, unsigned n)
+{
+    uint32_t v = 0u;
+    for (unsigned i = 0u; i < n; i++) {
+        TEST_ASSERT_LESS_THAN_UINT(br->len * 8u, br->bit_pos);
+        uint32_t b = (br->buf[br->bit_pos >> 3] >> (7u - (br->bit_pos & 7u))) & 1u;
+        v = (v << 1) | b;
+        br->bit_pos++;
+    }
+    return v;
+}
+
+static uint32_t test_br_ue(test_br_t *br)
+{
+    unsigned z = 0u;
+    while (test_br_u(br, 1u) == 0u) {
+        z++;
+        TEST_ASSERT_LESS_OR_EQUAL_UINT(16u, z);
+    }
+    if (z == 0u) {
+        return 0u;
+    }
+    return ((1u << z) - 1u) + test_br_u(br, z);
+}
+
+static size_t test_ebsp_to_rbsp(const uint8_t *ebsp, size_t len, uint8_t *rbsp, size_t cap)
+{
+    size_t out = 0u;
+    int zeros = 0;
+    for (size_t i = 0u; i < len; i++) {
+        uint8_t b = ebsp[i];
+        if (zeros >= 2) {
+            TEST_ASSERT_TRUE_MESSAGE(b >= 0x03u, "Illegal 00 00 00/01/02 start-code emulation in EBSP");
+            if (b == 0x03u) {
+                zeros = 0;
+                continue;
+            }
+        }
+        TEST_ASSERT_LESS_THAN_UINT(cap, out);
+        rbsp[out++] = b;
+        zeros = (b == 0u) ? (zeros + 1) : 0;
+    }
+    return out;
+}
+
+static void assert_patched_sps_fields(const uint8_t *ebsp, size_t ebsp_len,
+                                      uint8_t exp_level, uint32_t exp_w_mbs_minus1,
+                                      uint32_t exp_h_mbs_minus1, uint32_t exp_crop,
+                                      uint32_t exp_crop_bottom, uint32_t exp_time_scale)
+{
+    uint8_t rbsp[64];
+    size_t rbsp_len = test_ebsp_to_rbsp(ebsp, ebsp_len, rbsp, sizeof(rbsp));
+    test_br_t br = { .buf = rbsp, .len = rbsp_len, .bit_pos = 0u };
+
+    TEST_ASSERT_EQUAL_UINT(0x67u, test_br_u(&br, 8u));
+    TEST_ASSERT_EQUAL_UINT(66u, test_br_u(&br, 8u));
+    TEST_ASSERT_EQUAL_UINT(0xc0u, test_br_u(&br, 8u));
+    TEST_ASSERT_EQUAL_UINT(exp_level, test_br_u(&br, 8u));
+    TEST_ASSERT_EQUAL_UINT(0u, test_br_ue(&br)); /* sps_id */
+    TEST_ASSERT_EQUAL_UINT(4u, test_br_ue(&br)); /* log2_max_frame_num_minus4 */
+    TEST_ASSERT_EQUAL_UINT(2u, test_br_ue(&br)); /* pic_order_cnt_type */
+    TEST_ASSERT_EQUAL_UINT(1u, test_br_ue(&br)); /* max_num_ref_frames */
+    TEST_ASSERT_EQUAL_UINT(0u, test_br_u(&br, 1u));
+    TEST_ASSERT_EQUAL_UINT(exp_w_mbs_minus1, test_br_ue(&br));
+    TEST_ASSERT_EQUAL_UINT(exp_h_mbs_minus1, test_br_ue(&br));
+    TEST_ASSERT_EQUAL_UINT(1u, test_br_u(&br, 1u)); /* frame_mbs_only */
+    TEST_ASSERT_EQUAL_UINT(0u, test_br_u(&br, 1u)); /* direct_8x8 */
+    uint32_t crop = test_br_u(&br, 1u);
+    TEST_ASSERT_EQUAL_UINT(exp_crop, crop);
+    if (crop != 0u) {
+        TEST_ASSERT_EQUAL_UINT(0u, test_br_ue(&br));
+        TEST_ASSERT_EQUAL_UINT(0u, test_br_ue(&br));
+        TEST_ASSERT_EQUAL_UINT(0u, test_br_ue(&br));
+        TEST_ASSERT_EQUAL_UINT(exp_crop_bottom, test_br_ue(&br));
+    }
+    TEST_ASSERT_EQUAL_UINT(1u, test_br_u(&br, 1u)); /* vui_parameters_present_flag */
+    TEST_ASSERT_EQUAL_UINT(0u, test_br_u(&br, 1u)); /* aspect_ratio */
+    TEST_ASSERT_EQUAL_UINT(0u, test_br_u(&br, 1u)); /* overscan */
+    TEST_ASSERT_EQUAL_UINT(0u, test_br_u(&br, 1u)); /* video_signal_type */
+    TEST_ASSERT_EQUAL_UINT(0u, test_br_u(&br, 1u)); /* chroma_loc */
+    uint32_t ti = test_br_u(&br, 1u);
+    if (exp_time_scale > 0u) {
+        TEST_ASSERT_EQUAL_UINT(1u, ti);
+        TEST_ASSERT_EQUAL_UINT(1u, test_br_u(&br, 32u));
+        TEST_ASSERT_EQUAL_UINT(exp_time_scale, test_br_u(&br, 32u));
+        TEST_ASSERT_EQUAL_UINT(0u, test_br_u(&br, 1u)); /* fixed_frame_rate_flag forced to 0 */
+    } else {
+        TEST_ASSERT_EQUAL_UINT(0u, ti);
+    }
+    TEST_ASSERT_EQUAL_UINT(0u, test_br_u(&br, 1u)); /* nal_hrd */
+    TEST_ASSERT_EQUAL_UINT(0u, test_br_u(&br, 1u)); /* vcl_hrd */
+    TEST_ASSERT_EQUAL_UINT(0u, test_br_u(&br, 1u)); /* pic_struct */
+    TEST_ASSERT_EQUAL_UINT(1u, test_br_u(&br, 1u)); /* bitstream_restriction_flag */
+    TEST_ASSERT_EQUAL_UINT(1u, test_br_u(&br, 1u)); /* motion_vectors_over_pic_boundaries */
+    TEST_ASSERT_EQUAL_UINT(0u, test_br_ue(&br));    /* max_bytes_per_pic_denom */
+    TEST_ASSERT_EQUAL_UINT(0u, test_br_ue(&br));    /* max_bits_per_mb_denom */
+    TEST_ASSERT_EQUAL_UINT(11u, test_br_ue(&br));   /* log2_max_mv_length_h */
+    TEST_ASSERT_EQUAL_UINT(11u, test_br_ue(&br));   /* log2_max_mv_length_v */
+    TEST_ASSERT_EQUAL_UINT(0u, test_br_ue(&br));    /* max_num_reorder_frames = 0 */
+    TEST_ASSERT_EQUAL_UINT(1u, test_br_ue(&br));    /* max_dec_frame_buffering = 1 */
+    TEST_ASSERT_EQUAL_UINT(1u, test_br_u(&br, 1u)); /* rbsp_stop_one_bit */
+    while ((br.bit_pos & 7u) != 0u) {
+        TEST_ASSERT_EQUAL_UINT(0u, test_br_u(&br, 1u));
+    }
+    TEST_ASSERT_EQUAL_UINT(rbsp_len * 8u, br.bit_pos);
+}
+
+static void test_patch_sps_low_latency(void)
+{
+    const uint8_t sps_720p20[] = {
+        0x67, 0x42, 0xc0, 0x1f, 0x95, 0xa0, 0x14, 0x01, 0x6c, 0x84,
+        0x00, 0x00, 0x03, 0x00, 0x04, 0x00, 0x00, 0x03, 0x00, 0xa2, 0x10
+    };
+    const uint8_t sps_900p14[] = {
+        0x67, 0x42, 0xc0, 0x20, 0x95, 0xa0, 0x16, 0x81, 0xcd, 0xe7, 0x84,
+        0x00, 0x00, 0x03, 0x00, 0x04, 0x00, 0x00, 0x03, 0x00, 0x72, 0x10
+    };
+    const uint8_t sps_1080p9[] = {
+        0x67, 0x42, 0xc0, 0x29, 0x95, 0xa0, 0x1e, 0x00, 0x89, 0x79, 0x61,
+        0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x03, 0x00, 0x12, 0x84
+    };
+
+    uint8_t out[80];
+    size_t len = csi_h264_patch_sps_low_latency(sps_720p20, sizeof(sps_720p20), out, sizeof(out));
+    TEST_ASSERT_GREATER_THAN_UINT(sizeof(sps_720p20), len);
+    assert_patched_sps_fields(out, len, 31u, 79u, 44u, 0u, 0u, 40u);
+    /* Re-patching an already-patched SPS is rejected cleanly because bitstream_restriction_flag is 1 */
+    uint8_t out2[80];
+    TEST_ASSERT_EQUAL_UINT(0u, csi_h264_patch_sps_low_latency(out, len, out2, sizeof(out2)));
+
+    len = csi_h264_patch_sps_low_latency(sps_900p14, sizeof(sps_900p14), out, sizeof(out));
+    TEST_ASSERT_GREATER_THAN_UINT(sizeof(sps_900p14), len);
+    assert_patched_sps_fields(out, len, 32u, 89u, 56u, 1u, 6u, 28u);
+
+    len = csi_h264_patch_sps_low_latency(sps_1080p9, sizeof(sps_1080p9), out, sizeof(out));
+    TEST_ASSERT_GREATER_THAN_UINT(sizeof(sps_1080p9), len);
+    assert_patched_sps_fields(out, len, 41u, 119u, 67u, 1u, 4u, 18u);
+
+    /* Non-SPS, non-Baseline, malformed / small buffer rejection */
+    const uint8_t pps[] = { 0x68, 0xce, 0x3c, 0x80, 0x00 };
+    const uint8_t main_prof[] = { 0x67, 0x4d, 0x40, 0x1f, 0x95, 0xa0 };
+    TEST_ASSERT_EQUAL_UINT(0u, csi_h264_patch_sps_low_latency(NULL, 10u, out, sizeof(out)));
+    TEST_ASSERT_EQUAL_UINT(0u, csi_h264_patch_sps_low_latency(sps_720p20, sizeof(sps_720p20), NULL, sizeof(out)));
+    TEST_ASSERT_EQUAL_UINT(0u, csi_h264_patch_sps_low_latency(sps_720p20, 4u, out, sizeof(out)));
+    TEST_ASSERT_EQUAL_UINT(0u, csi_h264_patch_sps_low_latency(pps, sizeof(pps), out, sizeof(out)));
+    TEST_ASSERT_EQUAL_UINT(0u, csi_h264_patch_sps_low_latency(main_prof, sizeof(main_prof), out, sizeof(out)));
+    TEST_ASSERT_EQUAL_UINT(0u, csi_h264_patch_sps_low_latency(sps_720p20, sizeof(sps_720p20), out, 10u));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -789,6 +946,7 @@ int main(void)
     RUN_TEST(test_check_resolution_boundaries);
     RUN_TEST(test_yuv_and_output_buffer_sizing);
     RUN_TEST(test_target_fps_and_param_validation);
+    RUN_TEST(test_patch_sps_low_latency);
     RUN_TEST(test_check_frame_empty_and_start_code);
     RUN_TEST(test_check_frame_key_and_oversize);
     RUN_TEST(test_ctrl_null_and_incapable);

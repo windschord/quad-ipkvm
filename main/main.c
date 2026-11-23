@@ -115,6 +115,13 @@ static void app_unlock(void* ctx) {
     xSemaphoreGive((SemaphoreHandle_t)ctx);
 }
 
+#if CONFIG_WEB_SERVER_ENABLE
+static void on_frame_hub_commit(void* ctx) {
+    (void)ctx;
+    web_server_notify_video_frame();
+}
+#endif
+
 #if CONFIG_CSI_CAPTURE_TEST
 // P2b-4 bring-up: receive RGB888 frames into PSRAM and log raw-data statistics.
 // Memory order is expected to be B,G,R per pixel on rev v1.3 [参照: docs/P2B_TC358743_REFERENCE.md 4-2].
@@ -278,7 +285,10 @@ void app_main(void)
             .free_cb = app_free,
             .lock_cb = app_lock,
             .unlock_cb = app_unlock,
-            .lock_ctx = (void*)hub_mutex
+            .lock_ctx = (void*)hub_mutex,
+#if CONFIG_WEB_SERVER_ENABLE
+            .on_commit_cb = on_frame_hub_commit,
+#endif
         };
 
         const char* prefer_spiram = "No";
