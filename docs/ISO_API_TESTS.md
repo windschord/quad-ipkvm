@@ -24,14 +24,14 @@
 | `test/host/iso_api/test_api_route.c` | 経路の表(定義していないメソッドは 405 + `Allow`、`<id>` の形式不正、`finish`、定義していない経路は 404、`?` 以降は見ない)、`iso_api_allow_for_path`、Content-Type の分類(大文字小文字、パラメーター、前後の空白、`application/jsonx`)、厳密な u64、id の変換 | 7 |
 | `test/host/iso_api/test_api_json.c` | JSON のボディ: begin / mount / eject / rescan / finish の正しい形と、不正(重複、定義していないキー、型、範囲、末尾の余計な文字、NUL、512 バイト)、**`\u` エスケープ(BMP、サロゲートペア、上位だけ / 下位だけ、対にならない、部分的な 16 進)**、名前の規則(C0 / DEL / C1、`/`、`\`、前後の空白、63 バイト、UTF-8 の不正)、`sha256`(大文字小文字、桁数、各桁の 16 進の境界)、**本体と同じ大きさのヒープに置いた、すべての先頭部分(読み出しの超過を ASan が検出)** | 25 |
 | `test/host/iso_api/test_api_list.c` | `GET` の本文を、仕様の例を含めて、手書きの文字列と比較(sd の各状態、イメージの各状態と `invalid_reason`、`meta_corrupt`、名前のエスケープ、`mounted` / `target` / `upload` / `hidden_images` / `chunk_size`)、**16 個の最大の本文が `ISO_API_RESPONSE_MAX` に収まること、ちょうどの大きさ**、小さいバッファでの失敗(すべての大きさで、ヒープの境界を超えない)、公開ビューのコピー(table の NULL 化、count の頭打ち)、サービスが起動していないとき | 18 |
-| `test/host/iso_api/test_api_order.c` | **判定の順序の各段**: 段 3 → 4 → 5 → 6 → 7 → 8 → 9(begin、mount、finish、PUT、delete、rescan の各 409 の並び)→ 10 → 11 → 12(507 とその境界)→ 13(`busy`。判定で拒否するときは `iso_op_mutex` を取りに行かないこと)。段ごとに、「前の段のエラーが先に出る」組み合わせ | 41 |
-| `test/host/iso_api/test_api_ops.c` | **処理と結果の対応表**: begin(受理、SHA-256 の宣言値、UTF-8 の名前、I/O エラー、`<id>` の枯渇)、PUT(チャンク 2 つ、再開、`commit` の各結果、書き込みの失敗)、finish(宣言値あり / 不一致 / 署名なし、`incomplete` の再開、`ready` で表なし、`meta_corrupt`、ワーカーのキューのあふれ)、mount / eject(ターゲットの取り外し、防止、差し替え)、delete(アップロードの中止、`crosslinked`)、rescan(`cursor` で続ける)。古いビュー(`use_stale`)と `OL_HOOK` で、判定と処理の間の競合を再現 | 44 |
-| `test/host/iso_api/test_api_edges.c` | 応答の初期化(汚れた応答を渡しても、前の内容が残らない)、書き出しの部品の境界、引数の不正、応答の置き場が小さいとき、**公開ビューが満杯(16 個)のときの探索、空き容量の推定**、処理が判定の後の状態(SD が消えた、すでにマウントされた、表がない)を見ること(`SL_HOOK` で `iso_state_mutex` の中の状態も変える) | 17 |
-| `test/host/iso_api/test_api_guard.c` | 段 1・2(`http_guard_decide`。Host → 初期設定 → 認証 → Origin の順。GET は Origin 不要)の前提の固定 | 2 |
+| `test/host/iso_api/test_api_order.c` | **判定の順序の各段**: 段 3 → 4 → 5 → 6 → 7 → 8 → 9(begin、mount、finish、PUT、delete、rescan の各 409 の並び)→ 10 → 11 → 12(507 とその境界)→ 13(`busy`。判定で拒否するときは `iso_op_mutex` を取りに行かないこと)。段ごとに、「前の段のエラーが先に出る」組み合わせ | 42 |
+| `test/host/iso_api/test_api_ops.c` | **処理と結果の対応表**: begin(受理、SHA-256 の宣言値、UTF-8 の名前、I/O エラー、`<id>` の枯渇)、PUT(チャンク 2 つ、再開、`commit` の各結果、書き込みの失敗)、finish(宣言値あり / 不一致 / 署名なし、`incomplete` の再開、`ready` で表なし、`meta_corrupt`、ワーカーのキューのあふれ)、mount / eject(ターゲットの取り外し、防止、差し替え)、delete(アップロードの中止、`crosslinked`)、rescan(`cursor` で続ける)。古いビュー(`use_stale`)と `OL_HOOK` で、判定と処理の間の競合を再現 | 45 |
+| `test/host/iso_api/test_api_edges.c` | 応答の初期化(汚れた応答を渡しても、前の内容が残らない)、書き出しの部品の境界、引数の不正、応答の置き場が小さいとき、**公開ビューが満杯(16 個)のときの探索、空き容量の推定**、処理が判定の後の状態(SD が消えた、すでにマウントされた、表がない)を見ること(`SL_HOOK` で `iso_state_mutex` の中の状態も変える)。**PR #158 のレビューの分**: 500 の短い本体の最小の `cap`(27)、SD が使えない間の `eject` が `ejected_by_target` を戻す(`eject` だけ)、`rsp->put` をそのまま `put_commit` に渡す、**受理の後にカードが替わったら書かない**(`epoch`)、ヘッダーの取得結果の分類(切り詰め) | 24 |
+| `test/host/iso_api/test_api_guard.c` | 段 1・2(`http_guard_decide`。Host → 初期設定 → 認証 → Origin の順。GET は Origin 不要)の前提と、Host / 認証 / Origin の全組み合わせの表の固定 | 3 |
 | `test/host/iso_api/test_api_fuzz.c` | **固定シードのファズ**(下記) | 3 |
 | `test/host/iso_api/api_common.h` | 共通の部品(`iso_core_t` の設定、ロックの数え上げ、公開ビューのコピー、要求の組み立て) | - |
 
-合計 157 件(`test/host/CMakeLists.txt` に、`iso_api` のテストのリンクの規則を足した。ctest の実行ファイルが 8 個増える)。期待値は手書き。
+合計 167 件(`test/host/CMakeLists.txt` に、`iso_api` のテストのリンクの規則を足した。ctest の実行ファイルが 8 個増える。PR #158 のレビューの nitpick の 3 件も、`test_api_order.c`(PUT の事前判定はロックなしで受理される)、`test_api_ops.c`(`rescan` の 2 件目の取り込みの失敗と再試行、`FINISH` との競合に、実際に受理された PUT を使う)に足した)。期待値は手書き。
 
 ### ファズ(`test_api_fuzz.c`。固定シード、ASan / UBSan)
 
@@ -55,27 +55,30 @@ UNITY_SRC=<build>/_deps/unity-src python3 tools/test/mutate_iso_api.py <repo> <�
 
 経緯: 最初の実行(1687 個)は、殺した 1503、生き残り 165、ビルドエラー 19 だった。生き残りを 1 つずつ調べ、**同値でないものには、テストを足した**(`test_api_edges.c`: 汚れた応答、書き出しの境界、満杯のビュー、`SL_HOOK` / `OL_HOOK` での競合、`iso_api_headers_check` の直接の呼び出しなど。`test_api_json.c`: 定義していないキーを、どの値でも拒否すること、部分的な `\u`、サロゲートの対の条件、先頭部分のヒープの検査)。
 **実装も単純にした**(同値のミュータントを減らすため): ID の一時バッファ(`route_image`)、`memset` の後の再代入、Content-Type の早期の戻り、`view_enter` の `memset`(呼び出し側が `{0}` で初期化)、「サービスが起動していない」の 6 か所の同じ分岐(`proceed()` に 1 つ)。`name_exists` / `avail_bytes` は、**配列の添字で直接読む**形にした(アドレスを取る形は、UBSan の bounds が 1 つ先を許すので、満杯のときの範囲外の読み出しを検出できない)。
-その後、ミュータントをソースから作り直し(1692 個)、**最初から全数**を実行した。
-全数の実行(殺した 1583、生き残り 88、ビルドエラー 21)の後、生き残りのうち、同値でない 4 個を、テストを足して殺した(`A041` / `A042`: `<id>` の先頭の文字と `'9'` の境界の経路の行、`A749` / `A750`: `test_mount_of_an_image_without_a_table_...` で `EPOCH = 0` にして、表がない場合の `epoch` の比較(表がなければ 0 と読まれる)で拒否されないようにした)。この 4 個だけを再実行して、殺したことを確かめ、結果に反映した(ソースは変えていないので、ミュータントの ID は同じ)。
+2 回目の全数(1692 個)は、殺した 1583、生き残り 88、ビルドエラー 21。同値でない 4 個(`<id>` の先頭の文字と `'9'` の境界、表がない場合の `epoch` の比較)を、テストを足して殺した。
+
+**PR #158 の CodeRabbit のレビューの後**(`iso_api.c` / `iso_api.h` を変えた: `eject` の印の解除、`put_commit` の `put` のコピー、受理時のカードの世代、ヘッダーの取得結果の分類、`ISO_OP_LOCK_WAIT_MS`)、ミュータントを作り直し(1719 個)、**最初から全数**を実行した(`-j3`): 殺した 1611、生き残り 87、ビルドエラー 21。生き残りを新しい ID で調べ直し(ID は、ソースを変えるたびに振り直される)、同値でないもの 1 個(`A586`: `eject` でない操作でも `ejected_by_target` を戻してしまう `&&` → `||`)を、テスト(`test_only_eject_clears_ejected_by_target_when_the_sd_goes_away`)を足して殺した。**足した後に、もう一度、全数を実行して、結果を確定した**(下の表。ソースは同じなので、ID は同じ)。
+`tools/test/mutate_iso_extent.py` は、ミュータントの定義を、`import` の仕組みを通さずソースから読む(既存の `__pycache__` の .pyc を使わない、.pyc を作らない)。
 
 **結果**(ミュータントを入れる前のベースラインは、全テスト成功):
 
 | 実行した数 | 殺した数 | 生き残った数 | ビルドエラー(コンパイラが検出) |
 |---|---|---|---|
-| 1692 | 1587 | 84 | 21 |
+| 1719 | 1612 | 86 | 21 |
 
 
-### 3.1 生き残ったミュータント(84 個)
+### 3.1 生き残ったミュータント(86 個)
 
 1 つずつ、変更の前後の挙動が同じ(または、サニタイザーで検出できない、到達しない防御)理由を確かめた。同じ理由のものは、まとめた。
 
 | ID | 理由 |
 |---|---|
-| A004, A187, A658, A804, A805, A835, A905, A906, A997, A1044, J132, J164, J321, J348, J355, J393 | 初期値(`= 0`)の変更: 直後の呼び出しが必ず上書きする、または成功のときだけ読む(`uint32_t v`(8 桁 = 32 ビットで、初期値は溢れて消える)、`size_t n`、`klen`、`cp`、`lo`、`received`、`offset`、`id_u32`、`uint64_t v`)。`memset(&rr / &out, 0, ...)` は、呼ばれた関数が全部の欄を書く(`iso_catalog_rescan` / `iso_upload_write_chunk`) |
-| A270, A610, A855, A856, M152 | 配列の大きさ・コピーの長さが、実際の使い方と同じ: `char id[ISO_ID_LEN + 2]`(余分な 1 バイトを使わない)、`set_log_id` / `put.id` の `memcpy` の `ISO_ID_LEN + 1` → `+ 0`(コピー先は `memset` 済みで、9 バイト目は 0)、`+ 2`(コピー元の構造体の中の、パディングの 1 バイトを読むだけで、サニタイザーは検出しない) |
-| A141, A272, A316, A321, A597, A599 | 境界で、両方の分岐が同じ値になる: `received <= size_bytes`(等しければ足すのは 0)、`free_bytes >= used`(等しければ 0 が 0)、`count >= ISO_MAX_IMAGES`(等しければ代入しても同じ)、`lower()` の `'Z'`(比較する文字列に `z` はない)、`rc <= 0` / `rc < 1`(`fail_rc` は 0 では呼ばれない) |
-| A328, A357 | `name_exists` の `meta_valid` と `NONE` の条件の `||` → `&&`: `meta_valid` が偽(`meta_corrupt`)のイメージの名前の長さは 0 で、1 バイト以上の名前とは一致しない。`NONE` はカタログに入らない。`log_id` の `has_id && id_ok` → `||`: `id_ok` が偽なら `id` は 0 のままで、何もコピーしない結果と同じ |
-| A568, A569, A603, A604, A605, A626, A627, A628, A680, A689, A690, A773, A774, A775, A797, A798, A799, A1051, A1052, A1053 | **到達しない防御(500 `internal_error`、「サービスが起動していない」の分岐)**: `proceed()` の `!usable`(公開ビューが空 = `no_card` なので、判定がすべて先に拒否する)、`fail_rc` の未知の正の値、`exec_begin` の `ISO_ERR_INVALID`(名前・size は検査済み)、`exec_mount` / `exec_eject` の `ISO_MEDIA_INVALID`(`media` は必須)、`iso_api_handle` の `default:`(全エンドポイントを列挙済み)。`exec_finish` の `e` が NULL / `meta_valid` が偽の分岐(`SIZE_MISMATCH` と `INVALID_IMAGE` はカタログにあるイメージだけ) |
+| A004, A193, A670, A816, A817, A847, A928, A929, A1020, A1071, J132, J164, J321, J348, J355, J393 | 初期値(`= 0`)の変更: 直後の呼び出しが必ず上書きする、または成功のときだけ読む(`uint32_t v`(8 桁 = 32 ビットで、初期値は溢れて消える)、`size_t n`、`klen`、`cp`、`lo`、`received`、`offset`、`id_u32`、`uint64_t v`)。`memset(&rr / &out, 0, ...)` は、呼ばれた関数が全部の欄を書く(`iso_catalog_rescan` / `iso_upload_write_chunk`) |
+| A276, A622, A867, A868, M152 | 配列の大きさ・コピーの長さが、実際の使い方と同じ: `char id[ISO_ID_LEN + 2]`(余分な 1 バイトを使わない)、`set_log_id` / `put.id` の `memcpy` の `ISO_ID_LEN + 1` → `+ 0`(コピー先は `memset` 済みで、9 バイト目は 0)、`+ 2`(コピー元の構造体の中の、パディングの 1 バイトを読むだけで、サニタイザーは検出しない) |
+| A141, A278, A322, A327, A609, A611 | 境界で、両方の分岐が同じ値になる: `received <= size_bytes`(等しければ足すのは 0)、`free_bytes >= used`(等しければ 0 が 0)、`count >= ISO_MAX_IMAGES`(等しければ代入しても同じ)、`lower()` の `'Z'`(比較する文字列に `z` はない)、`rc <= 0` / `rc < 1`(`fail_rc` は 0 では呼ばれない) |
+| A334, A363 | `name_exists` の `meta_valid` と `NONE` の条件の `||` → `&&`: `meta_valid` が偽(`meta_corrupt`)のイメージの名前の長さは 0 で、1 バイト以上の名前とは一致しない。`NONE` はカタログに入らない。`log_id` の `has_id && id_ok` → `||`: `id_ok` が偽なら `id` は 0 のままで、何もコピーしない結果と同じ |
+| A464, A873 | **`eject` の印の解除の補助(PR #158 の分)**: `clear_ejected_flag` の `iso_media_eject(media, false → true)`: `force` は、メディアがあるときの `locked_by_target` だけに効き、この関数は、メディアがないときだけ呼ぶ。`put.epoch` の `0 → 1`(`bdev` がないとき): `has_epoch` が偽なら、`epoch` は比べない |
+| A577, A578, A615, A616, A617, A638, A639, A640, A692, A701, A702, A785, A786, A787, A809, A810, A811, A1078, A1079, A1080 | **到達しない防御(500 `internal_error`、「サービスが起動していない」の分岐)**: `proceed()` の `!usable`(公開ビューが空 = `no_card` なので、判定がすべて先に拒否する)、`fail_rc` の未知の正の値、`exec_begin` の `ISO_ERR_INVALID`(名前・size は検査済み)、`exec_mount` / `exec_eject` の `ISO_MEDIA_INVALID`(`media` は必須)、`iso_api_handle` の `default:`(全エンドポイントを列挙済み)。`exec_finish` の `e` が NULL / `meta_valid` が偽の分岐(`SIZE_MISMATCH` と `INVALID_IMAGE` はカタログにあるイメージだけ) |
 | J042, J060, J061, J107, J112, J119, J120, J125, J130, J134, J136, J137, J140, J141, J158, J166, J172, J184, J264 | `iso_api_json.c` の、**部分的な `\u`・サロゲートの失敗の分岐の `return false` → `true`、または削除**: `parse_string` が `true` を返しても、`*out_len` は書かれない(呼び出し側の 0 のまま)ので、名前(長さ 0)、`id` / `sha256`(長さが違う)、キー(長さ 0 = 定義していない)として、そのあと必ず拒否される。削除したものは、不正な符号位置(NUL、`0xFFFFFFFF`、サロゲートの UTF-8 符号化、制御文字)が、名前の規則(`iso_name_valid`)か、16 進の検査で、必ず拒否される(多層の防御。名前の規則は、`test_api_json.c` で単独にも固定してある) |
 | J044, J047, J049, J148, J154, J249 | `read_u4` と 2 文字目の判定の境界(`len - i < 4`、`< 2`): 境界ちょうどの長さで読み切れる入力は、直後に閉じの引用符がなく、どちらの分岐でも、本体の終わりで拒否される。`literal` の `len - i < n`(`true` / `false` の直後が本体の終わり = `}` がない)も同じ |
 | J070, J175, J198 | `cp < 0x80` → `<=`: `0x80` を 1 バイトにしても、名前の規則(C1 制御文字、生の 0x80 の継続バイト)で、必ず拒否される。`J175`(`cp - 0xD800` → `cp + 0xD800`): 差は、ビット 22 以上にだけ出て、`utf8_encode` の `(char)(0xF0 | (cp >> 18))` の `char` への切り詰めで消える(`cp` が 0x10FFFF を超える値でも、出力のバイトは同じ)。`J198`(`len > 20` → `21`): 21 桁は、先頭ゼロ(拒否)か、u64 の超過(拒否) |
@@ -91,9 +94,9 @@ UNITY_SRC=<build>/_deps/unity-src python3 tools/test/mutate_iso_api.py <repo> <�
 |---|---|
 | A063 | L68: - -> + |
 | A140 | L129: delete statement |
-| A287 | L315: delete statement |
-| A826 | L826: const 0+1 -> 1 |
-| A968 | L934: const 0+1 -> 1 |
+| A293 | L325: delete statement |
+| A838 | L843: const 0+1 -> 1 |
+| A991 | L962: const 0+1 -> 1 |
 | J265 | L166: const 1+1 -> 2 |
 | J267 | L166: const 0+1 -> 1 |
 | J268 | L167: const 1+1 -> 2 |
@@ -111,7 +114,7 @@ UNITY_SRC=<build>/_deps/unity-src python3 tools/test/mutate_iso_api.py <repo> <�
 | J287 | L171: const 5-1 -> 4 |
 | J441 | L272: const 0+1 -> 1 |
 
-### 3.3 殺したミュータントの一覧(1587 個)
+### 3.3 殺したミュータントの一覧(1612 個)
 
 | ID | 変更箇所 | 最初に落ちたテスト |
 |---|---|---|
@@ -288,839 +291,864 @@ UNITY_SRC=<build>/_deps/unity-src python3 tools/test/mutate_iso_api.py <repo> <�
 | A175 | L158: == -> != | `test_ctype_table` |
 | A176 | L158: == -> != | `test_ctype_table` |
 | A177 | L158: \|\| -> && | `test_ctype_table` |
-| A178 | L164: const 0+1 -> 1 | `test_unknown_paths_and_methods_are_404_and_405`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A179 | L164: delete statement | `test_unknown_paths_and_methods_are_404_and_405`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A180 | L165: delete statement | `test_not_started_service_reports_no_card` |
-| A181 | L166: delete statement | `test_not_started_service_reports_no_card` |
-| A182 | L167: > -> >= | `test_response_init_clears_the_response_and_the_first_byte` |
-| A183 | L167: && -> \|\| | `test_response_init_clears_the_response_and_the_first_byte` |
-| A184 | L167: negate if condition | `test_api_edges:crash/rc=1` |
-| A185 | L167: const 0+1 -> 1 | `test_response_init_clears_the_response_and_the_first_byte` |
-| A186 | L167: delete statement | `test_api_edges:crash/rc=1` |
-| A188 | L175: == -> != | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
-| A189 | L175: negate if condition | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
-| A190 | L175: const 0+1 -> 1 | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
-| A191 | L176: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
-| A192 | L177: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
-| A193 | L178: delete statement | `test_begin_accepted`, `test_finish_flow_with_a_declared_sha256` |
-| A194 | L182: delete statement | `test_a_body_that_does_not_fit_becomes_the_short_internal_error` |
-| A195 | L183: delete statement | `test_a_body_that_does_not_fit_becomes_the_short_internal_error` |
-| A196 | L184: delete statement | `test_a_body_that_does_not_fit_becomes_the_short_internal_error` |
-| A197 | L185: const 500+1 -> 501 | `test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty` |
-| A198 | L185: const 500-1 -> 499 | `test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty` |
-| A199 | L185: delete statement | `test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty` |
-| A200 | L186: delete statement | `test_a_body_that_does_not_fit_becomes_the_short_internal_error` |
-| A201 | L191: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
-| A202 | L192: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
-| A203 | L193: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
-| A204 | L194: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
-| A205 | L195: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
-| A206 | L200: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
-| A207 | L201: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
-| A208 | L202: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
-| A209 | L203: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
-| A210 | L204: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
-| A211 | L205: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
-| A212 | L206: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
-| A213 | L207: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
-| A214 | L208: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
-| A215 | L213: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A216 | L214: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A217 | L215: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A218 | L216: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A219 | L217: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A220 | L218: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A221 | L219: const 409+1 -> 410 | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A222 | L219: const 409-1 -> 408 | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A223 | L219: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A224 | L223: const 503+1 -> 504 | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
-| A225 | L223: const 503-1 -> 502 | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
-| A226 | L223: delete statement | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
-| A227 | L224: true -> false | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
-| A228 | L224: delete statement | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
-| A229 | L225: const 1+1 -> 2 | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
-| A230 | L225: const 1-1 -> 0 | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
-| A231 | L225: delete statement | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
-| A232 | L228: const 503+1 -> 504 | `test_step6_format_errors_are_400_before_the_sd_check`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A233 | L228: const 503-1 -> 502 | `test_step6_format_errors_are_400_before_the_sd_check`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A234 | L233: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A235 | L234: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A236 | L235: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A237 | L236: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A238 | L237: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A239 | L238: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A240 | L239: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A241 | L245: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A242 | L246: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A243 | L247: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A244 | L248: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A245 | L249: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A246 | L250: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A247 | L251: const 200+1 -> 201 | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A248 | L251: const 200-1 -> 199 | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A249 | L251: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A250 | L268: negate if condition | `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A251 | L269: const 500+1 -> 501 | `test_api_edges:crash/rc=1` |
-| A252 | L269: const 500-1 -> 499 | `test_api_edges:crash/rc=1` |
-| A253 | L269: delete statement | `test_api_edges:crash/rc=1` |
-| A254 | L272: const 422+1 -> 423 | `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A255 | L272: const 422-1 -> 421 | `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A256 | L272: delete statement | `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A257 | L277: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A258 | L278: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A259 | L279: negate if condition | `test_api_order:crash/rc=1` |
-| A260 | L280: delete statement | `test_finish_flow_with_a_declared_sha256` |
-| A261 | L281: delete statement | `test_finish_flow_with_a_declared_sha256` |
-| A262 | L282: delete statement | `test_finish_flow_with_a_declared_sha256` |
-| A263 | L284: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A264 | L286: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A265 | L287: const 200+1 -> 201 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A266 | L287: const 200-1 -> 199 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A267 | L287: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A268 | L290: + -> - | `test_api_ops:crash/rc=1` |
-| A269 | L290: const 1+1 -> 2 | `test_api_order:crash/rc=1` |
-| A271 | L295: delete statement | `test_snapshot_update_copies_the_view_and_drops_the_table_pointers` |
-| A273 | L296: negate if condition | `test_snapshot_update_copies_the_view_and_drops_the_table_pointers` |
-| A274 | L296: delete statement | `test_snapshot_update_copies_the_view_and_drops_the_table_pointers` |
-| A275 | L297: < -> <= | `test_api_list:crash/rc=1` |
-| A276 | L297: const 0+1 -> 1 | `test_snapshot_update_copies_the_view_and_drops_the_table_pointers` |
-| A277 | L298: const 0+1 -> 1 | `test_snapshot_update_copies_the_view_and_drops_the_table_pointers` |
-| A278 | L298: delete statement | `test_snapshot_update_copies_the_view_and_drops_the_table_pointers` |
-| A279 | L309: && -> \|\| | `test_api_list:crash/rc=1` |
-| A280 | L309: && -> \|\| | `test_api_list:crash/rc=1` |
-| A281 | L309: && -> \|\| | `test_api_list:crash/rc=1` |
-| A282 | L309: && -> \|\| | `test_api_list:crash/rc=1` |
-| A283 | L309: && -> \|\| | `test_api_list:crash/rc=1` |
-| A284 | L309: && -> \|\| | `test_api_list:crash/rc=1` |
-| A285 | L309: && -> \|\| | `test_api_list:crash/rc=1` |
-| A286 | L314: negate if condition | `test_api_list:crash/rc=1` |
-| A288 | L318: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
-| A289 | L319: delete statement | `test_api_order:crash/rc=1` |
-| A290 | L320: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step9_delete_of_the_mounted_image_is_409` |
-| A291 | L324: negate if condition | `test_api_list:crash/rc=1` |
-| A292 | L324: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
-| A293 | L327: == -> != | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
-| A294 | L330: < -> <= | `test_api_edges:crash/rc=1` |
-| A295 | L330: const 0+1 -> 1 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A296 | L331: == -> != | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A297 | L331: != -> == | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A298 | L331: && -> \|\| | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step9_mount_image_not_ready_before_locked_by_target` |
-| A299 | L331: negate if condition | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A300 | L331: const 0+1 -> 1 | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_mount_image_not_ready_before_locked_by_target` |
-| A301 | L331: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A302 | L339: negate if condition | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A303 | L339: const 0+1 -> 1 | `test_step12_begin_without_a_sampled_free_size_is_507_with_zero`, `test_step12_put_resume_storage_boundary` |
-| A304 | L339: delete statement | `test_step12_begin_without_a_sampled_free_size_is_507_with_zero`, `test_step12_put_resume_storage_boundary` |
-| A305 | L342: < -> <= | `test_api_edges:crash/rc=1` |
-| A306 | L342: const 0+1 -> 1 | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A307 | L343: == -> != | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A308 | L343: \|\| -> && | `test_step12_put_resume_storage_boundary`, `test_the_resume_check_does_not_count_the_image_itself_twice` |
-| A309 | L343: negate if condition | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A310 | L343: delete statement | `test_step12_put_resume_storage_boundary`, `test_the_resume_check_does_not_count_the_image_itself_twice` |
-| A311 | L344: != -> == | `test_api_edges:crash/rc=1` |
-| A312 | L344: != -> == | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A313 | L344: && -> \|\| | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A314 | L344: negate if condition | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A315 | L344: delete statement | `test_api_edges:crash/rc=1` |
-| A317 | L345: negate if condition | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A318 | L345: - -> + | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
-| A319 | L345: += -> -= | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A320 | L345: delete statement | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A322 | L347: - -> + | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A323 | L347: const 0+1 -> 1 | `test_estimate_is_zero_when_the_used_bytes_exceed_the_free_space` |
-| A324 | L351: < -> <= | `test_api_order:crash/rc=1` |
-| A325 | L351: const 0+1 -> 1 | `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
-| A326 | L352: == -> != | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
-| A327 | L352: == -> != | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit` |
-| A329 | L352: \|\| -> && | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit` |
-| A330 | L352: negate if condition | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit` |
-| A331 | L352: delete statement | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit` |
-| A332 | L353: negate if condition | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A333 | L353: true -> false | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
-| A334 | L353: delete statement | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
-| A335 | L355: false -> true | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit` |
-| A336 | L358: != -> == | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A337 | L358: * -> / | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A338 | L358: const 0+1 -> 1 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A339 | L358: const 1024+1 -> 1025 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
-| A340 | L358: const 1024-1 -> 1023 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
-| A341 | L375: delete statement | `test_not_started_service_reports_no_card` |
-| A342 | L376: == -> != | `test_not_started_service_reports_no_card` |
-| A343 | L376: negate if condition | `test_not_started_service_reports_no_card` |
-| A344 | L377: const 404+1 -> 405 | `test_unknown_paths_and_methods_are_404_and_405` |
-| A345 | L377: const 404-1 -> 403 | `test_unknown_paths_and_methods_are_404_and_405` |
-| A346 | L377: delete statement | `test_unknown_paths_and_methods_are_404_and_405` |
-| A347 | L378: false -> true | `test_unknown_paths_and_methods_are_404_and_405` |
-| A348 | L380: == -> != | `test_not_started_service_reports_no_card` |
-| A349 | L380: negate if condition | `test_not_started_service_reports_no_card` |
-| A350 | L381: const 405+1 -> 406 | `test_unknown_paths_and_methods_are_404_and_405`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A351 | L381: const 405-1 -> 404 | `test_unknown_paths_and_methods_are_404_and_405`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A352 | L381: delete statement | `test_unknown_paths_and_methods_are_404_and_405`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A353 | L382: delete statement | `test_unknown_paths_and_methods_are_404_and_405` |
-| A354 | L383: false -> true | `test_unknown_paths_and_methods_are_404_and_405`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A355 | L385: delete statement | `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A356 | L386: delete statement | `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A358 | L387: negate if condition | `test_finish_flow_with_a_declared_sha256`, `test_delete_flow` |
-| A359 | L387: delete statement | `test_finish_flow_with_a_declared_sha256`, `test_delete_flow` |
-| A360 | L390: && -> \|\| | `test_not_started_service_reports_no_card` |
-| A361 | L390: negate if condition | `test_not_started_service_reports_no_card` |
-| A362 | L391: const 404+1 -> 405 | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A363 | L391: const 404-1 -> 403 | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A364 | L391: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A365 | L392: false -> true | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A366 | L398: false -> true | `test_not_started_service_reports_no_card` |
-| A367 | L408: negate if condition | `test_not_started_service_reports_no_card` |
-| A368 | L409: const 415+1 -> 416 | `test_step4_content_type_is_415_before_the_length_checks` |
-| A369 | L409: const 415-1 -> 414 | `test_step4_content_type_is_415_before_the_length_checks` |
-| A370 | L409: delete statement | `test_step4_content_type_is_415_before_the_length_checks` |
-| A371 | L410: false -> true | `test_step4_content_type_is_415_before_the_length_checks` |
-| A372 | L414: == -> != | `test_not_started_service_reports_no_card` |
-| A373 | L414: && -> \|\| | `test_not_started_service_reports_no_card` |
-| A374 | L414: negate if condition | `test_not_started_service_reports_no_card` |
-| A375 | L415: const 411+1 -> 412 | `test_step5_put_needs_a_content_length` |
-| A376 | L415: const 411-1 -> 410 | `test_step5_put_needs_a_content_length` |
-| A377 | L415: delete statement | `test_step5_put_needs_a_content_length` |
-| A378 | L416: false -> true | `test_step5_put_needs_a_content_length` |
-| A379 | L418: > -> >= | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed` |
-| A380 | L418: && -> \|\| | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed` |
-| A381 | L418: && -> \|\| | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed` |
-| A382 | L418: negate if condition | `test_not_started_service_reports_no_card` |
-| A383 | L419: const 413+1 -> 414 | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed` |
-| A384 | L419: const 413-1 -> 412 | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed` |
-| A385 | L419: delete statement | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed` |
-| A386 | L420: false -> true | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed` |
-| A387 | L422: true -> false | `test_not_started_service_reports_no_card` |
-| A388 | L426: negate if condition | `test_api_edges:crash/rc=1` |
-| A389 | L426: false -> true | `test_headers_check_directly` |
-| A390 | L426: delete statement | `test_api_edges:crash/rc=1` |
-| A391 | L427: delete statement | `test_api_edges:crash/rc=1` |
-| A392 | L428: \|\| -> && | `test_api_edges:crash/rc=1` |
-| A393 | L428: negate if condition | `test_api_edges:crash/rc=1` |
-| A394 | L429: const 500+1 -> 501 | `test_headers_check_directly` |
-| A395 | L429: const 500-1 -> 499 | `test_headers_check_directly` |
-| A396 | L429: delete statement | `test_headers_check_directly` |
-| A397 | L430: false -> true | `test_headers_check_directly` |
-| A398 | L434: == -> != | `test_headers_check_directly` |
-| A399 | L434: && -> \|\| | `test_headers_check_directly` |
-| A400 | L434: negate if condition | `test_api_edges:crash/rc=1` |
-| A401 | L434: true -> false | `test_headers_check_directly` |
-| A402 | L434: delete statement | `test_headers_check_directly` |
-| A403 | L444: negate if condition | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step9_begin_conflicts_in_the_documented_order` |
-| A404 | L445: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A405 | L446: false -> true | `test_step7_sd_not_ready_is_503_before_not_found` |
-| A406 | L448: negate if condition | `test_step9_begin_conflicts_in_the_documented_order`, `test_step9_begin_name_exists_then_too_many_images_then_507` |
-| A407 | L449: const 409+1 -> 410 | `test_step9_begin_conflicts_in_the_documented_order` |
-| A408 | L449: const 409-1 -> 408 | `test_step9_begin_conflicts_in_the_documented_order` |
-| A409 | L449: delete statement | `test_step9_begin_conflicts_in_the_documented_order` |
-| A410 | L450: false -> true | `test_step9_begin_conflicts_in_the_documented_order` |
-| A411 | L452: negate if condition | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit` |
-| A412 | L453: const 409+1 -> 410 | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
-| A413 | L453: const 409-1 -> 408 | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
-| A414 | L453: delete statement | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
-| A415 | L454: false -> true | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
-| A416 | L456: >= -> > | `test_step9_begin_name_exists_then_too_many_images_then_507` |
-| A417 | L456: negate if condition | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit` |
-| A418 | L457: const 409+1 -> 410 | `test_step9_begin_name_exists_then_too_many_images_then_507` |
-| A419 | L457: const 409-1 -> 408 | `test_step9_begin_name_exists_then_too_many_images_then_507` |
-| A420 | L457: delete statement | `test_step9_begin_name_exists_then_too_many_images_then_507` |
-| A421 | L458: false -> true | `test_step9_begin_name_exists_then_too_many_images_then_507` |
-| A422 | L461: < -> <= | `test_step12_begin_fits_exactly_with_the_reserve` |
-| A423 | L461: > -> >= | `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
-| A424 | L461: \|\| -> && | `test_begin_larger_than_the_card_is_decided_from_the_view_without_the_op_lock` |
-| A425 | L461: \|\| -> && | `test_step12_begin_one_byte_short_is_507` |
-| A426 | L461: negate if condition | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A427 | L461: + -> - | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A428 | L462: const 507+1 -> 508 | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
-| A429 | L462: const 507-1 -> 506 | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
-| A430 | L462: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
-| A431 | L463: false -> true | `test_step12_begin_one_byte_short_is_507` |
-| A432 | L465: true -> false | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A433 | L470: negate if condition | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A434 | L471: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A435 | L472: false -> true | `test_step7_sd_not_ready_is_503_before_not_found` |
-| A436 | L476: const 404+1 -> 405 | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A437 | L476: const 404-1 -> 403 | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A438 | L476: delete statement | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A439 | L477: false -> true | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
-| A440 | L479: != -> == | `test_step9_mount_image_not_ready_before_locked_by_target`, `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A441 | L479: negate if condition | `test_step9_mount_image_not_ready_before_locked_by_target`, `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A442 | L480: const 409+1 -> 410 | `test_step9_mount_image_not_ready_before_locked_by_target`, `test_step9_mount_of_a_ready_image_without_a_table_is_image_not_ready` |
-| A443 | L480: const 409-1 -> 408 | `test_step9_mount_image_not_ready_before_locked_by_target`, `test_step9_mount_of_a_ready_image_without_a_table_is_image_not_ready` |
-| A444 | L480: delete statement | `test_step9_mount_image_not_ready_before_locked_by_target`, `test_step9_mount_of_a_ready_image_without_a_table_is_image_not_ready` |
-| A445 | L481: false -> true | `test_step9_mount_image_not_ready_before_locked_by_target` |
-| A446 | L483: == -> != | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A447 | L483: && -> \|\| | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A448 | L483: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A449 | L484: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A450 | L485: false -> true | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A451 | L487: && -> \|\| | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A452 | L487: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A453 | L488: const 409+1 -> 410 | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A454 | L488: const 409-1 -> 408 | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A455 | L488: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A456 | L491: true -> false | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A457 | L495: negate if condition | `test_step7_eject_is_the_exception_it_answers_200_not_mounted`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A458 | L496: const 200+1 -> 201 | `test_step7_eject_is_the_exception_it_answers_200_not_mounted`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A459 | L496: const 200-1 -> 199 | `test_step7_eject_is_the_exception_it_answers_200_not_mounted`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A460 | L496: delete statement | `test_step7_eject_is_the_exception_it_answers_200_not_mounted`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A461 | L497: false -> true | `test_step7_eject_is_the_exception_it_answers_200_not_mounted`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A462 | L499: && -> \|\| | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A463 | L499: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A464 | L500: const 409+1 -> 410 | `test_eject_is_refused_while_the_target_prevents_removal_unless_forced` |
-| A465 | L500: const 409-1 -> 408 | `test_eject_is_refused_while_the_target_prevents_removal_unless_forced` |
-| A466 | L500: delete statement | `test_eject_is_refused_while_the_target_prevents_removal_unless_forced` |
-| A467 | L503: true -> false | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A468 | L507: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A469 | L508: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A470 | L509: false -> true | `test_step7_sd_not_ready_is_503_before_not_found` |
-| A471 | L511: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_rescan_during_an_upload_is_409` |
-| A472 | L512: const 409+1 -> 410 | `test_step9_rescan_during_an_upload_is_409` |
-| A473 | L512: const 409-1 -> 408 | `test_step9_rescan_during_an_upload_is_409` |
-| A474 | L512: delete statement | `test_step9_rescan_during_an_upload_is_409` |
-| A475 | L513: false -> true | `test_step9_rescan_during_an_upload_is_409` |
-| A476 | L515: true -> false | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A477 | L520: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A478 | L521: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A479 | L522: false -> true | `test_step7_sd_not_ready_is_503_before_not_found` |
-| A480 | L526: const 404+1 -> 405 | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A481 | L526: const 404-1 -> 403 | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A482 | L526: delete statement | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A483 | L527: false -> true | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
-| A484 | L531: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A485 | L532: false -> true | `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A486 | L534: delete statement | `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A487 | L535: false -> true | `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
-| A488 | L538: < -> <= | `test_step9_finish_size_mismatch_before_upload_in_progress`, `test_step13_busy_for_finish_and_put_commit` |
-| A489 | L538: negate if condition | `test_step9_finish_size_mismatch_before_upload_in_progress`, `test_step13_busy_for_finish_and_put_commit` |
-| A490 | L539: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A491 | L540: false -> true | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A492 | L542: == -> != | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A493 | L542: && -> \|\| | `test_step13_busy_for_finish_and_put_commit` |
-| A494 | L542: negate if condition | `test_step9_finish_size_mismatch_before_upload_in_progress`, `test_step13_busy_for_finish_and_put_commit` |
-| A495 | L543: const 409+1 -> 410 | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A496 | L543: const 409-1 -> 408 | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A497 | L543: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A498 | L544: false -> true | `test_step9_finish_size_mismatch_before_upload_in_progress` |
-| A499 | L546: true -> false | `test_step13_busy_for_finish_and_put_commit` |
-| A500 | L552: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A501 | L553: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A502 | L554: false -> true | `test_step7_sd_not_ready_is_503_before_not_found` |
-| A503 | L557: negate if condition | `test_api_order:crash/rc=1` |
-| A504 | L558: const 404+1 -> 405 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A505 | L558: const 404-1 -> 403 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A506 | L558: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A507 | L559: false -> true | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
-| A508 | L561: == -> != | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
-| A509 | L561: != -> == | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
-| A510 | L561: && -> \|\| | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
-| A511 | L561: && -> \|\| | `test_step9_delete_of_the_mounted_image_is_409` |
-| A512 | L561: negate if condition | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
-| A513 | L562: const 409+1 -> 410 | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
-| A514 | L562: const 409-1 -> 408 | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
-| A515 | L562: delete statement | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
-| A516 | L563: false -> true | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
-| A517 | L565: true -> false | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
-| A518 | L571: negate if condition | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A519 | L572: delete statement | `test_step6_format_errors_are_400_before_the_sd_check`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A520 | L573: false -> true | `test_step6_format_errors_are_400_before_the_sd_check`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A521 | L577: const 404+1 -> 405 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A522 | L577: const 404-1 -> 403 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A523 | L577: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A524 | L578: false -> true | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A525 | L580: != -> == | `test_step9_put_to_images_that_cannot_receive_is_not_uploading`, `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch` |
-| A526 | L580: != -> == | `test_step9_put_to_images_that_cannot_receive_is_not_uploading`, `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch` |
-| A527 | L580: && -> \|\| | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A528 | L580: negate if condition | `test_step9_put_to_images_that_cannot_receive_is_not_uploading`, `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch` |
-| A529 | L581: const 409+1 -> 410 | `test_step9_put_to_images_that_cannot_receive_is_not_uploading` |
-| A530 | L581: const 409-1 -> 408 | `test_step9_put_to_images_that_cannot_receive_is_not_uploading` |
-| A531 | L581: delete statement | `test_step9_put_to_images_that_cannot_receive_is_not_uploading` |
-| A532 | L582: false -> true | `test_step9_put_to_images_that_cannot_receive_is_not_uploading` |
-| A533 | L584: == -> != | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A534 | L584: && -> \|\| | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A535 | L584: negate if condition | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A536 | L585: const 409+1 -> 410 | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch` |
-| A537 | L585: const 409-1 -> 408 | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch` |
-| A538 | L585: delete statement | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch` |
-| A539 | L586: false -> true | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch` |
-| A540 | L588: != -> == | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A541 | L588: negate if condition | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A542 | L589: const 409+1 -> 410 | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A543 | L589: const 409-1 -> 408 | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A544 | L589: delete statement | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A545 | L590: false -> true | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A546 | L592: > -> >= | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A547 | L592: negate if condition | `test_step10_offset_mismatch_before_exceeds_size_and_storage`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A548 | L592: - -> + | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A549 | L593: const 400+1 -> 401 | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A550 | L593: const 400-1 -> 399 | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A551 | L593: delete statement | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A552 | L594: false -> true | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
-| A553 | L596: == -> != | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
-| A554 | L596: negate if condition | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
-| A555 | L597: - -> + | `test_step12_put_resume_storage_boundary`, `test_the_resume_check_does_not_count_the_image_itself_twice` |
-| A556 | L598: < -> <= | `test_step12_put_resume_storage_boundary`, `test_the_resume_check_does_not_count_the_image_itself_twice` |
-| A557 | L598: negate if condition | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
-| A558 | L598: + -> - | `test_step12_put_resume_storage_boundary`, `test_the_resume_check_does_not_count_the_image_itself_twice` |
-| A559 | L599: const 507+1 -> 508 | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
-| A560 | L599: const 507-1 -> 506 | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
-| A561 | L599: delete statement | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
-| A562 | L600: false -> true | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
-| A563 | L603: true -> false | `test_step10_offset_mismatch_before_exceeds_size_and_storage`, `test_step12_put_resume_storage_boundary` |
-| A564 | L609: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A565 | L609: false -> true | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A566 | L609: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A567 | L610: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A570 | L614: true -> false | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A571 | L621: != -> == | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_the_op_lock_wait_can_be_configured` |
-| A572 | L621: const 0+1 -> 1 | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_the_op_lock_wait_can_be_configured` |
-| A573 | L622: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A574 | L623: delete statement | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
-| A575 | L624: false -> true | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
-| A576 | L626: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A577 | L628: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A578 | L629: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A579 | L630: delete statement | `test_commit_rechecks_the_sd_after_taking_the_op_lock`, `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
-| A580 | L631: negate if condition | `test_commit_rechecks_the_sd_after_taking_the_op_lock`, `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
-| A581 | L632: const 200+1 -> 201 | `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
-| A582 | L632: const 200-1 -> 199 | `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
-| A583 | L632: delete statement | `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
-| A584 | L634: delete statement | `test_commit_rechecks_the_sd_after_taking_the_op_lock`, `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
-| A585 | L636: false -> true | `test_commit_rechecks_the_sd_after_taking_the_op_lock`, `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
-| A586 | L638: true -> false | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A587 | L645: == -> != | `test_begin_io_errors`, `test_commit_write_failures` |
-| A588 | L645: == -> != | `test_begin_io_errors`, `test_begin_exhausted_ids_are_a_retryable_503` |
-| A589 | L645: \|\| -> && | `test_begin_exhausted_ids_are_a_retryable_503`, `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing` |
-| A590 | L645: negate if condition | `test_begin_io_errors`, `test_begin_exhausted_ids_are_a_retryable_503` |
-| A591 | L646: delete statement | `test_begin_exhausted_ids_are_a_retryable_503`, `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing` |
-| A592 | L647: == -> != | `test_begin_io_errors`, `test_commit_write_failures` |
-| A593 | L647: negate if condition | `test_begin_io_errors`, `test_commit_write_failures` |
-| A594 | L648: const 507+1 -> 508 | `test_begin_io_errors` |
-| A595 | L648: const 507-1 -> 506 | `test_begin_io_errors` |
-| A596 | L648: delete statement | `test_begin_io_errors` |
-| A598 | L649: negate if condition | `test_begin_io_errors`, `test_commit_write_failures` |
-| A600 | L650: const 503+1 -> 504 | `test_begin_io_errors`, `test_commit_write_failures` |
-| A601 | L650: const 503-1 -> 502 | `test_begin_io_errors`, `test_commit_write_failures` |
-| A602 | L650: delete statement | `test_begin_io_errors`, `test_commit_write_failures` |
-| A606 | L657: negate if condition | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A607 | L657: false -> true | `test_api_edges:crash/rc=1` |
-| A608 | L657: delete statement | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A609 | L659: + -> - | `test_api_order:crash/rc=1` |
-| A611 | L659: const 1-1 -> 0 | `test_api_order:crash/rc=1` |
-| A612 | L661: == -> != | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A613 | L661: negate if condition | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A614 | L662: delete statement | `test_api_ops:crash/rc=1` |
-| A615 | L664: delete statement | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A616 | L665: delete statement | `test_begin_accepted` |
-| A617 | L666: delete statement | `test_begin_accepted` |
-| A618 | L667: delete statement | `test_begin_accepted` |
-| A619 | L668: delete statement | `test_begin_accepted` |
-| A620 | L669: delete statement | `test_begin_accepted` |
-| A621 | L670: const 201+1 -> 202 | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A622 | L670: const 201-1 -> 200 | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A623 | L670: delete statement | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A624 | L671: == -> != | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
-| A625 | L671: negate if condition | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
-| A629 | L673: == -> != | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
-| A630 | L673: negate if condition | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
-| A631 | L674: const 409+1 -> 410 | `test_begin_exec_mapping_when_the_view_is_stale` |
-| A632 | L674: const 409-1 -> 408 | `test_begin_exec_mapping_when_the_view_is_stale` |
-| A633 | L674: delete statement | `test_begin_exec_mapping_when_the_view_is_stale` |
-| A634 | L675: == -> != | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
-| A635 | L675: == -> != | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
-| A636 | L675: \|\| -> && | `test_begin_exec_mapping_when_the_view_is_stale` |
-| A637 | L675: negate if condition | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
-| A638 | L676: const 409+1 -> 410 | `test_begin_exec_mapping_when_the_view_is_stale` |
-| A639 | L676: const 409-1 -> 408 | `test_begin_exec_mapping_when_the_view_is_stale` |
-| A640 | L676: delete statement | `test_begin_exec_mapping_when_the_view_is_stale` |
-| A641 | L677: == -> != | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
-| A642 | L677: == -> != | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_io_errors` |
-| A643 | L677: \|\| -> && | `test_begin_exec_too_many_images_when_the_view_is_stale` |
-| A644 | L677: negate if condition | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
-| A645 | L678: const 409+1 -> 410 | `test_begin_exec_too_many_images_when_the_view_is_stale` |
-| A646 | L678: const 409-1 -> 408 | `test_begin_exec_too_many_images_when_the_view_is_stale` |
-| A647 | L678: delete statement | `test_begin_exec_too_many_images_when_the_view_is_stale` |
-| A648 | L679: == -> != | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_io_errors` |
-| A649 | L679: negate if condition | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_io_errors` |
-| A650 | L680: const 507+1 -> 508 | `test_begin_exec_mapping_when_the_view_is_stale` |
-| A651 | L680: const 507-1 -> 506 | `test_begin_exec_mapping_when_the_view_is_stale` |
-| A652 | L680: delete statement | `test_begin_exec_mapping_when_the_view_is_stale` |
-| A653 | L682: delete statement | `test_begin_io_errors`, `test_begin_exhausted_ids_are_a_retryable_503` |
-| A654 | L684: delete statement | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A655 | L688: negate if condition | `test_step13_busy_for_finish_and_put_commit` |
-| A656 | L688: false -> true | `test_api_edges:crash/rc=1` |
-| A657 | L688: delete statement | `test_step13_busy_for_finish_and_put_commit` |
-| A659 | L693: == -> != | `test_finish_flow_with_a_declared_sha256`, `test_finish_with_a_wrong_declared_sha256_ends_invalid` |
-| A660 | L693: == -> != | `test_finish_flow_with_a_declared_sha256`, `test_finish_exec_mapping_when_the_view_is_stale` |
-| A661 | L693: == -> != | `test_finish_exec_mapping_when_the_view_is_stale`, `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
-| A662 | L693: \|\| -> && | `test_finish_flow_with_a_declared_sha256`, `test_finish_with_a_wrong_declared_sha256_ends_invalid` |
-| A663 | L693: \|\| -> && | `test_finish_flow_with_a_declared_sha256` |
-| A664 | L693: negate if condition | `test_finish_flow_with_a_declared_sha256`, `test_finish_with_a_wrong_declared_sha256_ends_invalid` |
-| A665 | L694: const 202+1 -> 203 | `test_finish_flow_with_a_declared_sha256`, `test_finish_with_a_wrong_declared_sha256_ends_invalid` |
-| A666 | L694: const 202-1 -> 201 | `test_finish_flow_with_a_declared_sha256`, `test_finish_with_a_wrong_declared_sha256_ends_invalid` |
-| A667 | L694: delete statement | `test_finish_flow_with_a_declared_sha256`, `test_finish_with_a_wrong_declared_sha256_ends_invalid` |
-| A668 | L695: == -> != | `test_finish_of_a_ready_image_without_a_table_is_still_finalizing`, `test_finish_exec_mapping_when_the_view_is_stale` |
-| A669 | L695: negate if condition | `test_finish_of_a_ready_image_without_a_table_is_still_finalizing`, `test_finish_exec_mapping_when_the_view_is_stale` |
-| A670 | L696: \|\| -> && | `test_finish_of_a_ready_image_without_a_table_is_still_finalizing` |
-| A671 | L696: negate if condition | `test_finish_of_a_ready_image_without_a_table_is_still_finalizing` |
-| A672 | L697: const 202+1 -> 203 | `test_finish_of_a_ready_image_without_a_table_is_still_finalizing` |
-| A673 | L697: const 202-1 -> 201 | `test_finish_of_a_ready_image_without_a_table_is_still_finalizing` |
-| A674 | L697: delete statement | `test_finish_of_a_ready_image_without_a_table_is_still_finalizing` |
-| A675 | L699: == -> != | `test_finish_that_finds_the_image_ready_reports_the_computed_sha_only` |
-| A676 | L699: && -> \|\| | `test_finish_that_finds_the_image_ready_reports_the_computed_sha_only` |
-| A677 | L699: delete statement | `test_finish_that_finds_the_image_ready_reports_the_computed_sha_only` |
-| A678 | L701: == -> != | `test_finish_exec_mapping_when_the_view_is_stale`, `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
-| A679 | L701: negate if condition | `test_finish_exec_mapping_when_the_view_is_stale`, `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
-| A681 | L702: delete statement | `test_finish_exec_mapping_when_the_view_is_stale` |
-| A682 | L703: == -> != | `test_finish_exec_mapping_when_the_view_is_stale`, `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
-| A683 | L703: negate if condition | `test_finish_exec_mapping_when_the_view_is_stale`, `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
-| A684 | L704: const 404+1 -> 405 | `test_finish_exec_mapping_when_the_view_is_stale` |
-| A685 | L704: const 404-1 -> 403 | `test_finish_exec_mapping_when_the_view_is_stale` |
-| A686 | L704: delete statement | `test_finish_exec_mapping_when_the_view_is_stale` |
-| A687 | L705: == -> != | `test_finish_exec_mapping_when_the_view_is_stale`, `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
-| A688 | L705: negate if condition | `test_finish_exec_mapping_when_the_view_is_stale`, `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
-| A691 | L706: delete statement | `test_finish_exec_mapping_when_the_view_is_stale` |
-| A692 | L707: == -> != | `test_finish_exec_upload_in_progress_when_the_view_is_stale`, `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing` |
-| A693 | L707: negate if condition | `test_finish_exec_upload_in_progress_when_the_view_is_stale`, `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing` |
-| A694 | L708: const 409+1 -> 410 | `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
-| A695 | L708: const 409-1 -> 408 | `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
-| A696 | L708: delete statement | `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
-| A697 | L710: delete statement | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_finish_io_error_while_reloading_received_is_503` |
-| A698 | L712: delete statement | `test_finish_flow_with_a_declared_sha256`, `test_finish_with_a_wrong_declared_sha256_ends_invalid` |
-| A699 | L716: negate if condition | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
-| A700 | L716: false -> true | `test_api_edges:crash/rc=1` |
-| A701 | L716: delete statement | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
-| A702 | L720: != -> == | `test_step9_mounted_is_reported_before_crosslinked` |
-| A703 | L720: != -> == | `test_step9_mounted_is_reported_before_crosslinked` |
-| A704 | L720: && -> \|\| | `test_api_ops:crash/rc=1` |
-| A705 | L720: && -> \|\| | `test_api_ops:crash/rc=1` |
-| A706 | L720: negate if condition | `test_step9_mounted_is_reported_before_crosslinked` |
-| A707 | L722: delete statement | `test_step9_mounted_is_reported_before_crosslinked` |
-| A708 | L723: == -> != | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
-| A709 | L723: negate if condition | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
-| A710 | L724: const 409+1 -> 410 | `test_step9_mounted_is_reported_before_crosslinked` |
-| A711 | L724: const 409-1 -> 408 | `test_step9_mounted_is_reported_before_crosslinked` |
-| A712 | L724: delete statement | `test_step9_mounted_is_reported_before_crosslinked` |
-| A713 | L725: delete statement | `test_step9_mounted_is_reported_before_crosslinked` |
-| A714 | L729: == -> != | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_flow` |
-| A715 | L729: negate if condition | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_flow` |
-| A716 | L729: delete statement | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_flow` |
-| A717 | L730: == -> != | `test_step9_delete_of_the_mounted_image_is_409` |
-| A718 | L730: == -> != | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
-| A719 | L730: \|\| -> && | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
-| A720 | L730: negate if condition | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
-| A721 | L731: const 202+1 -> 203 | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
-| A722 | L731: const 202-1 -> 201 | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
-| A723 | L731: delete statement | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
-| A724 | L732: == -> != | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_exec_mapping` |
-| A725 | L732: negate if condition | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_exec_mapping` |
-| A726 | L733: const 404+1 -> 405 | `test_delete_exec_mapping` |
-| A727 | L733: const 404-1 -> 403 | `test_delete_exec_mapping` |
-| A728 | L733: delete statement | `test_delete_exec_mapping` |
-| A729 | L734: == -> != | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_exec_mapping` |
-| A730 | L734: negate if condition | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_exec_mapping` |
-| A731 | L735: const 409+1 -> 410 | `test_delete_exec_mapping` |
-| A732 | L735: const 409-1 -> 408 | `test_delete_exec_mapping` |
-| A733 | L735: delete statement | `test_delete_exec_mapping` |
-| A734 | L737: delete statement | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_exec_mapping` |
-| A735 | L739: delete statement | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
-| A736 | L743: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A737 | L743: false -> true | `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
-| A738 | L743: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A739 | L746: == -> != | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A740 | L746: == -> != | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A741 | L746: \|\| -> && | `test_api_ops:crash/rc=1` |
-| A742 | L746: \|\| -> && | `test_mount_exec_when_the_catalog_changed_after_the_check` |
-| A743 | L746: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A744 | L747: const 404+1 -> 405 | `test_mount_exec_when_the_catalog_changed_after_the_check` |
-| A745 | L747: const 404-1 -> 403 | `test_mount_exec_when_the_catalog_changed_after_the_check` |
-| A746 | L747: delete statement | `test_mount_exec_when_the_catalog_changed_after_the_check` |
-| A747 | L752: != -> == | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A748 | L752: != -> == | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A749 | L752: \|\| -> && | `test_api_edges:crash/rc=1` |
-| A750 | L752: \|\| -> && | `test_api_edges:crash/rc=1` |
-| A751 | L752: \|\| -> && | `test_mount_exec_requires_a_table_of_the_current_card` |
-| A752 | L752: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A753 | L753: const 409+1 -> 410 | `test_mount_exec_requires_a_table_of_the_current_card`, `test_mount_exec_when_the_catalog_changed_after_the_check` |
-| A754 | L753: const 409-1 -> 408 | `test_mount_exec_requires_a_table_of_the_current_card`, `test_mount_exec_when_the_catalog_changed_after_the_check` |
-| A755 | L753: delete statement | `test_mount_exec_requires_a_table_of_the_current_card`, `test_mount_exec_when_the_catalog_changed_after_the_check` |
-| A756 | L755: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A757 | L758: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A758 | L758: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A759 | L759: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A760 | L760: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A761 | L761: delete statement | `test_api_edges:crash/rc=1` |
-| A762 | L762: == -> != | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A763 | L762: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A764 | L763: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A765 | L764: == -> != | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
-| A766 | L764: negate if condition | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
-| A767 | L765: delete statement | `test_api_edges:crash/rc=1` |
-| A768 | L766: == -> != | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
-| A769 | L766: negate if condition | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
-| A770 | L767: const 409+1 -> 410 | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
-| A771 | L767: const 409-1 -> 408 | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
-| A772 | L767: delete statement | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
-| A776 | L773: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A777 | L777: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A778 | L777: true -> false | `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
-| A779 | L777: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A780 | L778: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A781 | L780: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A782 | L781: == -> != | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A783 | L781: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A784 | L782: const 200+1 -> 201 | `test_eject_flow_and_target_eject`, `test_eject_is_refused_while_the_target_prevents_removal_unless_forced` |
-| A785 | L782: const 200-1 -> 199 | `test_eject_flow_and_target_eject`, `test_eject_is_refused_while_the_target_prevents_removal_unless_forced` |
-| A786 | L782: delete statement | `test_eject_flow_and_target_eject`, `test_eject_is_refused_while_the_target_prevents_removal_unless_forced` |
-| A787 | L783: == -> != | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A788 | L783: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A789 | L784: const 200+1 -> 201 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A790 | L784: const 200-1 -> 199 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A791 | L784: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A792 | L785: == -> != | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
-| A793 | L785: negate if condition | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
-| A794 | L786: const 409+1 -> 410 | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
-| A795 | L786: const 409-1 -> 408 | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
-| A796 | L786: delete statement | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
-| A800 | L790: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A801 | L794: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A802 | L794: false -> true | `test_api_edges:crash/rc=1` |
-| A803 | L794: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A806 | L799: delete statement | `test_rescan_imports_and_reports` |
-| A807 | L800: delete statement | `test_rescan_imports_and_reports` |
-| A808 | L801: < -> <= | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A809 | L801: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A810 | L801: const 0+1 -> 1 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A811 | L802: delete statement | `test_rescan_io_error_is_503_but_keeps_what_was_imported` |
-| A812 | L805: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A813 | L806: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A814 | L807: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A815 | L808: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A816 | L809: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A817 | L810: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A818 | L811: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A819 | L812: delete statement | `test_rescan_continues_with_the_cursor` |
-| A820 | L814: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A821 | L816: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A822 | L817: const 200+1 -> 201 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A823 | L817: const 200-1 -> 199 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A824 | L817: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
-| A825 | L819: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_the_op_lock_wait_can_be_configured` |
-| A827 | L829: delete statement | `test_api_order:crash/rc=1` |
-| A828 | L831: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A829 | L832: > -> >= | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
-| A830 | L832: negate if condition | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A831 | L833: const 413+1 -> 414 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
-| A832 | L833: const 413-1 -> 412 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
-| A833 | L833: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
-| A834 | L834: false -> true | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
-| A836 | L839: == -> != | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A837 | L839: != -> == | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A838 | L839: \|\| -> && | `test_api_order:crash/rc=1` |
-| A839 | L839: \|\| -> && | `test_api_order:crash/rc=1` |
-| A840 | L839: negate if condition | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A841 | L839: const 0+1 -> 1 | `test_step6_format_errors_are_400_before_the_sd_check` |
-| A842 | L839: const 0+1 -> 1 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A843 | L840: const 400+1 -> 401 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A844 | L840: const 400-1 -> 399 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A845 | L840: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A846 | L841: false -> true | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A847 | L845: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A848 | L847: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A849 | L848: negate if condition | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A850 | L848: false -> true | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A851 | L848: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A852 | L850: true -> false | `test_step13_busy_for_finish_and_put_commit` |
-| A853 | L850: delete statement | `test_step13_busy_for_finish_and_put_commit` |
-| A854 | L851: + -> - | `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A857 | L851: delete statement | `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A858 | L852: delete statement | `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
-| A859 | L853: delete statement | `test_step10_offset_mismatch_before_exceeds_size_and_storage`, `test_step13_busy_for_finish_and_put_commit` |
-| A860 | L854: true -> false | `test_step10_offset_mismatch_before_exceeds_size_and_storage`, `test_step12_put_resume_storage_boundary` |
-| A861 | L858: negate if condition | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_step4_content_type_is_415_before_the_length_checks` |
-| A862 | L858: false -> true | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
-| A863 | L858: delete statement | `test_api_ops:crash/rc=1` |
-| A864 | L859: delete statement | `test_api_edges:crash/rc=1` |
-| A865 | L860: \|\| -> && | `test_api_ops:crash/rc=1` |
-| A866 | L860: negate if condition | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_step4_content_type_is_415_before_the_length_checks` |
-| A867 | L861: const 500+1 -> 501 | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
-| A868 | L861: const 500-1 -> 499 | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
-| A869 | L861: delete statement | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
-| A870 | L862: true -> false | `test_put_precheck_and_commit_argument_errors` |
-| A871 | L862: delete statement | `test_put_precheck_and_commit_argument_errors` |
-| A872 | L863: false -> true | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
-| A873 | L867: != -> == | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A874 | L867: && -> \|\| | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A875 | L867: negate if condition | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_step4_content_type_is_415_before_the_length_checks` |
-| A876 | L868: const 500+1 -> 501 | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
-| A877 | L868: const 500-1 -> 499 | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
-| A878 | L868: delete statement | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
-| A879 | L869: false -> true | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
-| A880 | L869: delete statement | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
-| A881 | L871: negate if condition | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_step4_content_type_is_415_before_the_length_checks` |
-| A882 | L871: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A883 | L872: negate if condition | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_step4_content_type_is_415_before_the_length_checks` |
-| A884 | L872: true -> false | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_step4_content_type_is_415_before_the_length_checks` |
-| A885 | L872: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_step4_content_type_is_415_before_the_length_checks` |
-| A886 | L877: negate if condition | `test_step13_busy_for_finish_and_put_commit` |
-| A887 | L877: delete statement | `test_api_edges:crash/rc=1` |
-| A888 | L878: delete statement | `test_api_edges:crash/rc=1` |
-| A889 | L879: == -> != | `test_step13_busy_for_finish_and_put_commit` |
-| A890 | L879: != -> == | `test_step13_busy_for_finish_and_put_commit` |
-| A891 | L879: \|\| -> && | `test_api_ops:crash/rc=1` |
-| A892 | L879: \|\| -> && | `test_commit_rejects_bad_arguments` |
-| A893 | L879: \|\| -> && | `test_commit_rejects_bad_arguments` |
-| A894 | L879: \|\| -> && | `test_commit_rejects_bad_arguments` |
-| A895 | L879: negate if condition | `test_step13_busy_for_finish_and_put_commit` |
-| A896 | L879: const 0+1 -> 1 | `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A897 | L880: const 400+1 -> 401 | `test_commit_rejects_bad_arguments` |
-| A898 | L880: const 400-1 -> 399 | `test_commit_rejects_bad_arguments` |
-| A899 | L880: delete statement | `test_commit_rejects_bad_arguments` |
-| A900 | L883: negate if condition | `test_api_order:crash/rc=1` |
-| A901 | L884: delete statement | `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A902 | L887: negate if condition | `test_step13_busy_for_finish_and_put_commit` |
-| A903 | L887: false -> true | `test_commit_rechecks_the_sd_after_taking_the_op_lock` |
-| A904 | L887: delete statement | `test_step13_busy_for_finish_and_put_commit` |
-| A907 | L892: == -> != | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
-| A908 | L892: negate if condition | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
-| A909 | L894: delete statement | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
-| A910 | L895: delete statement | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
-| A911 | L896: delete statement | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
-| A912 | L897: delete statement | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
-| A913 | L898: const 200+1 -> 201 | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
-| A914 | L898: const 200-1 -> 199 | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
-| A915 | L898: delete statement | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
-| A916 | L899: == -> != | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
-| A917 | L899: negate if condition | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
-| A918 | L900: const 413+1 -> 414 | `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
-| A919 | L900: const 413-1 -> 412 | `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
-| A920 | L900: delete statement | `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
-| A921 | L901: == -> != | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
-| A922 | L901: negate if condition | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
-| A923 | L902: const 404+1 -> 405 | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
-| A924 | L902: const 404-1 -> 403 | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
-| A925 | L902: delete statement | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
-| A926 | L903: == -> != | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
-| A927 | L903: negate if condition | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
-| A928 | L904: const 409+1 -> 410 | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
-| A929 | L904: const 409-1 -> 408 | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
-| A930 | L904: delete statement | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
-| A931 | L905: == -> != | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
-| A932 | L905: negate if condition | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
-| A933 | L906: const 409+1 -> 410 | `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
-| A934 | L906: const 409-1 -> 408 | `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
-| A935 | L906: delete statement | `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
-| A936 | L907: == -> != | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
-| A937 | L907: negate if condition | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
-| A938 | L908: const 409+1 -> 410 | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
-| A939 | L908: const 409-1 -> 408 | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
-| A940 | L908: delete statement | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
-| A941 | L909: == -> != | `test_commit_with_a_fabricated_put_maps_the_remaining_results`, `test_commit_507_when_the_resume_no_longer_fits` |
-| A942 | L909: == -> != | `test_commit_507_when_the_resume_no_longer_fits`, `test_commit_write_failures` |
-| A943 | L909: \|\| -> && | `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
-| A944 | L909: negate if condition | `test_commit_with_a_fabricated_put_maps_the_remaining_results`, `test_commit_507_when_the_resume_no_longer_fits` |
-| A945 | L910: const 400+1 -> 401 | `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
-| A946 | L910: const 400-1 -> 399 | `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
-| A947 | L910: delete statement | `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
-| A948 | L911: == -> != | `test_commit_507_when_the_resume_no_longer_fits`, `test_commit_write_failures` |
-| A949 | L911: negate if condition | `test_commit_507_when_the_resume_no_longer_fits`, `test_commit_write_failures` |
-| A950 | L912: const 507+1 -> 508 | `test_commit_507_when_the_resume_no_longer_fits`, `test_commit_write_failures` |
-| A951 | L912: const 507-1 -> 506 | `test_commit_507_when_the_resume_no_longer_fits`, `test_commit_write_failures` |
-| A952 | L912: delete statement | `test_commit_507_when_the_resume_no_longer_fits`, `test_commit_write_failures` |
-| A953 | L914: delete statement | `test_commit_write_failures` |
-| A954 | L916: delete statement | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
-| A955 | L922: negate if condition | `test_not_started_service_reports_no_card` |
-| A956 | L922: delete statement | `test_api_ops:crash/rc=1` |
-| A957 | L923: delete statement | `test_api_edges:crash/rc=1` |
-| A958 | L924: \|\| -> && | `test_api_ops:crash/rc=1` |
-| A959 | L924: negate if condition | `test_not_started_service_reports_no_card` |
-| A960 | L925: const 500+1 -> 501 | `test_put_precheck_and_commit_argument_errors` |
-| A961 | L925: const 500-1 -> 499 | `test_put_precheck_and_commit_argument_errors` |
-| A962 | L925: delete statement | `test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty` |
-| A963 | L929: negate if condition | `test_not_started_service_reports_no_card` |
-| A964 | L930: == -> != | `test_unknown_paths_and_methods_are_404_and_405` |
-| A965 | L930: negate if condition | `test_unknown_paths_and_methods_are_404_and_405` |
-| A966 | L930: true -> false | `test_unknown_paths_and_methods_are_404_and_405` |
-| A967 | L930: delete statement | `test_unknown_paths_and_methods_are_404_and_405` |
-| A969 | L939: delete statement | `test_not_started_service_reports_no_card` |
-| A970 | L941: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_get_and_put_precheck_do_not_take_the_op_lock` |
-| A971 | L942: != -> == | `test_not_started_service_reports_no_card` |
-| A972 | L942: negate if condition | `test_not_started_service_reports_no_card` |
-| A973 | L942: const 0+1 -> 1 | `test_not_started_service_reports_no_card` |
-| A974 | L943: const 500+1 -> 501 | `test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty` |
-| A975 | L943: const 500-1 -> 499 | `test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty` |
-| A976 | L943: delete statement | `test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty` |
-| A977 | L945: const 200+1 -> 201 | `test_not_started_service_reports_no_card` |
-| A978 | L945: const 200-1 -> 199 | `test_not_started_service_reports_no_card` |
-| A979 | L945: delete statement | `test_not_started_service_reports_no_card` |
-| A980 | L950: negate if condition | `test_fuzz_request_sequences` |
-| A981 | L950: true -> false | `test_fuzz_request_sequences` |
-| A982 | L950: delete statement | `test_api_edges:crash/rc=1` |
-| A983 | L953: != -> == | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A984 | L953: negate if condition | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A985 | L953: const 0+1 -> 1 | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step9_begin_conflicts_in_the_documented_order` |
-| A986 | L954: const 400+1 -> 401 | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A987 | L954: const 400-1 -> 399 | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A988 | L954: delete statement | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A989 | L957: true -> false | `test_begin_accepted` |
-| A990 | L957: delete statement | `test_begin_accepted` |
-| A991 | L958: delete statement | `test_begin_accepted` |
-| A992 | L959: delete statement | `test_api_order:crash/rc=1` |
-| A993 | L961: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step9_begin_conflicts_in_the_documented_order` |
-| A994 | L962: negate if condition | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step9_begin_conflicts_in_the_documented_order` |
-| A995 | L962: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step9_begin_conflicts_in_the_documented_order` |
-| A996 | L963: delete statement | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
-| A998 | L968: != -> == | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A999 | L968: \|\| -> && | `test_step9_mount_already_mounted_wins_over_the_lock` |
-| A1000 | L968: negate if condition | `test_step6_format_errors_are_400_before_the_sd_check`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A1001 | L968: const 0+1 -> 1 | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A1002 | L969: const 400+1 -> 401 | `test_step6_format_errors_are_400_before_the_sd_check`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A1003 | L969: const 400-1 -> 399 | `test_step6_format_errors_are_400_before_the_sd_check`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A1004 | L969: delete statement | `test_step6_format_errors_are_400_before_the_sd_check`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
-| A1005 | L972: delete statement | `test_mount_flow` |
-| A1006 | L973: delete statement | `test_api_order:crash/rc=1` |
-| A1007 | L975: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A1008 | L976: negate if condition | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A1009 | L976: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A1010 | L977: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A1011 | L981: != -> == | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A1012 | L981: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A1013 | L981: const 0+1 -> 1 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A1014 | L982: const 400+1 -> 401 | `test_step6_format_errors_are_400_before_the_sd_check` |
-| A1015 | L982: const 400-1 -> 399 | `test_step6_format_errors_are_400_before_the_sd_check` |
-| A1016 | L982: delete statement | `test_step6_format_errors_are_400_before_the_sd_check` |
-| A1017 | L985: delete statement | `test_api_order:crash/rc=1` |
-| A1018 | L987: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A1019 | L988: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A1020 | L988: delete statement | `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
-| A1021 | L989: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A1022 | L993: != -> == | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A1023 | L993: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A1024 | L993: const 0+1 -> 1 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A1025 | L994: const 400+1 -> 401 | `test_step6_format_errors_are_400_before_the_sd_check`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
-| A1026 | L994: const 400-1 -> 399 | `test_step6_format_errors_are_400_before_the_sd_check`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
-| A1027 | L994: delete statement | `test_step6_format_errors_are_400_before_the_sd_check`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
-| A1028 | L997: delete statement | `test_api_order:crash/rc=1` |
-| A1029 | L999: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A1030 | L1000: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A1031 | L1000: delete statement | `test_step7_sd_not_ready_is_503_before_not_found` |
-| A1032 | L1001: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
-| A1033 | L1005: != -> == | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A1034 | L1005: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step6_format_errors_are_400_before_the_sd_check` |
-| A1035 | L1005: const 0+1 -> 1 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A1036 | L1006: const 400+1 -> 401 | `test_step6_format_errors_are_400_before_the_sd_check` |
-| A1037 | L1006: const 400-1 -> 399 | `test_step6_format_errors_are_400_before_the_sd_check` |
-| A1038 | L1006: delete statement | `test_step6_format_errors_are_400_before_the_sd_check` |
-| A1039 | L1009: delete statement | `test_api_order:crash/rc=1` |
-| A1040 | L1011: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A1041 | L1012: negate if condition | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A1042 | L1012: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A1043 | L1013: delete statement | `test_step13_busy_for_finish_and_put_commit` |
-| A1045 | L1018: delete statement | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
-| A1046 | L1019: delete statement | `test_api_order:crash/rc=1` |
-| A1047 | L1021: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
-| A1048 | L1022: negate if condition | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A1049 | L1022: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
-| A1050 | L1023: delete statement | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
+| A178 | L162: negate if condition | `test_header_status_and_value`, `test_a_truncated_header_is_rejected_at_its_own_step` |
+| A179 | L162: delete statement | `test_header_status_and_value`, `test_a_truncated_header_is_rejected_at_its_own_step` |
+| A180 | L167: == -> != | `test_header_status_and_value`, `test_a_truncated_header_is_rejected_at_its_own_step` |
+| A181 | L167: negate if condition | `test_header_status_and_value`, `test_a_truncated_header_is_rejected_at_its_own_step` |
+| A182 | L167: delete statement | `test_header_status_and_value`, `test_a_truncated_header_is_rejected_at_its_own_step` |
+| A183 | L168: == -> != | `test_header_status_and_value` |
+| A184 | L174: const 0+1 -> 1 | `test_unknown_paths_and_methods_are_404_and_405`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A185 | L174: delete statement | `test_unknown_paths_and_methods_are_404_and_405`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A186 | L175: delete statement | `test_not_started_service_reports_no_card` |
+| A187 | L176: delete statement | `test_not_started_service_reports_no_card` |
+| A188 | L177: > -> >= | `test_response_init_clears_the_response_and_the_first_byte` |
+| A189 | L177: && -> \|\| | `test_response_init_clears_the_response_and_the_first_byte` |
+| A190 | L177: negate if condition | `test_response_init_clears_the_response_and_the_first_byte`, `test_entry_points_discard_what_the_response_held_before` |
+| A191 | L177: const 0+1 -> 1 | `test_response_init_clears_the_response_and_the_first_byte` |
+| A192 | L177: delete statement | `test_response_init_clears_the_response_and_the_first_byte`, `test_entry_points_discard_what_the_response_held_before` |
+| A194 | L185: == -> != | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
+| A195 | L185: negate if condition | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
+| A196 | L185: const 0+1 -> 1 | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
+| A197 | L186: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
+| A198 | L187: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
+| A199 | L188: delete statement | `test_begin_accepted`, `test_finish_flow_with_a_declared_sha256` |
+| A200 | L192: delete statement | `test_a_body_that_does_not_fit_becomes_the_short_internal_error` |
+| A201 | L193: delete statement | `test_a_body_that_does_not_fit_becomes_the_short_internal_error` |
+| A202 | L194: delete statement | `test_a_body_that_does_not_fit_becomes_the_short_internal_error` |
+| A203 | L195: const 500+1 -> 501 | `test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty` |
+| A204 | L195: const 500-1 -> 499 | `test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty` |
+| A205 | L195: delete statement | `test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty` |
+| A206 | L196: delete statement | `test_a_body_that_does_not_fit_becomes_the_short_internal_error` |
+| A207 | L201: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
+| A208 | L202: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
+| A209 | L203: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
+| A210 | L204: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
+| A211 | L205: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_unknown_paths_and_methods_are_404_and_405` |
+| A212 | L210: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
+| A213 | L211: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
+| A214 | L212: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
+| A215 | L213: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
+| A216 | L214: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
+| A217 | L215: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
+| A218 | L216: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
+| A219 | L217: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
+| A220 | L218: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
+| A221 | L223: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A222 | L224: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A223 | L225: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A224 | L226: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A225 | L227: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A226 | L228: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A227 | L229: const 409+1 -> 410 | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A228 | L229: const 409-1 -> 408 | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A229 | L229: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A230 | L233: const 503+1 -> 504 | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
+| A231 | L233: const 503-1 -> 502 | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
+| A232 | L233: delete statement | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
+| A233 | L234: true -> false | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
+| A234 | L234: delete statement | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
+| A235 | L235: const 1+1 -> 2 | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
+| A236 | L235: const 1-1 -> 0 | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
+| A237 | L235: delete statement | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
+| A238 | L238: const 503+1 -> 504 | `test_step6_format_errors_are_400_before_the_sd_check`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A239 | L238: const 503-1 -> 502 | `test_step6_format_errors_are_400_before_the_sd_check`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A240 | L243: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A241 | L244: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A242 | L245: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A243 | L246: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A244 | L247: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A245 | L248: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A246 | L249: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A247 | L255: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A248 | L256: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A249 | L257: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A250 | L258: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A251 | L259: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A252 | L260: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A253 | L261: const 200+1 -> 201 | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A254 | L261: const 200-1 -> 199 | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A255 | L261: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A256 | L278: negate if condition | `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A257 | L279: const 500+1 -> 501 | `test_an_unknown_invalid_reason_in_the_view_is_a_500` |
+| A258 | L279: const 500-1 -> 499 | `test_an_unknown_invalid_reason_in_the_view_is_a_500` |
+| A259 | L279: delete statement | `test_an_unknown_invalid_reason_in_the_view_is_a_500` |
+| A260 | L282: const 422+1 -> 423 | `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A261 | L282: const 422-1 -> 421 | `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A262 | L282: delete statement | `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A263 | L287: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A264 | L288: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A265 | L289: negate if condition | `test_api_order:crash/rc=1` |
+| A266 | L290: delete statement | `test_finish_flow_with_a_declared_sha256` |
+| A267 | L291: delete statement | `test_finish_flow_with_a_declared_sha256` |
+| A268 | L292: delete statement | `test_finish_flow_with_a_declared_sha256` |
+| A269 | L294: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A270 | L296: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A271 | L297: const 200+1 -> 201 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A272 | L297: const 200-1 -> 199 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A273 | L297: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A274 | L300: + -> - | `test_api_ops:crash/rc=1` |
+| A275 | L300: const 1+1 -> 2 | `test_api_order:crash/rc=1` |
+| A277 | L305: delete statement | `test_snapshot_update_copies_the_view_and_drops_the_table_pointers` |
+| A279 | L306: negate if condition | `test_snapshot_update_copies_the_view_and_drops_the_table_pointers` |
+| A280 | L306: delete statement | `test_snapshot_update_copies_the_view_and_drops_the_table_pointers` |
+| A281 | L307: < -> <= | `test_api_list:crash/rc=1` |
+| A282 | L307: const 0+1 -> 1 | `test_snapshot_update_copies_the_view_and_drops_the_table_pointers` |
+| A283 | L308: const 0+1 -> 1 | `test_snapshot_update_copies_the_view_and_drops_the_table_pointers` |
+| A284 | L308: delete statement | `test_snapshot_update_copies_the_view_and_drops_the_table_pointers` |
+| A285 | L319: && -> \|\| | `test_api_list:crash/rc=1` |
+| A286 | L319: && -> \|\| | `test_api_list:crash/rc=1` |
+| A287 | L319: && -> \|\| | `test_api_list:crash/rc=1` |
+| A288 | L319: && -> \|\| | `test_api_list:crash/rc=1` |
+| A289 | L319: && -> \|\| | `test_api_list:crash/rc=1` |
+| A290 | L319: && -> \|\| | `test_api_list:crash/rc=1` |
+| A291 | L319: && -> \|\| | `test_api_list:crash/rc=1` |
+| A292 | L324: negate if condition | `test_api_list:crash/rc=1` |
+| A294 | L328: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
+| A295 | L329: delete statement | `test_api_order:crash/rc=1` |
+| A296 | L330: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step9_delete_of_the_mounted_image_is_409` |
+| A297 | L334: negate if condition | `test_api_list:crash/rc=1` |
+| A298 | L334: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
+| A299 | L337: == -> != | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
+| A300 | L340: < -> <= | `test_api_edges:crash/rc=1` |
+| A301 | L340: const 0+1 -> 1 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A302 | L341: == -> != | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A303 | L341: != -> == | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A304 | L341: && -> \|\| | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step9_mount_image_not_ready_before_locked_by_target` |
+| A305 | L341: negate if condition | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A306 | L341: const 0+1 -> 1 | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_mount_image_not_ready_before_locked_by_target` |
+| A307 | L341: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A308 | L349: negate if condition | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A309 | L349: const 0+1 -> 1 | `test_step12_begin_without_a_sampled_free_size_is_507_with_zero`, `test_step12_put_resume_storage_boundary` |
+| A310 | L349: delete statement | `test_step12_begin_without_a_sampled_free_size_is_507_with_zero`, `test_step12_put_resume_storage_boundary` |
+| A311 | L352: < -> <= | `test_api_edges:crash/rc=1` |
+| A312 | L352: const 0+1 -> 1 | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A313 | L353: == -> != | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A314 | L353: \|\| -> && | `test_step12_put_resume_storage_boundary`, `test_the_resume_check_does_not_count_the_image_itself_twice` |
+| A315 | L353: negate if condition | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A316 | L353: delete statement | `test_step12_put_resume_storage_boundary`, `test_the_resume_check_does_not_count_the_image_itself_twice` |
+| A317 | L354: != -> == | `test_estimate_ignores_images_that_are_not_being_uploaded` |
+| A318 | L354: != -> == | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A319 | L354: && -> \|\| | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A320 | L354: negate if condition | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A321 | L354: delete statement | `test_estimate_ignores_images_that_are_not_being_uploaded` |
+| A323 | L355: negate if condition | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A324 | L355: - -> + | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
+| A325 | L355: += -> -= | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A326 | L355: delete statement | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A328 | L357: - -> + | `test_step12_the_estimate_subtracts_the_remaining_of_unfinished_images_and_consumed_bytes`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A329 | L357: const 0+1 -> 1 | `test_estimate_is_zero_when_the_used_bytes_exceed_the_free_space` |
+| A330 | L361: < -> <= | `test_api_order:crash/rc=1` |
+| A331 | L361: const 0+1 -> 1 | `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
+| A332 | L362: == -> != | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
+| A333 | L362: == -> != | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit` |
+| A335 | L362: \|\| -> && | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit` |
+| A336 | L362: negate if condition | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit` |
+| A337 | L362: delete statement | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit` |
+| A338 | L363: negate if condition | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A339 | L363: true -> false | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
+| A340 | L363: delete statement | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
+| A341 | L365: false -> true | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit` |
+| A342 | L368: != -> == | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A343 | L368: * -> / | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A344 | L368: const 0+1 -> 1 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A345 | L368: const 1024+1 -> 1025 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
+| A346 | L368: const 1024-1 -> 1023 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
+| A347 | L385: delete statement | `test_not_started_service_reports_no_card` |
+| A348 | L386: == -> != | `test_not_started_service_reports_no_card` |
+| A349 | L386: negate if condition | `test_not_started_service_reports_no_card` |
+| A350 | L387: const 404+1 -> 405 | `test_unknown_paths_and_methods_are_404_and_405` |
+| A351 | L387: const 404-1 -> 403 | `test_unknown_paths_and_methods_are_404_and_405` |
+| A352 | L387: delete statement | `test_unknown_paths_and_methods_are_404_and_405` |
+| A353 | L388: false -> true | `test_unknown_paths_and_methods_are_404_and_405` |
+| A354 | L390: == -> != | `test_not_started_service_reports_no_card` |
+| A355 | L390: negate if condition | `test_not_started_service_reports_no_card` |
+| A356 | L391: const 405+1 -> 406 | `test_unknown_paths_and_methods_are_404_and_405`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A357 | L391: const 405-1 -> 404 | `test_unknown_paths_and_methods_are_404_and_405`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A358 | L391: delete statement | `test_unknown_paths_and_methods_are_404_and_405`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A359 | L392: delete statement | `test_unknown_paths_and_methods_are_404_and_405` |
+| A360 | L393: false -> true | `test_unknown_paths_and_methods_are_404_and_405`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A361 | L395: delete statement | `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A362 | L396: delete statement | `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A364 | L397: negate if condition | `test_finish_flow_with_a_declared_sha256`, `test_delete_flow` |
+| A365 | L397: delete statement | `test_finish_flow_with_a_declared_sha256`, `test_delete_flow` |
+| A366 | L400: && -> \|\| | `test_not_started_service_reports_no_card` |
+| A367 | L400: negate if condition | `test_not_started_service_reports_no_card` |
+| A368 | L401: const 404+1 -> 405 | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A369 | L401: const 404-1 -> 403 | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A370 | L401: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A371 | L402: false -> true | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A372 | L408: false -> true | `test_not_started_service_reports_no_card` |
+| A373 | L418: negate if condition | `test_not_started_service_reports_no_card` |
+| A374 | L419: const 415+1 -> 416 | `test_step4_content_type_is_415_before_the_length_checks` |
+| A375 | L419: const 415-1 -> 414 | `test_step4_content_type_is_415_before_the_length_checks` |
+| A376 | L419: delete statement | `test_step4_content_type_is_415_before_the_length_checks` |
+| A377 | L420: false -> true | `test_step4_content_type_is_415_before_the_length_checks` |
+| A378 | L424: == -> != | `test_not_started_service_reports_no_card` |
+| A379 | L424: && -> \|\| | `test_not_started_service_reports_no_card` |
+| A380 | L424: negate if condition | `test_not_started_service_reports_no_card` |
+| A381 | L425: const 411+1 -> 412 | `test_step5_put_needs_a_content_length` |
+| A382 | L425: const 411-1 -> 410 | `test_step5_put_needs_a_content_length` |
+| A383 | L425: delete statement | `test_step5_put_needs_a_content_length` |
+| A384 | L426: false -> true | `test_step5_put_needs_a_content_length` |
+| A385 | L428: > -> >= | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed` |
+| A386 | L428: && -> \|\| | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed` |
+| A387 | L428: && -> \|\| | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed` |
+| A388 | L428: negate if condition | `test_not_started_service_reports_no_card` |
+| A389 | L429: const 413+1 -> 414 | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed` |
+| A390 | L429: const 413-1 -> 412 | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed` |
+| A391 | L429: delete statement | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed` |
+| A392 | L430: false -> true | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed` |
+| A393 | L432: true -> false | `test_not_started_service_reports_no_card` |
+| A394 | L436: negate if condition | `test_api_edges:crash/rc=1` |
+| A395 | L436: false -> true | `test_headers_check_directly` |
+| A396 | L436: delete statement | `test_api_edges:crash/rc=1` |
+| A397 | L437: delete statement | `test_entry_points_discard_what_the_response_held_before` |
+| A398 | L438: \|\| -> && | `test_api_edges:crash/rc=1` |
+| A399 | L438: negate if condition | `test_api_edges:crash/rc=1` |
+| A400 | L439: const 500+1 -> 501 | `test_headers_check_directly` |
+| A401 | L439: const 500-1 -> 499 | `test_headers_check_directly` |
+| A402 | L439: delete statement | `test_headers_check_directly` |
+| A403 | L440: false -> true | `test_headers_check_directly` |
+| A404 | L444: == -> != | `test_headers_check_directly` |
+| A405 | L444: && -> \|\| | `test_headers_check_directly` |
+| A406 | L444: negate if condition | `test_entry_points_discard_what_the_response_held_before`, `test_headers_check_directly` |
+| A407 | L444: true -> false | `test_headers_check_directly` |
+| A408 | L444: delete statement | `test_headers_check_directly` |
+| A409 | L454: negate if condition | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step9_begin_conflicts_in_the_documented_order` |
+| A410 | L455: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A411 | L456: false -> true | `test_step7_sd_not_ready_is_503_before_not_found` |
+| A412 | L458: negate if condition | `test_step9_begin_conflicts_in_the_documented_order`, `test_step9_begin_name_exists_then_too_many_images_then_507` |
+| A413 | L459: const 409+1 -> 410 | `test_step9_begin_conflicts_in_the_documented_order` |
+| A414 | L459: const 409-1 -> 408 | `test_step9_begin_conflicts_in_the_documented_order` |
+| A415 | L459: delete statement | `test_step9_begin_conflicts_in_the_documented_order` |
+| A416 | L460: false -> true | `test_step9_begin_conflicts_in_the_documented_order` |
+| A417 | L462: negate if condition | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit` |
+| A418 | L463: const 409+1 -> 410 | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
+| A419 | L463: const 409-1 -> 408 | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
+| A420 | L463: delete statement | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
+| A421 | L464: false -> true | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
+| A422 | L466: >= -> > | `test_step9_begin_name_exists_then_too_many_images_then_507` |
+| A423 | L466: negate if condition | `test_step9_begin_name_exists_then_too_many_images_then_507`, `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit` |
+| A424 | L467: const 409+1 -> 410 | `test_step9_begin_name_exists_then_too_many_images_then_507` |
+| A425 | L467: const 409-1 -> 408 | `test_step9_begin_name_exists_then_too_many_images_then_507` |
+| A426 | L467: delete statement | `test_step9_begin_name_exists_then_too_many_images_then_507` |
+| A427 | L468: false -> true | `test_step9_begin_name_exists_then_too_many_images_then_507` |
+| A428 | L471: < -> <= | `test_step12_begin_fits_exactly_with_the_reserve` |
+| A429 | L471: > -> >= | `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
+| A430 | L471: \|\| -> && | `test_begin_larger_than_the_card_is_decided_from_the_view_without_the_op_lock` |
+| A431 | L471: \|\| -> && | `test_step12_begin_one_byte_short_is_507` |
+| A432 | L471: negate if condition | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A433 | L471: + -> - | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A434 | L472: const 507+1 -> 508 | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
+| A435 | L472: const 507-1 -> 506 | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
+| A436 | L472: delete statement | `test_step12_begin_one_byte_short_is_507`, `test_step12_begin_larger_than_the_card_is_507_even_with_enough_free_space` |
+| A437 | L473: false -> true | `test_step12_begin_one_byte_short_is_507` |
+| A438 | L475: true -> false | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A439 | L480: negate if condition | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A440 | L481: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A441 | L482: false -> true | `test_step7_sd_not_ready_is_503_before_not_found` |
+| A442 | L486: const 404+1 -> 405 | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A443 | L486: const 404-1 -> 403 | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A444 | L486: delete statement | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A445 | L487: false -> true | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
+| A446 | L489: != -> == | `test_step9_mount_image_not_ready_before_locked_by_target`, `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A447 | L489: negate if condition | `test_step9_mount_image_not_ready_before_locked_by_target`, `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A448 | L490: const 409+1 -> 410 | `test_step9_mount_image_not_ready_before_locked_by_target`, `test_step9_mount_of_a_ready_image_without_a_table_is_image_not_ready` |
+| A449 | L490: const 409-1 -> 408 | `test_step9_mount_image_not_ready_before_locked_by_target`, `test_step9_mount_of_a_ready_image_without_a_table_is_image_not_ready` |
+| A450 | L490: delete statement | `test_step9_mount_image_not_ready_before_locked_by_target`, `test_step9_mount_of_a_ready_image_without_a_table_is_image_not_ready` |
+| A451 | L491: false -> true | `test_step9_mount_image_not_ready_before_locked_by_target` |
+| A452 | L493: == -> != | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A453 | L493: && -> \|\| | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A454 | L493: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A455 | L494: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A456 | L495: false -> true | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A457 | L497: && -> \|\| | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A458 | L497: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A459 | L498: const 409+1 -> 410 | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A460 | L498: const 409-1 -> 408 | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A461 | L498: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A462 | L501: true -> false | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A463 | L507: negate if condition | `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
+| A465 | L507: delete statement | `test_eject_while_the_sd_is_unusable_clears_ejected_by_target` |
+| A466 | L511: negate if condition | `test_step7_eject_is_the_exception_it_answers_200_not_mounted`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A467 | L512: const 200+1 -> 201 | `test_step7_eject_is_the_exception_it_answers_200_not_mounted`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A468 | L512: const 200-1 -> 199 | `test_step7_eject_is_the_exception_it_answers_200_not_mounted`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A469 | L512: delete statement | `test_step7_eject_is_the_exception_it_answers_200_not_mounted`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A470 | L513: false -> true | `test_step7_eject_is_the_exception_it_answers_200_not_mounted`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A471 | L515: && -> \|\| | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A472 | L515: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A473 | L516: const 409+1 -> 410 | `test_eject_is_refused_while_the_target_prevents_removal_unless_forced` |
+| A474 | L516: const 409-1 -> 408 | `test_eject_is_refused_while_the_target_prevents_removal_unless_forced` |
+| A475 | L516: delete statement | `test_eject_is_refused_while_the_target_prevents_removal_unless_forced` |
+| A476 | L519: true -> false | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A477 | L523: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A478 | L524: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A479 | L525: false -> true | `test_step7_sd_not_ready_is_503_before_not_found` |
+| A480 | L527: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_rescan_during_an_upload_is_409` |
+| A481 | L528: const 409+1 -> 410 | `test_step9_rescan_during_an_upload_is_409` |
+| A482 | L528: const 409-1 -> 408 | `test_step9_rescan_during_an_upload_is_409` |
+| A483 | L528: delete statement | `test_step9_rescan_during_an_upload_is_409` |
+| A484 | L529: false -> true | `test_step9_rescan_during_an_upload_is_409` |
+| A485 | L531: true -> false | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A486 | L536: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A487 | L537: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A488 | L538: false -> true | `test_step7_sd_not_ready_is_503_before_not_found` |
+| A489 | L542: const 404+1 -> 405 | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A490 | L542: const 404-1 -> 403 | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A491 | L542: delete statement | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A492 | L543: false -> true | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
+| A493 | L547: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A494 | L548: false -> true | `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A495 | L550: delete statement | `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A496 | L551: false -> true | `test_step9_finish_ready_and_invalid_are_answered_from_the_state` |
+| A497 | L554: < -> <= | `test_step9_finish_size_mismatch_before_upload_in_progress`, `test_step13_busy_for_finish_and_put_commit` |
+| A498 | L554: negate if condition | `test_step9_finish_size_mismatch_before_upload_in_progress`, `test_step13_busy_for_finish_and_put_commit` |
+| A499 | L555: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A500 | L556: false -> true | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A501 | L558: == -> != | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A502 | L558: && -> \|\| | `test_step13_busy_for_finish_and_put_commit` |
+| A503 | L558: negate if condition | `test_step9_finish_size_mismatch_before_upload_in_progress`, `test_step13_busy_for_finish_and_put_commit` |
+| A504 | L559: const 409+1 -> 410 | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A505 | L559: const 409-1 -> 408 | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A506 | L559: delete statement | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A507 | L560: false -> true | `test_step9_finish_size_mismatch_before_upload_in_progress` |
+| A508 | L562: true -> false | `test_step13_busy_for_finish_and_put_commit` |
+| A509 | L568: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A510 | L569: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A511 | L570: false -> true | `test_step7_sd_not_ready_is_503_before_not_found` |
+| A512 | L573: negate if condition | `test_api_order:crash/rc=1` |
+| A513 | L574: const 404+1 -> 405 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A514 | L574: const 404-1 -> 403 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A515 | L574: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A516 | L575: false -> true | `test_step8_not_found_is_404_before_the_state_conflicts`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
+| A517 | L577: == -> != | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
+| A518 | L577: != -> == | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
+| A519 | L577: && -> \|\| | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
+| A520 | L577: && -> \|\| | `test_step9_delete_of_the_mounted_image_is_409` |
+| A521 | L577: negate if condition | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
+| A522 | L578: const 409+1 -> 410 | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
+| A523 | L578: const 409-1 -> 408 | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
+| A524 | L578: delete statement | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
+| A525 | L579: false -> true | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
+| A526 | L581: true -> false | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
+| A527 | L587: negate if condition | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A528 | L588: delete statement | `test_step6_format_errors_are_400_before_the_sd_check`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A529 | L589: false -> true | `test_step6_format_errors_are_400_before_the_sd_check`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A530 | L593: const 404+1 -> 405 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A531 | L593: const 404-1 -> 403 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A532 | L593: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A533 | L594: false -> true | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A534 | L596: != -> == | `test_step9_put_to_images_that_cannot_receive_is_not_uploading`, `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch` |
+| A535 | L596: != -> == | `test_step9_put_to_images_that_cannot_receive_is_not_uploading`, `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch` |
+| A536 | L596: && -> \|\| | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A537 | L596: negate if condition | `test_step9_put_to_images_that_cannot_receive_is_not_uploading`, `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch` |
+| A538 | L597: const 409+1 -> 410 | `test_step9_put_to_images_that_cannot_receive_is_not_uploading` |
+| A539 | L597: const 409-1 -> 408 | `test_step9_put_to_images_that_cannot_receive_is_not_uploading` |
+| A540 | L597: delete statement | `test_step9_put_to_images_that_cannot_receive_is_not_uploading` |
+| A541 | L598: false -> true | `test_step9_put_to_images_that_cannot_receive_is_not_uploading` |
+| A542 | L600: == -> != | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A543 | L600: && -> \|\| | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A544 | L600: negate if condition | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A545 | L601: const 409+1 -> 410 | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch` |
+| A546 | L601: const 409-1 -> 408 | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch` |
+| A547 | L601: delete statement | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch` |
+| A548 | L602: false -> true | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch` |
+| A549 | L604: != -> == | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A550 | L604: negate if condition | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A551 | L605: const 409+1 -> 410 | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A552 | L605: const 409-1 -> 408 | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A553 | L605: delete statement | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A554 | L606: false -> true | `test_step9_put_resume_blocked_by_the_slot_before_offset_mismatch`, `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A555 | L608: > -> >= | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A556 | L608: negate if condition | `test_step10_offset_mismatch_before_exceeds_size_and_storage`, `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A557 | L608: - -> + | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A558 | L609: const 400+1 -> 401 | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A559 | L609: const 400-1 -> 399 | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A560 | L609: delete statement | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A561 | L610: false -> true | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check` |
+| A562 | L612: == -> != | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
+| A563 | L612: negate if condition | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
+| A564 | L613: - -> + | `test_step12_put_resume_storage_boundary`, `test_the_resume_check_does_not_count_the_image_itself_twice` |
+| A565 | L614: < -> <= | `test_step12_put_resume_storage_boundary`, `test_the_resume_check_does_not_count_the_image_itself_twice` |
+| A566 | L614: negate if condition | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
+| A567 | L614: + -> - | `test_step12_put_resume_storage_boundary`, `test_the_resume_check_does_not_count_the_image_itself_twice` |
+| A568 | L615: const 507+1 -> 508 | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
+| A569 | L615: const 507-1 -> 506 | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
+| A570 | L615: delete statement | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
+| A571 | L616: false -> true | `test_step11_chunk_beyond_the_size_is_400_before_the_storage_check`, `test_step12_put_resume_storage_boundary` |
+| A572 | L619: true -> false | `test_step10_offset_mismatch_before_exceeds_size_and_storage`, `test_step12_put_resume_storage_boundary` |
+| A573 | L625: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A574 | L625: false -> true | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A575 | L625: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A576 | L626: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A579 | L630: true -> false | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A580 | L637: != -> == | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_the_op_lock_wait_can_be_configured` |
+| A581 | L637: const 0+1 -> 1 | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_the_op_lock_wait_can_be_configured` |
+| A582 | L638: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A583 | L639: delete statement | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
+| A584 | L640: false -> true | `test_step13_busy_when_the_op_lock_cannot_be_taken`, `test_step13_busy_for_finish_and_put_commit` |
+| A585 | L642: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A586 | L644: && -> \|\| | `test_only_eject_clears_ejected_by_target_when_the_sd_goes_away` |
+| A587 | L644: negate if condition | `test_eject_while_the_sd_is_unusable_clears_ejected_by_target`, `test_only_eject_clears_ejected_by_target_when_the_sd_goes_away` |
+| A588 | L644: delete statement | `test_eject_while_the_sd_is_unusable_clears_ejected_by_target` |
+| A589 | L645: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A590 | L646: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A591 | L647: delete statement | `test_commit_rechecks_the_sd_after_taking_the_op_lock`, `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
+| A592 | L648: negate if condition | `test_commit_rechecks_the_sd_after_taking_the_op_lock`, `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
+| A593 | L649: const 200+1 -> 201 | `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
+| A594 | L649: const 200-1 -> 199 | `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
+| A595 | L649: delete statement | `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
+| A596 | L651: delete statement | `test_commit_rechecks_the_sd_after_taking_the_op_lock`, `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
+| A597 | L653: false -> true | `test_commit_rechecks_the_sd_after_taking_the_op_lock`, `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
+| A598 | L655: true -> false | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A599 | L662: == -> != | `test_begin_io_errors`, `test_commit_write_failures` |
+| A600 | L662: == -> != | `test_begin_io_errors`, `test_begin_exhausted_ids_are_a_retryable_503` |
+| A601 | L662: \|\| -> && | `test_begin_exhausted_ids_are_a_retryable_503`, `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing` |
+| A602 | L662: negate if condition | `test_begin_io_errors`, `test_begin_exhausted_ids_are_a_retryable_503` |
+| A603 | L663: delete statement | `test_begin_exhausted_ids_are_a_retryable_503`, `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing` |
+| A604 | L664: == -> != | `test_begin_io_errors`, `test_commit_write_failures` |
+| A605 | L664: negate if condition | `test_begin_io_errors`, `test_commit_write_failures` |
+| A606 | L665: const 507+1 -> 508 | `test_begin_io_errors` |
+| A607 | L665: const 507-1 -> 506 | `test_begin_io_errors` |
+| A608 | L665: delete statement | `test_begin_io_errors` |
+| A610 | L666: negate if condition | `test_begin_io_errors`, `test_commit_write_failures` |
+| A612 | L667: const 503+1 -> 504 | `test_begin_io_errors`, `test_commit_write_failures` |
+| A613 | L667: const 503-1 -> 502 | `test_begin_io_errors`, `test_commit_write_failures` |
+| A614 | L667: delete statement | `test_begin_io_errors`, `test_commit_write_failures` |
+| A618 | L674: negate if condition | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A619 | L674: false -> true | `test_every_changing_operation_rechecks_the_sd_after_taking_the_op_lock`, `test_only_eject_clears_ejected_by_target_when_the_sd_goes_away` |
+| A620 | L674: delete statement | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A621 | L676: + -> - | `test_api_order:crash/rc=1` |
+| A623 | L676: const 1-1 -> 0 | `test_api_order:crash/rc=1` |
+| A624 | L678: == -> != | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A625 | L678: negate if condition | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A626 | L679: delete statement | `test_api_ops:crash/rc=1` |
+| A627 | L681: delete statement | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A628 | L682: delete statement | `test_begin_accepted` |
+| A629 | L683: delete statement | `test_begin_accepted` |
+| A630 | L684: delete statement | `test_begin_accepted` |
+| A631 | L685: delete statement | `test_begin_accepted` |
+| A632 | L686: delete statement | `test_begin_accepted` |
+| A633 | L687: const 201+1 -> 202 | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A634 | L687: const 201-1 -> 200 | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A635 | L687: delete statement | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A636 | L688: == -> != | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
+| A637 | L688: negate if condition | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
+| A641 | L690: == -> != | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
+| A642 | L690: negate if condition | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
+| A643 | L691: const 409+1 -> 410 | `test_begin_exec_mapping_when_the_view_is_stale` |
+| A644 | L691: const 409-1 -> 408 | `test_begin_exec_mapping_when_the_view_is_stale` |
+| A645 | L691: delete statement | `test_begin_exec_mapping_when_the_view_is_stale` |
+| A646 | L692: == -> != | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
+| A647 | L692: == -> != | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
+| A648 | L692: \|\| -> && | `test_begin_exec_mapping_when_the_view_is_stale` |
+| A649 | L692: negate if condition | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
+| A650 | L693: const 409+1 -> 410 | `test_begin_exec_mapping_when_the_view_is_stale` |
+| A651 | L693: const 409-1 -> 408 | `test_begin_exec_mapping_when_the_view_is_stale` |
+| A652 | L693: delete statement | `test_begin_exec_mapping_when_the_view_is_stale` |
+| A653 | L694: == -> != | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
+| A654 | L694: == -> != | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_io_errors` |
+| A655 | L694: \|\| -> && | `test_begin_exec_too_many_images_when_the_view_is_stale` |
+| A656 | L694: negate if condition | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_exec_too_many_images_when_the_view_is_stale` |
+| A657 | L695: const 409+1 -> 410 | `test_begin_exec_too_many_images_when_the_view_is_stale` |
+| A658 | L695: const 409-1 -> 408 | `test_begin_exec_too_many_images_when_the_view_is_stale` |
+| A659 | L695: delete statement | `test_begin_exec_too_many_images_when_the_view_is_stale` |
+| A660 | L696: == -> != | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_io_errors` |
+| A661 | L696: negate if condition | `test_begin_exec_mapping_when_the_view_is_stale`, `test_begin_io_errors` |
+| A662 | L697: const 507+1 -> 508 | `test_begin_exec_mapping_when_the_view_is_stale` |
+| A663 | L697: const 507-1 -> 506 | `test_begin_exec_mapping_when_the_view_is_stale` |
+| A664 | L697: delete statement | `test_begin_exec_mapping_when_the_view_is_stale` |
+| A665 | L699: delete statement | `test_begin_io_errors`, `test_begin_exhausted_ids_are_a_retryable_503` |
+| A666 | L701: delete statement | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A667 | L705: negate if condition | `test_step13_busy_for_finish_and_put_commit` |
+| A668 | L705: false -> true | `test_every_changing_operation_rechecks_the_sd_after_taking_the_op_lock` |
+| A669 | L705: delete statement | `test_step13_busy_for_finish_and_put_commit` |
+| A671 | L710: == -> != | `test_finish_flow_with_a_declared_sha256`, `test_finish_with_a_wrong_declared_sha256_ends_invalid` |
+| A672 | L710: == -> != | `test_finish_flow_with_a_declared_sha256`, `test_finish_exec_mapping_when_the_view_is_stale` |
+| A673 | L710: == -> != | `test_finish_exec_mapping_when_the_view_is_stale`, `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
+| A674 | L710: \|\| -> && | `test_finish_flow_with_a_declared_sha256`, `test_finish_with_a_wrong_declared_sha256_ends_invalid` |
+| A675 | L710: \|\| -> && | `test_finish_flow_with_a_declared_sha256` |
+| A676 | L710: negate if condition | `test_finish_flow_with_a_declared_sha256`, `test_finish_with_a_wrong_declared_sha256_ends_invalid` |
+| A677 | L711: const 202+1 -> 203 | `test_finish_flow_with_a_declared_sha256`, `test_finish_with_a_wrong_declared_sha256_ends_invalid` |
+| A678 | L711: const 202-1 -> 201 | `test_finish_flow_with_a_declared_sha256`, `test_finish_with_a_wrong_declared_sha256_ends_invalid` |
+| A679 | L711: delete statement | `test_finish_flow_with_a_declared_sha256`, `test_finish_with_a_wrong_declared_sha256_ends_invalid` |
+| A680 | L712: == -> != | `test_finish_of_a_ready_image_without_a_table_is_still_finalizing`, `test_finish_exec_mapping_when_the_view_is_stale` |
+| A681 | L712: negate if condition | `test_finish_of_a_ready_image_without_a_table_is_still_finalizing`, `test_finish_exec_mapping_when_the_view_is_stale` |
+| A682 | L713: \|\| -> && | `test_finish_of_a_ready_image_without_a_table_is_still_finalizing` |
+| A683 | L713: negate if condition | `test_finish_of_a_ready_image_without_a_table_is_still_finalizing` |
+| A684 | L714: const 202+1 -> 203 | `test_finish_of_a_ready_image_without_a_table_is_still_finalizing` |
+| A685 | L714: const 202-1 -> 201 | `test_finish_of_a_ready_image_without_a_table_is_still_finalizing` |
+| A686 | L714: delete statement | `test_finish_of_a_ready_image_without_a_table_is_still_finalizing` |
+| A687 | L716: == -> != | `test_finish_that_finds_the_image_ready_reports_the_computed_sha_only` |
+| A688 | L716: && -> \|\| | `test_finish_that_finds_the_image_ready_reports_the_computed_sha_only` |
+| A689 | L716: delete statement | `test_finish_that_finds_the_image_ready_reports_the_computed_sha_only` |
+| A690 | L718: == -> != | `test_finish_exec_mapping_when_the_view_is_stale`, `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
+| A691 | L718: negate if condition | `test_finish_exec_mapping_when_the_view_is_stale`, `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
+| A693 | L719: delete statement | `test_finish_exec_mapping_when_the_view_is_stale` |
+| A694 | L720: == -> != | `test_finish_exec_mapping_when_the_view_is_stale`, `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
+| A695 | L720: negate if condition | `test_finish_exec_mapping_when_the_view_is_stale`, `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
+| A696 | L721: const 404+1 -> 405 | `test_finish_exec_mapping_when_the_view_is_stale` |
+| A697 | L721: const 404-1 -> 403 | `test_finish_exec_mapping_when_the_view_is_stale` |
+| A698 | L721: delete statement | `test_finish_exec_mapping_when_the_view_is_stale` |
+| A699 | L722: == -> != | `test_finish_exec_mapping_when_the_view_is_stale`, `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
+| A700 | L722: negate if condition | `test_finish_exec_mapping_when_the_view_is_stale`, `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
+| A703 | L723: delete statement | `test_finish_exec_mapping_when_the_view_is_stale` |
+| A704 | L724: == -> != | `test_finish_exec_upload_in_progress_when_the_view_is_stale`, `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing` |
+| A705 | L724: negate if condition | `test_finish_exec_upload_in_progress_when_the_view_is_stale`, `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing` |
+| A706 | L725: const 409+1 -> 410 | `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
+| A707 | L725: const 409-1 -> 408 | `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
+| A708 | L725: delete statement | `test_finish_exec_upload_in_progress_when_the_view_is_stale` |
+| A709 | L727: delete statement | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_finish_io_error_while_reloading_received_is_503` |
+| A710 | L729: delete statement | `test_finish_flow_with_a_declared_sha256`, `test_finish_with_a_wrong_declared_sha256_ends_invalid` |
+| A711 | L733: negate if condition | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
+| A712 | L733: false -> true | `test_every_changing_operation_rechecks_the_sd_after_taking_the_op_lock`, `test_only_eject_clears_ejected_by_target_when_the_sd_goes_away` |
+| A713 | L733: delete statement | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
+| A714 | L737: != -> == | `test_step9_mounted_is_reported_before_crosslinked` |
+| A715 | L737: != -> == | `test_step9_mounted_is_reported_before_crosslinked` |
+| A716 | L737: && -> \|\| | `test_api_ops:crash/rc=1` |
+| A717 | L737: && -> \|\| | `test_api_ops:crash/rc=1` |
+| A718 | L737: negate if condition | `test_step9_mounted_is_reported_before_crosslinked` |
+| A719 | L739: delete statement | `test_step9_mounted_is_reported_before_crosslinked` |
+| A720 | L740: == -> != | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
+| A721 | L740: negate if condition | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
+| A722 | L741: const 409+1 -> 410 | `test_step9_mounted_is_reported_before_crosslinked` |
+| A723 | L741: const 409-1 -> 408 | `test_step9_mounted_is_reported_before_crosslinked` |
+| A724 | L741: delete statement | `test_step9_mounted_is_reported_before_crosslinked` |
+| A725 | L742: delete statement | `test_step9_mounted_is_reported_before_crosslinked` |
+| A726 | L746: == -> != | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_flow` |
+| A727 | L746: negate if condition | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_flow` |
+| A728 | L746: delete statement | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_flow` |
+| A729 | L747: == -> != | `test_step9_delete_of_the_mounted_image_is_409` |
+| A730 | L747: == -> != | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish` |
+| A731 | L747: \|\| -> && | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
+| A732 | L747: negate if condition | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
+| A733 | L748: const 202+1 -> 203 | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
+| A734 | L748: const 202-1 -> 201 | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
+| A735 | L748: delete statement | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
+| A736 | L749: == -> != | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_exec_mapping` |
+| A737 | L749: negate if condition | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_exec_mapping` |
+| A738 | L750: const 404+1 -> 405 | `test_delete_exec_mapping` |
+| A739 | L750: const 404-1 -> 403 | `test_delete_exec_mapping` |
+| A740 | L750: delete statement | `test_delete_exec_mapping` |
+| A741 | L751: == -> != | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_exec_mapping` |
+| A742 | L751: negate if condition | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_exec_mapping` |
+| A743 | L752: const 409+1 -> 410 | `test_delete_exec_mapping` |
+| A744 | L752: const 409-1 -> 408 | `test_delete_exec_mapping` |
+| A745 | L752: delete statement | `test_delete_exec_mapping` |
+| A746 | L754: delete statement | `test_finish_with_a_full_worker_queue_is_503_busy_and_changes_nothing`, `test_delete_exec_mapping` |
+| A747 | L756: delete statement | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
+| A748 | L760: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A749 | L760: false -> true | `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
+| A750 | L760: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A751 | L763: == -> != | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A752 | L763: == -> != | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A753 | L763: \|\| -> && | `test_api_ops:crash/rc=1` |
+| A754 | L763: \|\| -> && | `test_mount_exec_when_the_catalog_changed_after_the_check` |
+| A755 | L763: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A756 | L764: const 404+1 -> 405 | `test_mount_exec_when_the_catalog_changed_after_the_check` |
+| A757 | L764: const 404-1 -> 403 | `test_mount_exec_when_the_catalog_changed_after_the_check` |
+| A758 | L764: delete statement | `test_mount_exec_when_the_catalog_changed_after_the_check` |
+| A759 | L769: != -> == | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A760 | L769: != -> == | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A761 | L769: \|\| -> && | `test_mount_of_an_image_without_a_table_is_refused_even_if_the_view_says_ready` |
+| A762 | L769: \|\| -> && | `test_mount_of_an_image_without_a_table_is_refused_even_if_the_view_says_ready` |
+| A763 | L769: \|\| -> && | `test_mount_exec_requires_a_table_of_the_current_card` |
+| A764 | L769: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A765 | L770: const 409+1 -> 410 | `test_mount_exec_requires_a_table_of_the_current_card`, `test_mount_exec_when_the_catalog_changed_after_the_check` |
+| A766 | L770: const 409-1 -> 408 | `test_mount_exec_requires_a_table_of_the_current_card`, `test_mount_exec_when_the_catalog_changed_after_the_check` |
+| A767 | L770: delete statement | `test_mount_exec_requires_a_table_of_the_current_card`, `test_mount_exec_when_the_catalog_changed_after_the_check` |
+| A768 | L772: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A769 | L775: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A770 | L775: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A771 | L776: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A772 | L777: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A773 | L778: delete statement | `test_mount_checks_the_sd_again_inside_the_state_lock` |
+| A774 | L779: == -> != | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A775 | L779: negate if condition | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A776 | L780: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A777 | L781: == -> != | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
+| A778 | L781: negate if condition | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
+| A779 | L782: delete statement | `test_mount_that_finds_the_image_already_mounted_reports_it` |
+| A780 | L783: == -> != | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
+| A781 | L783: negate if condition | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
+| A782 | L784: const 409+1 -> 410 | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
+| A783 | L784: const 409-1 -> 408 | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
+| A784 | L784: delete statement | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
+| A788 | L790: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A789 | L794: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A790 | L794: true -> false | `test_mount_and_eject_exec_when_the_sd_went_away_after_the_check` |
+| A791 | L794: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A792 | L795: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A793 | L797: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A794 | L798: == -> != | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A795 | L798: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A796 | L799: const 200+1 -> 201 | `test_eject_flow_and_target_eject`, `test_eject_is_refused_while_the_target_prevents_removal_unless_forced` |
+| A797 | L799: const 200-1 -> 199 | `test_eject_flow_and_target_eject`, `test_eject_is_refused_while_the_target_prevents_removal_unless_forced` |
+| A798 | L799: delete statement | `test_eject_flow_and_target_eject`, `test_eject_is_refused_while_the_target_prevents_removal_unless_forced` |
+| A799 | L800: == -> != | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A800 | L800: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A801 | L801: const 200+1 -> 201 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A802 | L801: const 200-1 -> 199 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A803 | L801: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A804 | L802: == -> != | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
+| A805 | L802: negate if condition | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
+| A806 | L803: const 409+1 -> 410 | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
+| A807 | L803: const 409-1 -> 408 | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
+| A808 | L803: delete statement | `test_mount_and_eject_exec_see_a_lock_that_appeared_after_the_check` |
+| A812 | L807: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A813 | L811: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A814 | L811: false -> true | `test_every_changing_operation_rechecks_the_sd_after_taking_the_op_lock`, `test_only_eject_clears_ejected_by_target_when_the_sd_goes_away` |
+| A815 | L811: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A818 | L816: delete statement | `test_rescan_imports_and_reports` |
+| A819 | L817: delete statement | `test_rescan_imports_and_reports` |
+| A820 | L818: < -> <= | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A821 | L818: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A822 | L818: const 0+1 -> 1 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A823 | L819: delete statement | `test_rescan_io_error_is_503_but_keeps_what_was_imported` |
+| A824 | L822: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A825 | L823: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A826 | L824: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A827 | L825: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A828 | L826: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A829 | L827: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A830 | L828: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A831 | L829: delete statement | `test_rescan_continues_with_the_cursor` |
+| A832 | L831: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A833 | L833: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A834 | L834: const 200+1 -> 201 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A835 | L834: const 200-1 -> 199 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A836 | L834: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete` |
+| A837 | L836: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_the_op_lock_wait_can_be_configured` |
+| A839 | L846: delete statement | `test_api_order:crash/rc=1` |
+| A840 | L848: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A841 | L849: > -> >= | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
+| A842 | L849: negate if condition | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A843 | L850: const 413+1 -> 414 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
+| A844 | L850: const 413-1 -> 412 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
+| A845 | L850: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
+| A846 | L851: false -> true | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks` |
+| A848 | L856: == -> != | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A849 | L856: != -> == | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A850 | L856: \|\| -> && | `test_api_order:crash/rc=1` |
+| A851 | L856: \|\| -> && | `test_api_order:crash/rc=1` |
+| A852 | L856: negate if condition | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A853 | L856: const 0+1 -> 1 | `test_step6_format_errors_are_400_before_the_sd_check` |
+| A854 | L856: const 0+1 -> 1 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A855 | L857: const 400+1 -> 401 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A856 | L857: const 400-1 -> 399 | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A857 | L857: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A858 | L858: false -> true | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A859 | L862: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A860 | L864: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A861 | L865: negate if condition | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A862 | L865: false -> true | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A863 | L865: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A864 | L867: true -> false | `test_step13_busy_for_finish_and_put_commit` |
+| A865 | L867: delete statement | `test_step13_busy_for_finish_and_put_commit` |
+| A866 | L868: + -> - | `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A869 | L868: delete statement | `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A870 | L869: delete statement | `test_step10_offset_mismatch_before_exceeds_size_and_storage` |
+| A871 | L870: delete statement | `test_step10_offset_mismatch_before_exceeds_size_and_storage`, `test_step13_busy_for_finish_and_put_commit` |
+| A872 | L872: delete statement | `test_api_edges:crash/rc=1` |
+| A874 | L873: delete statement | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
+| A875 | L874: true -> false | `test_step10_offset_mismatch_before_exceeds_size_and_storage`, `test_step12_put_resume_storage_boundary` |
+| A876 | L878: negate if condition | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_step4_content_type_is_415_before_the_length_checks` |
+| A877 | L878: false -> true | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
+| A878 | L878: delete statement | `test_api_ops:crash/rc=1` |
+| A879 | L879: delete statement | `test_entry_points_discard_what_the_response_held_before` |
+| A880 | L880: \|\| -> && | `test_api_ops:crash/rc=1` |
+| A881 | L880: negate if condition | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_step4_content_type_is_415_before_the_length_checks` |
+| A882 | L881: const 500+1 -> 501 | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
+| A883 | L881: const 500-1 -> 499 | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
+| A884 | L881: delete statement | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
+| A885 | L882: true -> false | `test_put_precheck_and_commit_argument_errors` |
+| A886 | L882: delete statement | `test_put_precheck_and_commit_argument_errors` |
+| A887 | L883: false -> true | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
+| A888 | L887: != -> == | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A889 | L887: && -> \|\| | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A890 | L887: negate if condition | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_step4_content_type_is_415_before_the_length_checks` |
+| A891 | L888: const 500+1 -> 501 | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
+| A892 | L888: const 500-1 -> 499 | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
+| A893 | L888: delete statement | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
+| A894 | L889: false -> true | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
+| A895 | L889: delete statement | `test_put_precheck_rejects_a_request_that_is_not_a_put` |
+| A896 | L891: negate if condition | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_step4_content_type_is_415_before_the_length_checks` |
+| A897 | L891: delete statement | `test_step5_put_content_length_over_chunk_size_is_413_before_the_format_checks`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A898 | L892: negate if condition | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_step4_content_type_is_415_before_the_length_checks` |
+| A899 | L892: true -> false | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_step4_content_type_is_415_before_the_length_checks` |
+| A900 | L892: delete statement | `test_step3_an_invalid_id_in_the_path_is_404_before_everything_else`, `test_step4_content_type_is_415_before_the_length_checks` |
+| A901 | L897: negate if condition | `test_step13_busy_for_finish_and_put_commit` |
+| A902 | L897: delete statement | `test_api_edges:crash/rc=1` |
+| A903 | L900: delete statement | `test_entry_points_discard_what_the_response_held_before` |
+| A904 | L901: == -> != | `test_step13_busy_for_finish_and_put_commit` |
+| A905 | L901: != -> == | `test_step13_busy_for_finish_and_put_commit` |
+| A906 | L901: \|\| -> && | `test_commit_rejects_bad_arguments` |
+| A907 | L901: \|\| -> && | `test_commit_rejects_bad_arguments` |
+| A908 | L901: \|\| -> && | `test_commit_rejects_bad_arguments` |
+| A909 | L901: \|\| -> && | `test_commit_rejects_bad_arguments` |
+| A910 | L901: negate if condition | `test_step13_busy_for_finish_and_put_commit` |
+| A911 | L901: const 0+1 -> 1 | `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A912 | L902: const 400+1 -> 401 | `test_commit_rejects_bad_arguments` |
+| A913 | L902: const 400-1 -> 399 | `test_commit_rejects_bad_arguments` |
+| A914 | L902: delete statement | `test_commit_rejects_bad_arguments` |
+| A915 | L905: negate if condition | `test_step13_busy_for_finish_and_put_commit` |
+| A916 | L906: delete statement | `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A917 | L909: negate if condition | `test_step13_busy_for_finish_and_put_commit` |
+| A918 | L909: false -> true | `test_commit_rechecks_the_sd_after_taking_the_op_lock` |
+| A919 | L909: delete statement | `test_step13_busy_for_finish_and_put_commit` |
+| A920 | L912: != -> == | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
+| A921 | L912: && -> \|\| | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
+| A922 | L912: \|\| -> && | `test_api_edges:crash/rc=1` |
+| A923 | L912: negate if condition | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
+| A924 | L913: const 503+1 -> 504 | `test_api_edges:crash/rc=1` |
+| A925 | L913: const 503-1 -> 502 | `test_api_edges:crash/rc=1` |
+| A926 | L913: delete statement | `test_api_edges:crash/rc=1` |
+| A927 | L914: delete statement | `test_api_edges:crash/rc=1` |
+| A930 | L920: == -> != | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
+| A931 | L920: negate if condition | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
+| A932 | L922: delete statement | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
+| A933 | L923: delete statement | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
+| A934 | L924: delete statement | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
+| A935 | L925: delete statement | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
+| A936 | L926: const 200+1 -> 201 | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
+| A937 | L926: const 200-1 -> 199 | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
+| A938 | L926: delete statement | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
+| A939 | L927: == -> != | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
+| A940 | L927: negate if condition | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
+| A941 | L928: const 413+1 -> 414 | `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
+| A942 | L928: const 413-1 -> 412 | `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
+| A943 | L928: delete statement | `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
+| A944 | L929: == -> != | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
+| A945 | L929: negate if condition | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
+| A946 | L930: const 404+1 -> 405 | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
+| A947 | L930: const 404-1 -> 403 | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
+| A948 | L930: delete statement | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
+| A949 | L931: == -> != | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
+| A950 | L931: negate if condition | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
+| A951 | L932: const 409+1 -> 410 | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
+| A952 | L932: const 409-1 -> 408 | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
+| A953 | L932: delete statement | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
+| A954 | L933: == -> != | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
+| A955 | L933: negate if condition | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
+| A956 | L934: const 409+1 -> 410 | `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
+| A957 | L934: const 409-1 -> 408 | `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
+| A958 | L934: delete statement | `test_commit_upload_in_progress_for_a_resume_when_another_upload_started` |
+| A959 | L935: == -> != | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
+| A960 | L935: negate if condition | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck`, `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
+| A961 | L936: const 409+1 -> 410 | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
+| A962 | L936: const 409-1 -> 408 | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
+| A963 | L936: delete statement | `test_commit_maps_the_upload_results_when_the_state_changed_after_the_precheck` |
+| A964 | L937: == -> != | `test_commit_with_a_fabricated_put_maps_the_remaining_results`, `test_commit_507_when_the_resume_no_longer_fits` |
+| A965 | L937: == -> != | `test_commit_507_when_the_resume_no_longer_fits`, `test_commit_write_failures` |
+| A966 | L937: \|\| -> && | `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
+| A967 | L937: negate if condition | `test_commit_with_a_fabricated_put_maps_the_remaining_results`, `test_commit_507_when_the_resume_no_longer_fits` |
+| A968 | L938: const 400+1 -> 401 | `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
+| A969 | L938: const 400-1 -> 399 | `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
+| A970 | L938: delete statement | `test_commit_with_a_fabricated_put_maps_the_remaining_results` |
+| A971 | L939: == -> != | `test_commit_507_when_the_resume_no_longer_fits`, `test_commit_write_failures` |
+| A972 | L939: negate if condition | `test_commit_507_when_the_resume_no_longer_fits`, `test_commit_write_failures` |
+| A973 | L940: const 507+1 -> 508 | `test_commit_507_when_the_resume_no_longer_fits`, `test_commit_write_failures` |
+| A974 | L940: const 507-1 -> 506 | `test_commit_507_when_the_resume_no_longer_fits`, `test_commit_write_failures` |
+| A975 | L940: delete statement | `test_commit_507_when_the_resume_no_longer_fits`, `test_commit_write_failures` |
+| A976 | L942: delete statement | `test_commit_write_failures` |
+| A977 | L944: delete statement | `test_put_flow_two_chunks`, `test_put_resume_of_an_incomplete_image` |
+| A978 | L950: negate if condition | `test_not_started_service_reports_no_card` |
+| A979 | L950: delete statement | `test_api_ops:crash/rc=1` |
+| A980 | L951: delete statement | `test_entry_points_discard_what_the_response_held_before` |
+| A981 | L952: \|\| -> && | `test_api_ops:crash/rc=1` |
+| A982 | L952: negate if condition | `test_not_started_service_reports_no_card` |
+| A983 | L953: const 500+1 -> 501 | `test_put_precheck_and_commit_argument_errors` |
+| A984 | L953: const 500-1 -> 499 | `test_put_precheck_and_commit_argument_errors` |
+| A985 | L953: delete statement | `test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty` |
+| A986 | L957: negate if condition | `test_not_started_service_reports_no_card` |
+| A987 | L958: == -> != | `test_unknown_paths_and_methods_are_404_and_405` |
+| A988 | L958: negate if condition | `test_unknown_paths_and_methods_are_404_and_405` |
+| A989 | L958: true -> false | `test_unknown_paths_and_methods_are_404_and_405` |
+| A990 | L958: delete statement | `test_unknown_paths_and_methods_are_404_and_405` |
+| A992 | L967: delete statement | `test_not_started_service_reports_no_card` |
+| A993 | L969: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_get_and_put_precheck_do_not_take_the_op_lock` |
+| A994 | L970: != -> == | `test_not_started_service_reports_no_card` |
+| A995 | L970: negate if condition | `test_not_started_service_reports_no_card` |
+| A996 | L970: const 0+1 -> 1 | `test_not_started_service_reports_no_card` |
+| A997 | L971: const 500+1 -> 501 | `test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty` |
+| A998 | L971: const 500-1 -> 499 | `test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty` |
+| A999 | L971: delete statement | `test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty` |
+| A1000 | L973: const 200+1 -> 201 | `test_not_started_service_reports_no_card` |
+| A1001 | L973: const 200-1 -> 199 | `test_not_started_service_reports_no_card` |
+| A1002 | L973: delete statement | `test_not_started_service_reports_no_card` |
+| A1003 | L978: negate if condition | `test_fuzz_request_sequences` |
+| A1004 | L978: true -> false | `test_fuzz_request_sequences` |
+| A1005 | L978: delete statement | `test_entry_points_discard_what_the_response_held_before` |
+| A1006 | L981: != -> == | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1007 | L981: negate if condition | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1008 | L981: const 0+1 -> 1 | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step9_begin_conflicts_in_the_documented_order` |
+| A1009 | L982: const 400+1 -> 401 | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1010 | L982: const 400-1 -> 399 | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1011 | L982: delete statement | `test_step5_json_body_is_at_most_512_bytes_before_the_body_is_parsed`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1012 | L985: true -> false | `test_begin_accepted` |
+| A1013 | L985: delete statement | `test_begin_accepted` |
+| A1014 | L986: delete statement | `test_begin_accepted` |
+| A1015 | L987: delete statement | `test_api_order:crash/rc=1` |
+| A1016 | L989: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step9_begin_conflicts_in_the_documented_order` |
+| A1017 | L990: negate if condition | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step9_begin_conflicts_in_the_documented_order` |
+| A1018 | L990: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step9_begin_conflicts_in_the_documented_order` |
+| A1019 | L991: delete statement | `test_step9_deleting_images_do_not_hold_their_name_but_do_count_toward_the_limit`, `test_step12_begin_fits_exactly_with_the_reserve` |
+| A1021 | L996: != -> == | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A1022 | L996: \|\| -> && | `test_step9_mount_already_mounted_wins_over_the_lock` |
+| A1023 | L996: negate if condition | `test_step6_format_errors_are_400_before_the_sd_check`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A1024 | L996: const 0+1 -> 1 | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A1025 | L997: const 400+1 -> 401 | `test_step6_format_errors_are_400_before_the_sd_check`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A1026 | L997: const 400-1 -> 399 | `test_step6_format_errors_are_400_before_the_sd_check`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A1027 | L997: delete statement | `test_step6_format_errors_are_400_before_the_sd_check`, `test_a_service_that_is_not_started_answers_not_ready_after_the_format_checks` |
+| A1028 | L1000: delete statement | `test_mount_flow` |
+| A1029 | L1001: delete statement | `test_api_order:crash/rc=1` |
+| A1030 | L1003: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A1031 | L1004: negate if condition | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A1032 | L1004: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A1033 | L1005: delete statement | `test_step9_mount_already_mounted_wins_over_the_lock`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A1034 | L1009: != -> == | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1035 | L1009: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1036 | L1009: const 0+1 -> 1 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A1037 | L1010: const 400+1 -> 401 | `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1038 | L1010: const 400-1 -> 399 | `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1039 | L1010: delete statement | `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1040 | L1013: delete statement | `test_api_order:crash/rc=1` |
+| A1041 | L1015: && -> \|\| | `test_api_order:crash/rc=1` |
+| A1042 | L1015: && -> \|\| | `test_api_order:crash/rc=1` |
+| A1043 | L1015: negate if condition | `test_api_order:crash/rc=1` |
+| A1044 | L1015: delete statement | `test_eject_while_the_sd_is_unusable_clears_ejected_by_target` |
+| A1045 | L1016: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A1046 | L1017: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A1047 | L1017: delete statement | `test_step7_eject_is_the_exception_it_answers_200_not_mounted` |
+| A1048 | L1018: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A1049 | L1022: != -> == | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1050 | L1022: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1051 | L1022: const 0+1 -> 1 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A1052 | L1023: const 400+1 -> 401 | `test_step6_format_errors_are_400_before_the_sd_check`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
+| A1053 | L1023: const 400-1 -> 399 | `test_step6_format_errors_are_400_before_the_sd_check`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
+| A1054 | L1023: delete statement | `test_step6_format_errors_are_400_before_the_sd_check`, `test_a_rejection_in_steps_3_to_12_never_asks_for_the_op_lock` |
+| A1055 | L1026: delete statement | `test_api_order:crash/rc=1` |
+| A1056 | L1028: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A1057 | L1029: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A1058 | L1029: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step9_rescan_during_an_upload_is_409` |
+| A1059 | L1030: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step13_busy_when_the_op_lock_cannot_be_taken` |
+| A1060 | L1034: != -> == | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1061 | L1034: negate if condition | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1062 | L1034: const 0+1 -> 1 | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A1063 | L1035: const 400+1 -> 401 | `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1064 | L1035: const 400-1 -> 399 | `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1065 | L1035: delete statement | `test_step6_format_errors_are_400_before_the_sd_check` |
+| A1066 | L1038: delete statement | `test_api_order:crash/rc=1` |
+| A1067 | L1040: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A1068 | L1041: negate if condition | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A1069 | L1041: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A1070 | L1042: delete statement | `test_step13_busy_for_finish_and_put_commit` |
+| A1072 | L1047: delete statement | `test_step9_delete_of_the_mounted_image_is_409`, `test_step9_mounted_is_reported_before_crosslinked` |
+| A1073 | L1048: delete statement | `test_api_order:crash/rc=1` |
+| A1074 | L1050: delete statement | `test_step4_is_not_applied_to_requests_without_a_body_or_to_delete`, `test_step7_sd_not_ready_is_503_before_not_found` |
+| A1075 | L1051: negate if condition | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A1076 | L1051: delete statement | `test_step7_sd_not_ready_is_503_before_not_found`, `test_step8_not_found_is_404_before_the_state_conflicts` |
+| A1077 | L1052: delete statement | `test_step8_a_deleting_image_does_not_exist_for_put_mount_and_finish`, `test_step9_delete_of_the_mounted_image_is_409` |
 | J001 | L17: == -> != | `test_begin_minimal_and_full`, `test_begin_whitespace_and_key_order` |
 | J002 | L17: == -> != | `test_begin_minimal_and_full`, `test_begin_whitespace_and_key_order` |
 | J003 | L17: == -> != | `test_begin_minimal_and_full`, `test_begin_whitespace_and_key_order` |
