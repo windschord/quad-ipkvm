@@ -2689,21 +2689,21 @@ async function checkCodecBrowser(source) {
         const globals = Object.assign({ localStorage: stStore }, env.globals);
         const h = await boot(source, L('kvm.local', 'kvm.local', ''), { value: READY_AUTH({ video_port: 8444 }) }, globals);
         const s0 = h.lastVideo();
-        click(h, 'btn-codec-mjpeg'); // same mode: no reconnect
+        click(h, 'btn-codec-mjpeg'); // same mode: persists choice, no reconnect
         await flush();
-        eq('3 same click does not reconnect', [videoUrls(h).length, s0.readyState], [1, 0]);
+        eq('3 same click does not reconnect', [videoUrls(h).length, s0.readyState, stStore.writes], [1, 0, [[CODEC_KEY, 'mjpeg']]]);
 
         click(h, 'btn-codec-h264');
         await flush();
         eq('3 h264 pressed', codecPressed(h), ['false', 'true']);
-        eq('3 h264 saved', stStore.writes, [[CODEC_KEY, 'h264']]);
+        eq('3 h264 saved', stStore.writes, [[CODEC_KEY, 'mjpeg'], [CODEC_KEY, 'h264']]);
         eq('3 old closed and reconnected h264', [s0.readyState, videoUrls(h)], [3, ['wss://kvm.local:8444/video', 'wss://kvm.local:8444/video?accept=h264']]);
         eq('3 arraybuffer on new ws', h.lastVideo().binaryType, 'arraybuffer');
 
         click(h, 'btn-codec-mjpeg');
         await flush();
         eq('3 mjpeg pressed', codecPressed(h), ['true', 'false']);
-        eq('3 mjpeg saved', stStore.writes[1], [CODEC_KEY, 'mjpeg']);
+        eq('3 mjpeg saved', stStore.writes[2], [CODEC_KEY, 'mjpeg']);
         eq('3 reconnected without accept', videoUrls(h), ['wss://kvm.local:8444/video', 'wss://kvm.local:8444/video?accept=h264', 'wss://kvm.local:8444/video']);
         eq('3 blob on mjpeg', h.lastVideo().binaryType, 'blob');
     });
@@ -2760,6 +2760,9 @@ async function checkCodecBrowser(source) {
         eq('4 fallback pressed mjpeg', codecPressed(h), ['true', 'false']);
         eq('4 fallback did not overwrite storage', stStore.writes, []);
         eq('4 reconnected mjpeg', videoUrls(h), ['wss://kvm.local:8444/video?accept=h264', 'wss://kvm.local:8444/video']);
+        click(h, 'btn-codec-mjpeg');
+        await flush();
+        eq('4 explicit mjpeg after fallback persists without reconnect', [stStore.writes, videoUrls(h).length], [[[CODEC_KEY, 'mjpeg']], 2]);
         click(h, 'btn-codec-h264');
         await flush();
         eq('4 manual click retries accept=h264', videoUrls(h), ['wss://kvm.local:8444/video?accept=h264', 'wss://kvm.local:8444/video', 'wss://kvm.local:8444/video?accept=h264']);
@@ -3339,6 +3342,7 @@ function mutantList() {
         M('C11', 'pumpMjpeg drops frames while decoding instead of coalescing', '        if (isDecoding) {\n            pendingMjpegFrame = initialFrame;\n            return;\n        }', '        if (isDecoding) {\n            return;\n        }'),
         M('C12', 'pumpMjpeg draws stale frame after reconnect', '                    if (frameGen === videoConnGen) {', '                    if (true) {'),
         M('C13', 'nextH264Timestamp ignores performance.now tiebreak', '            h264Timestamp = nowUs > h264Timestamp ? nowUs : h264Timestamp + 1;', '            h264Timestamp = nowUs;'),
+        M('C14', 'setCodecMode does not save explicit mjpeg after fallback', "        const next = VideoCodec.normalizeMode(mode);\n        saveCodecMode(next);\n        if (next === codecMode && (next !== 'h264' || !h264Failed)) return;", "        const next = VideoCodec.normalizeMode(mode);\n        if (next === codecMode && (next !== 'h264' || !h264Failed)) return;\n        saveCodecMode(next);"),
     ];
 }
 

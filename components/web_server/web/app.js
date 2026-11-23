@@ -1899,10 +1899,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function setCodecMode(mode) {
         const next = VideoCodec.normalizeMode(mode);
+        saveCodecMode(next);
         if (next === codecMode && (next !== 'h264' || !h264Failed)) return;
         codecMode = next;
         if (next === 'h264') h264Failed = false;
-        saveCodecMode(codecMode);
         updateCodecModeUI();
         if (ws || wsReconnectTimer || codecSwitchPending) {
             codecSwitchPending = true;

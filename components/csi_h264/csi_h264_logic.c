@@ -242,7 +242,11 @@ size_t csi_h264_patch_sps_low_latency(const uint8_t *sps_in, size_t sps_in_len,
     } else if (poc_type != 2u) {
         return 0u;
     }
-    sps_copy_ue(&br, &bw);     /* max_num_ref_frames */
+    uint32_t max_ref = sps_br_ue(&br);
+    if (br.err || max_ref > 1u) {
+        return 0u; /* H.264 E.1.1 requires max_dec_frame_buffering >= max_num_ref_frames */
+    }
+    sps_bw_ue(&bw, max_ref);
     sps_copy_u(&br, &bw, 1u);  /* gaps_in_frame_num_value_allowed_flag */
     sps_copy_ue(&br, &bw);     /* pic_width_in_mbs_minus1 */
     sps_copy_ue(&br, &bw);     /* pic_height_in_map_units_minus1 */

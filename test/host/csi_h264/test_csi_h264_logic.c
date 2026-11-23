@@ -2,6 +2,7 @@
 #include "csi_h264_logic.h"
 
 #include <stdint.h>
+#include <string.h>
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -927,6 +928,12 @@ static void test_patch_sps_low_latency(void)
     len = csi_h264_patch_sps_low_latency(sps_1080p9, sizeof(sps_1080p9), out, sizeof(out));
     TEST_ASSERT_GREATER_THAN_UINT(sizeof(sps_1080p9), len);
     assert_patched_sps_fields(out, len, 41u, 119u, 67u, 1u, 4u, 18u);
+
+    /* max_num_ref_frames = 2 (> 1) would violate max_dec_frame_buffering >= max_num_ref_frames: refuse patch */
+    uint8_t sps_ref2[sizeof(sps_720p20)];
+    memcpy(sps_ref2, sps_720p20, sizeof(sps_720p20));
+    sps_ref2[5] = 0xb0u;
+    TEST_ASSERT_EQUAL_UINT(0u, csi_h264_patch_sps_low_latency(sps_ref2, sizeof(sps_ref2), out, sizeof(out)));
 
     /* Non-SPS, non-Baseline, malformed / small buffer rejection */
     const uint8_t pps[] = { 0x68, 0xce, 0x3c, 0x80, 0x00 };
