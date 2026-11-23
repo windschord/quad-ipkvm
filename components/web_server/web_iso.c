@@ -39,10 +39,11 @@ static const char *status_line(int status) {
 }
 
 static void close_after_response(httpd_req_t *req) {
-    /* 残りの本体を読み捨てて、単一スレッドの httpd が止まるのを避ける(設計 6.1)。
-     * TODO(A-15 / hw-verify): Connection: close のヘッダーと httpd_sess_trigger_close が、実際にソケットを閉じることを、最初に確かめる。 */
+    /* 残りの本体を読み捨てて、単一スレッドの httpd が止まるのを避ける(設計 6.1)。閉じるのは、ハンドラーが ESP_FAIL を返すことで行う(send_rsp)。
+     * httpd_sess_trigger_close は呼ばない: ESP_FAIL で先にセッションが消えると、積んだ close が、同じスロットを再利用した別の新しい接続を閉じる
+     * (ESP-IDF v6.0.1 の httpd_sess_close は、lru_counter が 0 でないスロットを閉じる)。
+     * TODO(A-15 / hw-verify): ESP_FAIL と Connection: close で、実際にソケットが閉じることを、最初に確かめる。 */
     (void)httpd_resp_set_hdr(req, "Connection", "close");
-    (void)httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
 }
 
 /* 応答を送る(ログは、名前・セッション情報・データを含めない。イメージの id と大きさだけ) */
@@ -65,8 +66,7 @@ static esp_err_t send_rsp(httpd_req_t *req, const iso_api_response_t *rsp) {
     (void)httpd_resp_set_status(req, status_line(rsp->status));
     (void)httpd_resp_set_type(req, "application/json");
     esp_err_t err = httpd_resp_send(req, rsp->body, (ssize_t)rsp->body_len);
-    /* 拒否(close_connection)のときは、ESP_FAIL を返す: esp_http_server は、ESP_OK のハンドラーの後で、未受信の本文を読み捨ててから、
-     * httpd_sess_trigger_close の登録を処理する。低速な送信側が、本文を送り続けると、単一スレッドの httpd が受信待ちを続ける。ESP_FAIL なら、すぐ閉じる。 */
+    /* 拒否(close_connection)のときは、ESP_FAIL を返す: esp_http_server は、ESP_OK のハンドラーの後で、未受信の本文を読み捨てる。低速な送信側が、本文を送り続けると、単一スレッドの httpd が受信待ちを続ける。ESP_FAIL なら、すぐ閉じる。 */
     return rsp->close_connection ? ESP_FAIL : err;
 }
 
@@ -148,8 +148,7 @@ static esp_err_t iso_handler(httpd_req_t *req) {
         int rc = s_put_hooks->recv_chunk(s_put_hooks->ctx, req, put.len, &chunk);
         if (rc < 0) { /* タイムアウト、切断: 何も書かずに、接続を閉じる */
             if (s_put_hooks->release_chunk) s_put_hooks->release_chunk(s_put_hooks->ctx, chunk);
-            (void)httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
-            return ESP_FAIL;
+            return ESP_FAIL; /* ESP_FAIL で、httpd が閉じる(httpd_sess_trigger_close は呼ばない。close_after_response を参照) */
         }
         iso_api_response_init(&rsp, s_rsp_body, sizeof(s_rsp_body));
         iso_api_put_commit(s_env, &put, chunk, put.len, &rsp);

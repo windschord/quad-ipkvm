@@ -1980,8 +1980,9 @@ bool web_server_iso_guard(httpd_req_t *req, bool mutating, bool close_on_deny) {
                                                    valid, origin_ok, true, host_ok);
     if (action == HTTP_GUARD_ACTION_ALLOW) return true;
     if (close_on_deny) {
+        // The caller returns ESP_FAIL, which makes httpd close the session. No httpd_sess_trigger_close(): it queues a close of the
+        // session slot, and the slot can be reused by a new connection before the queued close runs (ESP-IDF v6.0.1 httpd_sess_close).
         httpd_resp_set_hdr(req, "Connection", "close");
-        httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
     }
     (void)send_action_error(req, action);
     return false;
