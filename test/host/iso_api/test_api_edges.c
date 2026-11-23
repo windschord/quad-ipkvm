@@ -665,6 +665,32 @@ void test_a_truncated_header_is_rejected_at_its_own_step(void) {
     TEST_ASSERT_TRUE(iso_api_put_precheck(&ENV, &rq, &RSP));
 }
 
+/* SD が消えたときに ejected_by_target を戻すのは、eject だけ(ほかの操作は、印に触らない) */
+void test_only_eject_clears_ejected_by_target_when_the_sd_goes_away(void) {
+    make_ejected_by_target();
+    OL_HOOK = hook_sd_gone;
+    api_post_json("/api/v1/iso", "{\"name\":\"new\",\"size\":34816}");
+    expect_err(503, "not_ready");
+    TEST_ASSERT_TRUE(ejected_flag());
+    SD_STATE = ISO_SD_READY;
+    iso_core_publish(&CORE);
+    api_delete(A);
+    expect_err(503, "not_ready");
+    TEST_ASSERT_TRUE(ejected_flag());
+    SD_STATE = ISO_SD_READY;
+    iso_core_publish(&CORE);
+    api_post_json("/api/v1/iso/rescan", "{}");
+    expect_err(503, "not_ready");
+    TEST_ASSERT_TRUE(ejected_flag());
+    /* SD が使える間の eject(メディアなし)は、印を戻す(処理の本来の経路) */
+    OL_HOOK = NULL;
+    SD_STATE = ISO_SD_READY;
+    iso_core_publish(&CORE);
+    api_post_empty("/api/v1/iso/eject");
+    expect_rsp(200, "{\"result\":\"not_mounted\"}");
+    TEST_ASSERT_FALSE(ejected_flag());
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_response_init_clears_the_response_and_the_first_byte);
@@ -686,6 +712,7 @@ int main(void) {
     RUN_TEST(test_finish_that_finds_the_image_ready_reports_the_computed_sha_only);
     RUN_TEST(test_the_short_internal_error_body_needs_a_cap_of_27);
     RUN_TEST(test_eject_while_the_sd_is_unusable_clears_ejected_by_target);
+    RUN_TEST(test_only_eject_clears_ejected_by_target_when_the_sd_goes_away);
     RUN_TEST(test_commit_accepts_the_put_stored_in_the_same_response);
     RUN_TEST(test_commit_refuses_a_chunk_accepted_on_another_card);
     RUN_TEST(test_header_status_and_value);
