@@ -149,7 +149,7 @@ typedef struct {
 
 typedef struct {
     void *ctx;
-    uint32_t (*next)(void *ctx);   /* <id>（8 桁の 16 進）の生成用。衝突したら、純 C 側が引き直す */
+    uint32_t (*next)(void *ctx);   /* <id>（8 桁の 16 進）の生成用。衝突したら、純 C 側が引き直す。0 は予約 ID（00000000）なので、0 を返しても、純 C 側が引き直す（C-14） */
 } iso_random_t;
 
 #define ISO_SHA256_LEN 32
