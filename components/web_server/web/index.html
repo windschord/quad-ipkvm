@@ -44,6 +44,7 @@
                 <button type="button" id="btn-view-actual" aria-pressed="false">実寸 (100%)</button>
             </div>
             <button type="button" id="btn-fullscreen">全画面</button>
+            <button type="button" id="btn-paste" aria-expanded="false" aria-controls="paste-panel">貼付</button>
             <button type="button" id="btn-iso" class="iso-hidden" aria-expanded="false" aria-controls="iso-panel">ISO</button>
             <button type="button" id="btn-logout">ログアウト</button>
         </div>
@@ -91,6 +92,35 @@
                 <button type="button" id="iso-rescan">取り込み（import/）</button>
                 <p class="hint">PC で SD カードの /iso/import/ にコピーした ISO（4 GiB 弱まで）を、イメージとして取り込みます。</p>
             </div>
+        </section>
+        <section id="paste-panel" class="paste-panel paste-hidden" aria-labelledby="paste-title" aria-hidden="true">
+            <div class="paste-head">
+                <h2 id="paste-title">テキスト貼付 (USB HID)</h2>
+                <button type="button" id="btn-paste-close">閉じる</button>
+            </div>
+            <form id="paste-form">
+                <fieldset id="paste-fields" class="paste-fieldset">
+                    <fieldset class="paste-layout-group">
+                        <legend>ターゲット配列</legend>
+                        <label for="paste-layout-jis"><input type="radio" name="paste-layout" id="paste-layout-jis" value="jis" checked> JIS (日本語)</label>
+                        <label for="paste-layout-us"><input type="radio" name="paste-layout" id="paste-layout-us" value="us"> US (英語)</label>
+                    </fieldset>
+                    <p id="paste-hint" class="hint paste-hint">ASCII 印字可能文字・改行・Tab のみ送信できます（最大 4096 文字、非 ASCII 文字は送信前にエラーになります）。送信中は操作を中断でき、Ctrl+Enter（Mac は Cmd+Enter）でも送信できます。</p>
+                    <label for="paste-text" class="paste-label">送信するテキスト</label>
+                    <textarea id="paste-text" class="paste-text" rows="6" maxlength="4096" aria-describedby="paste-hint" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"></textarea>
+                    <div class="paste-actions">
+                        <button type="button" id="btn-paste-clipboard">クリップボードから読込</button>
+                        <button type="button" id="btn-paste-clear">クリア</button>
+                        <button type="submit" class="paste-submit">ターゲットへ送信</button>
+                    </div>
+                </fieldset>
+                <div id="paste-progress-wrap" class="paste-progress paste-hidden">
+                    <span id="paste-progress" role="status" aria-live="polite"></span>
+                    <button type="button" id="btn-paste-cancel">中止</button>
+                </div>
+                <div id="paste-status" class="paste-status" role="status" aria-live="polite"></div>
+                <div id="paste-error" class="paste-error paste-hidden" role="alert"></div>
+            </form>
         </section>
     </div>
     <script src="app.js"></script>
