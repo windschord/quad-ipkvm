@@ -77,7 +77,7 @@ void test_iface_has_the_state_size_and_runs(void) {
     i.init(&st);
     i.update(&st, "ab", 2);
     i.update(&st, "c", 1);
-    i.final(&st, out);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, i.final(&st, out));
     hex32("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", want);
     TEST_ASSERT_EQUAL_HEX8_ARRAY(want, out, 32);
 }

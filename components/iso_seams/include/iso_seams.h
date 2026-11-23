@@ -157,7 +157,10 @@ typedef struct {
     size_t state_size;             /* 呼び出し側が確保する、逐次の状態の大きさ（バイト） */
     void (*init)(void *state);
     void (*update)(void *state, const void *data, size_t len);
-    void (*final)(void *state, uint8_t out[ISO_SHA256_LEN]);
+    /* ダイジェストを out に確定する(状態は、これで使えなくなる)。成功なら ISO_OK、失敗(PSA などのエラー)なら ISO_ERR_IO。
+     * 失敗したときの out は、使ってはならない(実装は 0 で埋めてよいが、呼び出し側は読まない)。呼び出し側は、ISO_OK 以外を
+     * すべて失敗として扱い、そのダイジェストを保存も比較もしない(FINISH は incomplete にして、再試行を待つ)。 */
+    int (*final)(void *state, uint8_t out[ISO_SHA256_LEN]);
 } iso_sha256_t;
 
 typedef struct {
