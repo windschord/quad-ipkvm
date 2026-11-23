@@ -506,6 +506,19 @@ void test_finish_exec_mapping_when_the_view_is_stale(void) {
     expect_err(404, "not_found");
 }
 
+/* 予約 ID 00000000(C-14): id の形式は有効なので、400 ではなく、カタログにない id として 404 になる(iso_api の id の検査は変えない) */
+void test_the_reserved_id_is_a_valid_id_that_is_not_found(void) {
+    api_add_ready(A, "alpha", SZ2);
+    api_boot();
+    api_delete("00000000");
+    expect_err(404, "not_found");
+    api_post_empty("/api/v1/iso/00000000/finish");
+    expect_err(404, "not_found");
+    api_post_json("/api/v1/iso/mount", "{\"id\":\"00000000\"}");
+    expect_err(404, "not_found");
+    TEST_ASSERT_EQUAL_INT(1, (int)CAT.count); /* 何も変わらない */
+}
+
 void test_finish_exec_upload_in_progress_when_the_view_is_stale(void) {
     api_add_incomplete(A, "alpha", SZ2, SZ2);
     api_boot();
@@ -912,6 +925,7 @@ void test_a_small_response_buffer_gives_a_500_that_fits_or_is_empty(void) {
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_begin_accepted);
+    RUN_TEST(test_the_reserved_id_is_a_valid_id_that_is_not_found);
     RUN_TEST(test_begin_keeps_the_declared_sha256_in_lower_case_bytes);
     RUN_TEST(test_begin_without_sha256_has_no_declared_value);
     RUN_TEST(test_begin_accepts_utf8_names_and_unicode_escapes);

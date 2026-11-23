@@ -25,13 +25,13 @@
 | `test/host/iso_api/test_api_json.c` | JSON のボディ: begin / mount / eject / rescan / finish の正しい形と、不正(重複、定義していないキー、型、範囲、末尾の余計な文字、NUL、512 バイト)、**`\u` エスケープ(BMP、サロゲートペア、上位だけ / 下位だけ、対にならない、部分的な 16 進)**、名前の規則(C0 / DEL / C1、`/`、`\`、前後の空白、63 バイト、UTF-8 の不正)、`sha256`(大文字小文字、桁数、各桁の 16 進の境界)、**本体と同じ大きさのヒープに置いた、すべての先頭部分(読み出しの超過を ASan が検出)** | 25 |
 | `test/host/iso_api/test_api_list.c` | `GET` の本文を、仕様の例を含めて、手書きの文字列と比較(sd の各状態、イメージの各状態と `invalid_reason`、`meta_corrupt`、名前のエスケープ、`mounted` / `target` / `upload` / `hidden_images` / `chunk_size`)、**16 個の最大の本文が `ISO_API_RESPONSE_MAX` に収まること、ちょうどの大きさ**、小さいバッファでの失敗(すべての大きさで、ヒープの境界を超えない)、公開ビューのコピー(table の NULL 化、count の頭打ち)、サービスが起動していないとき | 18 |
 | `test/host/iso_api/test_api_order.c` | **判定の順序の各段**: 段 3 → 4 → 5 → 6 → 7 → 8 → 9(begin、mount、finish、PUT、delete、rescan の各 409 の並び)→ 10 → 11 → 12(507 とその境界)→ 13(`busy`。判定で拒否するときは `iso_op_mutex` を取りに行かないこと)。段ごとに、「前の段のエラーが先に出る」組み合わせ | 42 |
-| `test/host/iso_api/test_api_ops.c` | **処理と結果の対応表**: begin(受理、SHA-256 の宣言値、UTF-8 の名前、I/O エラー、`<id>` の枯渇)、PUT(チャンク 2 つ、再開、`commit` の各結果、書き込みの失敗)、finish(宣言値あり / 不一致 / 署名なし、`incomplete` の再開、`ready` で表なし、`meta_corrupt`、ワーカーのキューのあふれ)、mount / eject(ターゲットの取り外し、防止、差し替え)、delete(アップロードの中止、`crosslinked`)、rescan(`cursor` で続ける)。古いビュー(`use_stale`)と `OL_HOOK` で、判定と処理の間の競合を再現 | 45 |
+| `test/host/iso_api/test_api_ops.c` | **処理と結果の対応表**: begin(受理、SHA-256 の宣言値、UTF-8 の名前、I/O エラー、`<id>` の枯渇)、PUT(チャンク 2 つ、再開、`commit` の各結果、書き込みの失敗)、finish(宣言値あり / 不一致 / 署名なし、`incomplete` の再開、`ready` で表なし、`meta_corrupt`、ワーカーのキューのあふれ)、mount / eject(ターゲットの取り外し、防止、差し替え)、delete(アップロードの中止、`crosslinked`)、rescan(`cursor` で続ける)。古いビュー(`use_stale`)と `OL_HOOK` で、判定と処理の間の競合を再現、**予約 ID `00000000`(C-14)は、形式が有効なので 400 にならず、カタログにない id として 404** | 46 |
 | `test/host/iso_api/test_api_edges.c` | 応答の初期化(汚れた応答を渡しても、前の内容が残らない)、書き出しの部品の境界、引数の不正、応答の置き場が小さいとき、**公開ビューが満杯(16 個)のときの探索、空き容量の推定**、処理が判定の後の状態(SD が消えた、すでにマウントされた、表がない)を見ること(`SL_HOOK` で `iso_state_mutex` の中の状態も変える)。**PR #158 のレビューの分**: 500 の短い本体の最小の `cap`(27)、SD が使えない間の `eject` が `ejected_by_target` を戻す(`eject` だけ)、`rsp->put` をそのまま `put_commit` に渡す、**受理の後にカードが替わったら書かない**(`epoch`)、ヘッダーの取得結果の分類(切り詰め) | 24 |
 | `test/host/iso_api/test_api_guard.c` | 段 1・2(`http_guard_decide`。Host → 初期設定 → 認証 → Origin の順。GET は Origin 不要)の前提と、Host / 認証 / Origin の全組み合わせの表の固定 | 3 |
 | `test/host/iso_api/test_api_fuzz.c` | **固定シードのファズ**(下記) | 3 |
 | `test/host/iso_api/api_common.h` | 共通の部品(`iso_core_t` の設定、ロックの数え上げ、公開ビューのコピー、要求の組み立て) | - |
 
-合計 167 件(`test/host/CMakeLists.txt` に、`iso_api` のテストのリンクの規則を足した。ctest の実行ファイルが 8 個増える。PR #158 のレビューの nitpick の 3 件も、`test_api_order.c`(PUT の事前判定はロックなしで受理される)、`test_api_ops.c`(`rescan` の 2 件目の取り込みの失敗と再試行、`FINISH` との競合に、実際に受理された PUT を使う)に足した)。期待値は手書き。
+合計 168 件(`test/host/CMakeLists.txt` に、`iso_api` のテストのリンクの規則を足した。ctest の実行ファイルが 8 個増える。PR #158 のレビューの nitpick の 3 件も、`test_api_order.c`(PUT の事前判定はロックなしで受理される)、`test_api_ops.c`(`rescan` の 2 件目の取り込みの失敗と再試行、`FINISH` との競合に、実際に受理された PUT を使う)に足した)。期待値は手書き。
 
 ### ファズ(`test_api_fuzz.c`。固定シード、ASan / UBSan)
 

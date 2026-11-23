@@ -190,10 +190,10 @@ void test_id_generate_formats_lowercase_hex_with_padding(void) {
     mock_rnd_set(&RND, seq2, 1);
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_id_generate(&IFS, &IRND, id));
     TEST_ASSERT_EQUAL_STRING("00000abc", id);
-    const uint32_t seq3[] = {0};
+    const uint32_t seq3[] = {1};
     mock_rnd_set(&RND, seq3, 1);
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_id_generate(&IFS, &IRND, id));
-    TEST_ASSERT_EQUAL_STRING("00000000", id);
+    TEST_ASSERT_EQUAL_STRING("00000001", id); /* 最小の id(00000000 は予約。下のテスト) */
     const uint32_t seq4[] = {0xFFFFFFFFu};
     mock_rnd_set(&RND, seq4, 1);
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_id_generate(&IFS, &IRND, id));
@@ -222,6 +222,95 @@ void test_id_generate_gives_up_after_16_tries(void) {
     TEST_ASSERT_EQUAL_INT(16, RND.calls);
     TEST_ASSERT_EQUAL_CHAR('\0', id[0]);
     TEST_ASSERT_FALSE(mock_fs_exists(&FS, "/iso/0000000b"));
+}
+
+/* ---- 予約 ID 00000000(C-14。#160 の worker は media_id == 0 を「ない」として扱うので、生成しない) ---- */
+
+void test_id_generate_redraws_when_the_random_value_is_zero(void) {
+    const uint32_t seq[] = {0, 0, 0x1};
+    mock_rnd_set(&RND, seq, 3);
+    char id[9];
+    fx_settle();
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_id_generate(&IFS, &IRND, id));
+    TEST_ASSERT_EQUAL_STRING("00000001", id);
+    TEST_ASSERT_EQUAL_INT(3, RND.calls);
+    TEST_ASSERT_FALSE(mock_fs_exists(&FS, "/iso/00000000")); /* 予約の id のディレクトリは作らない */
+    TEST_ASSERT_TRUE(mock_fs_is_dir(&FS, "/iso/00000001"));
+    TEST_ASSERT_EQUAL_INT(1, FS.nlog); /* mkdir は、採用した id の 1 回だけ */
+}
+
+void test_id_generate_zero_draws_count_as_tries_and_never_create_the_reserved_directory(void) {
+    char id[9];
+    uint32_t seq[20];
+    /* 15 回 0 を引いても、16 回目の値で成功する */
+    for (int i = 0; i < 15; i++) seq[i] = 0;
+    seq[15] = 0xabc;
+    mock_rnd_set(&RND, seq, 16);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_id_generate(&IFS, &IRND, id));
+    TEST_ASSERT_EQUAL_STRING("00000abc", id);
+    TEST_ASSERT_EQUAL_INT(16, RND.calls);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/00000abc"));
+    /* 16 回 0 を引いたら、あきらめる(17 回目は引かない。ずっと 0 を返す乱数でも、止まる) */
+    for (int i = 0; i < 16; i++) seq[i] = 0;
+    seq[16] = 0xabc;
+    mock_rnd_set(&RND, seq, 17);
+    id[0] = 'x';
+    fx_settle();
+    TEST_ASSERT_EQUAL_INT(ISO_CAT_ERR_ID_EXHAUSTED, iso_id_generate(&IFS, &IRND, id));
+    TEST_ASSERT_EQUAL_INT(16, RND.calls);
+    TEST_ASSERT_EQUAL_CHAR('\0', id[0]);
+    TEST_ASSERT_EQUAL_INT(0, FS.nlog); /* mkdir を 1 回もしない */
+    TEST_ASSERT_FALSE(mock_fs_exists(&FS, "/iso/00000000"));
+    TEST_ASSERT_FALSE(mock_fs_exists(&FS, "/iso/00000abc"));
+}
+
+void test_id_generate_zero_draws_and_collisions_share_the_same_16_tries(void) {
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/0000000a"));
+    uint32_t seq[20];
+    char id[9];
+    for (int i = 0; i < 16; i++) seq[i] = (i % 2) ? 0u : 0x0au; /* 衝突と 0 が交互。16 回で、あきらめる */
+    seq[16] = 0xb;
+    mock_rnd_set(&RND, seq, 17);
+    TEST_ASSERT_EQUAL_INT(ISO_CAT_ERR_ID_EXHAUSTED, iso_id_generate(&IFS, &IRND, id));
+    TEST_ASSERT_EQUAL_INT(16, RND.calls);
+    seq[15] = 0xb; /* 16 回目が通れば成功 */
+    mock_rnd_set(&RND, seq, 16);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_id_generate(&IFS, &IRND, id));
+    TEST_ASSERT_EQUAL_STRING("0000000b", id);
+}
+
+void test_id_generate_accepts_ids_next_to_the_reserved_one(void) {
+    char id[9];
+    const uint32_t a[] = {0x10000000u};
+    mock_rnd_set(&RND, a, 1);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_id_generate(&IFS, &IRND, id));
+    TEST_ASSERT_EQUAL_STRING("10000000", id); /* 先頭の桁だけ 0 でない */
+    const uint32_t b[] = {0x00000010u};
+    mock_rnd_set(&RND, b, 1);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_id_generate(&IFS, &IRND, id));
+    TEST_ASSERT_EQUAL_STRING("00000010", id);
+    const uint32_t c[] = {0x80000000u};
+    mock_rnd_set(&RND, c, 1);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_id_generate(&IFS, &IRND, id));
+    TEST_ASSERT_EQUAL_STRING("80000000", id);
+}
+
+void test_begin_never_uses_the_reserved_id(void) {
+    const uint32_t seq[] = {0, 0x5};
+    mock_rnd_set(&RND, seq, 2);
+    char id[9];
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_begin(&CAT, "x", 1, 100000, NULL, id));
+    TEST_ASSERT_EQUAL_STRING("00000005", id);
+    TEST_ASSERT_FALSE(mock_fs_exists(&FS, "/iso/00000000"));
+    TEST_ASSERT_NULL(iso_catalog_find(&CAT, "00000000"));
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/00000005/meta.a"));
+    /* 乱数が 0 しか返さないなら、begin は id を使い果たして失敗し、何も作らない */
+    const uint32_t z[] = {0};
+    mock_rnd_set(&RND, z, 1);
+    fx_settle();
+    TEST_ASSERT_EQUAL_INT(ISO_CAT_ERR_ID_EXHAUSTED, iso_catalog_begin(&CAT, "y", 1, 100000, NULL, id));
+    TEST_ASSERT_EQUAL_UINT(1, CAT.count);
+    TEST_ASSERT_EQUAL_INT(0, FS.nlog);
 }
 
 void test_begin_returns_id_exhausted_and_changes_nothing(void) {
@@ -691,6 +780,11 @@ int main(void) {
     RUN_TEST(test_begin_retries_the_id_on_collision);
     RUN_TEST(test_id_generate_formats_lowercase_hex_with_padding);
     RUN_TEST(test_id_generate_gives_up_after_16_tries);
+    RUN_TEST(test_id_generate_redraws_when_the_random_value_is_zero);
+    RUN_TEST(test_id_generate_zero_draws_count_as_tries_and_never_create_the_reserved_directory);
+    RUN_TEST(test_id_generate_zero_draws_and_collisions_share_the_same_16_tries);
+    RUN_TEST(test_id_generate_accepts_ids_next_to_the_reserved_one);
+    RUN_TEST(test_begin_never_uses_the_reserved_id);
     RUN_TEST(test_begin_returns_id_exhausted_and_changes_nothing);
     RUN_TEST(test_begin_mkdir_error_other_than_exists_is_returned_without_retry);
     RUN_TEST(test_id_generate_clears_the_output_on_a_mkdir_error);
