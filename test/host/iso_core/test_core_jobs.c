@@ -113,6 +113,36 @@ void test_finish_job_io_error_becomes_incomplete_and_the_view_follows(void) {
     TEST_ASSERT_EQUAL_INT(ISO_STATE_READY, find(id)->state);
 }
 
+/* C-14: SHA-256 の final の失敗は、ジョブの失敗(ISO_STEP_ERROR / ISO_ERR_IO)。incomplete のまま、ビューも ready にならず SHA-256 を持たない */
+void test_finish_job_with_a_failing_sha_final_becomes_incomplete_and_the_view_has_no_sha(void) {
+    char id[9];
+    upload_image(id, SZ);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit_finish(&CORE, id, NULL));
+    up_sha256_fail_final_at(1, ISO_ERR_IO);
+    TEST_ASSERT_EQUAL_INT(1, drive(0, 1000));
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, JOBS[0].result);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, JOBS[0].err);
+    TEST_ASSERT_EQUAL_INT(1, up_sha256_final_calls());
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_INCOMPLETE, find(id)->state);
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_INCOMPLETE, view_of(id)->state);
+    TEST_ASSERT_FALSE(view_of(id)->has_sha);
+    TEST_ASSERT_NULL(view_of(id)->table);
+    TEST_ASSERT_FALSE(VIEW_COPY.upload_active);
+    TEST_ASSERT_NULL(iso_core_table(&CORE, id));
+    TEST_ASSERT_NULL(iso_core_pick(&CORE));
+    expect_meta_state(id, ISO_META_INCOMPLETE, 0);
+    /* finish の再試行は、成功する(ready、SHA-256 は計算値) */
+    up_sha256_fail_final_at(0, 0);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_core_submit_finish(&CORE, id, NULL));
+    TEST_ASSERT_EQUAL_INT(1, drive(0, 1000));
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, JOBS[0].result);
+    TEST_ASSERT_EQUAL_INT(ISO_STATE_READY, view_of(id)->state);
+    TEST_ASSERT_TRUE(view_of(id)->has_sha);
+    uint8_t want[32];
+    gen_sha(SZ, want);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(want, view_of(id)->sha256, 32);
+}
+
 void test_finish_job_with_a_wrong_signature_ends_invalid_with_done(void) {
     SIG = "XXXXX";
     char id[9];
@@ -651,6 +681,7 @@ int main(void) {
     RUN_TEST(test_finish_job_end_to_end);
     RUN_TEST(test_view_in_the_middle_of_a_finish_job);
     RUN_TEST(test_finish_job_io_error_becomes_incomplete_and_the_view_follows);
+    RUN_TEST(test_finish_job_with_a_failing_sha_final_becomes_incomplete_and_the_view_has_no_sha);
     RUN_TEST(test_finish_job_with_a_wrong_signature_ends_invalid_with_done);
     RUN_TEST(test_finish_of_a_ready_image_is_idempotent);
     RUN_TEST(test_finish_size_mismatch_reports_received);
