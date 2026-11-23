@@ -1112,6 +1112,189 @@ void test_stale_job_when_the_meta_is_invalid(void) {
     entry()->meta_valid = true;
 }
 
+/* ---- SHA-256 の final の失敗(C-14。iso_sha256_t.final は、成功なら ISO_OK、失敗なら ISO_ERR_IO を返す) ------------------------
+ * 失敗した final は、出力を全ゼロで埋める(本番の worker_sha_final() と同じ)。その値を使うと、ready のイメージに全ゼロの SHA-256 が
+ * 保存される(期待値を宣言しない FINISH)、または、宣言値が全ゼロのとき一致してしまう。使わず、incomplete にして、再試行を待つ。 */
+
+/* final の失敗で終わったあとの、共通の確認: incomplete(ready でも invalid でもない)、meta も incomplete、SHA-256 を書いていない */
+static void expect_incomplete_after_final_failure(uint8_t sha_flag_kept) {
+    expect_incomplete_after_ioerr();
+    expect_meta(ISO_META_INCOMPLETE, 0);
+    iso_slots_t sl;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_slots_read(&IFS, ID, &sl));
+    TEST_ASSERT_TRUE(sl.adopted >= 0);
+    TEST_ASSERT_EQUAL_UINT8(sha_flag_kept, sl.meta[sl.adopted].sha_flag); /* COMPUTED にしない */
+    TEST_ASSERT_EQUAL_UINT8(sha_flag_kept, entry()->meta.sha_flag);
+    TEST_ASSERT_EQUAL_UINT64(SZ, entry()->received); /* ファイルは、そのまま(再試行できる) */
+    TEST_ASSERT_FALSE(UP.sha_valid);                 /* 使い切った(失敗した)状態は捨てる */
+    TEST_ASSERT_NULL(LAST_TABLE);
+}
+
+void test_final_failure_with_the_streamed_sha_and_no_declaration_is_incomplete_not_ready(void) {
+    upload_all(SZ, PB_SMALL);
+    up_sha256_fail_final_at(1, ISO_ERR_IO);
+    FS.n_read_at = 0;
+    iso_step_result_t r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, r.err);
+    TEST_ASSERT_EQUAL_INT(1, up_sha256_final_calls());
+    TEST_ASSERT_EQUAL_INT(0, FS.n_read_at); /* 署名の読み出しにも進まない */
+    expect_incomplete_after_final_failure(ISO_SHA_NONE);
+    /* 再試行(逐次の状態は使い切ったので、全パーツを読み直す)。今度は final が成功して ready */
+    up_sha256_fail_final_at(0, 0);
+    r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    expect_ready(SHA_100000, 3);
+    TEST_ASSERT_EQUAL_INT(1, up_sha256_final_calls());
+}
+
+void test_final_failure_with_the_streamed_sha_and_a_matching_declaration_is_incomplete_not_invalid(void) {
+    uint8_t sha[32];
+    hex32(SHA_100000, sha);
+    img_begin_pb("img", SZ, PB_SMALL, sha, ID);
+    put_all(ID, 0, SZ, 20000);
+    up_sha256_fail_final_at(1, ISO_ERR_IO);
+    iso_step_result_t r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind); /* 全ゼロの出力と宣言値を比べて、checksum_mismatch の invalid にしない */
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, r.err);
+    expect_incomplete_after_final_failure(ISO_SHA_DECLARED);
+    up_sha256_fail_final_at(0, 0);
+    r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    expect_ready(SHA_100000, 3);
+}
+
+void test_final_failure_with_an_all_zero_declaration_does_not_match_the_zero_output(void) {
+    uint8_t zero[32];
+    memset(zero, 0, sizeof(zero));
+    img_begin_pb("img", SZ, PB_SMALL, zero, ID);
+    put_all(ID, 0, SZ, 20000);
+    up_sha256_fail_final_at(1, ISO_ERR_IO);
+    iso_step_result_t r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind); /* 全ゼロ == 全ゼロ で、ready にしない */
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, r.err);
+    expect_incomplete_after_final_failure(ISO_SHA_DECLARED);
+}
+
+void test_final_failure_in_the_middle_of_the_hash_steps_after_a_reboot_is_incomplete_not_ready(void) {
+    upload_all(SZ, PB_SMALL);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
+    reboot();
+    up_sha256_fail_final_at(1, ISO_ERR_IO);
+    TEST_ASSERT_EQUAL_INT(ISO_RES_OK, iso_upload_finish_begin(&UP, ID, NULL));
+    iso_finish_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_finish_job_init(&job, ID));
+    int steps = 0;
+    iso_step_result_t r = run_finish(&job, 4096, &steps);
+    TEST_ASSERT_TRUE(steps > 20); /* 100000 / 4096 = 25 回の読み出しの途中を、final の失敗まで続けて進んだ */
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, r.err);
+    TEST_ASSERT_EQUAL_INT(1, up_sha256_final_calls());
+    TEST_ASSERT_FALSE(job.have_digest);
+    expect_incomplete_after_final_failure(ISO_SHA_NONE);
+    up_sha256_fail_final_at(0, 0);
+    r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    expect_ready(SHA_100000, 3);
+}
+
+void test_final_failure_after_a_reboot_with_a_declaration_is_incomplete_not_invalid(void) {
+    uint8_t sha[32];
+    hex32(SHA_100000, sha);
+    img_begin_pb("img", SZ, PB_SMALL, sha, ID);
+    put_all(ID, 0, SZ, 20000);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
+    reboot();
+    up_sha256_fail_final_at(1, ISO_ERR_IO);
+    iso_step_result_t r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, r.err);
+    expect_incomplete_after_final_failure(ISO_SHA_DECLARED);
+}
+
+/* iso_upload_hash_step の単体: final が失敗したら、ダイジェストを持たず、I/O エラーで終わる */
+void test_hash_step_final_failure_ends_with_an_io_error_and_no_digest(void) {
+    upload_all(SZ, PB_SMALL);
+    iso_finish_job_t job;
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_finish_job_init(&job, ID));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.sync(&FS, UP.f));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.close(&FS, UP.f));
+    UP.f = NULL;
+    up_sha256_fail_final_at(1, ISO_ERR_IO);
+    iso_step_result_t r;
+    int guard = 0;
+    do {
+        r = iso_upload_hash_step(&UP, &job, 0);
+        TEST_ASSERT_TRUE(++guard < 1000);
+    } while (r.kind == ISO_STEP_CONTINUE);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, r.err);
+    TEST_ASSERT_EQUAL_INT(ISO_OUTCOME_IOERR, job.fail);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, job.fail_err);
+    TEST_ASSERT_EQUAL_UINT8(0, job.fail_reason);
+    TEST_ASSERT_FALSE(job.have_digest);
+    TEST_ASSERT_EQUAL_INT(1, up_sha256_final_calls());
+}
+
+/* ISO_OK 以外は、すべて失敗(契約は ISO_OK / ISO_ERR_IO だが、ほかの値でも、全ゼロの値を採用しない)。報告するエラーは ISO_ERR_IO。
+ * 逐次の経路と読み直しの経路の、それぞれに、正の値と、IO 以外の負の値を試す */
+void test_final_failure_with_a_positive_code_in_the_streamed_path_and_nomem_in_the_reread_path(void) {
+    upload_all(SZ, PB_SMALL);
+    up_sha256_fail_final_at(1, 1); /* 逐次の経路: 正の値 */
+    iso_step_result_t r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, r.err);
+    expect_incomplete_after_final_failure(ISO_SHA_NONE);
+    up_sha256_fail_final_at(1, ISO_ERR_NOMEM); /* 再試行は、読み直しの経路: IO 以外の負の値 */
+    r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, r.err);
+    expect_incomplete_after_final_failure(ISO_SHA_NONE);
+    up_sha256_fail_final_at(0, 0);
+    r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    expect_ready(SHA_100000, 3);
+}
+
+void test_final_failure_with_nomem_in_the_streamed_path_and_a_positive_code_in_the_reread_path(void) {
+    upload_all(SZ, PB_SMALL);
+    up_sha256_fail_final_at(1, ISO_ERR_NOMEM); /* 逐次の経路: IO 以外の負の値 */
+    iso_step_result_t r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, r.err);
+    expect_incomplete_after_final_failure(ISO_SHA_NONE);
+    up_sha256_fail_final_at(1, 1); /* 再試行は、読み直しの経路: 正の値 */
+    r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_ERROR, r.kind);
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, r.err);
+    expect_incomplete_after_final_failure(ISO_SHA_NONE);
+    up_sha256_fail_final_at(0, 0);
+    r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    expect_ready(SHA_100000, 3);
+}
+
+/* 成功のときは従来どおり: final は 1 FINISH につき 1 回だけ(逐次の経路も、読み直しの経路も) */
+void test_final_is_called_exactly_once_per_successful_finish_in_both_paths(void) {
+    upload_all(SZ, PB_SMALL);
+    up_sha256_fail_final_at(0, 0);
+    iso_step_result_t r = finish_all(0);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    expect_ready(SHA_100000, 3);
+    TEST_ASSERT_EQUAL_INT(1, up_sha256_final_calls());
+}
+
+void test_final_is_called_exactly_once_per_successful_finish_after_a_reboot(void) {
+    upload_all(SZ, PB_SMALL);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_upload_idle_close(&UP, ID));
+    reboot();
+    up_sha256_fail_final_at(0, 0);
+    iso_step_result_t r = finish_all(4096);
+    TEST_ASSERT_EQUAL_INT(ISO_STEP_DONE, r.kind);
+    expect_ready(SHA_100000, 3);
+    TEST_ASSERT_EQUAL_INT(1, up_sha256_final_calls());
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_finish_begin_complete_upload_becomes_finalizing_and_keeps_the_slot);
@@ -1188,5 +1371,15 @@ int main(void) {
     RUN_TEST(test_stale_job_when_the_slot_is_not_finalizing);
     RUN_TEST(test_stale_job_when_the_slot_belongs_to_another_image);
     RUN_TEST(test_stale_job_when_the_meta_is_invalid);
+    RUN_TEST(test_final_failure_with_the_streamed_sha_and_no_declaration_is_incomplete_not_ready);
+    RUN_TEST(test_final_failure_with_the_streamed_sha_and_a_matching_declaration_is_incomplete_not_invalid);
+    RUN_TEST(test_final_failure_with_an_all_zero_declaration_does_not_match_the_zero_output);
+    RUN_TEST(test_final_failure_in_the_middle_of_the_hash_steps_after_a_reboot_is_incomplete_not_ready);
+    RUN_TEST(test_final_failure_after_a_reboot_with_a_declaration_is_incomplete_not_invalid);
+    RUN_TEST(test_hash_step_final_failure_ends_with_an_io_error_and_no_digest);
+    RUN_TEST(test_final_failure_with_a_positive_code_in_the_streamed_path_and_nomem_in_the_reread_path);
+    RUN_TEST(test_final_failure_with_nomem_in_the_streamed_path_and_a_positive_code_in_the_reread_path);
+    RUN_TEST(test_final_is_called_exactly_once_per_successful_finish_in_both_paths);
+    RUN_TEST(test_final_is_called_exactly_once_per_successful_finish_after_a_reboot);
     return UNITY_END();
 }

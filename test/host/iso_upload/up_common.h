@@ -132,6 +132,7 @@ static inline void fx_base(void) {
     CLK.ctx = NULL;
     CLK.now_ms = clock_fn;
     SHA = up_sha256_iface();
+    up_sha256_fail_final_at(0, 0); /* final の失敗の注入なし。呼び出しの数を 0 に */
     ALLOC.ctx = NULL;
     ALLOC.alloc = alloc_fn;
     ALLOC.free = free_fn;

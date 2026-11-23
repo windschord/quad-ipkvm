@@ -352,6 +352,10 @@ int iso_catalog_scan(iso_catalog_t *cat) {
         }
         if (rc == 1) break;
         if (!st.is_dir || !iso_id_valid(name)) continue;
+        if (strcmp(name, ISO_ID_RESERVED) == 0) { /* 予約 ID は採用しない(枠も使わない)。触らずに、数だけ数える */
+            cat->hidden++;
+            continue;
+        }
         if (n < ISO_MAX_IMAGES) {
             memcpy(ids[n], name, ISO_ID_LEN + 1);
             n++;
@@ -377,6 +381,7 @@ int iso_catalog_scan(iso_catalog_t *cat) {
 int iso_id_generate(const iso_fs_t *fs, const iso_random_t *rnd, char out[ISO_ID_LEN + 1]) {
     for (unsigned tries = 0; tries < ISO_ID_TRIES; tries++) {
         unsigned v = (unsigned)rnd->next(rnd->ctx);
+        if (v == 0) continue; /* 予約 ID(ISO_ID_RESERVED)。mkdir しない。1 回に数える(乱数が 0 を返し続けても止まる) */
         snprintf(out, ISO_ID_LEN + 1, "%08x", v);
         char path[ISO_PATH_MAX];
         int rc = path_dir(path, sizeof(path), out);

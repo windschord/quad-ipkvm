@@ -98,7 +98,29 @@ void up_sha256(const void *data, size_t len, uint8_t out[32]) {
 
 static void if_init(void *st) { up_sha256_init((up_sha256_state_t *)st); }
 static void if_update(void *st, const void *d, size_t n) { up_sha256_update((up_sha256_state_t *)st, d, n); }
-static void if_final(void *st, uint8_t out[ISO_SHA256_LEN]) { up_sha256_final((up_sha256_state_t *)st, out); }
+/* final の失敗の注入(テスト用)。iface 経由の final の n 回目(1 始まり)が、rc を返して失敗する(0 = 注入なし)。
+ * 失敗したときは、本番の worker_sha_final() と同じく、出力を 0 で埋める(呼び出し側が、その値を使うと、全ゼロの SHA-256 が見える) */
+static int g_fail_at = 0;
+static int g_fail_rc = 0;
+static int g_final_calls = 0;
+
+void up_sha256_fail_final_at(int n, int rc) {
+    g_fail_at = n;
+    g_fail_rc = rc;
+    g_final_calls = 0;
+}
+
+int up_sha256_final_calls(void) { return g_final_calls; }
+
+static int if_final(void *st, uint8_t out[ISO_SHA256_LEN]) {
+    g_final_calls++;
+    if (g_fail_at != 0 && g_final_calls == g_fail_at) {
+        memset(out, 0, ISO_SHA256_LEN);
+        return g_fail_rc;
+    }
+    up_sha256_final((up_sha256_state_t *)st, out);
+    return ISO_OK;
+}
 
 iso_sha256_t up_sha256_iface(void) {
     iso_sha256_t i;

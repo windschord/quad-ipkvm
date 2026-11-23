@@ -1,0 +1,475 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1340" viewBox="0 0 1920 1340">
+<defs>
+<style>
+  .sans { font-family: Hiragino Sans, 'Hiragino Kaku Gothic ProN', 'Yu Gothic', sans-serif; }
+  .mono { font-family: 'SF Mono', Menlo, Consolas, monospace; }
+</style>
+<marker id="arr-ok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#15803d"/></marker>
+<marker id="arr-plan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#d97706"/></marker>
+<marker id="arr-tbd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#7e22ce"/></marker>
+<marker id="arr-fix" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#1d4ed8"/></marker>
+<marker id="arr-blk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#0f172a"/></marker>
+</defs>
+<rect width="1920" height="1340" fill="#ffffff"/>
+<rect x="24.0" y="18.0" width="1872.0" height="64.0" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="44.0" y="46.0" class="sans" font-size="20" fill="#0f172a" text-anchor="start" font-weight="bold">quad-ipkvm ハードウェア全体配線図  (Waveshare ESP32-P4-ETH rev v1.3 基準)</text>
+<text x="44.0" y="68.0" class="sans" font-size="12" fill="#475569" text-anchor="start" font-weight="normal">確認・配線済 / 基板内固定 / 設計・未配線 / GPIO番号未確定 TODO(hw-verify) / 接続禁止 を厳密に分離（推測値による確定なし）</text>
+<text x="1876.0" y="46.0" class="sans" font-size="12" fill="#475569" text-anchor="end" font-weight="normal">参照: docs/WIRING.md  |  回路図: docs/ESP32-P4-ETH-schematic.pdf</text>
+<text x="1876.0" y="67.0" class="sans" font-size="11" fill="#475569" text-anchor="end" font-weight="normal">向き: H2 (USB-C) が上、J4 (RJ45) が下（基板表面から見た P1 ピン配列）</text>
+<rect x="24.0" y="92.0" width="1872.0" height="64.0" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+<line x1="44.0" y1="110.0" x2="74.0" y2="110.0" stroke="#15803d" stroke-width="3.0"/>
+<rect x="82.0" y="99.0" width="128.0" height="22.0" rx="4" fill="#f0fdf4" stroke="#15803d" stroke-width="1.2"/>
+<text x="146.0" y="114.0" class="sans" font-size="11" fill="#15803d" text-anchor="middle" font-weight="bold">[確認・配線済]</text>
+<text x="218.0" y="114.0" class="sans" font-size="11" fill="#475569" text-anchor="start" font-weight="normal">実機で接続・動作確認済み</text>
+<line x1="650.0" y1="110.0" x2="680.0" y2="110.0" stroke="#1d4ed8" stroke-width="3.0"/>
+<rect x="688.0" y="99.0" width="128.0" height="22.0" rx="4" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.2"/>
+<text x="752.0" y="114.0" class="sans" font-size="11" fill="#1d4ed8" text-anchor="middle" font-weight="bold">[基板内固定]</text>
+<text x="824.0" y="114.0" class="sans" font-size="11" fill="#475569" text-anchor="start" font-weight="normal">PCB 上で結線済み（変更不可）</text>
+<line x1="1260.0" y1="110.0" x2="1290.0" y2="110.0" stroke="#d97706" stroke-width="3.0" stroke-dasharray="6,4"/>
+<rect x="1298.0" y="99.0" width="128.0" height="22.0" rx="4" fill="#fffbeb" stroke="#d97706" stroke-width="1.2"/>
+<text x="1362.0" y="114.0" class="sans" font-size="11" fill="#d97706" text-anchor="middle" font-weight="bold">[設計・未配線]</text>
+<text x="1434.0" y="114.0" class="sans" font-size="11" fill="#475569" text-anchor="start" font-weight="normal">配線先・定数は設計済み / 実機未配線</text>
+<line x1="44.0" y1="138.0" x2="74.0" y2="138.0" stroke="#7e22ce" stroke-width="3.0" stroke-dasharray="4,4"/>
+<rect x="82.0" y="127.0" width="175.0" height="22.0" rx="4" fill="#faf5ff" stroke="#7e22ce" stroke-width="1.2"/>
+<text x="169.5" y="142.0" class="sans" font-size="11" fill="#7e22ce" text-anchor="middle" font-weight="bold">[未確定 TODO(hw-verify)]</text>
+<text x="265.0" y="142.0" class="sans" font-size="11" fill="#475569" text-anchor="start" font-weight="normal">GPIO 番号・部品定数は実測/確定待ち</text>
+<line x1="658.0" y1="132.0" x2="670.0" y2="144.0" stroke="#dc2626" stroke-width="2.6"/>
+<line x1="658.0" y1="144.0" x2="670.0" y2="132.0" stroke="#dc2626" stroke-width="2.6"/>
+<rect x="688.0" y="127.0" width="128.0" height="22.0" rx="4" fill="#fef2f2" stroke="#dc2626" stroke-width="1.2"/>
+<text x="752.0" y="142.0" class="sans" font-size="11" fill="#dc2626" text-anchor="middle" font-weight="bold">[接続禁止 ✕]</text>
+<text x="824.0" y="142.0" class="sans" font-size="11" fill="#475569" text-anchor="start" font-weight="normal">電源衝突・定格超過リスク（接続しない）</text>
+<line x1="1260.0" y1="138.0" x2="1290.0" y2="138.0" stroke="#0f766e" stroke-width="3.0"/>
+<rect x="1298.0" y="127.0" width="128.0" height="22.0" rx="4" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.2"/>
+<text x="1362.0" y="142.0" class="sans" font-size="11" fill="#0f766e" text-anchor="middle" font-weight="bold">[空き安全GPIO]</text>
+<text x="1434.0" y="142.0" class="sans" font-size="11" fill="#475569" text-anchor="start" font-weight="normal">出力安全に割り当て可能な未予約ピン</text>
+<rect x="690.0" y="188.0" width="540.0" height="1036.0" rx="14" fill="#f8fafc" stroke="#334155" stroke-width="2.4"/>
+<text x="960.0" y="212.0" class="sans" font-size="15" fill="#0f172a" text-anchor="middle" font-weight="bold">Waveshare ESP32-P4-ETH  (P4NRW32 / rev v1.3)</text>
+<rect x="855.0" y="224.0" width="210.0" height="46.0" rx="6" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.5"/>
+<text x="960.0" y="243.0" class="sans" font-size="12" fill="#1d4ed8" text-anchor="middle" font-weight="bold">H2: Type-C UART (CH343P)</text>
+<text x="960.0" y="260.0" class="sans" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal">GPIO37/38 | 給電・ログ (非JTAG)</text>
+<rect x="860.0" y="280.0" width="200.0" height="56.0" rx="6" fill="#ffffff" stroke="#334155" stroke-width="1.5"/>
+<text x="960.0" y="297.0" class="sans" font-size="11" fill="#0f172a" text-anchor="middle" font-weight="bold">J3: USB OTG HS (4-pin)</text>
+<rect x="870.0" y="305.0" width="36.0" height="22.0" rx="3" fill="#ffffff" stroke="#dc2626" stroke-width="1.2"/>
+<text x="888.0" y="320.0" class="mono" font-size="10" fill="#dc2626" text-anchor="middle" font-weight="bold">1:V</text>
+<rect x="918.0" y="305.0" width="36.0" height="22.0" rx="3" fill="#ffffff" stroke="#15803d" stroke-width="1.2"/>
+<text x="936.0" y="320.0" class="mono" font-size="10" fill="#15803d" text-anchor="middle" font-weight="bold">2:D-</text>
+<rect x="966.0" y="305.0" width="36.0" height="22.0" rx="3" fill="#ffffff" stroke="#15803d" stroke-width="1.2"/>
+<text x="984.0" y="320.0" class="mono" font-size="10" fill="#15803d" text-anchor="middle" font-weight="bold">3:D+</text>
+<rect x="1014.0" y="305.0" width="36.0" height="22.0" rx="3" fill="#ffffff" stroke="#15803d" stroke-width="1.2"/>
+<text x="1032.0" y="320.0" class="mono" font-size="10" fill="#15803d" text-anchor="middle" font-weight="bold">4:G</text>
+<line x1="883.0" y1="326.0" x2="893.0" y2="336.0" stroke="#dc2626" stroke-width="2.6"/>
+<line x1="883.0" y1="336.0" x2="893.0" y2="326.0" stroke="#dc2626" stroke-width="2.6"/>
+<rect x="714.0" y="346.0" width="232.0" height="56.0" rx="6" fill="#f0fdf4" stroke="#15803d" stroke-width="1.6"/>
+<text x="830.0" y="363.0" class="sans" font-size="11" fill="#15803d" text-anchor="middle" font-weight="bold">J1: CSI 22-pin (0.5mm PI5)</text>
+<text x="830.0" y="380.0" class="mono" font-size="10" fill="#0f172a" text-anchor="middle" font-weight="normal">3V3 / SDA(7) / SCL(8) / IO0,1</text>
+<text x="830.0" y="395.0" class="mono" font-size="10" fill="#0f172a" text-anchor="middle" font-weight="normal">CLK± / D0± / D1± / GND</text>
+<rect x="974.0" y="346.0" width="232.0" height="56.0" rx="6" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.2"/>
+<text x="1090.0" y="367.0" class="sans" font-size="11" fill="#475569" text-anchor="middle" font-weight="bold">J2: DSI 22-pin (未使用)</text>
+<text x="1090.0" y="387.0" class="sans" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal">ディスプレイ未接続</text>
+<text x="960.0" y="421.0" class="sans" font-size="12" fill="#0f172a" text-anchor="middle" font-weight="bold">P1 ヘッダ (PICO-2*20 IO) 全 40 ピン配列</text>
+<rect x="698.0" y="434.0" width="190.0" height="26.0" rx="4" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.0"/>
+<text x="704.0" y="451.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold"> 1</text>
+<text x="723.0" y="451.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">54 </text>
+<text x="752.0" y="451.0" class="sans" font-size="9" fill="#0f766e" text-anchor="start" font-weight="normal">空き(安全出力)</text>
+<circle cx="690" cy="447.0" r="3.5" fill="#0f766e"/>
+<rect x="698.0" y="464.0" width="190.0" height="26.0" rx="4" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.0"/>
+<text x="704.0" y="481.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold"> 2</text>
+<text x="723.0" y="481.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">19 </text>
+<text x="752.0" y="481.0" class="sans" font-size="9" fill="#0f766e" text-anchor="start" font-weight="normal">空き(安全出力/VBUS代案)</text>
+<circle cx="690" cy="477.0" r="3.5" fill="#0f766e"/>
+<rect x="698.0" y="494.0" width="190.0" height="26.0" rx="4" fill="#f1f5f9" stroke="#334155" stroke-width="1.0"/>
+<text x="704.0" y="511.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold"> 3</text>
+<text x="723.0" y="511.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">GND</text>
+<text x="752.0" y="511.0" class="sans" font-size="9" fill="#334155" text-anchor="start" font-weight="normal">GND</text>
+<circle cx="690" cy="507.0" r="3.5" fill="#334155"/>
+<rect x="698.0" y="524.0" width="190.0" height="26.0" rx="4" fill="#fffbeb" stroke="#d97706" stroke-width="1.0"/>
+<text x="704.0" y="541.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold"> 4</text>
+<text x="723.0" y="541.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">18 </text>
+<text x="752.0" y="541.0" class="sans" font-size="9" fill="#d97706" text-anchor="start" font-weight="normal">VBUS検出 [推奨]</text>
+<circle cx="690" cy="537.0" r="3.5" fill="#d97706"/>
+<rect x="698.0" y="554.0" width="190.0" height="26.0" rx="4" fill="#fffbeb" stroke="#d97706" stroke-width="1.0"/>
+<text x="704.0" y="571.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold"> 5</text>
+<text x="723.0" y="571.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">17 </text>
+<text x="752.0" y="571.0" class="sans" font-size="9" fill="#d97706" text-anchor="start" font-weight="normal">X630 INT [予定/未測]</text>
+<circle cx="690" cy="567.0" r="3.5" fill="#d97706"/>
+<rect x="698.0" y="584.0" width="190.0" height="26.0" rx="4" fill="#f0fdf4" stroke="#15803d" stroke-width="1.0"/>
+<text x="704.0" y="601.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold"> 6</text>
+<text x="723.0" y="601.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">16 </text>
+<text x="752.0" y="601.0" class="sans" font-size="9" fill="#15803d" text-anchor="start" font-weight="normal">X630 RESET (OD) [済]</text>
+<circle cx="690" cy="597.0" r="3.5" fill="#15803d"/>
+<rect x="698.0" y="614.0" width="190.0" height="26.0" rx="4" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.0"/>
+<text x="704.0" y="631.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold"> 7</text>
+<text x="723.0" y="631.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">15 </text>
+<text x="752.0" y="631.0" class="sans" font-size="9" fill="#0f766e" text-anchor="start" font-weight="normal">空き(安全出力/VBUS代案)</text>
+<circle cx="690" cy="627.0" r="3.5" fill="#0f766e"/>
+<rect x="698.0" y="644.0" width="190.0" height="26.0" rx="4" fill="#f0fdf4" stroke="#15803d" stroke-width="1.0"/>
+<text x="704.0" y="661.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold"> 8</text>
+<text x="723.0" y="661.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">GND</text>
+<text x="752.0" y="661.0" class="sans" font-size="9" fill="#15803d" text-anchor="start" font-weight="normal">X630 GND / 共通GND</text>
+<circle cx="690" cy="657.0" r="3.5" fill="#15803d"/>
+<rect x="698.0" y="674.0" width="190.0" height="26.0" rx="4" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.0"/>
+<text x="704.0" y="691.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold"> 9</text>
+<text x="723.0" y="691.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">14 </text>
+<text x="752.0" y="691.0" class="sans" font-size="9" fill="#0f766e" text-anchor="start" font-weight="normal">空き(安全出力/VBUS代案)</text>
+<circle cx="690" cy="687.0" r="3.5" fill="#0f766e"/>
+<rect x="698.0" y="704.0" width="190.0" height="26.0" rx="4" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.0"/>
+<text x="704.0" y="721.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold">10</text>
+<text x="723.0" y="721.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">6  </text>
+<text x="752.0" y="721.0" class="sans" font-size="9" fill="#0f766e" text-anchor="start" font-weight="normal">空き(安全出力)</text>
+<circle cx="690" cy="717.0" r="3.5" fill="#0f766e"/>
+<rect x="698.0" y="734.0" width="190.0" height="26.0" rx="4" fill="#f1f5f9" stroke="#64748b" stroke-width="1.0"/>
+<text x="704.0" y="751.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold">11</text>
+<text x="723.0" y="751.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">5  </text>
+<text x="752.0" y="751.0" class="sans" font-size="9" fill="#64748b" text-anchor="start" font-weight="normal">注意(JTAG/入力可)</text>
+<circle cx="690" cy="747.0" r="3.5" fill="#64748b"/>
+<rect x="698.0" y="764.0" width="190.0" height="26.0" rx="4" fill="#f1f5f9" stroke="#64748b" stroke-width="1.0"/>
+<text x="704.0" y="781.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold">12</text>
+<text x="723.0" y="781.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">4  </text>
+<text x="752.0" y="781.0" class="sans" font-size="9" fill="#64748b" text-anchor="start" font-weight="normal">注意(JTAG/入力可)</text>
+<circle cx="690" cy="777.0" r="3.5" fill="#64748b"/>
+<rect x="698.0" y="794.0" width="190.0" height="26.0" rx="4" fill="#f1f5f9" stroke="#334155" stroke-width="1.0"/>
+<text x="704.0" y="811.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold">13</text>
+<text x="723.0" y="811.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">GND</text>
+<text x="752.0" y="811.0" class="sans" font-size="9" fill="#334155" text-anchor="start" font-weight="normal">GND</text>
+<circle cx="690" cy="807.0" r="3.5" fill="#334155"/>
+<rect x="698.0" y="824.0" width="190.0" height="26.0" rx="4" fill="#f1f5f9" stroke="#64748b" stroke-width="1.0"/>
+<text x="704.0" y="841.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold">14</text>
+<text x="723.0" y="841.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">3  </text>
+<text x="752.0" y="841.0" class="sans" font-size="9" fill="#64748b" text-anchor="start" font-weight="normal">注意(JTAG/入力可)</text>
+<circle cx="690" cy="837.0" r="3.5" fill="#64748b"/>
+<rect x="698.0" y="854.0" width="190.0" height="26.0" rx="4" fill="#f1f5f9" stroke="#64748b" stroke-width="1.0"/>
+<text x="704.0" y="871.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold">15</text>
+<text x="723.0" y="871.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">2  </text>
+<text x="752.0" y="871.0" class="sans" font-size="9" fill="#64748b" text-anchor="start" font-weight="normal">注意(JTAG/PU有)</text>
+<circle cx="690" cy="867.0" r="3.5" fill="#64748b"/>
+<rect x="698.0" y="884.0" width="190.0" height="26.0" rx="4" fill="#f0fdf4" stroke="#15803d" stroke-width="1.0"/>
+<text x="704.0" y="901.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold">16</text>
+<text x="723.0" y="901.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">SCL</text>
+<text x="752.0" y="901.0" class="sans" font-size="9" fill="#15803d" text-anchor="start" font-weight="normal">GPIO8: I2C SCL (2.2k PU)</text>
+<circle cx="690" cy="897.0" r="3.5" fill="#15803d"/>
+<rect x="698.0" y="914.0" width="190.0" height="26.0" rx="4" fill="#f0fdf4" stroke="#15803d" stroke-width="1.0"/>
+<text x="704.0" y="931.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold">17</text>
+<text x="723.0" y="931.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">SDA</text>
+<text x="752.0" y="931.0" class="sans" font-size="9" fill="#15803d" text-anchor="start" font-weight="normal">GPIO7: I2C SDA (2.2k PU)</text>
+<circle cx="690" cy="927.0" r="3.5" fill="#15803d"/>
+<rect x="698.0" y="944.0" width="190.0" height="26.0" rx="4" fill="#f1f5f9" stroke="#334155" stroke-width="1.0"/>
+<text x="704.0" y="961.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold">18</text>
+<text x="723.0" y="961.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">GND</text>
+<text x="752.0" y="961.0" class="sans" font-size="9" fill="#334155" text-anchor="start" font-weight="normal">I2C / 外部GND</text>
+<circle cx="690" cy="957.0" r="3.5" fill="#334155"/>
+<rect x="698.0" y="974.0" width="190.0" height="26.0" rx="4" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.0"/>
+<text x="704.0" y="991.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold">19</text>
+<text x="723.0" y="991.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">24 </text>
+<text x="752.0" y="991.0" class="sans" font-size="9" fill="#1d4ed8" text-anchor="start" font-weight="normal">不可(USB1.1/JTAG予約)</text>
+<circle cx="690" cy="987.0" r="3.5" fill="#1d4ed8"/>
+<rect x="698.0" y="1004.0" width="190.0" height="26.0" rx="4" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.0"/>
+<text x="704.0" y="1021.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="bold">20</text>
+<text x="723.0" y="1021.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">25 </text>
+<text x="752.0" y="1021.0" class="sans" font-size="9" fill="#1d4ed8" text-anchor="start" font-weight="normal">不可(USB1.1/JTAG予約)</text>
+<circle cx="690" cy="1017.0" r="3.5" fill="#1d4ed8"/>
+<rect x="1032.0" y="434.0" width="190.0" height="26.0" rx="4" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.0"/>
+<text x="1216.0" y="451.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">40</text>
+<text x="1196.0" y="451.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">VBUS</text>
+<text x="1160.0" y="451.0" class="sans" font-size="9" fill="#b91c1c" text-anchor="end" font-weight="normal">VCC1_5V (H2電源5V注意)</text>
+<circle cx="1230" cy="447.0" r="3.5" fill="#b91c1c"/>
+<rect x="1032.0" y="464.0" width="190.0" height="26.0" rx="4" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.0"/>
+<text x="1216.0" y="481.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">39</text>
+<text x="1196.0" y="481.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">VSYS</text>
+<text x="1160.0" y="481.0" class="sans" font-size="9" fill="#b91c1c" text-anchor="end" font-weight="normal">VCC_5V (システム5V)</text>
+<circle cx="1230" cy="477.0" r="3.5" fill="#b91c1c"/>
+<rect x="1032.0" y="494.0" width="190.0" height="26.0" rx="4" fill="#f1f5f9" stroke="#334155" stroke-width="1.0"/>
+<text x="1216.0" y="511.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">38</text>
+<text x="1196.0" y="511.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">GND</text>
+<text x="1160.0" y="511.0" class="sans" font-size="9" fill="#334155" text-anchor="end" font-weight="normal">GND</text>
+<circle cx="1230" cy="507.0" r="3.5" fill="#334155"/>
+<rect x="1032.0" y="524.0" width="190.0" height="26.0" rx="4" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.0"/>
+<text x="1216.0" y="541.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">37</text>
+<text x="1196.0" y="541.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">EN</text>
+<text x="1160.0" y="541.0" class="sans" font-size="9" fill="#b91c1c" text-anchor="end" font-weight="normal">3V3_EN</text>
+<circle cx="1230" cy="537.0" r="3.5" fill="#b91c1c"/>
+<rect x="1032.0" y="554.0" width="190.0" height="26.0" rx="4" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.0"/>
+<text x="1216.0" y="571.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">36</text>
+<text x="1196.0" y="571.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">3V3</text>
+<text x="1160.0" y="571.0" class="sans" font-size="9" fill="#b91c1c" text-anchor="end" font-weight="normal">ESP_3V3 (約3.27V外部可)</text>
+<circle cx="1230" cy="567.0" r="3.5" fill="#b91c1c"/>
+<rect x="1032.0" y="584.0" width="190.0" height="26.0" rx="4" fill="#faf5ff" stroke="#7e22ce" stroke-width="1.0"/>
+<text x="1216.0" y="601.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">35</text>
+<text x="1196.0" y="601.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">20</text>
+<text x="1160.0" y="601.0" class="sans" font-size="9" fill="#7e22ce" text-anchor="end" font-weight="normal">空き(安全出力候補)</text>
+<circle cx="1230" cy="597.0" r="3.5" fill="#7e22ce"/>
+<rect x="1032.0" y="614.0" width="190.0" height="26.0" rx="4" fill="#faf5ff" stroke="#7e22ce" stroke-width="1.0"/>
+<text x="1216.0" y="631.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">34</text>
+<text x="1196.0" y="631.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">21</text>
+<text x="1160.0" y="631.0" class="sans" font-size="9" fill="#7e22ce" text-anchor="end" font-weight="normal">空き(安全出力候補)</text>
+<circle cx="1230" cy="627.0" r="3.5" fill="#7e22ce"/>
+<rect x="1032.0" y="644.0" width="190.0" height="26.0" rx="4" fill="#f1f5f9" stroke="#334155" stroke-width="1.0"/>
+<text x="1216.0" y="661.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">33</text>
+<text x="1196.0" y="661.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">GND</text>
+<text x="1160.0" y="661.0" class="sans" font-size="9" fill="#334155" text-anchor="end" font-weight="normal">GND</text>
+<circle cx="1230" cy="657.0" r="3.5" fill="#334155"/>
+<rect x="1032.0" y="674.0" width="190.0" height="26.0" rx="4" fill="#faf5ff" stroke="#7e22ce" stroke-width="1.0"/>
+<text x="1216.0" y="691.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">32</text>
+<text x="1196.0" y="691.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">22</text>
+<text x="1160.0" y="691.0" class="sans" font-size="9" fill="#7e22ce" text-anchor="end" font-weight="normal">空き(安全出力候補)</text>
+<circle cx="1230" cy="687.0" r="3.5" fill="#7e22ce"/>
+<rect x="1032.0" y="704.0" width="190.0" height="26.0" rx="4" fill="#faf5ff" stroke="#7e22ce" stroke-width="1.0"/>
+<text x="1216.0" y="721.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">31</text>
+<text x="1196.0" y="721.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">23</text>
+<text x="1160.0" y="721.0" class="sans" font-size="9" fill="#7e22ce" text-anchor="end" font-weight="normal">空き(安全出力候補)</text>
+<circle cx="1230" cy="717.0" r="3.5" fill="#7e22ce"/>
+<rect x="1032.0" y="734.0" width="190.0" height="26.0" rx="4" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.0"/>
+<text x="1216.0" y="751.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">30</text>
+<text x="1196.0" y="751.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">RUN</text>
+<text x="1160.0" y="751.0" class="sans" font-size="9" fill="#b91c1c" text-anchor="end" font-weight="normal">ESP_EN (リセット)</text>
+<circle cx="1230" cy="747.0" r="3.5" fill="#b91c1c"/>
+<rect x="1032.0" y="764.0" width="190.0" height="26.0" rx="4" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.0"/>
+<text x="1216.0" y="781.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">29</text>
+<text x="1196.0" y="781.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">26</text>
+<text x="1160.0" y="781.0" class="sans" font-size="9" fill="#1d4ed8" text-anchor="end" font-weight="normal">予約(USB FS OTG N)</text>
+<circle cx="1230" cy="777.0" r="3.5" fill="#1d4ed8"/>
+<rect x="1032.0" y="794.0" width="190.0" height="26.0" rx="4" fill="#f1f5f9" stroke="#334155" stroke-width="1.0"/>
+<text x="1216.0" y="811.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">28</text>
+<text x="1196.0" y="811.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">GND</text>
+<text x="1160.0" y="811.0" class="sans" font-size="9" fill="#334155" text-anchor="end" font-weight="normal">GND</text>
+<circle cx="1230" cy="807.0" r="3.5" fill="#334155"/>
+<rect x="1032.0" y="824.0" width="190.0" height="26.0" rx="4" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.0"/>
+<text x="1216.0" y="841.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">27</text>
+<text x="1196.0" y="841.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">27</text>
+<text x="1160.0" y="841.0" class="sans" font-size="9" fill="#1d4ed8" text-anchor="end" font-weight="normal">予約(USB FS OTG P)</text>
+<circle cx="1230" cy="837.0" r="3.5" fill="#1d4ed8"/>
+<rect x="1032.0" y="854.0" width="190.0" height="26.0" rx="4" fill="#faf5ff" stroke="#7e22ce" stroke-width="1.0"/>
+<text x="1216.0" y="871.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">26</text>
+<text x="1196.0" y="871.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">32</text>
+<text x="1160.0" y="871.0" class="sans" font-size="9" fill="#7e22ce" text-anchor="end" font-weight="normal">空き(入力適/LED候補)</text>
+<circle cx="1230" cy="867.0" r="3.5" fill="#7e22ce"/>
+<rect x="1032.0" y="884.0" width="190.0" height="26.0" rx="4" fill="#faf5ff" stroke="#7e22ce" stroke-width="1.0"/>
+<text x="1216.0" y="901.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">25</text>
+<text x="1196.0" y="901.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">33</text>
+<text x="1160.0" y="901.0" class="sans" font-size="9" fill="#7e22ce" text-anchor="end" font-weight="normal">空き(入力適/LED候補)</text>
+<circle cx="1230" cy="897.0" r="3.5" fill="#7e22ce"/>
+<rect x="1032.0" y="914.0" width="190.0" height="26.0" rx="4" fill="#faf5ff" stroke="#7e22ce" stroke-width="1.0"/>
+<text x="1216.0" y="931.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">24</text>
+<text x="1196.0" y="931.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">46</text>
+<text x="1160.0" y="931.0" class="sans" font-size="9" fill="#7e22ce" text-anchor="end" font-weight="normal">空き(安全出力候補/SD5)</text>
+<circle cx="1230" cy="927.0" r="3.5" fill="#7e22ce"/>
+<rect x="1032.0" y="944.0" width="190.0" height="26.0" rx="4" fill="#f1f5f9" stroke="#334155" stroke-width="1.0"/>
+<text x="1216.0" y="961.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">23</text>
+<text x="1196.0" y="961.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">GND</text>
+<text x="1160.0" y="961.0" class="sans" font-size="9" fill="#334155" text-anchor="end" font-weight="normal">GND</text>
+<circle cx="1230" cy="957.0" r="3.5" fill="#334155"/>
+<rect x="1032.0" y="974.0" width="190.0" height="26.0" rx="4" fill="#faf5ff" stroke="#7e22ce" stroke-width="1.0"/>
+<text x="1216.0" y="991.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">22</text>
+<text x="1196.0" y="991.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">47</text>
+<text x="1160.0" y="991.0" class="sans" font-size="9" fill="#7e22ce" text-anchor="end" font-weight="normal">空き(安全出力候補/SD6)</text>
+<circle cx="1230" cy="987.0" r="3.5" fill="#7e22ce"/>
+<rect x="1032.0" y="1004.0" width="190.0" height="26.0" rx="4" fill="#faf5ff" stroke="#7e22ce" stroke-width="1.0"/>
+<text x="1216.0" y="1021.0" class="mono" font-size="10" fill="#475569" text-anchor="end" font-weight="bold">21</text>
+<text x="1196.0" y="1021.0" class="mono" font-size="10" fill="#0f172a" text-anchor="end" font-weight="bold">48</text>
+<text x="1160.0" y="1021.0" class="sans" font-size="9" fill="#7e22ce" text-anchor="end" font-weight="normal">空き(安全出力候補/SD7)</text>
+<circle cx="1230" cy="1017.0" r="3.5" fill="#7e22ce"/>
+<rect x="894.0" y="438.0" width="132.0" height="178.0" rx="6" fill="#ffffff" stroke="#334155" stroke-width="1.4"/>
+<text x="960.0" y="460.0" class="sans" font-size="12" fill="#0f172a" text-anchor="middle" font-weight="bold">ESP32-P4</text>
+<text x="960.0" y="476.0" class="sans" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal">NRW32 (rev v1.3)</text>
+<text x="960.0" y="496.0" class="sans" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal">PSRAM 32MB HEX</text>
+<text x="960.0" y="511.0" class="sans" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal">Flash 32MB</text>
+<text x="960.0" y="536.0" class="sans" font-size="10" fill="#1d4ed8" text-anchor="middle" font-weight="bold">MIPI PHY 電源:</text>
+<text x="960.0" y="551.0" class="mono" font-size="10" fill="#1d4ed8" text-anchor="middle" font-weight="normal">LDO_VO3</text>
+<text x="960.0" y="566.0" class="sans" font-size="10" fill="#15803d" text-anchor="middle" font-weight="bold">2500mV [済]</text>
+<text x="960.0" y="590.0" class="sans" font-size="10" fill="#dc2626" text-anchor="middle" font-weight="bold">GPIO = 3.3V専用</text>
+<text x="960.0" y="605.0" class="sans" font-size="9" fill="#dc2626" text-anchor="middle" font-weight="normal">(5V 耐圧なし)</text>
+<rect x="894.0" y="628.0" width="132.0" height="198.0" rx="6" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="960.0" y="649.0" class="sans" font-size="11" fill="#1d4ed8" text-anchor="middle" font-weight="bold">TF1: microSD</text>
+<text x="960.0" y="665.0" class="sans" font-size="9" fill="#475569" text-anchor="middle" font-weight="normal">(基板裏面固定)</text>
+<text x="960.0" y="684.0" class="mono" font-size="9" fill="#0f172a" text-anchor="middle" font-weight="normal">D0-3: GPIO39-42</text>
+<text x="960.0" y="699.0" class="mono" font-size="9" fill="#0f172a" text-anchor="middle" font-weight="normal">CLK : GPIO43</text>
+<text x="960.0" y="714.0" class="mono" font-size="9" fill="#0f172a" text-anchor="middle" font-weight="normal">CMD : GPIO44</text>
+<text x="960.0" y="729.0" class="mono" font-size="9" fill="#0f172a" text-anchor="middle" font-weight="normal">PWR : GPIO45(Q1)</text>
+<text x="960.0" y="746.0" class="sans" font-size="9" fill="#15803d" text-anchor="middle" font-weight="normal">VO4 51kΩ PU [済]</text>
+<line x1="906.0" y1="760.0" x2="1014.0" y2="760.0" stroke="#cbd5e1" stroke-width="1.0"/>
+<text x="960.0" y="779.0" class="sans" font-size="10" fill="#1d4ed8" text-anchor="middle" font-weight="bold">Audio (未使用)</text>
+<text x="960.0" y="795.0" class="mono" font-size="9" fill="#475569" text-anchor="middle" font-weight="normal">ES8311: GPIO9-13</text>
+<text x="960.0" y="811.0" class="mono" font-size="9" fill="#475569" text-anchor="middle" font-weight="normal">PA_CTRL: GPIO53</text>
+<rect x="894.0" y="838.0" width="132.0" height="178.0" rx="6" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="960.0" y="860.0" class="sans" font-size="11" fill="#1d4ed8" text-anchor="middle" font-weight="bold">RMII Ethernet</text>
+<text x="960.0" y="876.0" class="sans" font-size="10" fill="#15803d" text-anchor="middle" font-weight="bold">IP101GRI [確認]</text>
+<text x="960.0" y="896.0" class="mono" font-size="9" fill="#0f172a" text-anchor="middle" font-weight="normal">CRS/RX0/1: 28-30</text>
+<text x="960.0" y="912.0" class="mono" font-size="9" fill="#0f172a" text-anchor="middle" font-weight="normal">MDC/MDIO : 31,52</text>
+<text x="960.0" y="928.0" class="mono" font-size="9" fill="#0f172a" text-anchor="middle" font-weight="normal">TX0/1/EN :34,35,49</text>
+<text x="960.0" y="944.0" class="mono" font-size="9" fill="#0f172a" text-anchor="middle" font-weight="normal">CLK/RST  : 50,51</text>
+<text x="960.0" y="968.0" class="sans" font-size="9" fill="#475569" text-anchor="middle" font-weight="normal">Boot Strap:</text>
+<text x="960.0" y="983.0" class="mono" font-size="9" fill="#475569" text-anchor="middle" font-weight="normal">GPIO34-38</text>
+<text x="960.0" y="1001.0" class="sans" font-size="9" fill="#475569" text-anchor="middle" font-weight="normal">(P1候補に含まれず)</text>
+<rect x="714.0" y="1056.0" width="102.0" height="36.0" rx="4" fill="#ffffff" stroke="#475569" stroke-width="1.2"/>
+<text x="765.0" y="1078.0" class="sans" font-size="10" fill="#0f172a" text-anchor="middle" font-weight="normal">RESETボタン</text>
+<rect x="1104.0" y="1056.0" width="102.0" height="36.0" rx="4" fill="#ffffff" stroke="#475569" stroke-width="1.2"/>
+<text x="1155.0" y="1078.0" class="sans" font-size="10" fill="#0f172a" text-anchor="middle" font-weight="normal">BOOT(GPIO35)</text>
+<rect x="840.0" y="1050.0" width="240.0" height="140.0" rx="8" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.8"/>
+<text x="960.0" y="1084.0" class="sans" font-size="13" fill="#1d4ed8" text-anchor="middle" font-weight="bold">J4: RJ45 100M Ethernet</text>
+<text x="960.0" y="1108.0" class="sans" font-size="11" fill="#0f172a" text-anchor="middle" font-weight="normal">IP101GRI (100BASE-TX)</text>
+<text x="960.0" y="1134.0" class="sans" font-size="11" fill="#15803d" text-anchor="middle" font-weight="bold">HTTPS / WSS / ISO Upload</text>
+<text x="960.0" y="1162.0" class="sans" font-size="11" fill="#475569" text-anchor="middle" font-weight="normal">▶ Web ビューア / 操作 PC へ</text>
+<rect x="24.0" y="188.0" width="510.0" height="344.0" rx="8" fill="#ffffff" stroke="#15803d" stroke-width="1.8"/>
+<path d="M 24 222 L 24 196 Q 24 188 32 188 L 526 188 Q 534 188 534 196 L 534 222 Z" fill="#15803d"/>
+<line x1="24" y1="222" x2="534" y2="222" stroke="#15803d" stroke-width="1.2"/>
+<text x="36.0" y="210.0" class="sans" font-size="14" fill="#ffffff" text-anchor="start" font-weight="bold">1. HDMI キャプチャ: Geekworm X630 V1.5</text>
+<text x="522.0" y="209.0" class="sans" font-size="11" fill="#f8fafc" text-anchor="end" font-weight="normal">TC358743XBG</text>
+<text x="38.0" y="242.0" class="sans" font-size="11" fill="#0f172a" text-anchor="start" font-weight="bold">入力: PC / 4ch KVM HDMI OUT ─▶ X630 HDMI IN (現在 PC直結で実機確認済)</text>
+<rect x="38.0" y="254.0" width="482.0" height="94.0" rx="6" fill="#f0fdf4" stroke="#15803d" stroke-width="1.3"/>
+<text x="48.0" y="274.0" class="sans" font-size="12" fill="#15803d" text-anchor="start" font-weight="bold">15-pin 1.0mm FFC ⇄ 22-pin 0.5mm 変換ケーブル [導通・動作済]</text>
+<text x="48.0" y="294.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">・1:3V3→J1#1  2:SDA→J1#2  3:SCL→J1#3 (I2C 0x0F 応答確認)</text>
+<text x="48.0" y="311.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">・7/8:CLK±→J1#14/15  10/11:D1±→J1#17/18  13/14:D0±→J1#20/21</text>
+<text x="48.0" y="329.0" class="sans" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">・6/9/12/15:GND→J1#13/16/19/22 (15pin番号はC779逆順推定+GND実測)</text>
+<rect x="38.0" y="360.0" width="482.0" height="158.0" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.3"/>
+<text x="48.0" y="380.0" class="sans" font-size="12" fill="#0f172a" text-anchor="start" font-weight="bold">10-pin SH1.0 コネクタ (左端 = 1番):</text>
+<text x="50.0" y="404.0" class="sans" font-size="11" fill="#15803d" text-anchor="start" font-weight="bold">#5  RESET (Active-Low, 約20kΩ内蔵PU)</text>
+<rect x="412.0" y="390.0" width="94.0" height="22.0" rx="4" fill="#f0fdf4" stroke="#15803d" stroke-width="1.2"/>
+<text x="459.0" y="405.0" class="sans" font-size="11" fill="#15803d" text-anchor="middle" font-weight="bold">[配線済 OD]</text>
+<text x="50.0" y="429.0" class="sans" font-size="11" fill="#15803d" text-anchor="start" font-weight="bold">#10 GND</text>
+<rect x="412.0" y="415.0" width="94.0" height="22.0" rx="4" fill="#f0fdf4" stroke="#15803d" stroke-width="1.2"/>
+<text x="459.0" y="430.0" class="sans" font-size="11" fill="#15803d" text-anchor="middle" font-weight="bold">[配線済]</text>
+<text x="50.0" y="454.0" class="sans" font-size="11" fill="#d97706" text-anchor="start" font-weight="bold">#4  INT (Active-High, High電圧未測)</text>
+<rect x="412.0" y="440.0" width="94.0" height="22.0" rx="4" fill="#fffbeb" stroke="#d97706" stroke-width="1.2"/>
+<text x="459.0" y="455.0" class="sans" font-size="11" fill="#d97706" text-anchor="middle" font-weight="bold">[予定・未配線]</text>
+<rect x="46.0" y="468.0" width="466.0" height="24.0" rx="4" fill="#fef2f2" stroke="#dc2626" stroke-width="1.2"/>
+<text x="54.0" y="484.0" class="sans" font-size="11" fill="#dc2626" text-anchor="start" font-weight="bold">#2  HDET (HDMI接続時 4.8V)  ✕ ESP32-P4 GPIO へ接続禁止</text>
+<text x="50.0" y="510.0" class="sans" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">#1 3V3出力 / #3 IR / #6-9 I2S音声 : 未使用 (NC)</text>
+<rect x="24.0" y="552.0" width="510.0" height="450.0" rx="8" fill="#ffffff" stroke="#d97706" stroke-width="1.8"/>
+<path d="M 24 586 L 24 560 Q 24 552 32 552 L 526 552 Q 534 552 534 560 L 534 586 Z" fill="#334155"/>
+<line x1="24" y1="586" x2="534" y2="586" stroke="#d97706" stroke-width="1.2"/>
+<text x="36.0" y="574.0" class="sans" font-size="14" fill="#ffffff" text-anchor="start" font-weight="bold">2. 共有 I2C バス + SSD1306 OLED + MCP23017</text>
+<text x="522.0" y="573.0" class="sans" font-size="11" fill="#f8fafc" text-anchor="end" font-weight="normal">GPIO7 / GPIO8</text>
+<text x="38.0" y="606.0" class="sans" font-size="11" fill="#0f172a" text-anchor="start" font-weight="bold">バス条件: 3.3V / ≤400kHz | ESP32-P4 基板内に 2.2kΩ PU あり (R44, R46)</text>
+<rect x="38.0" y="618.0" width="482.0" height="44.0" rx="5" fill="#f0fdf4" stroke="#15803d" stroke-width="1.2"/>
+<text x="48.0" y="637.0" class="sans" font-size="11" fill="#15803d" text-anchor="start" font-weight="bold">TC358743 (X630)  Addr: 0x0F</text>
+<text x="48.0" y="654.0" class="sans" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">J1 (2,3番ピン) 経由で共有I2Cへ接続済み [確認]</text>
+<rect x="38.0" y="672.0" width="482.0" height="72.0" rx="5" fill="#fffbeb" stroke="#d97706" stroke-width="1.3" stroke-dasharray="6,3"/>
+<text x="48.0" y="692.0" class="sans" font-size="11" fill="#d97706" text-anchor="start" font-weight="bold">SSD1306 128×64 OLED  Addr: 0x3C / 0x3D  [設計・未配線]</text>
+<text x="48.0" y="710.0" class="sans" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">配線: 3.3V (P1#36), GND (P1#18), SDA (GPIO7), SCL (GPIO8)</text>
+<text x="48.0" y="728.0" class="sans" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">確認待ち: モジュール内蔵PU有無・向き (HW_VERIFY G2, G3, G5)</text>
+<rect x="38.0" y="754.0" width="482.0" height="234.0" rx="5" fill="#fffbeb" stroke="#d97706" stroke-width="1.3" stroke-dasharray="6,3"/>
+<text x="48.0" y="774.0" class="sans" font-size="11" fill="#d97706" text-anchor="start" font-weight="bold">MCP23017 (スイッチサイエンス SSCI-016506) Addr: 0x20 [未配線]</text>
+<text x="48.0" y="792.0" class="sans" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">・電源: 3.3V専用  ・基板R1/R2(10kΩ PU): 未実装</text>
+<text x="48.0" y="809.0" class="sans" font-size="10" fill="#dc2626" text-anchor="start" font-weight="normal">・INTA/B 未引出→ポーリング読取  /RESET 内部RC(10k+0.1µF)固定 [G4]</text>
+<rect x="48.0" y="822.0" width="462.0" height="94.0" rx="4" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.0"/>
+<text x="58.0" y="841.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">Port A  GPA0..3 (出力)   ─▶ R ─▶ パネル LED 1..4  [G6要確認]</text>
+<text x="58.0" y="859.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">Port A  GPA4..7 (入力PU) ◀─ SW ─ パネル切替ボタン 1..4 (GND)</text>
+<text x="58.0" y="877.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">Port B  GPB0    (入力PU) ◀─ SW ─ OLED 表示切替ボタン (GND)</text>
+<text x="58.0" y="895.0" class="mono" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">Port B  GPB1..7 (入力PU)    予備 (未接続)</text>
+<rect x="48.0" y="926.0" width="462.0" height="50.0" rx="4" fill="#fef2f2" stroke="#dc2626" stroke-width="1.2"/>
+<text x="58.0" y="945.0" class="sans" font-size="10" fill="#dc2626" text-anchor="start" font-weight="bold">✕ 安全禁止: ATX (A0/A1/Ē) と KVM LED を MCP23017 に繋がない!</text>
+<text x="58.0" y="964.0" class="sans" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">理由: I2CエキスパンダはESPリセット後も出力ラッチを保持するためリレーが切れない</text>
+<rect x="24.0" y="1020.0" width="510.0" height="204.0" rx="8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.8"/>
+<path d="M 24 1054 L 24 1028 Q 24 1020 32 1020 L 526 1020 Q 534 1020 534 1028 L 534 1054 Z" fill="#1d4ed8"/>
+<line x1="24" y1="1054" x2="534" y2="1054" stroke="#1d4ed8" stroke-width="1.2"/>
+<text x="36.0" y="1042.0" class="sans" font-size="14" fill="#ffffff" text-anchor="start" font-weight="bold">3. 電源・書込・ログ供給 (H2 Type-C UART)</text>
+<text x="522.0" y="1041.0" class="sans" font-size="11" fill="#f8fafc" text-anchor="end" font-weight="normal">3.3V I/O制限</text>
+<text x="38.0" y="1076.0" class="sans" font-size="11" fill="#0f172a" text-anchor="start" font-weight="normal">・給電: 開発用PC / USBハブ ──▶ H2 Type-C (CH343P UART 115200bps)</text>
+<text x="38.0" y="1098.0" class="sans" font-size="11" fill="#0f172a" text-anchor="start" font-weight="normal">・生成レール: USB0_5V → U1(MP1658GTF-Z, 3A) → ESP_3V3 (計算 ≈3.27V)</text>
+<text x="38.0" y="1120.0" class="sans" font-size="11" fill="#0f172a" text-anchor="start" font-weight="normal">・LDO電源: VO3=2500mV(MIPI PHY有効済) / VO4=3300mV(SD IOプルアップ)</text>
+<text x="38.0" y="1144.0" class="sans" font-size="11" fill="#dc2626" text-anchor="start" font-weight="bold">・注意: H2 以外の外部 5V を VCC_5V / 3V3 に同時給電しないこと</text>
+<text x="38.0" y="1166.0" class="sans" font-size="11" fill="#dc2626" text-anchor="start" font-weight="normal">        ESP32-P4 全 GPIO は 3.3V 専用 (5V 入力は破損リスク)</text>
+<text x="38.0" y="1192.0" class="sans" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">・基板内消費済 GPIO: Ethernet RMII, microSD(39-45), ES8311(9-13,53), UART</text>
+<rect x="1386.0" y="188.0" width="510.0" height="318.0" rx="8" fill="#ffffff" stroke="#15803d" stroke-width="1.8"/>
+<path d="M 1386 222 L 1386 196 Q 1386 188 1394 188 L 1888 188 Q 1896 188 1896 196 L 1896 222 Z" fill="#15803d"/>
+<line x1="1386" y1="222" x2="1896" y2="222" stroke="#15803d" stroke-width="1.2"/>
+<text x="1398.0" y="210.0" class="sans" font-size="14" fill="#ffffff" text-anchor="start" font-weight="bold">4. ターゲットPC USB OTG HS (J3) + VBUS検出</text>
+<text x="1884.0" y="209.0" class="sans" font-size="11" fill="#f8fafc" text-anchor="end" font-weight="normal">HID + ISO CD</text>
+<rect x="1400.0" y="234.0" width="482.0" height="102.0" rx="6" fill="#f0fdf4" stroke="#15803d" stroke-width="1.3"/>
+<text x="1410.0" y="254.0" class="sans" font-size="11" fill="#15803d" text-anchor="start" font-weight="bold">USB データ 3本線 (J3 ↔ ターゲットPC / 4ch KVM) [HID実機確認済]</text>
+<text x="1410.0" y="274.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">・J3 #2 USBD_N (D-)  ──▶ PC USB D-</text>
+<text x="1410.0" y="292.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">・J3 #3 USBD_P (D+)  ──▶ PC USB D+  (直列抵抗・ESD素子なし [H4])</text>
+<text x="1410.0" y="310.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">・J3 #4 GND          ──▶ PC USB GND</text>
+<text x="1410.0" y="327.0" class="mono" font-size="10" fill="#dc2626" text-anchor="start" font-weight="bold">・J3 #1 VCC_5V       ✕   PC VBUS へ接続禁止 (5V衝突 [H3])</text>
+<rect x="1400.0" y="348.0" width="482.0" height="146.0" rx="6" fill="#fffbeb" stroke="#d97706" stroke-width="1.3" stroke-dasharray="6,3"/>
+<text x="1410.0" y="368.0" class="sans" font-size="11" fill="#d97706" text-anchor="start" font-weight="bold">VBUS 検出線 (J3 #1 とは別線 / USB_VBUS_DESIGN.md) [設計・未配線]</text>
+<text x="1410.0" y="388.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">PC VBUS (4.75–5.50V) ─[R1:120kΩ ±1%]─┬─▶ P1 #4 GPIO18 (推奨)</text>
+<text x="1410.0" y="405.0" class="mono" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">  (推奨0.5%: 130kΩ / 162kΩ)          └─[R2:150kΩ ±1%]─ GND</text>
+<text x="1410.0" y="426.0" class="sans" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">・GPIO18 3.3V/GND ジャンパ試験は実機済 (外部PC分圧回路は未配線)</text>
+<text x="1410.0" y="444.0" class="sans" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">・PC OFF (VBUS消失) から ≤10秒以内にソフト切断 (D+プルアップ解除)</text>
+<text x="1410.0" y="463.0" class="sans" font-size="10" fill="#dc2626" text-anchor="start" font-weight="bold">・起動手順: 必ず ESP32-P4 電源 ON 後にターゲット PC 接続 (逆流防止)</text>
+<text x="1410.0" y="481.0" class="sans" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">・J3 コネクタ実物形状/ピッチ (H7) は製作時に確認</text>
+<rect x="1386.0" y="524.0" width="510.0" height="478.0" rx="8" fill="#ffffff" stroke="#7e22ce" stroke-width="1.8"/>
+<path d="M 1386 558 L 1386 532 Q 1386 524 1394 524 L 1888 524 Q 1896 524 1896 532 L 1896 558 Z" fill="#7e22ce"/>
+<line x1="1386" y1="558" x2="1896" y2="558" stroke="#7e22ce" stroke-width="1.2"/>
+<text x="1398.0" y="546.0" class="sans" font-size="14" fill="#ffffff" text-anchor="start" font-weight="bold">5. 4ch ATX &amp; KVM 切替回路 (直接 GPIO 必須)</text>
+<text x="1884.0" y="545.0" class="sans" font-size="11" fill="#f8fafc" text-anchor="end" font-weight="normal">GPIO番号 TODO(hw-verify)</text>
+<rect x="1400.0" y="568.0" width="482.0" height="44.0" rx="5" fill="#fef2f2" stroke="#dc2626" stroke-width="1.2"/>
+<text x="1410.0" y="586.0" class="sans" font-size="11" fill="#dc2626" text-anchor="start" font-weight="bold">安全要件: 必ず直接 GPIO 接続 (MCP23017 不可) + 外付PU/PD必須</text>
+<text x="1410.0" y="603.0" class="sans" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">A0/A1=100kΩ→GND (起動時CH1) / Ē系=10kΩ→3.3V (リセット時リレー全OFF)</text>
+<rect x="1400.0" y="622.0" width="482.0" height="174.0" rx="6" fill="#faf5ff" stroke="#7e22ce" stroke-width="1.3" stroke-dasharray="5,3"/>
+<text x="1410.0" y="642.0" class="sans" font-size="11" fill="#7e22ce" text-anchor="start" font-weight="bold">出力 5 本 (KVM_BOARD_GPIO_*) → 74HC139 ×2 + フォトリレー×12 [未確定]</text>
+<text x="1410.0" y="662.0" class="sans" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">・A0, A1 (各+100kΩ→GND) ──▶ 74HC139 #1 &amp; #2 A0/A1 共有</text>
+<text x="1410.0" y="680.0" class="sans" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">・Ē_PWR (+10kΩ→3V3)    ──▶ 74HC139 #1(1/2) → フォトリレー×4 → PWR</text>
+<text x="1410.0" y="698.0" class="sans" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">・Ē_RST (+10kΩ→3V3)    ──▶ 74HC139 #1(2/2) → フォトリレー×4 → RST</text>
+<text x="1410.0" y="716.0" class="sans" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">・Ē_KVM (+10kΩ→3V3)    ──▶ 74HC139 #2(1/2) → フォトリレー×4 → KVM BTN</text>
+<text x="1410.0" y="735.0" class="sans" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">※ 74HC139 #2 (2/2) 2Ḡ は 3.3V 直結で常に無効化</text>
+<text x="1410.0" y="753.0" class="sans" font-size="10" fill="#7e22ce" text-anchor="start" font-weight="normal">※ 使用可出力候補: GPIO 6,14,15,19,20,21,22,23,46,47,48,54 から5本選定</text>
+<text x="1410.0" y="771.0" class="sans" font-size="10" fill="#dc2626" text-anchor="start" font-weight="normal">※ GPIO 2..5(JTAG), 32, 33(リセット時入力有効) は出力禁止 (kvm_board規約)</text>
+<text x="1410.0" y="788.0" class="sans" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">※ 要確認: フォトリレー If/Vf と 74HC139 シンク能力 (HW_VERIFY C1, C3)</text>
+<rect x="1400.0" y="806.0" width="482.0" height="134.0" rx="6" fill="#faf5ff" stroke="#7e22ce" stroke-width="1.3" stroke-dasharray="5,3"/>
+<text x="1410.0" y="826.0" class="sans" font-size="11" fill="#7e22ce" text-anchor="start" font-weight="bold">入力 4 本 (KVM_BOARD_GPIO_LED_CH1..4) ← KVM LED 絶縁入力 [未確定]</text>
+<text x="1410.0" y="846.0" class="sans" font-size="10" fill="#0f172a" text-anchor="start" font-weight="normal">・KVM 本体 CH1–4 LED ─▶ フォトカプラ×4 (絶縁) ─▶ 外付PU/PD ─▶ GPIO×4</text>
+<text x="1410.0" y="864.0" class="sans" font-size="10" fill="#dc2626" text-anchor="start" font-weight="normal">・内蔵プルアップ/ダウンは無効 (kvm_board実装)。外付け抵抗を必ず実装すること</text>
+<text x="1410.0" y="882.0" class="sans" font-size="10" fill="#7e22ce" text-anchor="start" font-weight="normal">・入力候補: GPIO 32, 33 (入力専用活用推奨) + 余剰安全GPIO から4本選定</text>
+<text x="1410.0" y="900.0" class="sans" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">・状態の真実原則: ESP はこの4入力で現在チャンネルを確定 (Kconfig極性設定)</text>
+<text x="1410.0" y="918.0" class="sans" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">・要測定: KVM ボタン/LED 電圧・極性・共通線の有無 (HW_VERIFY A1..A8, C2)</text>
+<text x="1400.0" y="962.0" class="sans" font-size="10" fill="#0f172a" text-anchor="start" font-weight="bold">不変条件: 切替中(KVM押下〜LED確定〜HDMI再同期)は Ē_PWR / Ē_RST を常に High</text>
+<text x="1400.0" y="982.0" class="sans" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">ATX パルス時は直前・直後に LED 再確認、不一致ならタイマ上限制御で即中断</text>
+<rect x="1386.0" y="1020.0" width="510.0" height="204.0" rx="8" fill="#ffffff" stroke="#0f766e" stroke-width="1.8"/>
+<path d="M 1386 1054 L 1386 1028 Q 1386 1020 1394 1020 L 1888 1020 Q 1896 1020 1896 1028 L 1896 1054 Z" fill="#0f766e"/>
+<line x1="1386" y1="1054" x2="1896" y2="1054" stroke="#0f766e" stroke-width="1.2"/>
+<text x="1398.0" y="1042.0" class="sans" font-size="14" fill="#ffffff" text-anchor="start" font-weight="bold">6. P1 ヘッダ GPIO 収支サマリ (公開 23本枠)</text>
+<text x="1884.0" y="1041.0" class="sans" font-size="11" fill="#f8fafc" text-anchor="end" font-weight="normal">余裕あり</text>
+<text x="1400.0" y="1076.0" class="sans" font-size="11" fill="#0f172a" text-anchor="start" font-weight="normal">・P1 候補 GPIO 23本 − JTAG(2-5: 4本回避) − USB_FS(26,27: 2本予約) = 17本枠</text>
+<text x="1400.0" y="1099.0" class="sans" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">・内訳: 出力安全 15本 (6,14-23,46-48,54) + 入力適 2本 (32,33) = 計 17本</text>
+<text x="1400.0" y="1122.0" class="sans" font-size="10" fill="#475569" text-anchor="start" font-weight="normal">        (うち GPIO 16,17 は X630、GPIO 18 は VBUS 検出に割り当て・残り 14本)</text>
+<text x="1400.0" y="1148.0" class="sans" font-size="11" fill="#7e22ce" text-anchor="start" font-weight="bold">・割当合計: X630(2本) + VBUS(1本) + ATX/KVM出力(5本) + LED入力(4本) = 12本</text>
+<text x="1400.0" y="1172.0" class="sans" font-size="11" fill="#15803d" text-anchor="start" font-weight="bold">・残余: GPIO 5本が空き (JTAG GPIO2-5 に触れずに余裕あり)</text>
+<text x="1400.0" y="1196.0" class="sans" font-size="10" fill="#15803d" text-anchor="start" font-weight="normal">※ SSD1306・MCP23017 は GPIO7/8 (共有I2C) を使うため追加 GPIO 消費ゼロ</text>
+<polyline points="534.0,290.0 650.0,290.0 650.0,374.0 714.0,374.0" fill="none" stroke="#15803d" stroke-width="4.0" stroke-linejoin="round" marker-end="url(#arr-ok)"/>
+<polyline points="534.0,400.0 664.0,400.0 664.0,597.0 690.0,597.0" fill="none" stroke="#15803d" stroke-width="2.4" stroke-linejoin="round" marker-end="url(#arr-ok)"/>
+<polyline points="534.0,425.0 636.0,425.0 636.0,657.0 690.0,657.0" fill="none" stroke="#15803d" stroke-width="2.0" stroke-linejoin="round"/>
+<polyline points="534.0,450.0 610.0,450.0 610.0,567.0 690.0,567.0" fill="none" stroke="#d97706" stroke-width="2.2" stroke-linejoin="round" stroke-dasharray="6,4" marker-end="url(#arr-plan)"/>
+<polyline points="690.0,897.0 576.0,897.0 576.0,680.0 534.0,680.0" fill="none" stroke="#15803d" stroke-width="2.4" stroke-linejoin="round" marker-start="url(#arr-ok)" marker-end="url(#arr-ok)"/>
+<polyline points="690.0,927.0 594.0,927.0 594.0,704.0 534.0,704.0" fill="none" stroke="#15803d" stroke-width="2.4" stroke-linejoin="round" marker-start="url(#arr-ok)" marker-end="url(#arr-ok)"/>
+<polyline points="690.0,957.0 612.0,957.0 612.0,728.0 534.0,728.0" fill="none" stroke="#334155" stroke-width="1.8" stroke-linejoin="round"/>
+<line x1="576.0" y1="795.0" x2="534.0" y2="795.0" stroke="#d97706" stroke-width="2.0" stroke-dasharray="5,4"/>
+<polyline points="1386.0,390.0 1325.0,390.0 1325.0,172.0 552.0,172.0 552.0,537.0 690.0,537.0" fill="none" stroke="#d97706" stroke-width="2.2" stroke-linejoin="round" stroke-dasharray="6,4" marker-end="url(#arr-plan)"/>
+<polyline points="1060.0,312.0 1296.0,312.0 1296.0,286.0 1386.0,286.0" fill="none" stroke="#15803d" stroke-width="3.2" stroke-linejoin="round" marker-end="url(#arr-ok)"/>
+<line x1="1230.0" y1="597.0" x2="1264.0" y2="597.0" stroke="#7e22ce" stroke-width="1.8" stroke-dasharray="4,3"/>
+<line x1="1230.0" y1="627.0" x2="1264.0" y2="627.0" stroke="#7e22ce" stroke-width="1.8" stroke-dasharray="4,3"/>
+<line x1="1230.0" y1="687.0" x2="1264.0" y2="687.0" stroke="#7e22ce" stroke-width="1.8" stroke-dasharray="4,3"/>
+<line x1="1230.0" y1="717.0" x2="1264.0" y2="717.0" stroke="#7e22ce" stroke-width="1.8" stroke-dasharray="4,3"/>
+<line x1="1264.0" y1="597.0" x2="1264.0" y2="717.0" stroke="#7e22ce" stroke-width="2.2" stroke-dasharray="4,3"/>
+<polyline points="1264.0,657.0 1310.0,657.0 1310.0,680.0 1386.0,680.0" fill="none" stroke="#7e22ce" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="5,3" marker-end="url(#arr-tbd)"/>
+<line x1="1230.0" y1="867.0" x2="1264.0" y2="867.0" stroke="#7e22ce" stroke-width="1.8" stroke-dasharray="4,3"/>
+<line x1="1230.0" y1="897.0" x2="1264.0" y2="897.0" stroke="#7e22ce" stroke-width="1.8" stroke-dasharray="4,3"/>
+<line x1="1230.0" y1="927.0" x2="1264.0" y2="927.0" stroke="#7e22ce" stroke-width="1.8" stroke-dasharray="4,3"/>
+<line x1="1230.0" y1="987.0" x2="1264.0" y2="987.0" stroke="#7e22ce" stroke-width="1.8" stroke-dasharray="4,3"/>
+<line x1="1230.0" y1="1017.0" x2="1264.0" y2="1017.0" stroke="#7e22ce" stroke-width="1.8" stroke-dasharray="4,3"/>
+<line x1="1264.0" y1="867.0" x2="1264.0" y2="1017.0" stroke="#7e22ce" stroke-width="2.2" stroke-dasharray="4,3"/>
+<polyline points="1386.0,855.0 1310.0,855.0 1310.0,942.0 1264.0,942.0" fill="none" stroke="#7e22ce" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="5,3" marker-end="url(#arr-tbd)"/>
+<line x1="1230.0" y1="567.0" x2="1241.0" y2="567.0" stroke="#b91c1c" stroke-width="1.8"/>
+<rect x="565.0" y="238.0" width="118.0" height="20.0" rx="4" fill="#f0fdf4" stroke="#15803d" stroke-width="1.1"/>
+<text x="624.0" y="252.0" class="sans" font-size="10" fill="#15803d" text-anchor="middle" font-weight="bold">15↔22pin FFC [済]</text>
+<rect x="563.0" y="470.0" width="118.0" height="20.0" rx="4" fill="#f0fdf4" stroke="#15803d" stroke-width="1.1"/>
+<text x="622.0" y="484.0" class="sans" font-size="10" fill="#15803d" text-anchor="middle" font-weight="bold">RESET→GPIO16 [済]</text>
+<rect x="563.0" y="496.0" width="118.0" height="20.0" rx="4" fill="#fffbeb" stroke="#d97706" stroke-width="1.1"/>
+<text x="622.0" y="510.0" class="sans" font-size="10" fill="#d97706" text-anchor="middle" font-weight="bold">INT→GPIO17 [予定]</text>
+<rect x="552.0" y="754.0" width="120.0" height="20.0" rx="4" fill="#f0fdf4" stroke="#15803d" stroke-width="1.1"/>
+<text x="612.0" y="768.0" class="sans" font-size="10" fill="#15803d" text-anchor="middle" font-weight="bold">I2C (SCL/SDA/GND)</text>
+<rect x="787.0" y="162.0" width="346.0" height="20.0" rx="4" fill="#fffbeb" stroke="#d97706" stroke-width="1.1"/>
+<text x="960.0" y="176.0" class="sans" font-size="10" fill="#d97706" text-anchor="middle" font-weight="bold">VBUS分圧線 (ターゲットPC別線) → P1 #4 GPIO18 [設計・未配線]</text>
+<rect x="1249.0" y="248.0" width="114.0" height="20.0" rx="4" fill="#f0fdf4" stroke="#15803d" stroke-width="1.1"/>
+<text x="1306.0" y="262.0" class="sans" font-size="10" fill="#15803d" text-anchor="middle" font-weight="bold">USB 3本線 [済]</text>
+<rect x="1237.0" y="624.0" width="142.0" height="20.0" rx="4" fill="#faf5ff" stroke="#7e22ce" stroke-width="1.1"/>
+<text x="1308.0" y="638.0" class="sans" font-size="10" fill="#7e22ce" text-anchor="middle" font-weight="bold">出力5本(候補群) [TODO]</text>
+<rect x="1234.0" y="906.0" width="148.0" height="20.0" rx="4" fill="#faf5ff" stroke="#7e22ce" stroke-width="1.1"/>
+<text x="1308.0" y="920.0" class="sans" font-size="10" fill="#7e22ce" text-anchor="middle" font-weight="bold">LED入力4本(候補群) [TODO]</text>
+<rect x="1238.0" y="557.0" width="140.0" height="20.0" rx="4" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.1"/>
+<text x="1308.0" y="571.0" class="sans" font-size="10" fill="#b91c1c" text-anchor="middle" font-weight="bold">3.3V外部供給用 (P1#36)</text>
+<rect x="24.0" y="1242.0" width="1872.0" height="76.0" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.2"/>
+<text x="42.0" y="1267.0" class="sans" font-size="12" fill="#0f172a" text-anchor="start" font-weight="bold">【図面の前提・注意事項】</text>
+<text x="42.0" y="1288.0" class="sans" font-size="11" fill="#475569" text-anchor="start" font-weight="normal">1. ピン配列の配置は実機回路図 Page 2 (上: H2 USB-C / 下: J4 RJ45) の左右列に一致（左上から 1..20、右上から 40..21）。作業時は基板シルクとピン番号を必ず照合すること。</text>
+<text x="42.0" y="1307.0" class="sans" font-size="11" fill="#475569" text-anchor="start" font-weight="normal">2. 紫色 (TODO) で示した ATX/KVM 出力 5本・KVM LED 入力 4本の候補線は接続イメージであり未確定。確定後に menuconfig (KVM_BOARD_GPIO_*) へ設定する。</text>
+</svg>
