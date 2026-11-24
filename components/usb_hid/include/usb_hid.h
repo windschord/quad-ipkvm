@@ -32,6 +32,15 @@ typedef void (*usb_hid_mounted_cb_t)(void);
 esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted);
 
 /**
+ * @brief Initialize TinyUSB composite HID (and optional MSC) device on ESP32-P4 OTG_HS.
+ *
+ * When @p msc_ready is true and CONFIG_USB_MSC_ENABLE is enabled, exposes the
+ * 107-byte HID+MSC descriptors; otherwise falls back to the 84-byte HID-only
+ * descriptors so HID remains operational even if MSC initialization fails.
+ */
+esp_err_t usb_hid_init_ex(usb_hid_mounted_cb_t on_mounted, bool msc_ready);
+
+/**
  * @brief Return the non-blocking @ref hid_sink_t wired to TinyUSB HID interfaces.
  *
  * @return Pointer to static hid_sink_t after successful usb_hid_init(), else NULL.

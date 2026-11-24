@@ -118,6 +118,9 @@ static const char *s_string_desc[] = {
     "Quad-IPKVM Boot Keyboard",
     "Quad-IPKVM Absolute Pointer",
     "Quad-IPKVM Relative Mouse",
+#if defined(CONFIG_USB_MSC_ENABLE) && CONFIG_USB_MSC_ENABLE
+    "Quad-IPKVM Virtual CD-ROM",
+#endif
 };
 
 #ifndef CONFIG_USB_DEVICE_START_DISCONNECTED
@@ -468,6 +471,10 @@ static void usb_vbus_task(void *pvParameters) {
 #endif /* CONFIG_USB_DEVICE_VBUS_SENSE_GPIO >= 0 */
 
 esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
+    return usb_hid_init_ex(on_mounted, false);
+}
+
+esp_err_t usb_hid_init_ex(usb_hid_mounted_cb_t on_mounted, bool msc_ready) {
     if (is_initialized() || is_force_uninstalled() || usb_hid_gate_is_closed(&s_hid_gate)) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -504,10 +511,22 @@ esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
 
     size_t fs_len = 0;
     size_t hs_len = 0;
-    const uint8_t *fs_cfg = usb_hid_get_fs_config_desc(&fs_len);
-    const uint8_t *hs_cfg = usb_hid_get_hs_config_desc(&hs_len);
-    ESP_RETURN_ON_FALSE(fs_cfg && hs_cfg && fs_len == USB_HID_CONFIG_DESC_LEN &&
-                        hs_len == USB_HID_CONFIG_DESC_LEN,
+    bool use_msc_desc = false;
+#if defined(CONFIG_USB_MSC_ENABLE) && CONFIG_USB_MSC_ENABLE
+    if (msc_ready) {
+        use_msc_desc = true;
+    } else {
+        ESP_LOGW(TAG, "USB MSC disabled or init failed; falling back to 84-byte HID-only descriptors");
+    }
+#else
+    (void)msc_ready;
+#endif
+    const size_t expected_cfg_len =
+        use_msc_desc ? USB_HID_MSC_CONFIG_DESC_LEN : USB_HID_CONFIG_DESC_LEN;
+    const uint8_t *fs_cfg = usb_hid_select_fs_config_desc(use_msc_desc, &fs_len);
+    const uint8_t *hs_cfg = usb_hid_select_hs_config_desc(use_msc_desc, &hs_len);
+    ESP_RETURN_ON_FALSE(fs_cfg && hs_cfg && fs_len == expected_cfg_len &&
+                        hs_len == expected_cfg_len,
                         ESP_ERR_INVALID_SIZE, TAG, "Invalid config descriptor");
 
     tinyusb_config_t tusb_cfg = TINYUSB_CONFIG_HIGH_SPEED(usb_hid_event_cb, NULL);
@@ -655,7 +674,12 @@ esp_err_t usb_hid_set_connected(bool connected) {
 #else /* !CONFIG_USB_DEVICE_ENABLE */
 
 esp_err_t usb_hid_init(usb_hid_mounted_cb_t on_mounted) {
+    return usb_hid_init_ex(on_mounted, false);
+}
+
+esp_err_t usb_hid_init_ex(usb_hid_mounted_cb_t on_mounted, bool msc_ready) {
     (void)on_mounted;
+    (void)msc_ready;
     return ESP_ERR_NOT_SUPPORTED;
 }
 
