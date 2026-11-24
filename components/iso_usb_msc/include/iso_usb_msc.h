@@ -17,10 +17,22 @@
 #include "iso_extent.h"
 #include "iso_media.h"
 #include "iso_seams.h"
+#include "iso_usb_msc_glue.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+typedef struct {
+    const iso_blockdev_t *bdev;
+    /* Optional shared iso_media + iso_state_mutex (e.g. iso_worker) so HTTP API and MSC share
+     * one authoritative owner. Both state_lock and state_unlock are required when non-NULL. */
+    iso_media_t *shared_media;
+    void *state_lock_ctx;
+    void (*state_lock)(void *ctx);
+    void (*state_unlock)(void *ctx);
+    iso_usb_msc_table_resolver_t resolver;
+} iso_usb_msc_config_t;
 
 /**
  * @brief Initialize MSC BOT/SCSI/media state, DMA ping-pong buffers, and iso_msc_task.
@@ -29,8 +41,14 @@ extern "C" {
  */
 esp_err_t iso_usb_msc_init(const iso_blockdev_t *bdev);
 
+/** @brief Extended init allowing shared iso_media, external state lock, and table resolver. */
+esp_err_t iso_usb_msc_init_ex(const iso_usb_msc_config_t *cfg);
+
 /** @brief Update or clear the raw block device handle used for extent reads. */
 void iso_usb_msc_set_blockdev(const iso_blockdev_t *bdev);
+
+/** @brief Notify MSC media state of USB detach / soft-disconnect so prevent_removal clears. */
+void iso_usb_msc_notify_disconnect(void);
 
 /** @brief Mount an ISO extent table for @p media_id on the virtual CD-ROM drive. */
 esp_err_t iso_usb_msc_mount_image(uint32_t media_id, iso_extent_table_t *table, bool force);

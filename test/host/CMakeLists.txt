@@ -132,7 +132,9 @@ foreach(test_source ${TEST_SOURCES})
         target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/../../components/frame_hub/include)
     endif()
 
-    if (test_source MATCHES "/web_server/")
+    if (test_source MATCHES "test_web_iso_put_logic.c")
+        target_link_libraries(${test_name} PRIVATE web_iso_put_logic)
+    elseif (test_source MATCHES "/web_server/")
         target_link_libraries(${test_name} PRIVATE web_status_map)
     endif()
 

@@ -5,19 +5,56 @@
 #include <inttypes.h>
 #include <string.h>
 #include "esp_log.h"
+#include "web_iso_put_logic.h"
 
 /* /api/v1/iso* の HTTP の結線。docs/WEB_API.md 8 章。ここは薄く保ち、判定と対応表は iso_api(ホストでテスト済み)に任せる。 */
 
 static const char *TAG = "web_iso";
 
 static const iso_api_env_t *s_env;              /* NULL = 起動していない */
-static const web_iso_put_hooks_t *s_put_hooks;  /* NULL = PUT の受信ループが未結線(TODO(A-15)) */
+static const web_iso_put_hooks_t *s_put_hooks;  /* NULL = PUT の受信ループが未結線 */
+static char s_prog_id[ISO_ID_LEN + 1];
+static int s_prog_bucket = -1;
 
 /* GET の応答の組み立て用。esp_http_server のハンドラーは 1 つのタスクで直列なので、静的でよい(スタックは 10 KiB しかない) */
 static char s_rsp_body[ISO_API_RESPONSE_MAX];
 
 void web_iso_set_env(const iso_api_env_t *env) { s_env = env; }
 void web_iso_set_put_hooks(const web_iso_put_hooks_t *hooks) { s_put_hooks = hooks; }
+
+static void log_put_progress(const iso_api_put_t *put) {
+    if (!put || !s_env || !s_env->state_lock || !s_env->state_unlock || !s_env->snapshot) {
+        return;
+    }
+    if (strcmp(s_prog_id, put->id) != 0) {
+        memcpy(s_prog_id, put->id, sizeof(s_prog_id));
+        s_prog_bucket = -1;
+    }
+
+    uint64_t received = 0;
+    uint64_t total = 0;
+    bool found = false;
+    s_env->state_lock(s_env->ctx);
+    const iso_view_t *v = &s_env->snapshot->view;
+    const size_t n = (v->count > ISO_MAX_IMAGES) ? ISO_MAX_IMAGES : v->count;
+    for (size_t i = 0; i < n; i++) {
+        if (v->images[i].state != ISO_STATE_NONE && strcmp(v->images[i].id, put->id) == 0) {
+            received = v->images[i].received;
+            total = v->images[i].size_bytes;
+            found = true;
+            break;
+        }
+    }
+    s_env->state_unlock(s_env->ctx);
+
+    if (found && total > 0) {
+        const int pct = web_iso_progress_step_pct(received, total, &s_prog_bucket);
+        if (pct >= 0) {
+            ESP_LOGI(TAG, "iso put id=%s progress=%d%% (%" PRIu64 "/%" PRIu64 " B)",
+                     put->id, pct, received, total);
+        }
+    }
+}
 
 static const char *status_line(int status) {
     switch (status) {
@@ -104,9 +141,10 @@ static esp_err_t iso_handler(httpd_req_t *req) {
     const iso_api_method_t method = map_method(req->method);
     const bool mutating = (method == ISO_API_M_POST || method == ISO_API_M_PUT || method == ISO_API_M_DELETE);
     const bool is_put = (method == ISO_API_M_PUT);
+    const bool close_on_deny = is_put || (req->content_len > ISO_API_BODY_MAX);
 
-    /* 段 1・2: 認証と Origin(http_guard)。PUT の拒否は、本体を読まずに閉じる */
-    if (!web_server_iso_guard(req, mutating, is_put)) return is_put ? ESP_FAIL : ESP_OK; /* PUT の拒否は、本体を読まずに閉じる */
+    /* 段 1・2: 認証と Origin(http_guard)。PUT と過大な未読ボディの拒否は、本体を読まずに閉じる */
+    if (!web_server_iso_guard(req, mutating, close_on_deny)) return close_on_deny ? ESP_FAIL : ESP_OK;
 
     /* ヘッダーの収集 */
     char ctype[64];
@@ -153,11 +191,15 @@ static esp_err_t iso_handler(httpd_req_t *req) {
         iso_api_response_init(&rsp, s_rsp_body, sizeof(s_rsp_body));
         iso_api_put_commit(s_env, &put, chunk, put.len, &rsp);
         if (s_put_hooks->release_chunk) s_put_hooks->release_chunk(s_put_hooks->ctx, chunk);
+        if (rsp.status == 200) log_put_progress(&put);
         return send_rsp(req, &rsp);
     }
 
     /* 段 3〜5(本体を読む前) */
-    if (!iso_api_headers_check(&rq, &rsp)) return send_rsp(req, &rsp);
+    if (!iso_api_headers_check(&rq, &rsp)) {
+        if (req->content_len > ISO_API_BODY_MAX) rsp.close_connection = true;
+        return send_rsp(req, &rsp);
+    }
 
     /* JSON のエンドポイントの本体(512 バイトまで。段 5 が保証した) */
     char body[ISO_API_BODY_MAX];
@@ -168,9 +210,13 @@ static esp_err_t iso_handler(httpd_req_t *req) {
         rq.body = body;
         rq.body_len = req->content_len;
     }
-    /* TODO(A-15): 本体のある DELETE / GET は、読み捨てる(httpd が、ハンドラーの後で残りを読むか、確かめる) */
 
     iso_api_handle(s_env, &rq, &rsp);
+    /* 小さな GET / DELETE の未読本体は、ESP_OK の返却後に ESP-IDF v6.0.1 の httpd_req_delete() が読み捨てる。
+     * ISO_API_BODY_MAX を超える未読本体は、単一スレッドの httpd を止めないよう接続を閉じる。 */
+    if (!iso_api_ep_has_body(rt.ep) && req->content_len > ISO_API_BODY_MAX) {
+        rsp.close_connection = true;
+    }
     return send_rsp(req, &rsp);
 }
 

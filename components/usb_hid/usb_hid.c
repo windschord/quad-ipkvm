@@ -24,6 +24,15 @@
 #include "tinyusb_default_config.h"
 #include "tusb.h"
 #include "usb_vbus_ctrl.h"
+#if defined(CONFIG_USB_MSC_ENABLE) && CONFIG_USB_MSC_ENABLE
+#include "iso_usb_msc.h"
+#endif
+
+static void notify_msc_disconnect(void) {
+#if defined(CONFIG_USB_MSC_ENABLE) && CONFIG_USB_MSC_ENABLE
+    iso_usb_msc_notify_disconnect();
+#endif
+}
 
 #if CFG_TUD_HID < USB_HID_ITF_COUNT
 #error "CONFIG_TINYUSB_HID_COUNT must be >= 3 when CONFIG_USB_DEVICE_ENABLE=y"
@@ -204,6 +213,7 @@ static void usb_hid_event_cb(tinyusb_event_t *event, void *arg) {
             break;
         case TINYUSB_EVENT_DETACHED:
             ESP_LOGI(TAG, "USB detached (rhport=%u)", (unsigned)event->rhport);
+            notify_msc_disconnect();
             break;
 #ifdef CONFIG_TINYUSB_SUSPEND_CALLBACK
         case TINYUSB_EVENT_SUSPENDED:
@@ -363,6 +373,7 @@ static bool vbus_apply_action(usb_vbus_ctrl_action_t action) {
                          call_ok ? 1 : 0, (unsigned)USB_DWC_HS.dctl_reg.sftdiscon);
                 return false;
             }
+            notify_msc_disconnect();
             return true;
         }
         case USB_VBUS_CTRL_ACTION_FORCE_OFF: {
@@ -386,6 +397,7 @@ static bool vbus_apply_action(usb_vbus_ctrl_action_t action) {
                 log_dwc_hs_regs("vbus-force-off-stage1");
                 if (stage1_ok) {
                     ESP_LOGE(TAG, "VBUS FORCE_OFF stage-1 succeeded via direct DCTL.sftdiscon=1");
+                    notify_msc_disconnect();
                     return true;
                 }
                 ESP_LOGE(TAG,
@@ -667,6 +679,9 @@ esp_err_t usb_hid_set_connected(bool connected) {
     usb_hid_gate_leave(&s_hid_gate);
     log_dwc_hs_regs(connected ? "connect" : "disconnect");
     xSemaphoreGive(s_usb_ctrl_mux);
+    if (ok && !connected) {
+        notify_msc_disconnect();
+    }
     return ok ? ESP_OK : ESP_FAIL;
 #endif
 }

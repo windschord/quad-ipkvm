@@ -8,6 +8,6 @@ else()
         SRCS "usb_hid_logic.c" "usb_hid.c"
         INCLUDE_DIRS "include"
         REQUIRES hid_logic
-        PRIV_REQUIRES esp_tinyusb esp_hw_support esp_driver_gpio esp_timer usb_vbus_ctrl soc log
+        PRIV_REQUIRES esp_tinyusb esp_hw_support esp_driver_gpio esp_timer usb_vbus_ctrl iso_usb_msc soc log
     )
 endif()

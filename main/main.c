@@ -63,6 +63,9 @@
 #include <stdlib.h>
 #if CONFIG_WEB_SERVER_ENABLE
 #include "web_server.h"
+#if defined(CONFIG_ISO_ENABLE) && CONFIG_ISO_ENABLE
+#include "web_iso_service.h"
+#endif
 #endif
 #if CONFIG_USB_DEVICE_ENABLE
 #include "usb_hid.h"
@@ -83,6 +86,29 @@
 #include "freertos/semphr.h"
 
 static const char *TAG = "app_main";
+
+#if CONFIG_USB_DEVICE_ENABLE && defined(CONFIG_USB_MSC_ENABLE) && CONFIG_USB_MSC_ENABLE && \
+    defined(CONFIG_SD_WORKER_ENABLE) && CONFIG_SD_WORKER_ENABLE
+static void msc_worker_state_lock(void *ctx) {
+    (void)ctx;
+    iso_worker_state_lock();
+}
+
+static void msc_worker_state_unlock(void *ctx) {
+    (void)ctx;
+    iso_worker_state_unlock();
+}
+
+static int msc_worker_lookup_size_locked(void *ctx, uint32_t media_id, uint64_t *out_bytes) {
+    (void)ctx;
+    return iso_worker_lookup_size_locked(media_id, out_bytes);
+}
+
+static iso_extent_table_t *msc_worker_acquire_table_locked(void *ctx, uint32_t media_id) {
+    (void)ctx;
+    return iso_worker_acquire_table_locked(media_id);
+}
+#endif
 
 // video_status (docs/INTERFACES.md 1.3): adapts csi_video_source_get_status() to a video_status provider.
 static void csi_status_provider(void *ctx, video_status_t *out) {
@@ -270,6 +296,36 @@ void app_main(void)
         }
     }
 
+    /* Initialize microSD / iso_worker before HTTPS & USB MSC so HTTP ISO API and MSC share live state from boot. */
+#if defined(CONFIG_SD_WORKER_ENABLE) && CONFIG_SD_WORKER_ENABLE
+    if (iso_worker_init() == ESP_OK) {
+#if defined(CONFIG_SD_SELF_TEST_ON_BOOT) && CONFIG_SD_SELF_TEST_ON_BOOT
+        if (iso_worker_op_trylock(5000u)) {
+            esp_err_t st_err = iso_sd_run_self_test();
+            iso_worker_op_unlock();
+            if (st_err != ESP_OK) {
+                ESP_LOGW(TAG, "iso_sd_run_self_test failed: %s", esp_err_to_name(st_err));
+            }
+        } else {
+            ESP_LOGW(TAG, "iso_sd_run_self_test skipped: iso_op_mutex busy");
+        }
+#endif
+    } else {
+        ESP_LOGE(TAG, "iso_worker_init failed");
+    }
+#elif defined(CONFIG_SD_ENABLE) && CONFIG_SD_ENABLE
+    if (iso_sd_init(NULL) == ESP_OK) {
+#if defined(CONFIG_SD_SELF_TEST_ON_BOOT) && CONFIG_SD_SELF_TEST_ON_BOOT
+        esp_err_t st_err = iso_sd_run_self_test();
+        if (st_err != ESP_OK) {
+            ESP_LOGW(TAG, "iso_sd_run_self_test failed: %s", esp_err_to_name(st_err));
+        }
+#endif
+    } else {
+        ESP_LOGE(TAG, "iso_sd_init failed");
+    }
+#endif
+
     frame_hub_t* hub = NULL;
     SemaphoreHandle_t hub_mutex = xSemaphoreCreateMutex();
     if (!hub_mutex) {
@@ -319,6 +375,14 @@ void app_main(void)
 #if CONFIG_WEB_SERVER_ENABLE
         if (netif_ret == ESP_OK || netif_ret == ESP_ERR_INVALID_STATE) {
             if (event_ret == ESP_OK || event_ret == ESP_ERR_INVALID_STATE) {
+#if defined(CONFIG_ISO_ENABLE) && CONFIG_ISO_ENABLE && defined(CONFIG_SD_WORKER_ENABLE) && CONFIG_SD_WORKER_ENABLE
+                if (iso_worker_is_running()) {
+                    esp_err_t iso_svc_err = web_iso_service_init();
+                    if (iso_svc_err != ESP_OK) {
+                        ESP_LOGE(TAG, "web_iso_service_init failed: %s", esp_err_to_name(iso_svc_err));
+                    }
+                }
+#endif
                 if (web_server_start(hub) == ESP_OK) {
                     ESP_LOGI(TAG, "Web server started successfully");
                 } else {
@@ -331,7 +395,30 @@ void app_main(void)
         {
             bool msc_ready = false;
 #if defined(CONFIG_USB_MSC_ENABLE) && CONFIG_USB_MSC_ENABLE
-            esp_err_t msc_err = iso_usb_msc_init(NULL);
+            esp_err_t msc_err = ESP_ERR_INVALID_STATE;
+#if defined(CONFIG_SD_WORKER_ENABLE) && CONFIG_SD_WORKER_ENABLE
+            if (iso_worker_is_running()) {
+                const iso_usb_msc_config_t msc_cfg = {
+                    .bdev = iso_sd_blockdev(),
+                    .shared_media = iso_worker_media(),
+                    .state_lock_ctx = NULL,
+                    .state_lock = msc_worker_state_lock,
+                    .state_unlock = msc_worker_state_unlock,
+                    .resolver = {
+                        .ctx = NULL,
+                        .lookup_size_locked = msc_worker_lookup_size_locked,
+                        .acquire_table_locked = msc_worker_acquire_table_locked,
+                    },
+                };
+                msc_err = iso_usb_msc_init_ex(&msc_cfg);
+            } else {
+                msc_err = iso_usb_msc_init(iso_sd_blockdev());
+            }
+#elif defined(CONFIG_SD_ENABLE) && CONFIG_SD_ENABLE
+            msc_err = iso_usb_msc_init(iso_sd_blockdev());
+#else
+            msc_err = iso_usb_msc_init(NULL);
+#endif
             if (msc_err == ESP_OK) {
                 msc_ready = iso_usb_msc_is_initialized();
             } else {
@@ -355,35 +442,6 @@ void app_main(void)
         }
 #endif
     }
-
-#if defined(CONFIG_SD_WORKER_ENABLE) && CONFIG_SD_WORKER_ENABLE
-    if (iso_worker_init() == ESP_OK) {
-#if defined(CONFIG_SD_SELF_TEST_ON_BOOT) && CONFIG_SD_SELF_TEST_ON_BOOT
-        if (iso_worker_op_trylock(5000u)) {
-            esp_err_t st_err = iso_sd_run_self_test();
-            iso_worker_op_unlock();
-            if (st_err != ESP_OK) {
-                ESP_LOGW(TAG, "iso_sd_run_self_test failed: %s", esp_err_to_name(st_err));
-            }
-        } else {
-            ESP_LOGW(TAG, "iso_sd_run_self_test skipped: iso_op_mutex busy");
-        }
-#endif
-    } else {
-        ESP_LOGE(TAG, "iso_worker_init failed");
-    }
-#elif defined(CONFIG_SD_ENABLE) && CONFIG_SD_ENABLE
-    if (iso_sd_init(NULL) == ESP_OK) {
-#if defined(CONFIG_SD_SELF_TEST_ON_BOOT) && CONFIG_SD_SELF_TEST_ON_BOOT
-        esp_err_t st_err = iso_sd_run_self_test();
-        if (st_err != ESP_OK) {
-            ESP_LOGW(TAG, "iso_sd_run_self_test failed: %s", esp_err_to_name(st_err));
-        }
-#endif
-    } else {
-        ESP_LOGE(TAG, "iso_sd_init failed");
-    }
-#endif
 
     // Use a standard C `if` to guard the body, as specifically requested
     if (CONFIG_TC358743_INIT) {
