@@ -57,6 +57,8 @@ A-13 のテストだけで殺した数(先に落ちた実行ファイルが `tes
 | W104 | `atomic_init(&w->reinit_pending, false)` の削除: 直前の `memset(w, 0, ...)` で、`_Atomic bool` は偽(0)になっている |
 | W106 | `atomic_init(&w->reprobe_pending, false)` の削除: 同上 |
 
+**詰め物だけを変えるミュータントの扱い**: W016 / W027 などは、公開スロットの詰め物の値だけを変える。観測できる動作(文字列、`id_u32`、大きさ)は同じなので、動作の検査では殺せない。`test_impl_pin_view_slot_padding_after_the_id_is_zero`(実装の詳細を固定するテスト)が、実装の意図(0 で埋めてから写す)を固定して殺している。**このテストを外す場合は、これらを同値の表に移す**(根拠: 詰め物は、どの API からも読まれない)。
+
 ### 2.2 殺せないが、同値でもないミュータント(1 個)
 
 | ID | 変更箇所 | 理由 |
@@ -69,7 +71,7 @@ A-13 のテストだけで殺した数(先に落ちた実行ファイルが `tes
 |---|---|
 | W008 | L16: delete statement(`has_pending_core_work` の `\|\|` の途中の式を削ると、構文エラー) |
 
-### 2.4 足したテスト(32 件。`test/host/iso_worker/test_iso_worker_logic_mut.c`)
+### 2.4 足したテスト(33 件。`test/host/iso_worker/test_iso_worker_logic_mut.c`)
 
 | テスト | 内容 |
 |---|---|
@@ -99,7 +101,8 @@ A-13 のテストだけで殺した数(先に落ちた実行ファイルが `tes
 | `test_a_fault_raised_during_the_reinit_keeps_the_override_and_the_pending_flag` | 再初期化の最中に来た障害(`fault_raced`)は、済んだ再初期化に消されない。上書きと保留が残り、もう 1 回再初期化する |
 | `test_reprobe_reinitializes_while_a_fault_override_is_published_even_if_the_card_reads_ready` | 上書きが公開中なら、カードが READY を返していても、再確認は再初期化する |
 | `test_a_missing_sd_status_is_not_ready_and_a_reprobe_reinitializes` | `cfg.sd == NULL` は ready でない(`boot` は走査しない)。再確認は再初期化する |
-| `test_view_slots_copy_exactly_the_id_and_nothing_after_it` | 公開した表の欄は、id の 9 バイトだけを写す(後ろの詰め物は 0) |
+| `test_view_slots_copy_the_id_with_its_terminator` | 動作の検査: 公開した表の欄の `id` は、終端(NUL)までが元と同じ文字列で、`id_u32` と大きさも同じ |
+| `test_impl_pin_view_slot_padding_after_the_id_is_zero` | **実装の詳細を固定するテスト(動作の検査ではない)**。公開した表の欄は、0 で埋めてから `id` を 9 バイトだけ写すので、`id` の後ろの詰め物は、元のビューの値にならない。C は、構造体の代入やコピーの後の詰め物の値を保証しない(CodeRabbit の指摘、#171)。**このテストだけが殺すミュータント(W016 / W027 など、詰め物の値だけを変えるもの)は、観測できる動作を変えない。実装の意図を固定するもので、同値の表の隣に注記する(2.1)** |
 | `test_boot_dirs_failure_reports_the_error_to_the_hw_state_hook` | `ensure_dirs` の失敗が `set_hw_sd_state`(`state_lock` の中、`os.ctx` つき)に `ERROR` を伝える |
 | `test_pending_work_wakes_the_worker_when_the_op_lock_is_released_or_on_tick` | 動いているジョブだけ / 再確認の要求だけが残っているとき、`op_unlock` と `tick` が起こす。何もなければ起こさない |
 | `test_notify_hands_the_hw_hook_the_non_ready_state_and_the_published_consumed_since` | `set_hw_sd_state` に渡すのは、読み替えた後の状態。ビューのコールバックの `consumed_since` は、直前に公開した値 |

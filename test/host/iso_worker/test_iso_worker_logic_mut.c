@@ -752,6 +752,7 @@ void test_view_publish_hands_over_the_consumed_since_of_the_upload(void) {
 
 void test_boot_with_a_not_ready_sd_only_publishes_the_state(void) {
     w_setup(8192u);
+    seed_images(1u); /* READY のイメージが 1 件ある。非 READY の起動が走査すると、公開と INDEX に現れる */
     E.sd_state = ISO_SD_NO_CARD;
     const int calls = E.view_cb_calls;
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_worker_logic_boot(&W));
@@ -759,7 +760,9 @@ void test_boot_with_a_not_ready_sd_only_publishes_the_state(void) {
     TEST_ASSERT_EQUAL_INT(ISO_SD_NO_CARD, E.last_view_sd);
     iso_worker_logic_state_lock(&W);
     TEST_ASSERT_EQUAL_INT(ISO_SD_NO_CARD, iso_worker_logic_view_locked(&W, NULL)->sd_state);
+    TEST_ASSERT_EQUAL_UINT(0u, iso_worker_logic_view_locked(&W, NULL)->count); /* 走査していない */
     iso_worker_logic_state_unlock(&W);
+    TEST_ASSERT_EQUAL_UINT(0u, iso_core_queue_len(&W.core));
     TEST_ASSERT_EQUAL_INT(0, E.wake_calls);
     TEST_ASSERT_EQUAL_INT(0, E.remount_calls);
     w_teardown();
@@ -1070,10 +1073,15 @@ void test_reprobe_reinitializes_while_a_fault_override_is_published_even_if_the_
 void test_a_missing_sd_status_is_not_ready_and_a_reprobe_reinitializes(void) {
     OPT = OPT_NO_SD;
     w_setup(8192u);
+    seed_images(1u); /* READY のイメージが 1 件ある。走査すると、公開と INDEX に現れる */
     const int views = E.view_cb_calls;
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_worker_logic_boot(&W));
     TEST_ASSERT_EQUAL_INT(views + 1, E.view_cb_calls); /* 走査せずに、状態だけ公開する */
     TEST_ASSERT_EQUAL_INT(ISO_SD_NO_CARD, E.last_view_sd);
+    iso_worker_logic_state_lock(&W);
+    TEST_ASSERT_EQUAL_UINT(0u, iso_worker_logic_view_locked(&W, NULL)->count); /* 走査していない */
+    iso_worker_logic_state_unlock(&W);
+    TEST_ASSERT_EQUAL_UINT(0u, iso_core_queue_len(&W.core));
     TEST_ASSERT_EQUAL_INT(0, E.wake_calls);
     iso_worker_logic_request_reprobe(&W);
     bool busy = false;
@@ -1083,7 +1091,25 @@ void test_a_missing_sd_status_is_not_ready_and_a_reprobe_reinitializes(void) {
     w_teardown();
 }
 
-void test_view_slots_copy_exactly_the_id_and_nothing_after_it(void) {
+/* 動作の検査: 公開スロットの id は、終端(NUL)までが同じ文字列で、id_u32 と大きさも同じ */
+void test_view_slots_copy_the_id_with_its_terminator(void) {
+    w_setup(8192u);
+    seed_images(1u);
+    boot_and_index_all();
+    const iso_view_t v = *iso_core_view(&W.core);
+    TEST_ASSERT_EQUAL_STRING(v.images[0].id, W.pub_tables[0].id);
+    uint32_t want = 0u;
+    TEST_ASSERT_TRUE(iso_worker_logic_id_to_u32(v.images[0].id, &want));
+    TEST_ASSERT_EQUAL_UINT32(want, W.pub_tables[0].id_u32);
+    TEST_ASSERT_EQUAL_UINT64(v.images[0].size_bytes, W.pub_tables[0].size_bytes);
+    w_teardown();
+}
+
+/* 実装の詳細を固定するテスト(動作の検査ではない)。C は、構造体のメンバーの代入や構造体のコピーの後の詰め物の値を
+ * 保証しない。ここで固定するのは、実装が公開スロットを 0 で埋めてから、id を ISO_ID_LEN + 1 バイトだけ写す、という意図
+ * (id の後ろの詰め物が、元のビューの値に変わらない)。観測できる動作は変わらないので、これだけが殺すミュータントは、
+ * docs/ISO_WORKER_TESTS.md の「詰め物だけを変えるもの」に分けて数える。 */
+void test_impl_pin_view_slot_padding_after_the_id_is_zero(void) {
     w_setup(8192u);
     seed_images(1u);
     boot_and_index_all();
@@ -1092,7 +1118,6 @@ void test_view_slots_copy_exactly_the_id_and_nothing_after_it(void) {
     W.core.cfg.hooks.view_update(W.core.cfg.hooks.ctx, &v);
     unsigned char slot[sizeof(W.pub_tables[0])];
     memcpy(slot, &W.pub_tables[0], sizeof(slot));
-    TEST_ASSERT_EQUAL_STRING(v.images[0].id, (const char *)&slot[offsetof(iso_worker_table_slot_t, id)]);
     TEST_ASSERT_EQUAL_UINT8(0u, slot[offsetof(iso_worker_table_slot_t, id) + ISO_ID_LEN + 1u]);
     w_teardown();
 }
@@ -1168,13 +1193,20 @@ void test_notify_hands_the_hw_hook_the_non_ready_state_and_the_published_consume
     iso_worker_logic_op_unlock(&W);
     TEST_ASSERT_TRUE(W.pub_consumed_since >= 4096u);
 
+    /* コア側の消費量だけを進める(再公開しない)。通知のコールバックが受け取るのは、最後に公開した値 */
+    const uint64_t published = W.pub_consumed_since;
+    TEST_ASSERT_TRUE(iso_worker_logic_op_trylock(&W, 0u));
+    W.core.up.consumed_since += 7777u;
+    iso_worker_logic_op_unlock(&W);
+    TEST_ASSERT_NOT_EQUAL(published, W.core.up.consumed_since);
+
     iso_worker_logic_notify_sd_fault(&W, ISO_SD_READY);
     TEST_ASSERT_EQUAL_INT(ISO_SD_NO_CARD, E.sd_state); /* READY は、障害の状態ではない */
     TEST_ASSERT_TRUE(E.hw_state_set_in_state_lock);
-    TEST_ASSERT_EQUAL_UINT64(W.pub_consumed_since, E.last_consumed);
+    TEST_ASSERT_EQUAL_UINT64(published, E.last_consumed);
     iso_worker_logic_notify_sd_fault(&W, ISO_SD_UNSUPPORTED_FS);
     TEST_ASSERT_EQUAL_INT(ISO_SD_UNSUPPORTED_FS, E.sd_state);
-    TEST_ASSERT_EQUAL_UINT64(W.pub_consumed_since, E.last_consumed);
+    TEST_ASSERT_EQUAL_UINT64(published, E.last_consumed);
     drive_worker_until_idle(32);
     w_teardown();
 }
@@ -1232,7 +1264,8 @@ int main(void) {
     RUN_TEST(test_a_fault_raised_during_the_reinit_keeps_the_override_and_the_pending_flag);
     RUN_TEST(test_reprobe_reinitializes_while_a_fault_override_is_published_even_if_the_card_reads_ready);
     RUN_TEST(test_a_missing_sd_status_is_not_ready_and_a_reprobe_reinitializes);
-    RUN_TEST(test_view_slots_copy_exactly_the_id_and_nothing_after_it);
+    RUN_TEST(test_view_slots_copy_the_id_with_its_terminator);
+    RUN_TEST(test_impl_pin_view_slot_padding_after_the_id_is_zero);
     RUN_TEST(test_boot_dirs_failure_reports_the_error_to_the_hw_state_hook);
     RUN_TEST(test_pending_work_wakes_the_worker_when_the_op_lock_is_released_or_on_tick);
     RUN_TEST(test_notify_hands_the_hw_hook_the_non_ready_state_and_the_published_consumed_since);
