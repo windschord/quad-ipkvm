@@ -7,7 +7,9 @@ if 条件の否定、文の削除、定数の ±1、真偽値の反転。old の
   python3 tools/test/gen_iso_mutants.py upload . > tools/test/iso_upload_mutants.py
   python3 tools/test/gen_iso_mutants.py core . > tools/test/iso_core_mutants.py
   python3 tools/test/gen_iso_mutants.py api . > tools/test/iso_api_mutants.py
-  python3 tools/test/gen_iso_mutants.py worker . > tools/test/iso_worker_mutants.py"""
+  python3 tools/test/gen_iso_mutants.py worker . > tools/test/iso_worker_mutants.py
+  python3 tools/test/gen_iso_mutants.py put . > tools/test/iso_put_mutants.py
+  python3 tools/test/gen_iso_mutants.py msc . > tools/test/iso_msc_mutants.py"""
 import re
 import sys
 
@@ -43,7 +45,7 @@ def split_comment(line):
     return line[:cut], line[cut:]
 
 
-DECL = re.compile(r"^\s*(const\s+)?(static\s+)?(u?int\d*_t|size_t|bool|int|char|unsigned|iso_\w+|up_\w+|enum)\b[\s\*]+\w+(\[[^\]]*\])?\s*(=|;)")
+DECL = re.compile(r"^\s*(const\s+)?(static\s+)?(u?int\d*_t|size_t|bool|int|char|unsigned|iso_\w+|up_\w+|mmc_\w+|msc_bot_\w+|enum)\b[\s\*]+\w+(\[[^\]]*\])?\s*(=|;)")
 
 REL = [("==", "!="), ("!=", "=="), ("<=", "<"), (">=", ">"), ("<", "<="), (">", ">=")]
 
@@ -207,11 +209,11 @@ def pragma_header(inc):
     return "INC = %r\nPRAGMAS = %r\n" % (inc, PRAGMAS)
 
 
-USAGE = "usage: gen_iso_mutants.py {upload|core|api|worker} <repo-root>   (標準出力に、ミュータントの Python ソースを書く)\n"
+USAGE = "usage: gen_iso_mutants.py {upload|core|api|worker|put|msc} <repo-root>   (標準出力に、ミュータントの Python ソースを書く)\n"
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] not in ("upload", "core", "api", "worker"):
+    if len(sys.argv) != 3 or sys.argv[1] not in ("upload", "core", "api", "worker", "put", "msc"):
         sys.stderr.write(USAGE)
         sys.exit(2)
     mode = sys.argv[1]
@@ -258,6 +260,34 @@ WL = "components/iso_worker/iso_worker_logic.c"
 
 
 def M(id, desc, *edits, file=WL):
+    return {"id": id, "desc": desc, "edits": list(edits), "file": file}
+
+
+MUTANTS = [
+'''
+    elif mode == "put":
+        files = [("components/web_server/web_iso_put_logic.c", "P", "PL", '#include "web_iso_put_logic.h"')]
+        inc_line = '#include "web_iso_put_logic.h"'
+        header = '''# web_iso_put_logic.c(PUT のチャンク受信の期限と、5% ごとの進捗)のミュータント。tools/test/gen_iso_mutants.py が、ソースから機械的に作ったもの(iso_upload_mutants.py と同じ方法)。
+# ソースを変えたら、gen_iso_mutants.py で作り直す。手書きの追加分は iso_put_mutants_extra.py(別のファイル)。
+PL = "components/web_server/web_iso_put_logic.c"
+
+
+def M(id, desc, *edits, file=PL):
+    return {"id": id, "desc": desc, "edits": list(edits), "file": file}
+
+
+MUTANTS = [
+'''
+    elif mode == "msc":
+        files = [("components/iso_usb_msc/iso_usb_msc_glue.c", "G", "GL", '#include "iso_usb_msc_glue.h"')]
+        inc_line = '#include "iso_usb_msc_glue.h"'
+        header = '''# iso_usb_msc_glue.c(MSC の BOT と mmc_scsi と iso_extent の橋)のミュータント。tools/test/gen_iso_mutants.py が、ソースから機械的に作ったもの(iso_upload_mutants.py と同じ方法)。
+# ソースを変えたら、gen_iso_mutants.py で作り直す。手書きの追加分は iso_msc_mutants_extra.py(別のファイル)。
+GL = "components/iso_usb_msc/iso_usb_msc_glue.c"
+
+
+def M(id, desc, *edits, file=GL):
     return {"id": id, "desc": desc, "edits": list(edits), "file": file}
 
 
