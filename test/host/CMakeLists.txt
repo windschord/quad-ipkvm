@@ -238,6 +238,11 @@ foreach(test_source ${TEST_SOURCES})
         target_link_libraries(${test_name} PRIVATE msc_bot)
     endif()
 
+    if (test_rel_path MATCHES "^iso_usb_msc/")
+        target_link_libraries(${test_name} PRIVATE iso_usb_msc_glue pthread)
+        set_target_properties(${test_name} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    endif()
+
     if (test_rel_path MATCHES "^iso_sd/")
         target_link_libraries(${test_name} PRIVATE iso_sd_logic)
     endif()
@@ -353,6 +358,9 @@ endif()
 
 # msc_bot (USB Mass Storage Bulk-Only Transport state machine, docs/MSC_BOT_TESTS.md; pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/msc_bot ${CMAKE_BINARY_DIR}/msc_bot)
+
+# iso_usb_msc_glue (msc_bot <-> mmc_scsi <-> iso_extent bridge, pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_usb_msc ${CMAKE_BINARY_DIR}/iso_usb_msc)
 
 # iso_sd_logic (A-13: microSD path validation, FAT32 mount policy, CLMT->extents, atomic state; pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_sd ${CMAKE_BINARY_DIR}/iso_sd)
