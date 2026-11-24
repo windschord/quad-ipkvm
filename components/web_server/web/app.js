@@ -1280,6 +1280,419 @@ const IsoViewer = (function () {
 })();
 // ==== ISO viewer (end) ====
 
+// ==== Paste viewer (begin) ====
+const PasteViewer = (() => {
+    const MAX_CHARS = 4096;
+    const STEP_MS = 12;
+    const SHIFT_USAGE = 0xE1;
+    const LAYOUT_KEY = 'quadkvm.pasteLayout';
+
+    function buildTables() {
+        const base = Object.create(null);
+        for (let i = 0; i < 26; i++) {
+            base[String.fromCharCode(97 + i)] = [0x04 + i, false];
+            base[String.fromCharCode(65 + i)] = [0x04 + i, true];
+        }
+        for (let i = 0; i < 9; i++) base[String.fromCharCode(49 + i)] = [0x1E + i, false];
+        base['0'] = [0x27, false];
+        base[' '] = [0x2C, false];
+        base['\n'] = [0x28, false];
+        base['\t'] = [0x2B, false];
+        base['-'] = [0x2D, false];
+        base[','] = [0x36, false];
+        base['<'] = [0x36, true];
+        base['.'] = [0x37, false];
+        base['>'] = [0x37, true];
+        base['/'] = [0x38, false];
+        base['?'] = [0x38, true];
+        base[';'] = [0x33, false];
+        base['!'] = [0x1E, true];
+        base['#'] = [0x20, true];
+        base['$'] = [0x21, true];
+        base['%'] = [0x22, true];
+
+        const us = Object.assign(Object.create(null), base, {
+            '@': [0x1F, true],
+            '^': [0x23, true],
+            '&': [0x24, true],
+            '*': [0x25, true],
+            '(': [0x26, true],
+            ')': [0x27, true],
+            '_': [0x2D, true],
+            '=': [0x2E, false],
+            '+': [0x2E, true],
+            '[': [0x2F, false],
+            '{': [0x2F, true],
+            ']': [0x30, false],
+            '}': [0x30, true],
+            '\\': [0x31, false],
+            '|': [0x31, true],
+            ':': [0x33, true],
+            "'": [0x34, false],
+            '"': [0x34, true],
+            '`': [0x35, false],
+            '~': [0x35, true],
+        });
+
+        const jis = Object.assign(Object.create(null), base, {
+            '"': [0x1F, true],
+            '&': [0x23, true],
+            "'": [0x24, true],
+            '(': [0x25, true],
+            ')': [0x26, true],
+            '=': [0x2D, true],
+            '^': [0x2E, false],
+            '~': [0x2E, true],
+            '@': [0x2F, false],
+            '`': [0x2F, true],
+            '[': [0x30, false],
+            '{': [0x30, true],
+            ']': [0x32, false],
+            '}': [0x32, true],
+            '+': [0x33, true],
+            ':': [0x34, false],
+            '*': [0x34, true],
+            '\\': [0x87, false],
+            '_': [0x87, true],
+            '|': [0x89, true],
+        });
+
+        return { us, jis };
+    }
+
+    const TABLES = buildTables();
+
+    function normalizeLayout(layout) {
+        return layout === 'us' || layout === 'jis' ? layout : 'jis';
+    }
+
+    function normalizeNewlines(text) {
+        return typeof text === 'string' ? text.replace(/\r\n|\r/g, '\n') : '';
+    }
+
+    function planText(text, layout) {
+        const lay = normalizeLayout(layout);
+        const norm = normalizeNewlines(text);
+        if (norm.length === 0) return { ok: false, error: 'empty' };
+        if (norm.length > MAX_CHARS) return { ok: false, error: 'too_long', length: norm.length };
+        const map = TABLES[lay];
+        const steps = [];
+        let unsupportedCount = 0;
+        let firstIndex = -1;
+        let idx = 0;
+        for (const ch of norm) {
+            if (Object.prototype.hasOwnProperty.call(map, ch)) {
+                steps.push({ usage: map[ch][0], shift: map[ch][1] });
+            } else {
+                if (firstIndex === -1) firstIndex = idx;
+                unsupportedCount++;
+            }
+            idx++;
+        }
+        if (unsupportedCount > 0) {
+            return { ok: false, error: 'unsupported', unsupportedCount, firstIndex };
+        }
+        return { ok: true, charCount: steps.length, steps };
+    }
+
+    function eventsForStep(step) {
+        if (step.shift) {
+            return [
+                [1, SHIFT_USAGE],
+                [1, step.usage],
+                [0, step.usage],
+                [0, SHIFT_USAGE],
+            ];
+        }
+        return [
+            [1, step.usage],
+            [0, step.usage],
+        ];
+    }
+
+    function create(deps) {
+        const doc = deps.document;
+        const setTimeoutFn = deps.setTimeout;
+        const clearTimeoutFn = deps.clearTimeout;
+
+        const btnOpen = doc.getElementById('btn-paste');
+        const panel = doc.getElementById('paste-panel');
+        const btnClose = doc.getElementById('btn-paste-close');
+        const form = doc.getElementById('paste-form');
+        const fields = doc.getElementById('paste-fields');
+        const radioJis = doc.getElementById('paste-layout-jis');
+        const radioUs = doc.getElementById('paste-layout-us');
+        const elText = doc.getElementById('paste-text');
+        const chkClearAfter = doc.getElementById('paste-clear-after');
+        const btnClipboard = doc.getElementById('btn-paste-clipboard');
+        const btnClear = doc.getElementById('btn-paste-clear');
+        const progressWrap = doc.getElementById('paste-progress-wrap');
+        const elProgress = doc.getElementById('paste-progress');
+        const btnCancel = doc.getElementById('btn-paste-cancel');
+        const elStatus = doc.getElementById('paste-status');
+        const elError = doc.getElementById('paste-error');
+
+        let panelOpen = false;
+        let sending = false;
+        let sendTimer = null;
+        let charIdx = 0;
+        let evIdx = 0;
+        let curEvents = [];
+        let activeSteps = [];
+        let layoutLoaded = false;
+        let clipboardGen = 0;
+
+        function loadLayout() {
+            try {
+                return normalizeLayout(deps.getStorageItem(LAYOUT_KEY));
+            } catch (err) {
+                return 'jis';
+            }
+        }
+
+        function saveLayout(layout) {
+            try {
+                deps.setStorageItem(LAYOUT_KEY, normalizeLayout(layout));
+            } catch (err) {
+                // ignore storage failure
+            }
+        }
+
+        function applyLayoutRadios(layout) {
+            const v = normalizeLayout(layout);
+            radioJis.checked = v === 'jis';
+            radioUs.checked = v === 'us';
+        }
+
+        function ensureLayoutLoaded() {
+            if (layoutLoaded) return;
+            layoutLoaded = true;
+            applyLayoutRadios(loadLayout());
+        }
+
+        function selectedLayout() {
+            return radioUs.checked ? 'us' : 'jis';
+        }
+
+        function clearError() {
+            elError.classList.add('paste-hidden');
+            elError.textContent = '';
+        }
+
+        function showError(msg) {
+            elError.textContent = msg;
+            elError.classList.remove('paste-hidden');
+        }
+
+        function clearTimer() {
+            if (sendTimer !== null) {
+                clearTimeoutFn(sendTimer);
+                sendTimer = null;
+            }
+        }
+
+        function finishUi(statusMsg, clearText) {
+            sending = false;
+            clearTimer();
+            activeSteps = [];
+            curEvents = [];
+            fields.disabled = false;
+            progressWrap.classList.add('paste-hidden');
+            elProgress.textContent = '';
+            if (clearText && (!chkClearAfter || chkClearAfter.checked)) {
+                elText.value = '';
+            }
+            if (typeof statusMsg === 'string') elStatus.textContent = statusMsg;
+        }
+
+        function abortSend(reasonMsg, isError) {
+            if (!sending) return;
+            const sentChars = charIdx;
+            const totalChars = activeSteps.length;
+            deps.sendReleaseAll();
+            finishUi(isError ? '' : reasonMsg + '（' + sentChars + ' / ' + totalChars + ' 文字送信済み）', true);
+            if (isError) showError(reasonMsg);
+        }
+
+        function setPanel(open) {
+            const nextOpen = !!open;
+            if (!nextOpen && sending) abortSend('パネルを閉じたため送信を中止しました', false);
+            const wasOpen = panelOpen;
+            panelOpen = nextOpen;
+            btnOpen.setAttribute('aria-expanded', panelOpen ? 'true' : 'false');
+            panel.setAttribute('aria-hidden', panelOpen ? 'false' : 'true');
+            if (panelOpen) {
+                ensureLayoutLoaded();
+                if (!wasOpen && typeof deps.onOpen === 'function') deps.onOpen();
+                clearError();
+                panel.classList.remove('paste-hidden');
+                if (typeof elText.focus === 'function') elText.focus();
+            } else {
+                panel.classList.add('paste-hidden');
+            }
+        }
+
+        function pumpStep() {
+            if (!sending) return;
+            if (!deps.isInputReady()) {
+                abortSend('入力接続または制御権が失われたため中止しました', true);
+                return;
+            }
+            if (evIdx >= curEvents.length) {
+                charIdx++;
+                if (charIdx >= activeSteps.length) {
+                    const total = activeSteps.length;
+                    finishUi('送信完了: ' + total + ' 文字', true);
+                    return;
+                }
+                curEvents = eventsForStep(activeSteps[charIdx]);
+                evIdx = 0;
+                elProgress.textContent = '送信中: ' + charIdx + ' / ' + activeSteps.length + ' 文字';
+            }
+            const ev = curEvents[evIdx++];
+            const ok = ev[0] === 1 ? deps.sendKeyDown(ev[1]) : deps.sendKeyUp(ev[1]);
+            if (!ok) {
+                abortSend('送信に失敗したため中止しました', true);
+                return;
+            }
+            sendTimer = setTimeoutFn(pumpStep, STEP_MS);
+        }
+
+        function startSend() {
+            clearError();
+            if (sending) return;
+            const plan = planText(elText.value, selectedLayout());
+            if (!plan.ok) {
+                if (plan.error === 'empty') {
+                    showError('送信するテキストを入力してください');
+                } else if (plan.error === 'too_long') {
+                    showError('テキストが長すぎます（最大 ' + MAX_CHARS + ' 文字、現在 ' + plan.length + ' 文字）');
+                } else {
+                    showError('対応していない文字が ' + plan.unsupportedCount + ' 文字含まれています（' + (plan.firstIndex + 1) + ' 文字目が非対応）。ASCII 印字可能文字・改行・Tab のみ送信できます');
+                }
+                return;
+            }
+            if (!deps.isInputReady()) {
+                showError('入力 WebSocket が未接続、または制御権がありません');
+                return;
+            }
+            clipboardGen++;
+            deps.onBeforeSend();
+            sending = true;
+            activeSteps = plan.steps;
+            charIdx = 0;
+            evIdx = 0;
+            curEvents = eventsForStep(activeSteps[0]);
+            fields.disabled = true;
+            elStatus.textContent = '';
+            elProgress.textContent = '送信中: 0 / ' + activeSteps.length + ' 文字';
+            progressWrap.classList.remove('paste-hidden');
+            pumpStep();
+        }
+
+        async function readClipboard() {
+            clearError();
+            if (sending) return;
+            const read = deps.readClipboardText;
+            if (typeof read !== 'function') {
+                showError('このブラウザ環境ではクリップボード読込を利用できません。下の入力欄に直接貼り付けてください');
+                return;
+            }
+            const gen = ++clipboardGen;
+            try {
+                const txt = await read();
+                if (gen !== clipboardGen) return;
+                if (typeof txt !== 'string' || txt.length === 0) {
+                    elStatus.textContent = 'クリップボードは空です';
+                    return;
+                }
+                elText.value = txt;
+                elStatus.textContent = 'クリップボードから読み込みました（' + txt.length + ' 文字）';
+            } catch (err) {
+                if (gen !== clipboardGen) return;
+                showError('クリップボードの読込が拒否されました。下の入力欄に手動で貼り付けてください');
+            }
+        }
+
+        btnOpen.addEventListener('click', () => setPanel(!panelOpen));
+        btnClose.addEventListener('click', () => {
+            setPanel(false);
+            if (typeof btnOpen.focus === 'function') btnOpen.focus();
+        });
+        radioJis.addEventListener('change', () => {
+            layoutLoaded = true;
+            clearError();
+            if (radioJis.checked) saveLayout('jis');
+        });
+        radioUs.addEventListener('change', () => {
+            layoutLoaded = true;
+            clearError();
+            if (radioUs.checked) saveLayout('us');
+        });
+        elText.addEventListener('input', () => clearError());
+        elText.addEventListener('keydown', (e) => {
+            if (e.isComposing || e.keyCode === 229) return;
+            if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === 'Enter') {
+                e.preventDefault();
+                startSend();
+            }
+        });
+        panel.addEventListener('keydown', (e) => {
+            if (e.isComposing || e.keyCode === 229) return;
+            if (e.key === 'Escape' || e.code === 'Escape') {
+                e.preventDefault();
+                if (sending) abortSend('中止しました', false);
+                else {
+                    setPanel(false);
+                    if (typeof btnOpen.focus === 'function') btnOpen.focus();
+                }
+            }
+        });
+        btnClipboard.addEventListener('click', () => { void readClipboard(); });
+        btnClear.addEventListener('click', () => {
+            if (sending) return;
+            clearError();
+            elText.value = '';
+            elStatus.textContent = '';
+        });
+        btnCancel.addEventListener('click', () => abortSend('中止しました', false));
+        form.addEventListener('submit', (e) => {
+            e.preventDefault();
+            startSend();
+        });
+
+        function onDisconnect() {
+            if (sending) abortSend('入力接続が切断されたため送信を中止しました', true);
+        }
+
+        function onBackground() {
+            if (sending) abortSend('タブが背景になったため送信を中止しました', false);
+        }
+
+        function stop() {
+            clipboardGen++;
+            if (sending) abortSend('終了したため送信を中止しました', false);
+            elText.value = '';
+            elStatus.textContent = '';
+            clearError();
+            setPanel(false);
+        }
+
+        function isOpen() {
+            return panelOpen;
+        }
+
+        function isSending() {
+            return sending;
+        }
+
+        return { isOpen, isSending, setPanel, onDisconnect, onBackground, stop };
+    }
+
+    return { create, MAX_CHARS, STEP_MS, SHIFT_USAGE, LAYOUT_KEY, normalizeLayout, normalizeNewlines, planText, eventsForStep };
+})();
+// ==== Paste viewer (end) ====
+
 document.addEventListener('DOMContentLoaded', () => {
     const elError = document.getElementById('error-message');
     const viewSetup = document.getElementById('view-setup');
@@ -1327,6 +1740,34 @@ document.addEventListener('DOMContentLoaded', () => {
             iso.stop();
             setTimeout(fetchStatus, 1000);
         }
+    });
+
+    const paste = PasteViewer.create({
+        document: document,
+        setTimeout: (fn, ms) => setTimeout(fn, ms),
+        clearTimeout: (id) => clearTimeout(id),
+        getStorageItem: (k) => (typeof localStorage !== 'undefined' ? localStorage.getItem(k) : null),
+        setStorageItem: (k, v) => { if (typeof localStorage !== 'undefined') localStorage.setItem(k, v); },
+        readClipboardText: () => {
+            if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+                return navigator.clipboard.readText();
+            }
+            return Promise.reject(new Error('clipboard unavailable'));
+        },
+        isInputReady: () => inputGranted && !!wsInput && wsInput.readyState === WebSocket.OPEN,
+        onOpen: () => doReleaseAll(),
+        onBeforeSend: () => doReleaseAll(),
+        sendKeyDown: (usage) => {
+            if (!inputGranted || !wsInput || wsInput.readyState !== WebSocket.OPEN) return false;
+            wsInput.send(MsgBuilder.keyDown(usage));
+            return true;
+        },
+        sendKeyUp: (usage) => {
+            if (!inputGranted || !wsInput || wsInput.readyState !== WebSocket.OPEN) return false;
+            wsInput.send(MsgBuilder.keyUp(usage));
+            return true;
+        },
+        sendReleaseAll: () => sendWsInput(MsgBuilder.releaseAll()),
     });
 
     let ws = null;
@@ -1438,7 +1879,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     window.addEventListener('keydown', (e) => {
-        if (!inputEnabled) return;
+        if (!inputEnabled || paste.isOpen()) return;
 
         if (e.code === 'Escape') {
             if (!isEscPressed) {
@@ -1465,7 +1906,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // The Escape long-press state is reset even when input is already disabled (otherwise it would stay set
         // and the long press could never disable the input a second time).
         if (e.code === 'Escape') resetEscLongPress();
-        if (!inputEnabled) return;
+        if (!inputEnabled || paste.isOpen()) return;
 
         if (Object.prototype.hasOwnProperty.call(KEYMAP, e.code)) {
             e.preventDefault();
@@ -1620,12 +2061,14 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     document.addEventListener('visibilitychange', () => {
-        if (document.hidden && inputEnabled) {
-            doReleaseAll();
+        if (document.hidden) {
+            paste.onBackground();
+            if (inputEnabled) doReleaseAll();
         }
     });
 
     window.addEventListener('pagehide', () => {
+        paste.onBackground();
         if (inputEnabled) doReleaseAll();
     });
 
@@ -2366,6 +2809,7 @@ document.addEventListener('DOMContentLoaded', () => {
         wsInput.onclose = () => {
             wsInput = null;
             inputGranted = false;
+            paste.onDisconnect();
             syncKeyboardLock();
             elInputStatus.textContent = '入力: 未接続';
             elUsbStatus.textContent = 'ターゲット: 未接続';
@@ -2405,6 +2849,7 @@ document.addEventListener('DOMContentLoaded', () => {
             wsInput = null;
         }
         inputGranted = false;
+        paste.onDisconnect();
         syncKeyboardLock();
         elInputStatus.textContent = '入力: 未接続';
         elUsbStatus.textContent = 'ターゲット: 未接続';
@@ -2539,6 +2984,7 @@ document.addEventListener('DOMContentLoaded', () => {
             iso.start();
         } else {
             iso.stop();
+            paste.stop();
             elAuthCard.classList.remove('view-hidden');
             if (isFullscreen()) {
                 // e.g. the session ended while the video was full screen
