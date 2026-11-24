@@ -66,21 +66,21 @@ jobs:
           python3 tools/test/check_kvm_board_iram.py build/quad-ipkvm.elf
 
   idf-build-iso:
-    # ISO virtual media (P8): microSD (SD_ENABLE) + the HTTP API (ISO_ENABLE). Neither is enabled by default; this job keeps them building.
+    # ISO virtual media (P8): microSD (SD_ENABLE) + worker (SD_WORKER_ENABLE) + the HTTP API (ISO_ENABLE). Neither is enabled by default; this job keeps them building.
     runs-on: ubuntu-latest
     container:
       image: espressif/idf:v6.0.1
     steps:
       - uses: actions/checkout@v4
-      - name: Build IDF Project with SD_ENABLE=y and ISO_ENABLE=y
+      - name: Build IDF Project with SD_ENABLE=y, SD_WORKER_ENABLE=y, and ISO_ENABLE=y
         run: |
           . $IDF_PATH/export.sh
-          printf 'CONFIG_SD_ENABLE=y\nCONFIG_ISO_ENABLE=y\n' > sdkconfig.ci_iso
+          printf 'CONFIG_SD_ENABLE=y\nCONFIG_SD_WORKER_ENABLE=y\nCONFIG_ISO_ENABLE=y\n' > sdkconfig.ci_iso
           idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.ci_iso" set-target esp32p4
           idf.py build
       - name: Verify sdkconfig
         run: |
           grep -E '^CONFIG_IDF_TARGET="esp32p4"' sdkconfig
           grep '^CONFIG_SD_ENABLE=y' sdkconfig
+          grep '^CONFIG_SD_WORKER_ENABLE=y' sdkconfig
           grep '^CONFIG_ISO_ENABLE=y' sdkconfig
-          grep '^CONFIG_FATFS_USE_FASTSEEK=y' sdkconfig

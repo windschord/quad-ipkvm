@@ -75,6 +75,9 @@
 #if defined(CONFIG_SD_ENABLE) && CONFIG_SD_ENABLE
 #include "iso_sd.h"
 #endif
+#if defined(CONFIG_SD_WORKER_ENABLE) && CONFIG_SD_WORKER_ENABLE
+#include "iso_worker.h"
+#endif
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -353,7 +356,23 @@ void app_main(void)
 #endif
     }
 
-#if defined(CONFIG_SD_ENABLE) && CONFIG_SD_ENABLE
+#if defined(CONFIG_SD_WORKER_ENABLE) && CONFIG_SD_WORKER_ENABLE
+    if (iso_worker_init() == ESP_OK) {
+#if defined(CONFIG_SD_SELF_TEST_ON_BOOT) && CONFIG_SD_SELF_TEST_ON_BOOT
+        if (iso_worker_op_trylock(5000u)) {
+            esp_err_t st_err = iso_sd_run_self_test();
+            iso_worker_op_unlock();
+            if (st_err != ESP_OK) {
+                ESP_LOGW(TAG, "iso_sd_run_self_test failed: %s", esp_err_to_name(st_err));
+            }
+        } else {
+            ESP_LOGW(TAG, "iso_sd_run_self_test skipped: iso_op_mutex busy");
+        }
+#endif
+    } else {
+        ESP_LOGE(TAG, "iso_worker_init failed");
+    }
+#elif defined(CONFIG_SD_ENABLE) && CONFIG_SD_ENABLE
     if (iso_sd_init(NULL) == ESP_OK) {
 #if defined(CONFIG_SD_SELF_TEST_ON_BOOT) && CONFIG_SD_SELF_TEST_ON_BOOT
         esp_err_t st_err = iso_sd_run_self_test();

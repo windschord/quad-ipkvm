@@ -88,41 +88,38 @@ void test_validate_mount_policy(void) {
     TEST_ASSERT_EQUAL_INT(ISO_ERR_UNSUPPORTED_FS, iso_sd_validate_mount(true, 512u, 0x01000000u, &cb));
 }
 
-void test_clmt_to_extents_conversion_and_limits(void) {
-    iso_extent_t out[4];
-    size_t n = 99u;
+void test_write_fence_allow_and_fresult_epoch_mapping(void) {
+    TEST_ASSERT_FALSE(iso_sd_write_fence_allow(0u, 0u));
+    TEST_ASSERT_FALSE(iso_sd_write_fence_allow(0u, 1u));
+    TEST_ASSERT_FALSE(iso_sd_write_fence_allow(5u, 6u));
+    TEST_ASSERT_TRUE(iso_sd_write_fence_allow(5u, 5u));
 
-    /* Empty CLMT (0 fragments) */
-    const uint32_t empty_clmt[] = {2u, 0u};
-    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_sd_clmt_to_extents(empty_clmt, 2u, 8192u, 8u, out, 4u, &n));
-    TEST_ASSERT_EQUAL_UINT32(0u, (uint32_t)n);
+    /* FR_OK always maps to ISO_OK regardless of epoch transition after write commit. */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_sd_map_fresult_with_epoch(ISO_SD_FR_OK, 5u, 6u));
 
-    /* Multi-fragment file: database=8192, csize=8 (4 KiB clusters).
-     * frag0: ncl=10, tcl=2 -> start = 8192 + (2-2)*8 = 8192, count = 80 sectors
-     * frag1: ncl=5,  tcl=20 -> start = 8192 + (20-2)*8 = 8336, count = 40 sectors */
-    const uint32_t two_clmt[] = {6u, 10u, 2u, 5u, 20u, 0u};
-    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_sd_clmt_to_extents(two_clmt, 6u, 8192u, 8u, out, 2u, &n));
-    TEST_ASSERT_EQUAL_UINT32(2u, (uint32_t)n);
-    TEST_ASSERT_EQUAL_UINT64(8192u, out[0].start_sector);
-    TEST_ASSERT_EQUAL_UINT64(80u, out[0].sector_count);
-    TEST_ASSERT_EQUAL_UINT64(8336u, out[1].start_sector);
-    TEST_ASSERT_EQUAL_UINT64(40u, out[1].sector_count);
+    /* Failure with changed non-zero epoch becomes ISO_ERR_EPOCH (write-fence hit). */
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_EPOCH, iso_sd_map_fresult_with_epoch(ISO_SD_FR_DISK_ERR, 5u, 6u));
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_EPOCH, iso_sd_map_fresult_with_epoch(ISO_SD_FR_NOT_READY, 5u, 6u));
 
-    /* Insufficient max_out reports required fragment count and ISO_ERR_TOO_FRAGMENTED */
-    TEST_ASSERT_EQUAL_INT(ISO_ERR_TOO_FRAGMENTED,
-                          iso_sd_clmt_to_extents(two_clmt, 6u, 8192u, 8u, out, 1u, &n));
-    TEST_ASSERT_EQUAL_UINT32(2u, (uint32_t)n);
+    /* Failure with matching epoch or unpinned epoch=0 preserves normal FRESULT mapping. */
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_sd_map_fresult_with_epoch(ISO_SD_FR_DISK_ERR, 5u, 5u));
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_NOT_FOUND, iso_sd_map_fresult_with_epoch(ISO_SD_FR_NO_FILE, 0u, 6u));
+}
 
-    /* Malformed CLMT: cluster < 2, missing terminator, NULL pointers */
-    const uint32_t bad_clust[] = {4u, 3u, 1u, 0u};
-    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_sd_clmt_to_extents(bad_clust, 4u, 8192u, 8u, out, 4u, &n));
+void test_probe_backoff_schedule_and_cap(void) {
+    /* base_ms=0 falls back to 2000ms default. */
+    TEST_ASSERT_EQUAL_UINT32(2000u, iso_sd_probe_backoff_ms(0u, 0u));
+    TEST_ASSERT_EQUAL_UINT32(4000u, iso_sd_probe_backoff_ms(0u, 1u));
+    TEST_ASSERT_EQUAL_UINT32(8000u, iso_sd_probe_backoff_ms(0u, 2u));
+    TEST_ASSERT_EQUAL_UINT32(16000u, iso_sd_probe_backoff_ms(0u, 3u));
+    TEST_ASSERT_EQUAL_UINT32(30000u, iso_sd_probe_backoff_ms(0u, 4u));
+    TEST_ASSERT_EQUAL_UINT32(30000u, iso_sd_probe_backoff_ms(0u, 10u));
+    TEST_ASSERT_EQUAL_UINT32(30000u, iso_sd_probe_backoff_ms(0u, UINT32_MAX));
 
-    const uint32_t no_term[] = {3u, 3u, 2u};
-    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_sd_clmt_to_extents(no_term, 3u, 8192u, 8u, out, 4u, &n));
-
-    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_sd_clmt_to_extents(NULL, 6u, 8192u, 8u, out, 4u, &n));
-    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_sd_clmt_to_extents(two_clmt, 6u, 8192u, 8u, out, 4u, NULL));
-    TEST_ASSERT_EQUAL_INT(ISO_ERR_INVALID, iso_sd_clmt_to_extents(two_clmt, 6u, 8192u, 8u, NULL, 2u, &n));
+    /* Custom base schedules and huge base caps safely at 30000ms. */
+    TEST_ASSERT_EQUAL_UINT32(500u, iso_sd_probe_backoff_ms(500u, 0u));
+    TEST_ASSERT_EQUAL_UINT32(1000u, iso_sd_probe_backoff_ms(500u, 1u));
+    TEST_ASSERT_EQUAL_UINT32(30000u, iso_sd_probe_backoff_ms(50000u, 0u));
 }
 
 void test_fresult_mapping_and_atomic_state(void) {
@@ -277,7 +274,8 @@ int main(void) {
     RUN_TEST(test_format_fatfs_path_and_utf8_boundaries);
     RUN_TEST(test_join_path);
     RUN_TEST(test_validate_mount_policy);
-    RUN_TEST(test_clmt_to_extents_conversion_and_limits);
+    RUN_TEST(test_write_fence_allow_and_fresult_epoch_mapping);
+    RUN_TEST(test_probe_backoff_schedule_and_cap);
     RUN_TEST(test_fresult_mapping_and_atomic_state);
     RUN_TEST(test_walk_fat32_extents_and_cycle_guard);
     RUN_TEST(test_init_with_epoch_seed);

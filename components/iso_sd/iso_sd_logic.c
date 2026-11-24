@@ -37,6 +37,35 @@ int iso_sd_fresult_to_err(int fresult) {
     }
 }
 
+bool iso_sd_write_fence_allow(uint32_t mount_epoch, uint32_t current_epoch) {
+    return (mount_epoch != 0u) && (mount_epoch == current_epoch);
+}
+
+int iso_sd_map_fresult_with_epoch(int fresult, uint32_t expected_epoch, uint32_t current_epoch) {
+    if (fresult == ISO_SD_FR_OK) {
+        return ISO_OK;
+    }
+    if (expected_epoch != 0u && current_epoch != expected_epoch) {
+        return ISO_ERR_EPOCH;
+    }
+    return iso_sd_fresult_to_err(fresult);
+}
+
+uint32_t iso_sd_probe_backoff_ms(uint32_t base_ms, uint32_t consec_failures) {
+    const uint32_t max_ms = 30000u;
+    uint32_t interval = (base_ms == 0u) ? 2000u : base_ms;
+    if (interval >= max_ms) {
+        return max_ms;
+    }
+    for (uint32_t i = 0u; i < consec_failures; i++) {
+        if (interval > max_ms / 2u) {
+            return max_ms;
+        }
+        interval *= 2u;
+    }
+    return interval;
+}
+
 static bool valid_volume_path_chars(const char *path, size_t len) {
     if (!path || len == 0u || len >= ISO_PATH_MAX || path[0] != '/') {
         return false;
@@ -125,54 +154,6 @@ int iso_sd_validate_mount(bool is_fat32, uint32_t sector_size, uint32_t sectors_
         *out_cluster_bytes = cluster_bytes;
     }
     return ISO_OK;
-}
-
-int iso_sd_clmt_to_extents(const uint32_t *cltbl, size_t cltbl_cap,
-                           uint64_t database_sector, uint32_t sectors_per_cluster,
-                           iso_extent_t *out, size_t max_out, size_t *out_n) {
-    if (!cltbl || !out_n || sectors_per_cluster == 0u || cltbl_cap < 2u) {
-        return ISO_ERR_INVALID;
-    }
-    if (max_out > 0u && !out) {
-        return ISO_ERR_INVALID;
-    }
-
-    size_t frags = 0u;
-    size_t idx = 1u;
-    while (idx < cltbl_cap) {
-        uint32_t ncl = cltbl[idx];
-        if (ncl == 0u) {
-            *out_n = frags;
-            return (frags > max_out) ? ISO_ERR_TOO_FRAGMENTED : ISO_OK;
-        }
-        if (idx + 1u >= cltbl_cap) {
-            return ISO_ERR_INVALID;
-        }
-        uint32_t tcl = cltbl[idx + 1u];
-        if (tcl < 2u) {
-            return ISO_ERR_INVALID;
-        }
-
-        uint64_t rel_cluster = (uint64_t)(tcl - 2u);
-        if (rel_cluster > (UINT64_MAX - database_sector) / sectors_per_cluster) {
-            return ISO_ERR_INVALID;
-        }
-        uint64_t start_sector = database_sector + rel_cluster * (uint64_t)sectors_per_cluster;
-        uint64_t sector_count = (uint64_t)ncl * (uint64_t)sectors_per_cluster;
-        if (sector_count > UINT64_MAX - start_sector) {
-            return ISO_ERR_INVALID;
-        }
-
-        if (frags < max_out) {
-            out[frags].start_sector = start_sector;
-            out[frags].sector_count = sector_count;
-        }
-        frags++;
-        idx += 2u;
-    }
-
-    /* Missing terminating 0 entry in cltbl. */
-    return ISO_ERR_INVALID;
 }
 
 static int emit_fat32_run(uint64_t database_sector,
