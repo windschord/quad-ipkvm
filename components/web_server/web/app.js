@@ -1440,6 +1440,7 @@ const PasteViewer = (() => {
         let curEvents = [];
         let activeSteps = [];
         let layoutLoaded = false;
+        let clipboardGen = 0;
 
         function loadLayout() {
             try {
@@ -1514,12 +1515,15 @@ const PasteViewer = (() => {
         }
 
         function setPanel(open) {
-            if (!open && sending) abortSend('パネルを閉じたため送信を中止しました', false);
-            panelOpen = !!open;
+            const nextOpen = !!open;
+            if (!nextOpen && sending) abortSend('パネルを閉じたため送信を中止しました', false);
+            const wasOpen = panelOpen;
+            panelOpen = nextOpen;
             btnOpen.setAttribute('aria-expanded', panelOpen ? 'true' : 'false');
             panel.setAttribute('aria-hidden', panelOpen ? 'false' : 'true');
             if (panelOpen) {
                 ensureLayoutLoaded();
+                if (!wasOpen && typeof deps.onOpen === 'function') deps.onOpen();
                 clearError();
                 panel.classList.remove('paste-hidden');
                 if (typeof elText.focus === 'function') elText.focus();
@@ -1593,8 +1597,10 @@ const PasteViewer = (() => {
                 showError('このブラウザ環境ではクリップボード読込を利用できません。下の入力欄に直接貼り付けてください');
                 return;
             }
+            const gen = ++clipboardGen;
             try {
                 const txt = await read();
+                if (gen !== clipboardGen) return;
                 if (typeof txt !== 'string' || txt.length === 0) {
                     elStatus.textContent = 'クリップボードは空です';
                     return;
@@ -1602,6 +1608,7 @@ const PasteViewer = (() => {
                 elText.value = txt;
                 elStatus.textContent = 'クリップボードから読み込みました（' + txt.length + ' 文字）';
             } catch (err) {
+                if (gen !== clipboardGen) return;
                 showError('クリップボードの読込が拒否されました。下の入力欄に手動で貼り付けてください');
             }
         }
@@ -1662,6 +1669,7 @@ const PasteViewer = (() => {
         }
 
         function stop() {
+            clipboardGen++;
             if (sending) abortSend('終了したため送信を中止しました', false);
             elText.value = '';
             elStatus.textContent = '';
@@ -1746,6 +1754,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return Promise.reject(new Error('clipboard unavailable'));
         },
         isInputReady: () => inputGranted && !!wsInput && wsInput.readyState === WebSocket.OPEN,
+        onOpen: () => doReleaseAll(),
         onBeforeSend: () => doReleaseAll(),
         sendKeyDown: (usage) => {
             if (!inputGranted || !wsInput || wsInput.readyState !== WebSocket.OPEN) return false;

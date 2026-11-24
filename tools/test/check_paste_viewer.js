@@ -412,6 +412,7 @@ async function checkBrowser(source) {
     await guard('browser/validation rejections', async () => {
         const h = await bootApp(source);
         h.emitClick('btn-paste');
+        h.wsInput.sent.length = 0;
         h.emitSubmit();
         eq('4 empty rejected without send', [h.elements['paste-error']._classes.has('paste-hidden'), h.keyReports()], [false, []]);
 
@@ -441,10 +442,11 @@ async function checkBrowser(source) {
         eq('5 live key sent when closed', h.keyReports(), [[0x01, 0x04]]);
 
         h.emitClick('btn-paste');
-        // While paste panel is open, live window keydown/keyup do NOT forward to target
+        // Opening panel releases any held live keys immediately, then isolates keydown/keyup while open
+        eq('5 open emits releaseAll for held key', h.keyReports(), [[0x01, 0x04], [0x03]]);
         h.winListeners.keydown[0](ev('KeyB'));
         h.winListeners.keyup[0](ev('KeyA'));
-        eq('5 live keys isolated while open', h.keyReports().length, 1);
+        eq('5 live keys isolated while open', h.keyReports().length, 2);
 
         // Esc long press state still resets on keyup even while open
         h.winListeners.keyup[0](ev('Escape'));
@@ -549,6 +551,35 @@ async function checkBrowser(source) {
         await flush();
         await flush();
         eq('6 logout stops, clears textarea, and closes panel', [h2.elements['paste-text'].value, h2.elements['paste-panel']._classes.has('paste-hidden'), h2.timers.length], ['', true, 0]);
+
+        // Pending clipboard reads resolved or rejected after stop() must not overwrite textarea/error
+        let resolveClip = null;
+        const hClipRes = await bootApp(source, {
+            navigator: { clipboard: { readText: () => new Promise((r) => { resolveClip = r; }) } },
+        });
+        hClipRes.emitClick('btn-paste');
+        hClipRes.emitClick('btn-paste-clipboard');
+        hClipRes.status.value = { state: 'ready', authenticated: false };
+        hClipRes.elements['btn-logout']._listeners.click[0]();
+        await flush();
+        await flush();
+        resolveClip('stale-secret');
+        await flush();
+        eq('6 stale clipboard resolve ignored after logout', [hClipRes.elements['paste-text'].value, hClipRes.elements['paste-status'].textContent], ['', '']);
+
+        let rejectClip = null;
+        const hClipRej = await bootApp(source, {
+            navigator: { clipboard: { readText: () => new Promise((_, rej) => { rejectClip = rej; }) } },
+        });
+        hClipRej.emitClick('btn-paste');
+        hClipRej.emitClick('btn-paste-clipboard');
+        hClipRej.status.value = { state: 'ready', authenticated: false };
+        hClipRej.elements['btn-logout']._listeners.click[0]();
+        await flush();
+        await flush();
+        rejectClip(new Error('NotAllowedError'));
+        await flush();
+        eq('6 stale clipboard reject ignored after logout', hClipRej.elements['paste-error']._classes.has('paste-hidden'), true);
     });
 
     return problems;
@@ -589,6 +620,10 @@ function mutantList() {
         M('P22', 'pagehide does not abort HID paste', "    window.addEventListener('pagehide', () => {\n        paste.onBackground();", "    window.addEventListener('pagehide', () => {"),
         M('P23', 'completion does not clear textarea when checked', "finishUi('送信完了: ' + total + ' 文字', true);", "finishUi('送信完了: ' + total + ' 文字', false);"),
         M('P24', 'abort does not clear textarea when checked', "+ ' 文字送信済み）', true);", "+ ' 文字送信済み）', false);"),
+        M('P25', 'setPanel open does not call onOpen', "                if (!wasOpen && typeof deps.onOpen === 'function') deps.onOpen();\n", ''),
+        M('P26', 'stop does not bump clipboardGen', "        function stop() {\n            clipboardGen++;\n", "        function stop() {\n"),
+        M('P27', 'readClipboard ignores clipboardGen after resolve', "                const txt = await read();\n                if (gen !== clipboardGen) return;\n", "                const txt = await read();\n"),
+        M('P28', 'readClipboard ignores clipboardGen after reject', "            } catch (err) {\n                if (gen !== clipboardGen) return;\n", "            } catch (err) {\n"),
     ];
 }
 
