@@ -104,7 +104,7 @@ A-13 のテストだけで殺した数(先に落ちた実行ファイルが `tes
 | `test_reprobe_reinitializes_while_a_fault_override_is_published_even_if_the_card_reads_ready` | 上書きが公開中なら、カードが READY を返していても、再確認は再初期化する |
 | `test_a_missing_sd_status_is_not_ready_and_a_reprobe_reinitializes` | `cfg.sd == NULL` は ready でない(`boot` は走査しない)。再確認は再初期化する |
 | `test_view_slots_copy_the_id_with_its_terminator` | 動作の検査: 公開した表の欄の `id` は、終端(NUL)までが元と同じ文字列で、`id_u32` と大きさも同じ |
-| `test_impl_pin_view_slot_padding_after_the_id_is_zero` | **実装の詳細を固定するテスト(動作の検査ではない)**。公開した表の欄は、0 で埋めてから `id` を 9 バイトだけ写すので、`id` の後ろの詰め物は、元のビューの値にならない。C は、構造体の代入やコピーの後の詰め物の値を保証しない(CodeRabbit の指摘、#171)。**このテストだけが殺すミュータント(W016 / W027 など、詰め物の値だけを変えるもの)は、観測できる動作を変えない。実装の意図を固定するもので、同値の表の隣に注記する(2.1)** |
+| `test_impl_pin_view_slot_padding_after_the_id_is_zero` | **実装の詳細を固定するテスト(動作の検査ではない)**。公開した表の欄は、0 で埋めてから `id` を 9 バイトだけ写すので、`id` の後ろの詰め物は、元のビューの値にならない。C は、構造体の代入やコピーの後の詰め物の値を保証しない(CodeRabbit の指摘、#171)。**このテストだけが殺すミュータントは、観測できる動作を変えない。実装の意図を固定するもので、2.1 の「詰め物に関わるミュータントの扱い」に分けて書く: W016 は詰め物の値だけの差(外すなら同値)、W027 は配列の外への 1 バイトの書き込み(外しても同値とは書かない。W214 と同じ扱い)** |
 | `test_boot_dirs_failure_reports_the_error_to_the_hw_state_hook` | `ensure_dirs` の失敗が `set_hw_sd_state`(`state_lock` の中、`os.ctx` つき)に `ERROR` を伝える |
 | `test_pending_work_wakes_the_worker_when_the_op_lock_is_released_or_on_tick` | 動いているジョブだけ / 再確認の要求だけが残っているとき、`op_unlock` と `tick` が起こす。何もなければ起こさない |
 | `test_notify_hands_the_hw_hook_the_non_ready_state_and_the_published_consumed_since` | `set_hw_sd_state` に渡すのは、読み替えた後の状態。ビューのコールバックの `consumed_since` は、直前に公開した値 |

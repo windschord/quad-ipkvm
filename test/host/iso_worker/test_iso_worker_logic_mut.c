@@ -1122,7 +1122,8 @@ void test_view_slots_copy_the_id_with_its_terminator(void) {
 /* 実装の詳細を固定するテスト(動作の検査ではない)。C は、構造体のメンバーの代入や構造体のコピーの後の詰め物の値を
  * 保証しない。ここで固定するのは、実装が公開スロットを 0 で埋めてから、id を ISO_ID_LEN + 1 バイトだけ写す、という意図
  * (id の後ろの詰め物が、元のビューの値に変わらない)。観測できる動作は変わらないので、これだけが殺すミュータントは、
- * docs/ISO_WORKER_TESTS.md の「詰め物だけを変えるもの」に分けて数える。 */
+ * docs/ISO_WORKER_TESTS.md 2.1 の「詰め物に関わるミュータントの扱い」に分けて数える(W016 = 詰め物の値だけの差。
+ * W027 = 9 バイトの id 配列への 10 バイト目の書き込みで、配列の外なので、同値とは書かない)。 */
 void test_impl_pin_view_slot_padding_after_the_id_is_zero(void) {
     w_setup(8192u);
     seed_images(1u);
