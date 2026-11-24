@@ -1576,6 +1576,7 @@ const PasteViewer = (() => {
                 showError('入力 WebSocket が未接続、または制御権がありません');
                 return;
             }
+            clipboardGen++;
             deps.onBeforeSend();
             sending = true;
             activeSteps = plan.steps;

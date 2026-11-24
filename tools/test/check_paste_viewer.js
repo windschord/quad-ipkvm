@@ -580,6 +580,34 @@ async function checkBrowser(source) {
         rejectClip(new Error('NotAllowedError'));
         await flush();
         eq('6 stale clipboard reject ignored after logout', hClipRej.elements['paste-error']._classes.has('paste-hidden'), true);
+
+        // Pending clipboard read started before startSend() must be invalidated on valid send start,
+        // while validation failure must NOT invalidate the pending read
+        let resolveSendClip = null;
+        const hClipSend = await bootApp(source, {
+            navigator: { clipboard: { readText: () => new Promise((r) => { resolveSendClip = r; }) } },
+        });
+        hClipSend.emitClick('btn-paste');
+        hClipSend.emitClick('btn-paste-clipboard');
+        hClipSend.elements['paste-text'].value = 'go';
+        hClipSend.emitSubmit();
+        while (hClipSend.stepTimer() !== null) {}
+        eq('6 cleared text right after send completion', hClipSend.elements['paste-text'].value, '');
+        resolveSendClip('late-secret');
+        await flush();
+        eq('6 stale clipboard resolve ignored after send', [hClipSend.elements['paste-text'].value, hClipSend.elements['paste-status'].textContent], ['', '送信完了: 2 文字']);
+
+        let resolveValErrClip = null;
+        const hClipVal = await bootApp(source, {
+            navigator: { clipboard: { readText: () => new Promise((r) => { resolveValErrClip = r; }) } },
+        });
+        hClipVal.emitClick('btn-paste');
+        hClipVal.emitClick('btn-paste-clipboard');
+        hClipVal.emitSubmit(); // validation failure (empty) must NOT invalidate clipboard read
+        eq('6 validation error shown', hClipVal.elements['paste-error']._classes.has('paste-hidden'), false);
+        resolveValErrClip('after-val-err');
+        await flush();
+        eq('6 clipboard read still applies after validation error', hClipVal.elements['paste-text'].value, 'after-val-err');
     });
 
     return problems;
@@ -624,6 +652,7 @@ function mutantList() {
         M('P26', 'stop does not bump clipboardGen', "        function stop() {\n            clipboardGen++;\n", "        function stop() {\n"),
         M('P27', 'readClipboard ignores clipboardGen after resolve', "                const txt = await read();\n                if (gen !== clipboardGen) return;\n", "                const txt = await read();\n"),
         M('P28', 'readClipboard ignores clipboardGen after reject', "            } catch (err) {\n                if (gen !== clipboardGen) return;\n", "            } catch (err) {\n"),
+        M('P29', 'startSend does not bump clipboardGen', "            clipboardGen++;\n            deps.onBeforeSend();", "            deps.onBeforeSend();"),
     ];
 }
 
