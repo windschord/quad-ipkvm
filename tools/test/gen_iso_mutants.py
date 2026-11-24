@@ -6,7 +6,8 @@ if 条件の否定、文の削除、定数の ±1、真偽値の反転。old の
 使い方(リポジトリのルートで):
   python3 tools/test/gen_iso_mutants.py upload . > tools/test/iso_upload_mutants.py
   python3 tools/test/gen_iso_mutants.py core . > tools/test/iso_core_mutants.py
-  python3 tools/test/gen_iso_mutants.py api . > tools/test/iso_api_mutants.py"""
+  python3 tools/test/gen_iso_mutants.py api . > tools/test/iso_api_mutants.py
+  python3 tools/test/gen_iso_mutants.py worker . > tools/test/iso_worker_mutants.py"""
 import re
 import sys
 
@@ -133,14 +134,15 @@ def line_variants(line):
     return res
 
 
-def gen(path, prefix, file_const, inc):
+def gen(path, prefix, file_const, inc, variants=None):
+    variants = variants or line_variants
     src = open(path).read()
     lines = src.split("\n")
     out = []
     seen = set()
     nid = 1
     for i, line in enumerate(lines):
-        for desc, newline in line_variants(line):
+        for desc, newline in variants(line):
             old, new = line, newline
             # 一意にする
             lo, hi = i, i
@@ -164,6 +166,18 @@ def gen(path, prefix, file_const, inc):
             out.append((("%s%03d" % (prefix, nid)), "L%d: %s" % (i + 1, desc), old, new_block, file_const, inc))
             nid += 1
     return out
+
+
+def ctx_variants(line):
+    """iso_worker_logic.c: OS の関数に渡す文脈(cfg.os.ctx)を NULL にする(呼び出しの箇所ごとに 1 つ)。ctx を取り違える配線の誤りを調べる"""
+    code, comment = split_comment(line)
+    masked = mask_strings(code)
+    res = []
+    for m in re.finditer(r"\b\w+(?:->|\.)cfg\.os\.ctx\b", masked):
+        nl = code[: m.start()] + "NULL" + code[m.end():] + comment
+        if nl != line:
+            res.append(("os.ctx -> NULL", nl))
+    return res
 
 
 PRAGMAS = '''
@@ -193,11 +207,11 @@ def pragma_header(inc):
     return "INC = %r\nPRAGMAS = %r\n" % (inc, PRAGMAS)
 
 
-USAGE = "usage: gen_iso_mutants.py {upload|core|api} <repo-root>   (標準出力に、ミュータントの Python ソースを書く)\n"
+USAGE = "usage: gen_iso_mutants.py {upload|core|api|worker} <repo-root>   (標準出力に、ミュータントの Python ソースを書く)\n"
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] not in ("upload", "core", "api"):
+    if len(sys.argv) != 3 or sys.argv[1] not in ("upload", "core", "api", "worker"):
         sys.stderr.write(USAGE)
         sys.exit(2)
     mode = sys.argv[1]
@@ -235,6 +249,20 @@ def M(id, desc, *edits, file=AP):
 
 MUTANTS = [
 '''
+    elif mode == "worker":
+        files = [("components/iso_worker/iso_worker_logic.c", "W", "WL", '#include "iso_worker_logic.h"')]
+        inc_line = '#include "iso_worker_logic.h"'
+        header = '''# iso_worker_logic.c のミュータント。tools/test/gen_iso_mutants.py が、ソースから機械的に作ったもの(iso_upload_mutants.py と同じ方法)。
+# ソースを変えたら、gen_iso_mutants.py で作り直す。手書きの追加分は iso_worker_mutants_extra.py(別のファイル)。
+WL = "components/iso_worker/iso_worker_logic.c"
+
+
+def M(id, desc, *edits, file=WL):
+    return {"id": id, "desc": desc, "edits": list(edits), "file": file}
+
+
+MUTANTS = [
+'''
     else:
         files = [("components/iso_core/iso_core.c", "K", "CO", '#include "iso_core.h"')]
         inc_line = '#include "iso_core.h"'
@@ -251,6 +279,8 @@ MUTANTS = [
     items = []
     for path, prefix, const, inc in files:
         items += gen(root + "/" + path, prefix, const, inc)
+        if mode == "worker":
+            items += gen(root + "/" + path, "WC", const, inc, ctx_variants)
     assert all(it[5] == inc_line for it in items)  # #include は、モードごとに 1 つ
     i = header.index("\n\ndef M(")
     sys.stdout.write(header[:i] + "\n" + pragma_header(inc_line) + header[i:] + render(items) + "\n]\n")
