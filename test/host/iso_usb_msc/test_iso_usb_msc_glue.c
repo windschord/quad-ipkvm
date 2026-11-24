@@ -744,6 +744,235 @@ void test_target_start_stop_unit_eject_releases_extent_ref(void) {
     TEST_ASSERT_EQUAL_UINT32(0u, iso_extent_table_unref(tbl));
 }
 
+typedef struct {
+    uint32_t target_id;
+    iso_extent_table_t *tbl;
+    uint32_t lookup_calls;
+    uint32_t acquire_calls;
+} test_resolver_ctx_t;
+
+static int test_res_lookup_size_locked(void *ctx, uint32_t media_id, uint64_t *out_bytes) {
+    test_resolver_ctx_t *rc = (test_resolver_ctx_t *)ctx;
+    rc->lookup_calls++;
+    if (rc->tbl == NULL || media_id != rc->target_id) {
+        return ISO_ERR_NOT_FOUND;
+    }
+    *out_bytes = iso_extent_table_size_bytes(rc->tbl);
+    return ISO_OK;
+}
+
+static iso_extent_table_t *test_res_acquire_table_locked(void *ctx, uint32_t media_id) {
+    test_resolver_ctx_t *rc = (test_resolver_ctx_t *)ctx;
+    rc->acquire_calls++;
+    if (rc->tbl == NULL || media_id != rc->target_id) {
+        return NULL;
+    }
+    iso_extent_table_ref(rc->tbl);
+    return rc->tbl;
+}
+
+void test_resolver_delegation_refcounts_and_clear(void) {
+    mock_bdev_t raw = {.current_epoch = 4u, .fail_after_reads = -1};
+    for (uint32_t s = 0; s < 16u; s++) {
+        memset(raw.sectors[s], (int)(0x60u + s), ISO_SECTOR_BYTES);
+    }
+    const iso_extent_t ext = {.start_sector = 0u, .sector_count = 16u};
+    const iso_part_input_t part = {.file_bytes = 4u * ISO_CD_BLOCK_BYTES, .extents = &ext, .n_extents = 1u};
+    iso_extent_table_t *tbl = NULL;
+    TEST_ASSERT_EQUAL_INT(
+        ISO_EXT_OK, iso_extent_table_build(&s_alloc, 4u, 4u * ISO_CD_BLOCK_BYTES, 4u, &part, 1u, &tbl));
+
+    iso_blockdev_t bdev = {
+        .ctx = &raw,
+        .read_sectors = mock_bdev_read_sectors,
+        .epoch = mock_bdev_epoch,
+    };
+    harness_t h;
+    harness_init(&h, &bdev, 4u * ISO_CD_BLOCK_BYTES);
+
+    test_resolver_ctx_t rctx = {.target_id = 0x55u, .tbl = tbl};
+    const iso_usb_msc_table_resolver_t res = {
+        .ctx = &rctx,
+        .lookup_size_locked = test_res_lookup_size_locked,
+        .acquire_table_locked = test_res_acquire_table_locked,
+    };
+    iso_usb_msc_extent_backend_set_resolver(&h.backend, &res);
+    iso_media_mount(&h.media, 0x55u, false);
+
+    uint8_t k = 0u, a = 0u, q = 0u;
+    const uint8_t tur[6] = {0x00u};
+    host_run_bot_transaction(&h, 70u, 0u, 0x00u, tur, 6u, NULL, 0u);
+    host_request_sense(&h, 71u, &k, &a, &q);
+
+    const uint8_t rdcap[10] = {0x25u};
+    host_run_bot_transaction(&h, 72u, 8u, 0x80u, rdcap, 10u, NULL, 0u);
+    TEST_ASSERT_EQUAL_UINT8(MSC_BOT_CSW_PASSED, h.csw_status);
+    TEST_ASSERT_GREATER_THAN_UINT32(0u, rctx.lookup_calls);
+    TEST_ASSERT_EQUAL_UINT32(3u, (uint32_t)h.rx_data[3]); /* last LBA = 4 - 1 = 3 */
+
+    const uint8_t rd10[10] = {0x28u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 2u, 0u};
+    host_run_bot_transaction(&h, 73u, 2u * ISO_CD_BLOCK_BYTES, 0x80u, rd10, 10u, NULL, 0u);
+    TEST_ASSERT_EQUAL_UINT8(MSC_BOT_CSW_PASSED, h.csw_status);
+    TEST_ASSERT_EQUAL_UINT32(1u, rctx.acquire_calls);
+    TEST_ASSERT_EQUAL_MEMORY(raw.sectors[0], h.rx_data, 8u * ISO_SECTOR_BYTES);
+    TEST_ASSERT_EQUAL_UINT32(1u, iso_extent_table_refs(tbl)); /* command_done unref'd */
+
+    /* Unknown ID -> NOT READY */
+    iso_media_mount(&h.media, 0x99u, true);
+    host_run_bot_transaction(&h, 74u, 0u, 0x00u, tur, 6u, NULL, 0u);
+    TEST_ASSERT_EQUAL_UINT8(MSC_BOT_CSW_FAILED, h.csw_status);
+    host_request_sense(&h, 75u, &k, &a, &q); /* UA 06h/28h */
+    host_run_bot_transaction(&h, 76u, 0u, 0x00u, tur, 6u, NULL, 0u);
+    TEST_ASSERT_EQUAL_UINT8(MSC_BOT_CSW_FAILED, h.csw_status);
+    host_request_sense(&h, 77u, &k, &a, &q);
+    TEST_ASSERT_EQUAL_HEX8(0x02u, k);
+    TEST_ASSERT_EQUAL_HEX8(0x3Au, a);
+
+    /* Clear resolver and verify fallback to standalone table image */
+    iso_usb_msc_extent_backend_set_resolver(&h.backend, NULL);
+    iso_usb_msc_extent_backend_set_image(&h.backend, 0x55u, tbl);
+    iso_media_mount(&h.media, 0x55u, true);
+    host_run_bot_transaction(&h, 78u, 0u, 0x00u, tur, 6u, NULL, 0u);
+    host_request_sense(&h, 79u, &k, &a, &q);
+    host_run_bot_transaction(&h, 80u, 2u * ISO_CD_BLOCK_BYTES, 0x80u, rd10, 10u, NULL, 0u);
+    TEST_ASSERT_EQUAL_UINT8(MSC_BOT_CSW_PASSED, h.csw_status);
+    TEST_ASSERT_EQUAL_UINT32(2u, iso_extent_table_refs(tbl));
+
+    harness_destroy(&h);
+    TEST_ASSERT_EQUAL_UINT32(0u, iso_extent_table_unref(tbl));
+}
+
+void test_table_epoch_matches_valid_stale_and_null(void) {
+    mock_bdev_t raw = {.current_epoch = 7u, .fail_after_reads = -1};
+    const iso_extent_t ext = {.start_sector = 0u, .sector_count = ISO_SECTORS_PER_BLOCK};
+    const iso_part_input_t part = {.file_bytes = ISO_CD_BLOCK_BYTES, .extents = &ext, .n_extents = 1u};
+    iso_extent_table_t *tbl = NULL;
+    TEST_ASSERT_EQUAL_INT(
+        ISO_EXT_OK, iso_extent_table_build(&s_alloc, 7u, ISO_CD_BLOCK_BYTES, 1u, &part, 1u, &tbl));
+
+    iso_blockdev_t bdev = {
+        .ctx = &raw,
+        .read_sectors = mock_bdev_read_sectors,
+        .epoch = mock_bdev_epoch,
+    };
+    TEST_ASSERT_TRUE(iso_usb_msc_table_epoch_matches(&bdev, tbl));
+
+    raw.current_epoch = 8u;
+    TEST_ASSERT_FALSE(iso_usb_msc_table_epoch_matches(&bdev, tbl));
+
+    iso_blockdev_t bdev_no_epoch = {.ctx = &raw, .read_sectors = mock_bdev_read_sectors, .epoch = NULL};
+    TEST_ASSERT_FALSE(iso_usb_msc_table_epoch_matches(NULL, tbl));
+    TEST_ASSERT_FALSE(iso_usb_msc_table_epoch_matches(&bdev_no_epoch, tbl));
+    TEST_ASSERT_FALSE(iso_usb_msc_table_epoch_matches(&bdev, NULL));
+
+    TEST_ASSERT_EQUAL_UINT32(0u, iso_extent_table_unref(tbl));
+}
+
+void test_on_disconnect_media_clears_prevent_removal_and_keeps_media_loaded(void) {
+    mock_bdev_t raw = {.current_epoch = 1u, .fail_after_reads = -1};
+    const iso_extent_t ext = {.start_sector = 0u, .sector_count = ISO_SECTORS_PER_BLOCK};
+    const iso_part_input_t part = {.file_bytes = ISO_CD_BLOCK_BYTES, .extents = &ext, .n_extents = 1u};
+    iso_extent_table_t *tbl = NULL;
+    TEST_ASSERT_EQUAL_INT(
+        ISO_EXT_OK, iso_extent_table_build(&s_alloc, 1u, ISO_CD_BLOCK_BYTES, 1u, &part, 1u, &tbl));
+
+    iso_blockdev_t bdev = {
+        .ctx = &raw,
+        .read_sectors = mock_bdev_read_sectors,
+        .epoch = mock_bdev_epoch,
+    };
+    harness_t h;
+    harness_init(&h, &bdev, 4u * ISO_CD_BLOCK_BYTES);
+
+    iso_usb_msc_extent_backend_set_image(&h.backend, 0x77u, tbl);
+    iso_media_mount(&h.media, 0x77u, false);
+
+    uint8_t k = 0u, a = 0u, q = 0u;
+    const uint8_t prevent_on[6] = {0x1Eu, 0u, 0u, 0u, 0x01u, 0u};
+    host_run_bot_transaction(&h, 90u, 0u, 0x00u, prevent_on, 6u, NULL, 0u);
+    host_request_sense(&h, 91u, &k, &a, &q);
+    host_run_bot_transaction(&h, 92u, 0u, 0x00u, prevent_on, 6u, NULL, 0u);
+    TEST_ASSERT_EQUAL_UINT8(MSC_BOT_CSW_PASSED, h.csw_status);
+
+    TEST_ASSERT_EQUAL_INT(ISO_MEDIA_LOCKED, iso_media_eject(&h.media, false));
+    TEST_ASSERT_TRUE(iso_media_is_loaded(&h.media));
+
+    iso_usb_msc_on_disconnect_media(NULL);
+    iso_usb_msc_on_disconnect_media(&h.media);
+    TEST_ASSERT_TRUE(iso_media_is_loaded(&h.media));
+    TEST_ASSERT_EQUAL_INT(ISO_MEDIA_EJECTED, iso_media_eject(&h.media, false));
+    TEST_ASSERT_FALSE(iso_media_is_loaded(&h.media));
+
+    harness_destroy(&h);
+    TEST_ASSERT_EQUAL_UINT32(0u, iso_extent_table_unref(tbl));
+}
+
+static void mock_bdev_epoch_bump(void *ctx) {
+    ((mock_bdev_t *)ctx)->current_epoch++;
+}
+
+static void test_force_eject_epoch_bump_cb(void *ctx) {
+    const iso_blockdev_t *bd = (const iso_blockdev_t *)ctx;
+    if (bd != NULL && bd->epoch_bump != NULL) {
+        bd->epoch_bump(bd->ctx);
+    }
+}
+
+void test_force_eject_callback_bumps_epoch_and_rejects_in_flight_read(void) {
+    mock_bdev_t raw = {.current_epoch = 2u, .fail_after_reads = -1};
+    const iso_extent_t ext = {.start_sector = 0u, .sector_count = 8u};
+    const iso_part_input_t part = {.file_bytes = 2u * ISO_CD_BLOCK_BYTES, .extents = &ext, .n_extents = 1u};
+    iso_extent_table_t *tbl = NULL;
+    TEST_ASSERT_EQUAL_INT(
+        ISO_EXT_OK, iso_extent_table_build(&s_alloc, 2u, 2u * ISO_CD_BLOCK_BYTES, 2u, &part, 1u, &tbl));
+
+    iso_blockdev_t bdev = {
+        .ctx = &raw,
+        .read_sectors = mock_bdev_read_sectors,
+        .epoch = mock_bdev_epoch,
+        .epoch_bump = mock_bdev_epoch_bump,
+    };
+
+    iso_media_t media;
+    iso_media_init(&media, test_force_eject_epoch_bump_cb, &bdev);
+    iso_usb_msc_extent_backend_t be;
+    iso_usb_msc_extent_backend_init(&be, &bdev, NULL, NULL, NULL);
+    iso_usb_msc_extent_backend_set_image(&be, 0x88u, tbl);
+    mmc_scsi_t scsi;
+    const mmc_scsi_backend_t scsi_be = iso_usb_msc_extent_backend_as_scsi(&be);
+    TEST_ASSERT_EQUAL_INT(0, mmc_scsi_init(&scsi, &media, &scsi_be));
+
+    TEST_ASSERT_EQUAL_INT(ISO_MEDIA_MOUNTED, iso_media_mount(&media, 0x88u, false));
+
+    /* Clear UA and begin READ(10) to acquire extent ref */
+    uint8_t out[64] = {0};
+    mmc_result_t mr;
+    const uint8_t tur[6] = {0x00u};
+    mmc_scsi_execute(&scsi, tur, 6u, MMC_DIR_NONE, 0u, out, sizeof(out), &mr);
+    const uint8_t req_sense[6] = {0x03u, 0u, 0u, 0u, 18u, 0u};
+    mmc_scsi_execute(&scsi, req_sense, 6u, MMC_DIR_IN, 18u, out, sizeof(out), &mr);
+
+    const uint8_t rd10[10] = {0x28u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 1u, 0u};
+    mmc_scsi_execute(&scsi, rd10, 10u, MMC_DIR_IN, ISO_CD_BLOCK_BYTES, out, sizeof(out), &mr);
+    TEST_ASSERT_EQUAL_INT(MMC_STATUS_GOOD, mr.status);
+    TEST_ASSERT_TRUE(mr.read.is_read);
+    TEST_ASSERT_EQUAL_UINT32(3u, iso_extent_table_refs(tbl));
+
+    /* Force eject fires on_force_eject -> bdev->epoch_bump while read is in flight */
+    iso_media_force_eject(&media);
+    TEST_ASSERT_EQUAL_UINT32(3u, raw.current_epoch);
+    TEST_ASSERT_FALSE(iso_usb_msc_table_epoch_matches(&bdev, tbl));
+
+    uint8_t read_buf[ISO_CD_BLOCK_BYTES];
+    TEST_ASSERT_EQUAL_INT(MMC_STATUS_CHECK_CONDITION,
+                          mmc_scsi_read_blocks(&scsi, 0u, 1u, read_buf, sizeof(read_buf)));
+    mmc_scsi_command_done(&scsi);
+    iso_usb_msc_sync_media_backend(&media, &be);
+    TEST_ASSERT_EQUAL_UINT32(1u, iso_extent_table_refs(tbl));
+
+    TEST_ASSERT_EQUAL_UINT32(0u, iso_extent_table_unref(tbl));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_inquiry_and_tur_empty);
@@ -753,5 +982,9 @@ int main(void) {
     RUN_TEST(test_mid_command_bus_reset_defers_reset_done_and_reports_ua_29);
     RUN_TEST(test_highly_fragmented_spans_full_fallback);
     RUN_TEST(test_target_start_stop_unit_eject_releases_extent_ref);
+    RUN_TEST(test_resolver_delegation_refcounts_and_clear);
+    RUN_TEST(test_table_epoch_matches_valid_stale_and_null);
+    RUN_TEST(test_on_disconnect_media_clears_prevent_removal_and_keeps_media_loaded);
+    RUN_TEST(test_force_eject_callback_bumps_epoch_and_rejects_in_flight_read);
     return UNITY_END();
 }

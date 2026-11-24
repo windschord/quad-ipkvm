@@ -74,6 +74,11 @@ static int be_size_bytes(void *ctx, uint32_t media_id, uint64_t *out) {
         return ISO_ERR_INVALID;
     }
     be_lock(be);
+    iso_usb_msc_table_resolver_t res = be->resolver;
+    if (res.lookup_size_locked != NULL) {
+        be_unlock(be);
+        return res.lookup_size_locked(res.ctx, media_id, out);
+    }
     if (be->table == NULL || be->media_id != media_id) {
         be_unlock(be);
         return ISO_ERR_NOT_FOUND;
@@ -90,6 +95,16 @@ static int be_acquire(void *ctx, uint32_t media_id, void **handle) {
     }
     *handle = NULL;
     be_lock(be);
+    iso_usb_msc_table_resolver_t res = be->resolver;
+    if (res.acquire_table_locked != NULL) {
+        be_unlock(be);
+        iso_extent_table_t *tbl = res.acquire_table_locked(res.ctx, media_id);
+        if (tbl == NULL) {
+            return ISO_ERR_NOT_FOUND;
+        }
+        *handle = tbl;
+        return ISO_OK;
+    }
     if (be->table == NULL || be->media_id != media_id) {
         be_unlock(be);
         return ISO_ERR_NOT_FOUND;
@@ -205,6 +220,33 @@ void iso_usb_msc_extent_backend_set_blockdev(iso_usb_msc_extent_backend_t *be,
     be_lock(be);
     be->bdev = bdev;
     be_unlock(be);
+}
+
+void iso_usb_msc_extent_backend_set_resolver(iso_usb_msc_extent_backend_t *be,
+                                             const iso_usb_msc_table_resolver_t *resolver) {
+    if (be == NULL) {
+        return;
+    }
+    be_lock(be);
+    if (resolver != NULL) {
+        be->resolver = *resolver;
+    } else {
+        memset(&be->resolver, 0, sizeof(be->resolver));
+    }
+    be_unlock(be);
+}
+
+bool iso_usb_msc_table_epoch_matches(const iso_blockdev_t *bdev, const iso_extent_table_t *table) {
+    if (bdev == NULL || bdev->epoch == NULL || table == NULL) {
+        return false;
+    }
+    return iso_extent_table_epoch(table) == bdev->epoch(bdev->ctx);
+}
+
+void iso_usb_msc_on_disconnect_media(iso_media_t *media) {
+    if (media != NULL) {
+        iso_media_bus_reset(media);
+    }
 }
 
 void iso_usb_msc_extent_backend_set_image(iso_usb_msc_extent_backend_t *be,

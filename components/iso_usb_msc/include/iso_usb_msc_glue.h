@@ -8,6 +8,7 @@
  * Host-testable with ASan/UBSan and free of ESP-IDF/FreeRTOS/TinyUSB types.
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "iso_extent.h"
@@ -30,12 +31,25 @@ extern "C" {
 void iso_usb_msc_exec_cmd(mmc_scsi_t *scsi, const msc_bot_cmd_t *cmd, msc_bot_cmd_result_t *out_res);
 
 /**
+ * @brief Optional external table resolver (e.g. iso_worker) invoked under shared iso_state_mutex.
+ *
+ * acquire_table_locked MUST return a table with an incremented reference count (released later via
+ * iso_extent_table_unref() inside mmc_scsi_backend_t.release()).
+ */
+typedef struct {
+    void *ctx;
+    int (*lookup_size_locked)(void *ctx, uint32_t media_id, uint64_t *out_bytes);
+    iso_extent_table_t *(*acquire_table_locked)(void *ctx, uint32_t media_id);
+} iso_usb_msc_table_resolver_t;
+
+/**
  * @brief Backing state for mmc_scsi_backend_t built over iso_extent_table_t + iso_blockdev_t.
  */
 typedef struct {
     const iso_blockdev_t *bdev;
     uint32_t media_id;
     iso_extent_table_t *table;
+    iso_usb_msc_table_resolver_t resolver;
     void *lock_ctx;
     void (*lock)(void *ctx);
     void (*unlock)(void *ctx);
@@ -47,6 +61,16 @@ void iso_usb_msc_extent_backend_init(iso_usb_msc_extent_backend_t *be,
                                      void (*lock)(void *ctx),
                                      void (*unlock)(void *ctx),
                                      void *lock_ctx);
+
+/** @brief Install or clear an external locked table resolver (e.g. iso_worker_logic). */
+void iso_usb_msc_extent_backend_set_resolver(iso_usb_msc_extent_backend_t *be,
+                                             const iso_usb_msc_table_resolver_t *resolver);
+
+/** @brief Check whether @p table's snapshot epoch matches the current blockdev epoch. */
+bool iso_usb_msc_table_epoch_matches(const iso_blockdev_t *bdev, const iso_extent_table_t *table);
+
+/** @brief Clear prevent_removal on physical/soft USB disconnect per ISO_MOUNT_DESIGN §5.5. */
+void iso_usb_msc_on_disconnect_media(iso_media_t *media);
 
 /** @brief Replace or clear the underlying raw block device handle. */
 void iso_usb_msc_extent_backend_set_blockdev(iso_usb_msc_extent_backend_t *be,

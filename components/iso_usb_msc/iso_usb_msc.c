@@ -38,7 +38,12 @@ static QueueHandle_t s_cmd_queue = NULL;
 static QueueHandle_t s_res_queue = NULL;
 static TaskHandle_t s_worker_task = NULL;
 
-static iso_media_t s_media;
+static iso_media_t s_owned_media;
+static iso_media_t *s_media_ptr = NULL;
+static void *s_ext_state_ctx = NULL;
+static void (*s_ext_state_lock)(void *ctx) = NULL;
+static void (*s_ext_state_unlock)(void *ctx) = NULL;
+static bool s_using_ext_resolver = false;
 static iso_usb_msc_extent_backend_t s_backend;
 static mmc_scsi_t s_scsi;
 static msc_bot_t s_bot;
@@ -74,6 +79,32 @@ static void backend_unlock_cb(void *ctx) {
     }
 }
 
+static void msc_state_lock(void) {
+    if (s_ext_state_lock != NULL) {
+        s_ext_state_lock(s_ext_state_ctx);
+    } else if (s_state_mutex != NULL) {
+        xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    }
+}
+
+static void msc_state_unlock(void) {
+    if (s_ext_state_unlock != NULL) {
+        s_ext_state_unlock(s_ext_state_ctx);
+    } else if (s_state_mutex != NULL) {
+        xSemaphoreGive(s_state_mutex);
+    }
+}
+
+static void standalone_on_force_eject_cb(void *ctx) {
+    (void)ctx;
+    backend_lock_cb(NULL);
+    const iso_blockdev_t *bdev = s_backend.bdev;
+    backend_unlock_cb(NULL);
+    if (bdev != NULL && bdev->epoch_bump != NULL) {
+        bdev->epoch_bump(bdev->ctx);
+    }
+}
+
 static void on_msc_result_deferred(void *param) {
     (void)param;
     if (__atomic_load_n(&s_usb_uninstalling, __ATOMIC_SEQ_CST)) {
@@ -94,10 +125,12 @@ static void iso_msc_task(void *arg) {
         }
         msc_bot_cmd_result_t res;
         if (cmd.kind == MSC_BOT_CMD_EXECUTE) {
-            xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+            msc_state_lock();
             iso_usb_msc_exec_cmd(&s_scsi, &cmd, &res);
-            iso_usb_msc_sync_media_backend(&s_media, &s_backend);
-            xSemaphoreGive(s_state_mutex);
+            if (!s_using_ext_resolver) {
+                iso_usb_msc_sync_media_backend(s_media_ptr, &s_backend);
+            }
+            msc_state_unlock();
         } else {
             /* READ_BLOCKS performs blocking SD I/O without iso_state_mutex (mmc_scsi.h). */
             iso_usb_msc_exec_cmd(&s_scsi, &cmd, &res);
@@ -203,10 +236,12 @@ static int bot_submit_command(void *ctx, const msc_bot_cmd_t *cmd) {
 
 static void bot_command_done(void *ctx) {
     (void)ctx;
-    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    msc_state_lock();
     mmc_scsi_command_done(&s_scsi);
-    iso_usb_msc_sync_media_backend(&s_media, &s_backend);
-    xSemaphoreGive(s_state_mutex);
+    if (!s_using_ext_resolver) {
+        iso_usb_msc_sync_media_backend(s_media_ptr, &s_backend);
+    }
+    msc_state_unlock();
 }
 
 static void bot_reset_done(void *ctx) {
@@ -243,9 +278,9 @@ static bool msc_drv_deinit(void) {
 
     if (s_initialized) {
         __atomic_store_n(&s_usb_uninstalling, true, __ATOMIC_SEQ_CST);
-        xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-        iso_media_bus_reset(&s_media);
-        xSemaphoreGive(s_state_mutex);
+        msc_state_lock();
+        iso_media_bus_reset(s_media_ptr);
+        msc_state_unlock();
         msc_bot_detach(&s_bot);
 
         /* Wait for any in-flight worker command so usbd_defer_func() never hits a torndown queue. */
@@ -286,9 +321,9 @@ static void msc_drv_reset(uint8_t rhport) {
     if (!s_initialized) {
         return;
     }
-    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-    iso_media_bus_reset(&s_media);
-    xSemaphoreGive(s_state_mutex);
+    msc_state_lock();
+    iso_media_bus_reset(s_media_ptr);
+    msc_state_unlock();
     msc_bot_detach(&s_bot);
 }
 
@@ -471,15 +506,62 @@ static void cleanup_init_resources(void) {
     s_csw_buf = NULL;
     s_data_buf[0] = NULL;
     s_data_buf[1] = NULL;
+    s_media_ptr = NULL;
+    s_ext_state_ctx = NULL;
+    s_ext_state_lock = NULL;
+    s_ext_state_unlock = NULL;
+    s_using_ext_resolver = false;
 }
 
 esp_err_t iso_usb_msc_init(const iso_blockdev_t *bdev) {
+    const iso_usb_msc_config_t cfg = {
+        .bdev = bdev,
+    };
+    return iso_usb_msc_init_ex(&cfg);
+}
+
+esp_err_t iso_usb_msc_init_ex(const iso_usb_msc_config_t *cfg) {
     if (s_initialized) {
-        iso_usb_msc_set_blockdev(bdev);
+        if (cfg != NULL) {
+            iso_usb_msc_set_blockdev(cfg->bdev);
+            if (cfg->resolver.lookup_size_locked != NULL &&
+                cfg->resolver.acquire_table_locked != NULL) {
+                iso_usb_msc_extent_backend_set_resolver(&s_backend, &cfg->resolver);
+                msc_state_lock();
+                s_using_ext_resolver = true;
+                msc_state_unlock();
+            }
+        }
         return ESP_OK;
     }
 
-    s_state_mutex = xSemaphoreCreateMutex();
+    if (cfg != NULL) {
+        if ((cfg->state_lock != NULL) != (cfg->state_unlock != NULL)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        if (cfg->shared_media != NULL && cfg->state_lock == NULL) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        if ((cfg->resolver.lookup_size_locked != NULL) !=
+            (cfg->resolver.acquire_table_locked != NULL)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+
+    s_ext_state_ctx = (cfg != NULL) ? cfg->state_lock_ctx : NULL;
+    s_ext_state_lock = (cfg != NULL) ? cfg->state_lock : NULL;
+    s_ext_state_unlock = (cfg != NULL) ? cfg->state_unlock : NULL;
+    s_using_ext_resolver =
+        (cfg != NULL && cfg->resolver.lookup_size_locked != NULL &&
+         cfg->resolver.acquire_table_locked != NULL);
+
+    if (s_ext_state_lock == NULL) {
+        s_state_mutex = xSemaphoreCreateMutex();
+        if (s_state_mutex == NULL) {
+            cleanup_init_resources();
+            return ESP_ERR_NO_MEM;
+        }
+    }
     s_backend_mutex = xSemaphoreCreateMutex();
     s_cmd_queue = xQueueCreate(1, sizeof(msc_bot_cmd_t));
     s_res_queue = xQueueCreate(4, sizeof(msc_bot_cmd_result_t));
@@ -492,23 +574,31 @@ esp_err_t iso_usb_msc_init(const iso_blockdev_t *bdev) {
     s_data_buf[1] = heap_caps_aligned_alloc(ISO_MSC_DMA_ALIGN, ISO_MSC_BUF_SIZE,
                                             MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
 
-    if (s_state_mutex == NULL || s_backend_mutex == NULL ||
-        s_cmd_queue == NULL || s_res_queue == NULL ||
+    if (s_backend_mutex == NULL || s_cmd_queue == NULL || s_res_queue == NULL ||
         s_cbw_buf == NULL || s_csw_buf == NULL ||
         s_data_buf[0] == NULL || s_data_buf[1] == NULL) {
         cleanup_init_resources();
         return ESP_ERR_NO_MEM;
     }
 
-    iso_media_init(&s_media, NULL, NULL);
-    iso_usb_msc_extent_backend_init(&s_backend, bdev, backend_lock_cb, backend_unlock_cb, NULL);
+    if (cfg != NULL && cfg->shared_media != NULL) {
+        s_media_ptr = cfg->shared_media;
+    } else {
+        s_media_ptr = &s_owned_media;
+        iso_media_init(s_media_ptr, standalone_on_force_eject_cb, NULL);
+    }
+    iso_usb_msc_extent_backend_init(&s_backend, (cfg != NULL) ? cfg->bdev : NULL,
+                                    backend_lock_cb, backend_unlock_cb, NULL);
+    if (s_using_ext_resolver) {
+        iso_usb_msc_extent_backend_set_resolver(&s_backend, &cfg->resolver);
+    }
     const mmc_scsi_backend_t scsi_be = iso_usb_msc_extent_backend_as_scsi(&s_backend);
-    if (mmc_scsi_init(&s_scsi, &s_media, &scsi_be) != 0) {
+    if (mmc_scsi_init(&s_scsi, s_media_ptr, &scsi_be) != 0) {
         cleanup_init_resources();
         return ESP_ERR_INVALID_STATE;
     }
 
-    const msc_bot_cfg_t cfg = {
+    const msc_bot_cfg_t bot_cfg = {
         .ops = {
             .ctx = NULL,
             .xfer_in = bot_xfer_in,
@@ -528,7 +618,7 @@ esp_err_t iso_usb_msc_init(const iso_blockdev_t *bdev) {
         .buf_size = ISO_MSC_BUF_SIZE,
         .out_stall = true,
     };
-    if (msc_bot_init(&s_bot, &cfg) != MSC_BOT_OK) {
+    if (msc_bot_init(&s_bot, &bot_cfg) != MSC_BOT_OK) {
         cleanup_init_resources();
         return ESP_ERR_INVALID_ARG;
     }
@@ -564,12 +654,20 @@ esp_err_t iso_usb_msc_mount_image(uint32_t media_id, iso_extent_table_t *table, 
         return ESP_ERR_INVALID_ARG;
     }
 
-    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-    const iso_media_result_t mr = iso_media_mount(&s_media, media_id, force);
-    if (mr == ISO_MEDIA_MOUNTED) {
+    msc_state_lock();
+    backend_lock_cb(NULL);
+    const iso_blockdev_t *bdev = s_backend.bdev;
+    backend_unlock_cb(NULL);
+    if (bdev != NULL && bdev->epoch != NULL && !iso_usb_msc_table_epoch_matches(bdev, table)) {
+        msc_state_unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const iso_media_result_t mr = iso_media_mount(s_media_ptr, media_id, force);
+    if (mr == ISO_MEDIA_MOUNTED && !s_using_ext_resolver) {
         iso_usb_msc_extent_backend_set_image(&s_backend, media_id, table);
     }
-    xSemaphoreGive(s_state_mutex);
+    msc_state_unlock();
 
     switch (mr) {
     case ISO_MEDIA_MOUNTED:
@@ -588,12 +686,12 @@ esp_err_t iso_usb_msc_eject_image(bool force) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-    const iso_media_result_t mr = iso_media_eject(&s_media, force);
-    if (mr == ISO_MEDIA_EJECTED || mr == ISO_MEDIA_NOT_MOUNTED) {
+    msc_state_lock();
+    const iso_media_result_t mr = iso_media_eject(s_media_ptr, force);
+    if (!s_using_ext_resolver && (mr == ISO_MEDIA_EJECTED || mr == ISO_MEDIA_NOT_MOUNTED)) {
         iso_usb_msc_extent_backend_clear(&s_backend);
     }
-    xSemaphoreGive(s_state_mutex);
+    msc_state_unlock();
 
     if (mr == ISO_MEDIA_LOCKED) {
         return ESP_ERR_INVALID_STATE;
@@ -605,10 +703,21 @@ void iso_usb_msc_force_eject(void) {
     if (!s_initialized) {
         return;
     }
-    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-    iso_media_force_eject(&s_media);
-    iso_usb_msc_extent_backend_clear(&s_backend);
-    xSemaphoreGive(s_state_mutex);
+    msc_state_lock();
+    iso_media_force_eject(s_media_ptr);
+    if (!s_using_ext_resolver) {
+        iso_usb_msc_extent_backend_clear(&s_backend);
+    }
+    msc_state_unlock();
+}
+
+void iso_usb_msc_notify_disconnect(void) {
+    if (!s_initialized || s_media_ptr == NULL) {
+        return;
+    }
+    msc_state_lock();
+    iso_usb_msc_on_disconnect_media(s_media_ptr);
+    msc_state_unlock();
 }
 
 esp_err_t iso_usb_msc_get_status(iso_media_status_t *out) {
@@ -618,10 +727,12 @@ esp_err_t iso_usb_msc_get_status(iso_media_status_t *out) {
     if (out == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-    iso_usb_msc_sync_media_backend(&s_media, &s_backend);
-    iso_media_get_status(&s_media, out);
-    xSemaphoreGive(s_state_mutex);
+    msc_state_lock();
+    if (!s_using_ext_resolver) {
+        iso_usb_msc_sync_media_backend(s_media_ptr, &s_backend);
+    }
+    iso_media_get_status(s_media_ptr, out);
+    msc_state_unlock();
     return ESP_OK;
 }
 
@@ -636,8 +747,16 @@ esp_err_t iso_usb_msc_init(const iso_blockdev_t *bdev) {
     return ESP_ERR_NOT_SUPPORTED;
 }
 
+esp_err_t iso_usb_msc_init_ex(const iso_usb_msc_config_t *cfg) {
+    (void)cfg;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
 void iso_usb_msc_set_blockdev(const iso_blockdev_t *bdev) {
     (void)bdev;
+}
+
+void iso_usb_msc_notify_disconnect(void) {
 }
 
 esp_err_t iso_usb_msc_mount_image(uint32_t media_id, iso_extent_table_t *table, bool force) {
