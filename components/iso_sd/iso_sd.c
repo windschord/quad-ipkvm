@@ -351,8 +351,19 @@ static DRESULT sd_diskio_ioctl(BYTE pdrv, BYTE cmd, void *buff) {
     return res;
 }
 
-static void fs_wait_drain_and_disable(void) {
+static void sd_invalidate_mount_epoch(void) {
+    /* Sync fs_mount_epoch invalidation with sd_diskio_write()/read() under io_lock, without holding io_lock during drain. */
+    if (s_sd.io_lock) {
+        xSemaphoreTake(s_sd.io_lock, portMAX_DELAY);
+    }
     atomic_store_explicit(&s_sd.fs_mount_epoch, 0u, memory_order_release);
+    if (s_sd.io_lock) {
+        xSemaphoreGive(s_sd.io_lock);
+    }
+}
+
+static void fs_wait_drain_and_disable(void) {
+    sd_invalidate_mount_epoch();
     if (!s_sd.fs_state_lock) {
         s_sd.fs_accepting = false;
         return;
@@ -700,7 +711,8 @@ static void sd_monitor_task(void *arg) {
             }
             if (unhealthy) {
                 ESP_LOGW(TAG, "microSD fault/removal detected; force-ejecting media and unmounting");
-                /* Reject new FS ops & clear mount_epoch fence immediately. */
+                /* Reject new FS ops & clear mount_epoch fence immediately (under io_lock before fs_state_lock). */
+                sd_invalidate_mount_epoch();
                 if (s_sd.fs_state_lock) {
                     xSemaphoreTake(s_sd.fs_state_lock, portMAX_DELAY);
                     s_sd.fs_accepting = false;
@@ -1681,7 +1693,7 @@ esp_err_t iso_sd_init(const iso_sd_config_t *cfg) {
     return ESP_OK;
 }
 
-void iso_sd_deinit(void) {
+void iso_sd_stop_monitor(void) {
     atomic_store_explicit(&s_sd.shutdown_req, true, memory_order_release);
     if (s_sd.mon_started) {
         if (s_sd.mon_wake_sem) {
@@ -1693,6 +1705,10 @@ void iso_sd_deinit(void) {
         s_sd.mon_started = false;
         s_sd.mon_task = NULL;
     }
+}
+
+void iso_sd_deinit(void) {
+    iso_sd_stop_monitor();
 
     /* Publish non-READY and bump epoch before draining & tearing down FatFs/HW. */
     (void)sd_advance_epoch();
@@ -1990,6 +2006,8 @@ esp_err_t iso_sd_init(const iso_sd_config_t *cfg) {
     (void)cfg;
     return ESP_ERR_NOT_SUPPORTED;
 }
+
+void iso_sd_stop_monitor(void) {}
 
 void iso_sd_deinit(void) {}
 

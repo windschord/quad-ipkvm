@@ -20,6 +20,7 @@ typedef struct {
     int remount_calls;
     iso_sd_state_t remount_state;
     bool clear_fault_on_remount;
+    int fail_mkdir_rc;
 
     int job_err_calls;
     iso_job_kind_t last_err_kind;
@@ -125,6 +126,7 @@ static void w_epoch_bump_checked(void *ctx) {
 
 static int fence_mkdir(void *ctx, const char *path) {
     (void)ctx;
+    if (E.fail_mkdir_rc != 0) return E.fail_mkdir_rc;
     if (E.enforce_write_fence && EPOCH != E.mount_epoch) return ISO_ERR_EPOCH;
     return IFS.mkdir(IFS.ctx, path);
 }
@@ -504,8 +506,9 @@ void test_worker_idle_timeout_and_put_cancel(void) {
     iso_worker_logic_tick(&W, NOW_MS + (uint64_t)(ISO_UPLOAD_IDLE_S - 1u) * 1000ULL);
     TEST_ASSERT_EQUAL_UINT(0u, iso_core_queue_len(iso_worker_logic_core(&W)));
 
-    /* At 300s idle: tick queues IDLE_CLOSE, then an accepted PUT cancels it. */
-    iso_worker_logic_tick(&W, NOW_MS + (uint64_t)ISO_UPLOAD_IDLE_S * 1000ULL);
+    /* Advance test clock for the 300s idle tick, then accept a 2nd PUT at that same clock time. */
+    NOW_MS += (uint64_t)ISO_UPLOAD_IDLE_S * 1000ULL;
+    iso_worker_logic_tick(&W, NOW_MS);
     TEST_ASSERT_EQUAL_UINT(1u, iso_core_queue_len(iso_worker_logic_core(&W)));
 
     TEST_ASSERT_TRUE(iso_worker_logic_op_trylock(&W, 0u));
@@ -513,7 +516,10 @@ void test_worker_idle_timeout_and_put_cancel(void) {
     iso_worker_logic_op_unlock(&W);
     TEST_ASSERT_EQUAL_UINT(0u, iso_core_queue_len(iso_worker_logic_core(&W)));
 
-    /* Next 300s idle with no PUT: tick queues IDLE_CLOSE -> worker closes slot to incomplete. */
+    /* 299s after the 2nd PUT: queue remains empty; at 300s: tick queues IDLE_CLOSE -> closes slot. */
+    iso_worker_logic_tick(&W, NOW_MS + (uint64_t)(ISO_UPLOAD_IDLE_S - 1u) * 1000ULL);
+    TEST_ASSERT_EQUAL_UINT(0u, iso_core_queue_len(iso_worker_logic_core(&W)));
+
     NOW_MS += (uint64_t)ISO_UPLOAD_IDLE_S * 1000ULL;
     const int wakes_before = E.wake_calls;
     iso_worker_logic_tick(&W, NOW_MS);
@@ -576,6 +582,35 @@ void test_worker_op_unlock_wakes_worker(void) {
     w_teardown();
 }
 
+void test_worker_boot_ensure_dirs_failure_triggers_reprobe_recovery(void) {
+    w_setup(8192u);
+    E.fail_mkdir_rc = ISO_ERR_IO;
+
+    TEST_ASSERT_EQUAL_INT(ISO_ERR_IO, iso_worker_logic_boot(&W));
+    TEST_ASSERT_EQUAL_INT(ISO_SD_ERROR, E.sd_state);
+
+    iso_worker_logic_state_lock(&W);
+    const iso_view_t *v = iso_worker_logic_view_locked(&W, NULL);
+    TEST_ASSERT_NOT_NULL(v);
+    TEST_ASSERT_EQUAL_INT(ISO_SD_ERROR, v->sd_state);
+    iso_worker_logic_state_unlock(&W);
+
+    /* Reprobe after directory creation recovers brings SD back to READY. */
+    E.fail_mkdir_rc = 0;
+    iso_worker_logic_request_reprobe(&W);
+    drive_worker_until_idle(16);
+
+    TEST_ASSERT_EQUAL_INT(1, E.remount_calls);
+    TEST_ASSERT_EQUAL_INT(ISO_SD_READY, E.sd_state);
+    iso_worker_logic_state_lock(&W);
+    v = iso_worker_logic_view_locked(&W, NULL);
+    TEST_ASSERT_NOT_NULL(v);
+    TEST_ASSERT_EQUAL_INT(ISO_SD_READY, v->sd_state);
+    iso_worker_logic_state_unlock(&W);
+
+    w_teardown();
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_worker_boot_upload_finish_and_table_map);
@@ -585,5 +620,6 @@ int main(void) {
     RUN_TEST(test_worker_idle_timeout_and_put_cancel);
     RUN_TEST(test_worker_delete_crosslinked_logs_id_only);
     RUN_TEST(test_worker_op_unlock_wakes_worker);
+    RUN_TEST(test_worker_boot_ensure_dirs_failure_triggers_reprobe_recovery);
     return UNITY_END();
 }

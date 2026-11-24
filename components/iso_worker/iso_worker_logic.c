@@ -191,6 +191,7 @@ int iso_worker_logic_boot(iso_worker_logic_t *w) {
         return ISO_ERR_INVALID;
     }
     int rc = ISO_OK;
+    bool dirs_failed = false;
     w->cfg.os.op_lock(w->cfg.os.ctx);
     const bool ready = (w->cfg.sd != NULL) && (w->cfg.sd->state(w->cfg.sd->ctx) == ISO_SD_READY);
     if (ready) {
@@ -198,6 +199,11 @@ int iso_worker_logic_boot(iso_worker_logic_t *w) {
         if (rc == ISO_OK) {
             rc = iso_core_boot(&w->core);
         } else {
+            dirs_failed = true;
+            w->cfg.os.state_lock(w->cfg.os.ctx);
+            w->sd_override_non_ready = true;
+            w->sd_override_val = ISO_SD_ERROR;
+            w->cfg.os.state_unlock(w->cfg.os.ctx);
             iso_core_publish(&w->core);
         }
     } else {
@@ -205,6 +211,12 @@ int iso_worker_logic_boot(iso_worker_logic_t *w) {
     }
     const bool wake = has_pending_core_work(w);
     w->cfg.os.op_unlock(w->cfg.os.ctx);
+
+    if (dirs_failed && w->cfg.os.set_hw_sd_state) {
+        w->cfg.os.state_lock(w->cfg.os.ctx);
+        w->cfg.os.set_hw_sd_state(w->cfg.os.ctx, ISO_SD_ERROR);
+        w->cfg.os.state_unlock(w->cfg.os.ctx);
+    }
 
     if (wake) {
         wake_worker(w);

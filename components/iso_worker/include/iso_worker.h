@@ -35,7 +35,9 @@ void iso_worker_op_unlock(void);
 iso_core_t *iso_worker_core(void);
 iso_media_t *iso_worker_media(void);
 
-/* Must be called while holding iso_worker_state_lock(). */
+/* Must be called while holding iso_worker_state_lock().
+ * iso_worker_acquire_table_locked() increments the extent-table refcount: release via
+ * iso_extent_table_unref() after unlocking state_lock; returns NULL for media_id == 0 or unknown IDs. */
 const iso_view_t *iso_worker_view_locked(uint64_t *out_consumed_since);
 int iso_worker_lookup_size_locked(uint32_t media_id, uint64_t *out_bytes);
 iso_extent_table_t *iso_worker_acquire_table_locked(uint32_t media_id);

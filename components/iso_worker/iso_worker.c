@@ -50,10 +50,13 @@ typedef struct {
     bool initialized;
     bool worker_started;
     _Atomic bool shutdown_req;
+    _Atomic bool exited;
     _Atomic(TaskHandle_t) task;
     SemaphoreHandle_t op_mutex;
     SemaphoreHandle_t state_mutex;
     SemaphoreHandle_t done_sem;
+    SemaphoreHandle_t delete_allow_sem;
+    StaticSemaphore_t delete_allow_buf;
     uint8_t *io_buf;
     size_t io_buf_size;
     worker_psa_sha_ctx_t sha_ctx;
@@ -110,19 +113,23 @@ static void worker_sha_update(void *state, const void *data, size_t len) {
     }
 }
 
-static void worker_sha_final(void *state, uint8_t out[ISO_SHA256_LEN]) {
+static int worker_sha_final(void *state, uint8_t out[ISO_SHA256_LEN]) {
     if (out) {
         memset(out, 0, ISO_SHA256_LEN);
     }
     worker_psa_sha_ctx_t *sc = (worker_psa_sha_ctx_t *)state;
     if (!sc) {
-        return;
+        return ISO_ERR_IO;
     }
+    int rc = ISO_ERR_IO;
     if (sc->active && !sc->failed && out != NULL) {
         size_t hash_len = 0u;
         psa_status_t st = psa_hash_finish(&sc->op, out, ISO_SHA256_LEN, &hash_len);
-        if (st != PSA_SUCCESS || hash_len != ISO_SHA256_LEN) {
+        if (st == PSA_SUCCESS && hash_len == ISO_SHA256_LEN) {
+            rc = ISO_OK;
+        } else {
             memset(out, 0, ISO_SHA256_LEN);
+            (void)psa_hash_abort(&sc->op);
             ESP_LOGE(TAG, "psa_hash_finish failed (%d)", (int)st);
         }
     } else if (sc->active) {
@@ -131,6 +138,7 @@ static void worker_sha_final(void *state, uint8_t out[ISO_SHA256_LEN]) {
     sc->active = false;
     sc->failed = false;
     sc->op = psa_hash_operation_init();
+    return rc;
 }
 
 static const iso_sha256_t s_sha256 = {
@@ -311,7 +319,7 @@ static void iso_worker_task(void *arg) {
             }
             (void)ulTaskNotifyTake(pdTRUE, wait_ticks);
         } else if (busy) {
-            taskYIELD();
+            vTaskDelay(1);
         } else {
             const uint64_t t_after = s_worker.clock->now_ms(s_worker.clock->ctx);
             uint64_t rem_ms = 1000ULL;
@@ -329,6 +337,10 @@ static void iso_worker_task(void *arg) {
     if (s_worker.done_sem) {
         xSemaphoreGive(s_worker.done_sem);
     }
+    if (s_worker.delete_allow_sem) {
+        (void)xSemaphoreTake(s_worker.delete_allow_sem, portMAX_DELAY);
+    }
+    atomic_store_explicit(&s_worker.exited, true, memory_order_release);
     vTaskDelete(NULL);
 }
 
@@ -352,10 +364,13 @@ esp_err_t iso_worker_init(void) {
     s_worker.op_mutex = xSemaphoreCreateMutex();
     s_worker.state_mutex = xSemaphoreCreateMutex();
     s_worker.done_sem = xSemaphoreCreateBinary();
+    atomic_store_explicit(&s_worker.exited, false, memory_order_release);
+    s_worker.delete_allow_sem = xSemaphoreCreateBinaryStatic(&s_worker.delete_allow_buf);
     s_worker.io_buf_size = (size_t)CONFIG_SD_WORKER_IO_BUF_KB * 1024u;
     s_worker.io_buf = (uint8_t *)worker_psram_alloc(NULL, s_worker.io_buf_size);
 
-    if (!s_worker.op_mutex || !s_worker.state_mutex || !s_worker.done_sem || !s_worker.io_buf) {
+    if (!s_worker.op_mutex || !s_worker.state_mutex || !s_worker.done_sem || !s_worker.delete_allow_sem ||
+        !s_worker.io_buf) {
         iso_worker_deinit();
         return ESP_ERR_NO_MEM;
     }
@@ -410,6 +425,10 @@ esp_err_t iso_worker_init(void) {
     int brc = iso_worker_logic_boot(&s_worker.logic);
     if (brc != ISO_OK) {
         ESP_LOGW(TAG, "iso_worker_logic_boot completed with rc=%d", brc);
+        const iso_sd_status_t *sd_st = iso_sd_status();
+        if (sd_st && sd_st->state && sd_st->state(sd_st->ctx) != ISO_SD_READY) {
+            iso_sd_unmount();
+        }
     }
 
     TaskHandle_t task_h = NULL;
@@ -431,8 +450,9 @@ esp_err_t iso_worker_init(void) {
 void iso_worker_deinit(void) {
     atomic_store_explicit(&s_worker.shutdown_req, true, memory_order_release);
 
-    /* Stop SD monitor callbacks first so fault/reprobe handlers cannot fire after task exit. */
-    iso_sd_deinit();
+    /* Stop SD monitor callbacks first so fault/reprobe handlers cannot fire during shutdown,
+     * keeping iso_sd locks alive while the worker finishes any in-flight remount. */
+    iso_sd_stop_monitor();
 
     if (s_worker.worker_started) {
         TaskHandle_t task_h = atomic_load_explicit(&s_worker.task, memory_order_acquire);
@@ -444,7 +464,15 @@ void iso_worker_deinit(void) {
         }
         atomic_store_explicit(&s_worker.task, NULL, memory_order_release);
         s_worker.worker_started = false;
+        if (s_worker.delete_allow_sem) {
+            (void)xSemaphoreGive(s_worker.delete_allow_sem);
+            while (!atomic_load_explicit(&s_worker.exited, memory_order_acquire)) {
+                vTaskDelay(1);
+            }
+        }
     }
+
+    iso_sd_deinit();
 
     iso_worker_logic_deinit(&s_worker.logic);
 
@@ -467,6 +495,10 @@ void iso_worker_deinit(void) {
     if (s_worker.done_sem) {
         vSemaphoreDelete(s_worker.done_sem);
         s_worker.done_sem = NULL;
+    }
+    if (s_worker.delete_allow_sem) {
+        vSemaphoreDelete(s_worker.delete_allow_sem);
+        s_worker.delete_allow_sem = NULL;
     }
     s_worker.initialized = false;
 }

@@ -38,6 +38,8 @@ typedef struct {
 } iso_sd_config_t;
 
 esp_err_t iso_sd_init(const iso_sd_config_t *cfg);
+/* Stop monitor task callbacks before tearing down callers, leaving iso_sd locks intact. */
+void iso_sd_stop_monitor(void);
 void iso_sd_deinit(void);
 
 /* Explicit mount/unmount/state helpers for managed iso_worker §3.4 sequences. */
