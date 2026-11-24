@@ -27,8 +27,10 @@ static unsigned OPT;
 static iso_clock_t BAD_CLK;
 static iso_worker_logic_cfg_t CFG;
 
+/* w_setup で true、w_teardown で false。アサーションの失敗で w_teardown が呼ばれなかったときは、tearDown が後始末する */
+static bool W_LIVE = false;
+
 void setUp(void) { OPT = 0u; }
-void tearDown(void) {}
 
 typedef struct {
     iso_sd_state_t last_view_sd;
@@ -278,11 +280,13 @@ static void w_prepare(uint32_t budget_bytes) {
 
 static void w_setup(uint32_t budget_bytes) {
     w_prepare(budget_bytes);
+    W_LIVE = true;
     TEST_ASSERT_EQUAL_INT(ISO_OK, iso_worker_logic_init(&W, &CFG));
     UPP = iso_core_upload(iso_worker_logic_core(&W));
 }
 
 static void w_teardown(void) {
+    W_LIVE = false;
     mock_fs_power_on(&FS);
     iso_worker_logic_deinit(&W);
     TEST_ASSERT_FALSE(E.op_held);
@@ -294,6 +298,16 @@ static void w_teardown(void) {
     TEST_ASSERT_EQUAL_INT(0, live);
     TEST_ASSERT_EQUAL_INT(0, open_files);
     TEST_ASSERT_EQUAL_INT(0, open_dirs);
+}
+
+/* アサーションの失敗でテストが中断したとき(w_teardown が呼ばれなかったとき)の後始末。検査はしない(元の失敗を隠さない) */
+void tearDown(void) {
+    if (W_LIVE) {
+        W_LIVE = false;
+        mock_fs_power_on(&FS);
+        iso_worker_logic_deinit(&W);
+        mock_fs_free(&FS);
+    }
 }
 
 static void drive_worker_until_idle(int max_iters) {
