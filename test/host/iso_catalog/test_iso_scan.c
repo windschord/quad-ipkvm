@@ -197,6 +197,93 @@ void test_scan_exactly_16_images_has_no_hidden(void) {
     TEST_ASSERT_EQUAL_UINT32(0, CAT.hidden);
 }
 
+/* ---- 予約 ID 00000000(C-14): 採用せず、hidden に数える ---- */
+
+void test_scan_does_not_adopt_the_reserved_id_and_counts_it_as_hidden(void) {
+    iso_meta_t m = mk_meta("Reserved", 100000, ISO_META_READY, 1);
+    put_slot("00000000", 0, &m); /* meta が有効でも採用しない */
+    iso_meta_t n = mk_meta("Normal", 100000, ISO_META_READY, 1);
+    put_slot("00000001", 0, &n);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    TEST_ASSERT_EQUAL_UINT(1, CAT.count);
+    TEST_ASSERT_EQUAL_UINT32(1, CAT.hidden);
+    TEST_ASSERT_EQUAL_STRING("00000001", CAT.images[0].id);
+    TEST_ASSERT_EQUAL_STRING("Normal", CAT.images[0].meta.name);
+    TEST_ASSERT_NULL(iso_catalog_find(&CAT, "00000000"));
+    /* ディレクトリには触らない(消さない) */
+    TEST_ASSERT_TRUE(mock_fs_is_dir(&FS, "/iso/00000000"));
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/00000000/meta.a"));
+}
+
+void test_scan_counts_an_empty_reserved_directory_as_hidden_without_reading_it(void) {
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/00000000"));
+    mock_fs_fail_path(&FS, "/iso/00000000/meta.a"); /* 読もうとすれば、I/O エラー(読まないので、スキャンは成功する) */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    mock_fs_fail_path(&FS, NULL);
+    TEST_ASSERT_EQUAL_UINT(0, CAT.count);
+    TEST_ASSERT_EQUAL_UINT32(1, CAT.hidden);
+}
+
+void test_scan_reserved_id_does_not_take_one_of_the_16_slots(void) {
+    char id[9];
+    iso_meta_t m = mk_meta("N", 100000, ISO_META_READY, 1);
+    put_slot("00000000", 0, &m); /* ディレクトリの順の先頭 */
+    for (int i = 0; i < 16; i++) {
+        snprintf(id, sizeof(id), "%08x", 0x300 + i);
+        put_slot(id, 0, &m);
+    }
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    TEST_ASSERT_EQUAL_UINT(16, CAT.count);
+    TEST_ASSERT_EQUAL_UINT32(1, CAT.hidden); /* 予約の 1 つだけ(16 個とも見える) */
+    TEST_ASSERT_EQUAL_STRING("00000300", CAT.images[0].id);
+    TEST_ASSERT_EQUAL_STRING("0000030f", CAT.images[15].id);
+    /* 17 個目の普通の id は、従来どおり hidden に数える */
+    put_slot("00000400", 0, &m);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    TEST_ASSERT_EQUAL_UINT(16, CAT.count);
+    TEST_ASSERT_EQUAL_UINT32(2, CAT.hidden);
+}
+
+void test_scan_adopts_every_id_other_than_the_reserved_one(void) {
+    iso_meta_t m = mk_meta("N", 100000, ISO_META_READY, 1);
+    put_slot("00000001", 0, &m);
+    put_slot("00000010", 0, &m);
+    put_slot("10000000", 0, &m);
+    put_slot("80000000", 0, &m);
+    put_slot("ffffffff", 0, &m);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_dir(&FS, "/iso/000000000")); /* 9 桁: id ではないので、無視(hidden に数えない) */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_file(&FS, "/iso/00000000x", "x", 1, 0));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_file(&FS, "/iso/00000000f", "x", 1, 0)); /* 予約と似た名前のファイル */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    TEST_ASSERT_EQUAL_UINT(5, CAT.count);
+    TEST_ASSERT_EQUAL_UINT32(0, CAT.hidden);
+    TEST_ASSERT_NOT_NULL(iso_catalog_find(&CAT, "00000001"));
+    TEST_ASSERT_NOT_NULL(iso_catalog_find(&CAT, "00000010"));
+    TEST_ASSERT_NOT_NULL(iso_catalog_find(&CAT, "10000000"));
+    TEST_ASSERT_NOT_NULL(iso_catalog_find(&CAT, "80000000"));
+    TEST_ASSERT_NOT_NULL(iso_catalog_find(&CAT, "ffffffff"));
+}
+
+void test_scan_reserved_name_as_a_file_is_ignored_not_counted(void) {
+    TEST_ASSERT_EQUAL_INT(ISO_OK, mock_fs_add_file(&FS, "/iso/00000000", "x", 1, 0)); /* ファイル(ディレクトリでない): 従来どおり、無視 */
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    TEST_ASSERT_EQUAL_UINT(0, CAT.count);
+    TEST_ASSERT_EQUAL_UINT32(0, CAT.hidden);
+}
+
+void test_scan_rescan_resets_the_hidden_count_of_the_reserved_id(void) {
+    iso_meta_t m = mk_meta("R", 100000, ISO_META_READY, 1);
+    put_slot("00000000", 0, &m);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    TEST_ASSERT_EQUAL_UINT32(1, CAT.hidden);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT)); /* 再スキャンで、数え直す(積み上げない) */
+    TEST_ASSERT_EQUAL_UINT32(1, CAT.hidden);
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/00000000/meta.a"));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, IFS.remove(&FS, "/iso/00000000"));
+    TEST_ASSERT_EQUAL_INT(ISO_OK, iso_catalog_scan(&CAT));
+    TEST_ASSERT_EQUAL_UINT32(0, CAT.hidden);
+}
+
 void test_scan_resets_previous_contents(void) {
     iso_meta_t m = mk_meta("A", 100000, ISO_META_READY, 1);
     put_slot("00000001", 0, &m);
@@ -415,6 +502,12 @@ int main(void) {
     RUN_TEST(test_scan_adopts_the_newer_slot);
     RUN_TEST(test_scan_limits_to_16_images_and_counts_hidden_in_directory_order);
     RUN_TEST(test_scan_exactly_16_images_has_no_hidden);
+    RUN_TEST(test_scan_does_not_adopt_the_reserved_id_and_counts_it_as_hidden);
+    RUN_TEST(test_scan_counts_an_empty_reserved_directory_as_hidden_without_reading_it);
+    RUN_TEST(test_scan_reserved_id_does_not_take_one_of_the_16_slots);
+    RUN_TEST(test_scan_adopts_every_id_other_than_the_reserved_one);
+    RUN_TEST(test_scan_reserved_name_as_a_file_is_ignored_not_counted);
+    RUN_TEST(test_scan_rescan_resets_the_hidden_count_of_the_reserved_id);
     RUN_TEST(test_scan_resets_previous_contents);
     RUN_TEST(test_scan_io_errors_are_propagated);
     RUN_TEST(test_find_returns_only_exact_ids);

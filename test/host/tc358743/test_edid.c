@@ -158,6 +158,99 @@ void test_edid_profile_1080p30(void) {
     TEST_ASSERT_EQUAL_HEX8(0x00, sum2);
 }
 
+typedef struct {
+    uint16_t width;
+    uint16_t height;
+    float expected_hz;
+} expected_ext_dtd_t;
+
+static void assert_ext_dtds_valid(const uint8_t *buffer,
+                                  uint16_t max_w, uint16_t max_h,
+                                  const expected_ext_dtd_t *expected,
+                                  size_t expected_count) {
+    const uint8_t *ext = buffer + 128;
+    uint8_t dtd_start = ext[2];
+    TEST_ASSERT_TRUE(dtd_start >= 4);
+    TEST_ASSERT_TRUE((size_t)dtd_start + expected_count * 18u <= 127u);
+
+    for (size_t i = 0; i < expected_count; i++) {
+        const uint8_t *d = ext + dtd_start + i * 18u;
+        uint16_t pix_clk_10k = (uint16_t)(d[0] | (d[1] << 8));
+        uint16_t h_active = (uint16_t)(d[2] | ((d[4] & 0xF0u) << 4));
+        uint16_t h_blank  = (uint16_t)(d[3] | ((d[4] & 0x0Fu) << 8));
+        uint16_t v_active = (uint16_t)(d[5] | ((d[7] & 0xF0u) << 4));
+        uint16_t v_blank  = (uint16_t)(d[6] | ((d[7] & 0x0Fu) << 8));
+
+        TEST_ASSERT_EQUAL_UINT16(expected[i].width, h_active);
+        TEST_ASSERT_EQUAL_UINT16(expected[i].height, v_active);
+        TEST_ASSERT_TRUE(h_active <= max_w && v_active <= max_h);
+        TEST_ASSERT_EQUAL_UINT16(0u, h_active % 16u);
+        TEST_ASSERT_EQUAL_UINT16(0u, v_active % 2u);
+
+        uint32_t pix_clk_khz = (uint32_t)pix_clk_10k * 10u;
+        TEST_ASSERT_TRUE(pix_clk_khz <= 74250u);
+
+        uint32_t h_total = (uint32_t)h_active + (uint32_t)h_blank;
+        uint32_t v_total = (uint32_t)v_active + (uint32_t)v_blank;
+        float h_freq_khz = (float)pix_clk_khz / (float)h_total;
+        TEST_ASSERT_TRUE(h_freq_khz > 15.15f && h_freq_khz < 100.0f);
+
+        float refresh_hz = (float)pix_clk_10k * 10000.0f / (float)(h_total * v_total);
+        TEST_ASSERT_FLOAT_WITHIN(0.05f, expected[i].expected_hz, refresh_hz);
+    }
+
+    for (size_t off = (size_t)dtd_start + expected_count * 18u; off < 127u; off++) {
+        TEST_ASSERT_EQUAL_HEX8(0x00, ext[off]);
+    }
+}
+
+void test_edid_profile_720p60_modes(void) {
+    uint8_t buffer[256];
+    TEST_ASSERT_EQUAL(256, tc358743_edid_build_profile(buffer, sizeof(buffer), TC358743_EDID_PROFILE_720P_60));
+
+    // Established Timings: 640x480@60 (0x20) + 800x600@60 (0x01), no 1024x768@60 (height > 720)
+    TEST_ASSERT_EQUAL_HEX8(0x21, buffer[35]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buffer[36]);
+
+    static const expected_ext_dtd_t k_expected[] = {
+        {1152u, 648u, 60.0f},
+        {1024u, 576u, 60.0f},
+        { 960u, 540u, 60.0f},
+    };
+    assert_ext_dtds_valid(buffer, 1280u, 720u, k_expected, sizeof(k_expected) / sizeof(k_expected[0]));
+
+    uint8_t sum1 = 0, sum2 = 0;
+    for (int i = 0; i < 128; i++) sum1 += buffer[i];
+    for (int i = 128; i < 256; i++) sum2 += buffer[i];
+    TEST_ASSERT_EQUAL_HEX8(0x00, sum1);
+    TEST_ASSERT_EQUAL_HEX8(0x00, sum2);
+}
+
+void test_edid_profile_1080p30_modes(void) {
+    uint8_t buffer[256];
+    TEST_ASSERT_EQUAL(256, tc358743_edid_build_profile(buffer, sizeof(buffer), TC358743_EDID_PROFILE_1080P_30));
+
+    // Established Timings: 640x480@60 + 800x600@60 (0x21) and 1024x768@60 (0x08)
+    TEST_ASSERT_EQUAL_HEX8(0x21, buffer[35]);
+    TEST_ASSERT_EQUAL_HEX8(0x08, buffer[36]);
+
+    static const expected_ext_dtd_t k_expected[] = {
+        {1600u, 900u, 30.0f},
+        {1440u, 900u, 50.0f},
+        {1360u, 768u, 60.0f},
+        {1152u, 648u, 60.0f},
+        {1024u, 576u, 60.0f},
+        { 960u, 540u, 60.0f},
+    };
+    assert_ext_dtds_valid(buffer, 1920u, 1080u, k_expected, sizeof(k_expected) / sizeof(k_expected[0]));
+
+    uint8_t sum1 = 0, sum2 = 0;
+    for (int i = 0; i < 128; i++) sum1 += buffer[i];
+    for (int i = 128; i < 256; i++) sum2 += buffer[i];
+    TEST_ASSERT_EQUAL_HEX8(0x00, sum1);
+    TEST_ASSERT_EQUAL_HEX8(0x00, sum2);
+}
+
 
 int main(void) {
     UNITY_BEGIN();
@@ -169,6 +262,8 @@ int main(void) {
     RUN_TEST(test_edid_dtd_refresh_rates);
     RUN_TEST(test_edid_profile_720p60);
     RUN_TEST(test_edid_profile_1080p30);
+    RUN_TEST(test_edid_profile_720p60_modes);
+    RUN_TEST(test_edid_profile_1080p30_modes);
     return UNITY_END();
 }
 

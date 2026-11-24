@@ -10,7 +10,7 @@ repo の components/ と test/ を workdir にコピーして使う(repo は変�
 
 iso_catalog の mutate_iso_catalog.py も、この main() を使う(対象のファイル・テストの実行ファイル・ビルドの対象が違うだけ)。"""
 import concurrent.futures
-import importlib.util
+import types
 import json
 import os
 import re
@@ -127,9 +127,10 @@ def main(config):
     repo, work, mfile, outp = rest[:4]
     only = set(rest[4:])
     check_workdir(repo, outp)  # 結果の JSON を、リポジトリ(作業ツリー)の中に書かない(既存のファイルを上書きしない)
-    spec = importlib.util.spec_from_file_location("mutants", mfile)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # ミュータントの定義は、ソースをそのまま読む(import の仕組みを通さない: 既存の __pycache__ の .pyc を使わず、新しい .pyc も作らない)
+    mod = types.ModuleType("mutants")
+    with open(mfile, "rb") as fh:
+        exec(compile(fh.read(), mfile, "exec"), mod.__dict__)
     unknown = sorted(only - {m["id"] for m in mod.MUTANTS})
     if unknown:  # ビルドの前に、指定した ID を照合する(打ち間違いで、何も実行せずに成功しない)
         print("ERROR: unknown mutant id(s): " + " ".join(unknown), file=sys.stderr)

@@ -86,7 +86,7 @@ iso_step_result_t iso_upload_hash_step(iso_upload_t *u, iso_finish_job_t *job, u
         job->hash_part++;
         job->hash_off = 0;
         if (job->hash_part >= n_parts) {
-            sha->final(u->cfg.sha_state, job->digest);
+            if (sha->final(u->cfg.sha_state, job->digest) != ISO_OK) return hash_ioerr(job, ISO_ERR_IO); /* 出力は使わない */
             job->have_digest = true;
             return step_res(ISO_STEP_DONE, ISO_OK);
         }
@@ -192,10 +192,11 @@ iso_step_result_t iso_upload_finish_step(iso_upload_t *u, iso_finish_job_t *job,
 
     case FP_VERIFY: {
         if (!job->have_digest) {
-            u->cfg.sha->final(u->cfg.sha_state, job->digest); /* 逐次の状態を確定する(状態は、これで使えなくなる) */
-            job->have_digest = true;
+            /* 逐次の状態を確定する(状態は、これで使えなくなる)。失敗(ISO_OK 以外)の出力は使わない */
+            job->have_digest = u->cfg.sha->final(u->cfg.sha_state, job->digest) == ISO_OK;
         }
         iso_up_discard_sha(u);
+        if (!job->have_digest) return end_ioerr(u, job, e, ISO_ERR_IO); /* incomplete にして、再試行を待つ(逐次の状態はないので、全パーツを読み直す) */
         if (m->sha_flag == ISO_SHA_DECLARED && memcmp(m->sha256, job->digest, ISO_SHA256_LEN) != 0)
             return end_invalid(u, job, e, ISO_INVALID_CHECKSUM_MISMATCH);
         job->phase = FP_SIG;

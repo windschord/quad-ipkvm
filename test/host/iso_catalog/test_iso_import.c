@@ -60,6 +60,21 @@ void test_import_one_file(void) {
     TEST_ASSERT_EQUAL_INT(ISO_STATE_READY, CAT.images[0].state);
 }
 
+/* 予約 ID 00000000(C-14): 取り込みの <id> も、乱数が 0 なら引き直す(iso_id_generate を使う) */
+void test_import_never_uses_the_reserved_id(void) {
+    put_iso("Ubuntu.iso", 40000);
+    const uint32_t seq[] = {0, 0x77};
+    mock_rnd_set(&RND, seq, 2);
+    fx_settle();
+    iso_rescan_result_t r = rescan(0);
+    TEST_ASSERT_EQUAL_UINT32(1, r.imported);
+    TEST_ASSERT_EQUAL_UINT32(0, r.skipped);
+    TEST_ASSERT_FALSE(mock_fs_exists(&FS, "/iso/00000000"));
+    TEST_ASSERT_TRUE(mock_fs_exists(&FS, "/iso/00000077/p000"));
+    TEST_ASSERT_EQUAL_UINT(1, CAT.count);
+    TEST_ASSERT_EQUAL_STRING("00000077", CAT.images[0].id);
+}
+
 void test_import_extension_is_case_insensitive_and_other_entries_are_ignored(void) {
     put_iso("a.iso", 40000);
     put_iso("b.ISO", 40000);
@@ -581,6 +596,7 @@ void test_import_result_is_cleared_on_each_call(void) {
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_import_one_file);
+    RUN_TEST(test_import_never_uses_the_reserved_id);
     RUN_TEST(test_import_extension_is_case_insensitive_and_other_entries_are_ignored);
     RUN_TEST(test_import_name_rules);
     RUN_TEST(test_import_size_boundaries);
