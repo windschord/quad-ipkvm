@@ -10,16 +10,16 @@
 | `test/host/iso_catalog/test_iso_name.c` | 名前の規則(UTF-8 の境界、C0 / DEL / C1、`/` と `\`、前後の空白、63 / 64 バイト)、同名判定、`<id>` の形式 | 6 |
 | `test/host/iso_catalog/test_iso_slots.c` | 2 スロットの選択(世代の巻き戻り UINT32_MAX → 0、同世代、差が INT32_MIN)、スロットの読み込み(長さ 0 / 255 / 256 / 257 / 258 / 512、壊れた CRC、ディレクトリ、I/O エラー) | 14 |
 | `test/host/iso_catalog/test_iso_transitions.c` | 状態の遷移表(§3.4)の全 98 マス(7 状態 × 14 イベント)、フラグで変わる行、状態の保存の対応 | 9 |
-| `test/host/iso_catalog/test_iso_scan.c` | 起動時のスキャン(id でないディレクトリ、状態ごとの扱い、`uploading` → `incomplete`、`meta_corrupt`、deleting の印、16 個の上限と hidden)、`received` の計算 | 21 |
-| `test/host/iso_catalog/test_iso_begin_apply.c` | `begin`(書き込みの順序、検査の順序、同名、上限、`<id>` の引き直し、失敗の片づけ)、イベントの適用(meta の書き込みと世代、スロットの交互、世代の巻き戻り) | 32 |
-| `test/host/iso_catalog/test_iso_delete.c` | 削除のステップ(順序、1 回 1 つの書き込み、再起動後の続き、エラーの再試行、`ready` が復活しないこと) | 24 |
-| `test/host/iso_catalog/test_iso_import.c` | `import`(拡張子、名前、大きさ、署名の位置、同名、上限、クロスリンク、`cursor` / `next_cursor` と 4 個ずつの処理、I/O エラー、書き込み失敗の片づけ) | 29 |
+| `test/host/iso_catalog/test_iso_scan.c` | 起動時のスキャン(id でないディレクトリ、状態ごとの扱い、`uploading` → `incomplete`、`meta_corrupt`、deleting の印、16 個の上限と hidden)、`received` の計算、**予約 ID `00000000` を採用せず `hidden` に数える(C-14。枠を使わない、ディレクトリを読まない、似た名前は従来どおり、再スキャンで数え直す)** | 27 |
+| `test/host/iso_catalog/test_iso_begin_apply.c` | `begin`(書き込みの順序、検査の順序、同名、上限、`<id>` の引き直し、失敗の片づけ、**予約 ID `00000000` の引き直し(C-14。乱数が 0 のとき mkdir せずに引き直す、16 回に数える、衝突と合わせて 16 回、0 に近い値は採用)**)、イベントの適用(meta の書き込みと世代、スロットの交互、世代の巻き戻り) | 37 |
+| `test/host/iso_catalog/test_iso_delete.c` | 削除のステップ(順序、1 回 1 つの書き込み、再起動後の続き、エラーの再試行、`ready` が復活しないこと) | 25 |
+| `test/host/iso_catalog/test_iso_import.c` | `import`(拡張子、名前、大きさ、署名の位置、同名、上限、クロスリンク、`cursor` / `next_cursor` と 4 個ずつの処理、I/O エラー、書き込み失敗の片づけ、**取り込みの `<id>` も 0 を引き直す(C-14)**) | 31 |
 | `test/host/iso_catalog/test_iso_powercut.c` | 電源断の網羅(下記) | 6 |
 | `test/host/iso_catalog/test_iso_fuzz.c` | 固定シードのファズ(下記) | 6 |
 | `test/host/iso_catalog/iso_mock_fs.c` / `.h` | モックの `iso_fs_t`(メモリ上。電源断の注入、書き込みの失敗の注入、読み出しの失敗の注入、書き込みの記録、疎なファイル、クロスリンクの再現)と `iso_random_t` | - |
 | `test/host/iso_catalog/ic_common.h` | 共通の部品(フィクスチャ、meta / スロット / パーツ / import ファイルを置く補助) | - |
 
-合計 166 件(`test/host/CMakeLists.txt` の既存の自動発見で、ctest の実行ファイルは 10 個増える。`iso_extent` の 3 個と合わせて 13 個。全体は 75 → 88)。
+合計 180 件(`test/host/CMakeLists.txt` の既存の自動発見で、ctest の実行ファイルは 10 個増える。`iso_extent` の 3 個と合わせて 13 個。全体は 75 → 88)。
 
 **期待値はすべて手書き**。符号化のバイト列は、レイアウト表(設計 3.2)から手で書き、CRC-32 の値は Python の `zlib.crc32` で別に求めた定数(`0x258DD8B1`、`0x3D5027B1`、`0x8B1AE264`)。遷移表は、7 × 14 の表を手書きで固定した(実装の関数から作らない)。
 
@@ -46,13 +46,18 @@
 python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso_catalog_mutants.py <結果.json> -j4
 ```
 
+**C-14(Issue #162。予約 ID `00000000`)の後の再実行**: `iso_id_generate`(乱数が 0 のとき `continue` で引き直す。`ISO_ID_TRIES` に数える)と `iso_catalog_scan`(`00000000` を採用せず `hidden` に数える)を変えたので、ミュータント P01〜P15(15 個。生成の 6 個、スキャンの 9 個)を足し、**全数(593 個)を最初から実行**した。
+生存は、前と同じ 21 個(同じ ID、同じ理由)。新しい P は 15 個とも殺した。`C62`(`hidden` を 2 回数える)は、old の文字列が、新しい `hidden++` と重なって 1 回だけ現れなくなった(BAD EDIT)ので、前後の行を足して書き直した(意味は同じ)。
+`P05`(0 を引いても `tries` を進めない)は、乱数が 0 しか返さないとき終わらなくなる変更。`test_id_generate_zero_draws_count_as_tries_and_never_create_the_reserved_directory`(0 を 16 回引いた後で 17 個目の値を採用してしまう)が殺す(0 だけを返す乱数は、先に別のテストが落ちるので、ハングは起きない)。
+`test_iso_import.c` と `test_iso_delete.c` の件数は、以前の表が 1 ずつ少なかった(実数に直した)。
+
 **結果**(ミュータントを入れる前のベースラインは、全テスト成功):
 
 | 実行した数 | 殺した数 | 生き残った数(すべて同値と判断) | ビルドエラー |
 |---|---|---|---|
-| 578 | 557 | 21 | 0 |
+| 593 | 572 | 21 | 0 |
 
-ミュータントの内訳(PR #150 の対応で、Q の 30 個を足した。下の 3.): `iso_name.c` 63 個(N)、`iso_meta.c` 88 個(T)、遷移表と状態の対応 56 個(S)、2 スロット 31 個(L)、カタログ・received・スキャン 66 個(C)、`begin` と `<id>` 50 個(B)、`write_meta` と `apply` 49 個(W)、削除 52 個(D)、import 69 個(I)、`rescan` 24 個(R)、クロスリンクの照合と、削除の拒否 30 個(Q)。
+ミュータントの内訳(PR #150 の対応で、Q の 30 個を足した。下の 3.): `iso_name.c` 63 個(N)、`iso_meta.c` 88 個(T)、遷移表と状態の対応 56 個(S)、2 スロット 31 個(L)、カタログ・received・スキャン 66 個(C)、`begin` と `<id>` 50 個(B)、`write_meta` と `apply` 49 個(W)、削除 52 個(D)、import 69 個(I)、`rescan` 24 個(R)、クロスリンクの照合と、削除の拒否 30 個(Q)、**予約 ID 15 個(P。C-14)**。
 
 経緯:
 
@@ -111,7 +116,7 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | Q41 | `apply`: INVALID に入るときも、直前の理由を引き継ぐ | INVALID に入るイベント(`FINALIZE_FAIL` / `INDEX_FAIL`)は、引数の理由で上書きする |
 | Q42 | `apply`: INVALID を離れるときも、理由を引き継ぐ | 離れるとき(`DELETE`)は、その後で理由を 0 にする |
 
-### 2.2 殺したミュータントの一覧(557 個)
+### 2.2 殺したミュータントの一覧(572 個)
 
 「殺したテスト」は、失敗したテストのうち先頭の 2 つ(最初に落ちたテストの実行ファイルで止める)。
 
@@ -354,8 +359,8 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | C05 | ensure_dirs: import dir not created | `test_scan_empty_card_creates_directories`, `test_ensure_dirs_reports_each_failure` |
 | C06 | ensure_dirs: EXISTS is an error | `test_apply_delete_clears_reason_and_resume_mark`, `test_apply_generation_wraps_from_uint32_max_to_zero` |
 | C07 | find: NULL id not handled | `test_iso_scan:crash/rc=1` |
-| C08 | find: always the first | `test_find_returns_only_exact_ids` |
-| C09 | find: compares 7 characters | `test_apply_finalize_ok_sha_variants`, `test_apply_each_invalid_reason_is_persisted` |
+| C08 | find: always the first | `test_begin_never_uses_the_reserved_id` |
+| C09 | find: compares 7 characters | `test_begin_never_uses_the_reserved_id`, `test_apply_finalize_ok_sha_variants` |
 | C10 | find: skips the last entry | `test_iso_begin_apply:crash/rc=1` |
 | C11 | remove: entries not shifted | `test_remove_entry_in_the_middle_and_at_the_end` |
 | C12 | remove: count not decremented | `test_apply_delete_and_delete_done` |
@@ -395,23 +400,38 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | C47 | load: received error ignored | `test_scan_io_errors_are_propagated` |
 | C48 | load: deleting received computed | `test_scan_state_mapping_per_image` |
 | C49 | scan: count not reset | `test_iso_scan:crash/rc=1` |
-| C50 | scan: hidden not reset | `test_scan_limits_to_16_images_and_counts_hidden_in_directory_order`, `test_scan_resets_previous_contents` |
+| C50 | scan: hidden not reset | `test_scan_limits_to_16_images_and_counts_hidden_in_directory_order`, `test_scan_reserved_id_does_not_take_one_of_the_16_slots` |
 | C52 | scan: directories not ensured | `test_scan_empty_card_creates_directories`, `test_ensure_dirs_reports_each_failure` |
 | C53 | scan: ensure error ignored | `test_ensure_dirs_reports_each_failure` |
 | C54 | scan: dir_open error ignored | `test_scan_io_errors_are_propagated` |
 | C55 | scan: dir_next error ignored | `test_scan_io_errors_are_propagated` |
 | C56 | scan: dir not closed on error | `test_scan_io_errors_are_propagated` |
 | C57 | scan: dir not closed | `test_apply_delete_clears_reason_and_resume_mark`, `test_apply_generation_wraps_from_uint32_max_to_zero` |
-| C58 | scan: files accepted as images | `test_scan_ignores_directories_that_are_not_ids` |
+| C58 | scan: files accepted as images | `test_scan_ignores_directories_that_are_not_ids`, `test_scan_reserved_name_as_a_file_is_ignored_not_counted` |
 | C59 | scan: bad ids accepted | `test_apply_delete_clears_reason_and_resume_mark`, `test_apply_generation_wraps_from_uint32_max_to_zero` |
 | C60 | scan: image limit +1 (overflows the array) | `test_scan_limits_to_16_images_and_counts_hidden_in_directory_order`, `test_scan_exactly_16_images_has_no_hidden` |
-| C61 | scan: hidden not counted | `test_scan_limits_to_16_images_and_counts_hidden_in_directory_order` |
-| C62 | scan: hidden counted twice | `test_scan_limits_to_16_images_and_counts_hidden_in_directory_order` |
+| C61 | scan: hidden not counted | `test_scan_limits_to_16_images_and_counts_hidden_in_directory_order`, `test_scan_reserved_id_does_not_take_one_of_the_16_slots` |
+| C62 | scan: hidden counted twice | `test_scan_limits_to_16_images_and_counts_hidden_in_directory_order`, `test_scan_reserved_id_does_not_take_one_of_the_16_slots` |
 | C63 | scan: id copied without NUL | `test_apply_delete_clears_reason_and_resume_mark`, `test_apply_generation_wraps_from_uint32_max_to_zero` |
 | C64 | scan: load error ignored | `test_scan_io_errors_are_propagated` |
 | C65 | scan: count not incremented | `test_iso_begin_apply:crash/rc=1` |
-| B01 | id: tries 15 (equivalent boundary is tested at 16) | `test_id_generate_gives_up_after_16_tries`, `test_begin_returns_id_exhausted_and_changes_nothing` |
-| B02 | id: tries 17 | `test_id_generate_gives_up_after_16_tries`, `test_begin_returns_id_exhausted_and_changes_nothing` |
+| P01 | reserved: generate does not redraw zero | `test_id_generate_redraws_when_the_random_value_is_zero`, `test_id_generate_zero_draws_count_as_tries_and_never_create_the_reserved_directory` |
+| P02 | reserved: generate redraws every nonzero value | `test_begin_creates_directory_then_meta_a`, `test_begin_with_declared_sha256` |
+| P03 | reserved: generate redraws 1 instead of 0 | `test_id_generate_formats_lowercase_hex_with_padding`, `test_id_generate_redraws_when_the_random_value_is_zero` |
+| P04 | reserved: generate gives up at the first zero | `test_id_generate_redraws_when_the_random_value_is_zero`, `test_id_generate_zero_draws_count_as_tries_and_never_create_the_reserved_directory` |
+| P05 | reserved: a zero draw is not counted as a try (a source that returns only 0 never ends) | `test_iso_begin_apply:crash/rc=1` |
+| P06 | reserved: generate redraws values below 0x10000 (low half zero) | `test_begin_retries_the_id_on_collision`, `test_id_generate_formats_lowercase_hex_with_padding` |
+| P07 | reserved: scan adopts the reserved id | `test_scan_does_not_adopt_the_reserved_id_and_counts_it_as_hidden`, `test_scan_counts_an_empty_reserved_directory_as_hidden_without_reading_it` |
+| P08 | reserved: scan skips every id except the reserved one | `test_iso_begin_apply:crash/rc=1` |
+| P09 | reserved: scan does not count it as hidden | `test_scan_does_not_adopt_the_reserved_id_and_counts_it_as_hidden`, `test_scan_counts_an_empty_reserved_directory_as_hidden_without_reading_it` |
+| P10 | reserved: scan counts it as hidden and adopts it | `test_scan_does_not_adopt_the_reserved_id_and_counts_it_as_hidden`, `test_scan_counts_an_empty_reserved_directory_as_hidden_without_reading_it` |
+| P11 | reserved: scan counts it as hidden twice | `test_scan_does_not_adopt_the_reserved_id_and_counts_it_as_hidden`, `test_scan_counts_an_empty_reserved_directory_as_hidden_without_reading_it` |
+| P12 | reserved: scan compares only the first 7 digits | `test_iso_begin_apply:crash/rc=1` |
+| P13 | reserved: scan compares only the first digit | `test_iso_begin_apply:crash/rc=1` |
+| P14 | reserved: scan reserves 00000001 instead | `test_iso_begin_apply:crash/rc=1` |
+| P15 | reserved: scan takes a slot for the reserved id and counts it hidden afterwards | `test_scan_does_not_adopt_the_reserved_id_and_counts_it_as_hidden`, `test_scan_counts_an_empty_reserved_directory_as_hidden_without_reading_it` |
+| B01 | id: tries 15 (equivalent boundary is tested at 16) | `test_id_generate_gives_up_after_16_tries`, `test_id_generate_zero_draws_count_as_tries_and_never_create_the_reserved_directory` |
+| B02 | id: tries 17 | `test_id_generate_gives_up_after_16_tries`, `test_id_generate_zero_draws_count_as_tries_and_never_create_the_reserved_directory` |
 | B03 | id: uppercase hex | `test_begin_retries_the_id_on_collision`, `test_id_generate_formats_lowercase_hex_with_padding` |
 | B04 | id: no zero padding | `test_begin_retries_the_id_on_collision`, `test_id_generate_formats_lowercase_hex_with_padding` |
 | B05 | id: 7 digits | `test_begin_retries_the_id_on_collision`, `test_id_generate_formats_lowercase_hex_with_padding` |
@@ -419,8 +439,8 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | B07 | id: mkdir error treated as retry | `test_begin_mkdir_error_other_than_exists_is_returned_without_retry`, `test_id_generate_clears_the_output_on_a_mkdir_error` |
 | B08 | id: every mkdir error ends with exists | `test_power_cut_at_every_write_and_every_tear`, `test_power_cut_during_import` |
 | B09 | id: success not returned | `test_begin_creates_directory_then_meta_a`, `test_begin_with_declared_sha256` |
-| B10 | id: exhausted code is exists | `test_id_generate_gives_up_after_16_tries`, `test_begin_returns_id_exhausted_and_changes_nothing` |
-| B11 | id: output not cleared when exhausted | `test_id_generate_gives_up_after_16_tries` |
+| B10 | id: exhausted code is exists | `test_id_generate_gives_up_after_16_tries`, `test_id_generate_zero_draws_count_as_tries_and_never_create_the_reserved_directory` |
+| B11 | id: output not cleared when exhausted | `test_id_generate_gives_up_after_16_tries`, `test_id_generate_zero_draws_count_as_tries_and_never_create_the_reserved_directory` |
 | B12 | id: output not cleared on mkdir error | `test_id_generate_clears_the_output_on_a_mkdir_error` |
 | B13 | cleanup: meta.a not removed | `test_begin_meta_write_failure_cleans_up_the_directory` |
 | B14 | cleanup: directory not removed | `test_begin_meta_write_failure_cleans_up_the_directory` |
@@ -436,7 +456,7 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | B25 | begin: limit check > | `test_iso_begin_apply:crash/rc=1` |
 | B26 | begin: limit removed | `test_iso_begin_apply:crash/rc=1` |
 | B27 | begin: limit before the name check | `test_begin_image_limit_and_precedence` |
-| B28 | begin: id error ignored | `test_begin_returns_id_exhausted_and_changes_nothing`, `test_begin_mkdir_error_other_than_exists_is_returned_without_retry` |
+| B28 | begin: id error ignored | `test_begin_never_uses_the_reserved_id`, `test_begin_returns_id_exhausted_and_changes_nothing` |
 | B29 | begin: state not uploading | `test_begin_creates_directory_then_meta_a`, `test_apply_idle_timeout_writes_incomplete_to_the_other_slot` |
 | B30 | begin: size not stored | `test_begin_creates_directory_then_meta_a`, `test_begin_with_declared_sha256` |
 | B31 | begin: part_blocks 1 GiB in bytes | `test_begin_creates_directory_then_meta_a` |
@@ -563,22 +583,22 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | I06 | import: length check removed (name shorter than 4 reads before the buffer) | `test_iso_import:crash/rc=1` |
 | I07 | import: length check <= 4 | `test_import_name_rules` |
 | I08 | import: extension checked one byte before the end | `test_iso_import:crash/rc=1` |
-| I09 | signature: offset 15 sectors | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
-| I10 | signature: offset 17 sectors | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
-| I11 | signature: offset 16 * 512 | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
+| I09 | signature: offset 15 sectors | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
+| I10 | signature: offset 17 sectors | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
+| I11 | signature: offset 16 * 512 | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
 | I12 | signature: open error ignored | `test_rescan_io_errors_are_propagated`, `test_rescan_counts_before_an_error_are_kept` |
-| I13 | signature: read_at offset 0 | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
-| I14 | signature: reads 5 bytes only | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
-| I15 | signature: reads from SIG_OFFSET + 1 | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
-| I16 | signature: sequential read instead of read_at (the file start) | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
-| I18 | signature: file not closed | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
+| I13 | signature: read_at offset 0 | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
+| I14 | signature: reads 5 bytes only | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
+| I15 | signature: reads from SIG_OFFSET + 1 | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
+| I16 | signature: sequential read instead of read_at (the file start) | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
+| I18 | signature: file not closed | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
 | I19 | signature: read error ignored | `test_rescan_read_errors_while_checking_the_signature` |
 | I20 | signature: read length 7 | `test_iso_import:crash/rc=1` |
-| I21 | signature: compares from byte 0 | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
-| I22 | signature: CD001 not accepted | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
+| I21 | signature: compares from byte 0 | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
+| I22 | signature: CD001 not accepted | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
 | I23 | signature: BEA01 not accepted | `test_import_signature` |
 | I24 | signature: compares 4 bytes | `test_import_signature` |
-| I25 | signature: ok not set | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
+| I25 | signature: ok not set | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
 | I26 | crosslink: zero cluster compared | `test_import_cluster_zero_never_counts_as_crosslink` |
 | I27 | crosslink: never reports | `test_import_crosslinked_file_is_skipped_and_left_alone`, `test_import_crosslink_between_two_files_in_one_batch` |
 | I28 | crosslink: missing p000 is an error | `test_import_same_name_and_limit`, `test_import_image_limit` |
@@ -608,19 +628,19 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | I52 | import: default part blocks | `test_import_one_file`, `test_import_size_boundaries` |
 | I53 | import: sha computed flag | `test_import_one_file` |
 | I54 | import: name includes the extension | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
-| I55 | import: name not copied | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
+| I55 | import: name not copied | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
 | I56 | import: generation 2 | `test_import_one_file` |
 | I57 | import: meta error ignored | `test_import_write_failures_clean_up_and_keep_the_file` |
 | I58 | import: no cleanup after a meta error | `test_import_write_failures_clean_up_and_keep_the_file` |
-| I59 | import: renamed to p001 | `test_import_one_file`, `test_import_crosslink_between_two_files_in_one_batch` |
-| I60 | import: file not moved | `test_import_one_file`, `test_import_name_rules` |
+| I59 | import: renamed to p001 | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
+| I60 | import: file not moved | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
 | I61 | import: rename error ignored | `test_import_write_failures_clean_up_and_keep_the_file` |
 | I62 | import: no cleanup after a rename error | `test_import_write_failures_clean_up_and_keep_the_file` |
 | I63 | import: entry not added | `test_iso_import:crash/rc=1` |
 | I64 | import: entry state incomplete | `test_import_one_file` |
 | I65 | import: entry received 0 | `test_import_one_file` |
 | I66 | import: entry meta not stored | `test_import_extension_is_case_insensitive_and_other_entries_are_ignored`, `test_import_name_rules` |
-| I67 | import: imported flag not set | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
+| I67 | import: imported flag not set | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
 | I68 | import: entry meta_valid not set | `test_import_one_file` |
 | R01 | rescan: result not cleared (equivalent: every field is assigned or zero-initialised later) | `test_iso_import:crash/rc=1` |
 | R02 | rescan: missing dir is an error | `test_rescan_without_import_directory_does_nothing` |
@@ -629,18 +649,18 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | R05 | rescan: directories counted | `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
 | R06 | rescan: extension not checked | `test_import_extension_is_case_insensitive_and_other_entries_are_ignored`, `test_rescan_cursor_counts_only_iso_files` |
 | R07 | rescan: cursor skip not counted | `test_import_name_rules`, `test_import_signature` |
-| R08 | rescan: cursor skips one more | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
+| R08 | rescan: cursor skips one more | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
 | R09 | rescan: cursor ignored | `test_import_name_rules`, `test_import_signature` |
 | R10 | rescan: batch limit +1 (overflows the array) | `test_iso_import:crash/rc=1` |
 | R11 | rescan: batch limit one less | `test_import_extension_is_case_insensitive_and_other_entries_are_ignored`, `test_import_signature` |
 | R12 | rescan: more flag not set | `test_import_name_rules`, `test_import_signature` |
 | R13 | rescan: loop does not stop at the batch | `test_iso_import:crash/rc=1` |
-| R14 | rescan: entry name not copied | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
-| R15 | rescan: entry stat not copied | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
-| R16 | rescan: entry not counted | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
-| R17 | rescan: dir not closed | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
+| R14 | rescan: entry name not copied | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
+| R15 | rescan: entry stat not copied | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
+| R16 | rescan: entry not counted | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
+| R17 | rescan: dir not closed | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
 | R18 | rescan: import error ignored | `test_rescan_io_errors_are_propagated`, `test_rescan_read_errors_while_checking_the_signature` |
-| R19 | rescan: imported not counted | `test_import_one_file`, `test_import_extension_is_case_insensitive_and_other_entries_are_ignored` |
+| R19 | rescan: imported not counted | `test_import_one_file`, `test_import_never_uses_the_reserved_id` |
 | R20 | rescan: skipped not counted | `test_import_name_rules`, `test_import_size_boundaries` |
 | R21 | rescan: next cursor without skipped | `test_import_name_rules`, `test_import_signature` |
 | R22 | rescan: next cursor counts imported | `test_import_name_rules`, `test_import_signature` |
@@ -649,27 +669,27 @@ python3 tools/test/mutate_iso_catalog.py <repo> <スクラッチ> tools/test/iso
 | Q01 | crosslink: p000 directory accepted | `test_delete_precheck_non_matches` |
 | Q02 | crosslink: cluster 0 compared | `test_delete_precheck_non_matches` |
 | Q03 | crosslink: missing p000 is an error | `test_scan_limits_to_16_images_and_counts_hidden_in_directory_order` |
-| Q04 | crosslink: p000 stat error ignored | `test_delete_precheck_propagates_io_errors` |
+| Q04 | crosslink: p000 stat error ignored | `test_delete_precheck_propagates_io_errors`, `test_delete_step_reports_io_errors_of_the_crosslink_check_without_changing_anything` |
 | Q05 | crosslink: missing import dir is an error | `test_delete_precheck_non_matches` |
-| Q06 | crosslink: import dir_open error ignored | `test_delete_precheck_propagates_io_errors` |
-| Q07 | crosslink: dir_next error ignored | `test_delete_precheck_propagates_io_errors` |
+| Q06 | crosslink: import dir_open error ignored | `test_delete_precheck_propagates_io_errors`, `test_delete_step_reports_io_errors_of_the_crosslink_check_without_changing_anything` |
+| Q07 | crosslink: dir_next error ignored | `test_delete_precheck_stops_at_the_first_match_and_does_not_read_further`, `test_delete_precheck_propagates_io_errors` |
 | Q08 | crosslink: import directories compared | `test_delete_precheck_non_matches` |
 | Q09 | crosslink: cluster compare inverted | `test_delete_precheck_refuses_when_import_has_the_same_first_cluster`, `test_delete_precheck_non_matches` |
 | Q10 | crosslink: match not reported | `test_delete_precheck_refuses_when_import_has_the_same_first_cluster`, `test_delete_precheck_non_matches` |
 | Q11 | crosslink: match does not stop (the next dir_next error turns crosslinked into an I/O error) | `test_delete_precheck_stops_at_the_first_match_and_does_not_read_further` |
 | Q12 | crosslink: import dir not closed after the loop | `test_delete_full_sequence_and_order`, `test_delete_when_slot_a_is_the_older_one` |
-| Q13 | crosslink: import dir not closed on a dir_next error | `test_delete_precheck_propagates_io_errors` |
+| Q13 | crosslink: import dir not closed on a dir_next error | `test_delete_precheck_stops_at_the_first_match_and_does_not_read_further`, `test_delete_precheck_propagates_io_errors` |
 | Q14 | crosslink: p000 path is p001 | `test_delete_precheck_refuses_when_import_has_the_same_first_cluster`, `test_delete_precheck_non_matches` |
 | Q15 | crosslink: the import directory is /iso | `test_delete_precheck_refuses_when_import_has_the_same_first_cluster`, `test_delete_precheck_non_matches` |
 | Q20 | precheck: crosslink reported as OK | `test_delete_precheck_refuses_when_import_has_the_same_first_cluster`, `test_delete_precheck_non_matches` |
 | Q21 | precheck: always crosslinked | `test_delete_precheck_refuses_when_import_has_the_same_first_cluster`, `test_delete_precheck_non_matches` |
-| Q22 | precheck: error ignored | `test_delete_precheck_propagates_io_errors` |
+| Q22 | precheck: error ignored | `test_delete_precheck_stops_at_the_first_match_and_does_not_read_further`, `test_delete_precheck_propagates_io_errors` |
 | Q23 | precheck: bad id accepted | `test_delete_precheck_non_matches` |
 | Q24 | precheck: NULL catalog accepted | `test_iso_delete:crash/rc=1` |
-| Q30 | delete init: crosslink not checked | `test_delete_step_refuses_a_crosslinked_image_without_changing_anything`, `test_delete_resume_with_crosslink_keeps_p000_and_everything_else` |
-| Q31 | delete init: crosslink match ignored | `test_delete_step_refuses_a_crosslinked_image_without_changing_anything`, `test_delete_resume_with_crosslink_keeps_p000_and_everything_else` |
+| Q30 | delete init: crosslink not checked | `test_delete_precheck_stops_at_the_first_match_and_does_not_read_further`, `test_delete_step_refuses_a_crosslinked_image_without_changing_anything` |
+| Q31 | delete init: crosslink match ignored | `test_delete_precheck_stops_at_the_first_match_and_does_not_read_further`, `test_delete_step_refuses_a_crosslinked_image_without_changing_anything` |
 | Q32 | delete init: crosslink check error ignored | `test_delete_step_reports_io_errors_of_the_crosslink_check_without_changing_anything` |
-| Q33 | delete init: crosslink reported with another code | `test_delete_step_refuses_a_crosslinked_image_without_changing_anything`, `test_delete_resume_with_crosslink_keeps_p000_and_everything_else` |
+| Q33 | delete init: crosslink reported with another code | `test_delete_precheck_stops_at_the_first_match_and_does_not_read_further`, `test_delete_step_refuses_a_crosslinked_image_without_changing_anything` |
 | Q35 | delete init: crosslink only checked when the meta is not deleting yet (the resume is not protected) | `test_delete_resume_with_crosslink_keeps_p000_and_everything_else` |
 | Q36 | delete files: directories starting with p are removed | `test_delete_step_ignores_p_directories_and_stops_at_rmdir` |
 | Q37 | delete files: only directories starting with p are removed | `test_delete_full_sequence_and_order`, `test_delete_when_slot_a_is_the_older_one` |

@@ -227,6 +227,12 @@ foreach(test_source ${TEST_SOURCES})
         target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/iso_catalog ${CMAKE_SOURCE_DIR}/iso_upload ${CMAKE_SOURCE_DIR}/../../components/iso_upload)
     endif()
 
+    # iso_api のテスト(iso_core のテストの部品(モックの fs、偽の時計、core_common.h)を使う)
+    if (test_rel_path_iso MATCHES "^iso_api/")
+        target_link_libraries(${test_name} PRIVATE iso_api iso_core iso_upload iso_catalog iso_media iso_mock_fs iso_up_support http_guard auth_logic)
+        target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/iso_catalog ${CMAKE_SOURCE_DIR}/iso_upload ${CMAKE_SOURCE_DIR}/iso_core ${CMAKE_SOURCE_DIR}/../../components/iso_upload ${CMAKE_SOURCE_DIR}/../../components/iso_api)
+    endif()
+
     # msc_bot のテストだけ
     if (test_rel_path MATCHES "^msc_bot/")
         target_link_libraries(${test_name} PRIVATE msc_bot)
@@ -323,6 +329,9 @@ add_library(iso_up_support STATIC ${CMAKE_SOURCE_DIR}/iso_upload/up_sha256.c)
 target_include_directories(iso_up_support PUBLIC ${CMAKE_SOURCE_DIR}/iso_upload ${CMAKE_SOURCE_DIR}/../../components/iso_seams/include)
 target_compile_options(iso_up_support PRIVATE ${TEST_COMPILE_OPTIONS})
 target_link_options(iso_up_support PRIVATE ${TEST_LINK_OPTIONS})
+
+# iso_api (P8 C-12: /api/v1/iso* request checks, decision order, error mapping, GET JSON; pure C)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_api ${CMAKE_BINARY_DIR}/iso_api)
 
 # iso_media (virtual CD-ROM media state: EMPTY/LOADED, unit attention, prevent removal; docs/ISO_MOUNT_DESIGN.md 5.5; pure C)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../../components/iso_media ${CMAKE_BINARY_DIR}/iso_media)

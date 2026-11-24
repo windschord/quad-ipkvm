@@ -13,7 +13,7 @@
 | `components/iso_upload/iso_finish.c` | `iso_upload_finish_step`(`FINISH` ジョブ。`sync` + `close` → SHA-256 → 宣言値 → 署名 → エクステント → meta を ready)、`iso_upload_hash_step`(全パーツを読み直して SHA-256) |
 | `components/iso_upload/iso_index.c` | `iso_index_step`(パーツごとの `stat` + `get_extents` → 期待値(meta)との照合 → `iso_extent_table_build`。`FINISH` と `INDEX` ジョブが共有) |
 | `components/iso_upload/include/iso_upload.h` | 公開ヘッダー(結果の列挙 `iso_res_t`、フック、ジョブの型) |
-| `components/iso_seams/include/iso_seams.h` | **`iso_fs_t.read_at` を足した**(位置指定の読み出し。`close` が読み取りハンドルにも使えることをコメントに明記)。ほかは変更なし |
+| `components/iso_seams/include/iso_seams.h` | **`iso_fs_t.read_at` を足した**(位置指定の読み出し。`close` が読み取りハンドルにも使えることをコメントに明記)。**C-14: `iso_sha256_t.final` を `void` から `int` にした**(成功 `ISO_OK`、失敗 `ISO_ERR_IO`。PR #160 のレビュー)。ほかは変更なし |
 
 戻り値の規則(`iso_catalog_apply` と同じ): 0 = 受理、正 = `iso_res_t`(拒否・結果。API のステータスの元)、負 = `iso_err_t`(I/O などのエラー)。
 
@@ -25,14 +25,14 @@
 | `test/host/iso_upload/test_up_begin.c` | `begin`: 検査の順序(400 → 枠 → 同名 → 上限 → 空き容量)、`size` の境界(34815 / 34816、16 GiB と +1)、空き容量の式の境界(`size + 64 MiB`、`total_bytes` 超、設計の数値例 `10 − 5 − (6 − 5) = 4 GiB`、途中のイメージの数え方)、キャッシュ未採取、`mkdir` / `meta` の失敗の巻き戻し | 18 |
 | `test/host/iso_upload/test_up_write.c` | `iso_upload_write_chunk`: `offset == received` のときだけ書く(不一致は何も書かず、現在の `received`)、チャンクの上限(1000 / 1001、既定 128 KiB)、`size` を超える(34816 / +1)、状態ごとの拒否、**パーツの境界**(またぐチャンク、パーツ最後の 1 バイト、次のパーツの先頭、3 パーツにまたがる 1 チャンク、**既定の 1 GiB の境界**)、`sync` の間隔(`>=`、リセット、パーツの終わり、既定 4 MiB)、SHA-256 の逐次、アイドル(`IDLE_CLOSE`)、中止、再開(`meta` を書かない、`open_a` / `open_w`、`received` の決め直し、空き容量の再検査、**訂正のときのビュー更新(3 つの拒否の分岐。進行中の拒否では更新しない)**、**`chunk_accepted` フック(受理のときだけ、1 回)**)、`receiving` / `idle` の境(5 秒)、**満杯のカタログの走査** | 47 |
 | `test/host/iso_upload/test_up_failures.c` | 書き込み・`sync`・`open` の失敗: チャンク全体を `truncate` で取り消して `incomplete`(部分書き込みつきの `ISO_ERR_NO_SPACE` は 507 相当)、パーツをまたぐチャンクの両方の取り消し、**`truncate` が失敗したら `received` は書く前の値のまま(直前に成功した PUT までのメモリ上の値。取り消せなかった分は覚えておき、再開の最初の `PUT` と `finish` の受付の前に、もう一度 `truncate` する。再び失敗したら、そのエラーを返し、済んだ分は維持して、残りは次の試行に持ち越す。新しい PUT には進まない)、パーツをまたぐ失敗の取り消しの失敗(CodeRabbit の例: 35816 バイトのイメージ、34816 バイトのパーツ)で、`finish` が、受け取っていない分を数えない、`abort` / `reinit` で保留を捨てる、複数のイメージの保留を取り違えない、保留の一覧が(全イメージ × 全パーツまで)新しい保留を捨てないこと、末尾の保留を詰め直しても配列の外を読まないこと、`finish` の受付が保留を先に行う**、`meta` の書き込みの失敗でもメモリ上は `incomplete`、再開の最初の `PUT` の失敗、`idle_close` の失敗(合わなくなった SHA-256 の状態を捨てる)、保留の一覧(捨てない、末尾の保留の詰め直し、満杯のときの守り)、保留が複数あって一部だけ成功したとき、`finish` の受付が訂正して拒否・受理するときのビュー更新 | 34 |
-| `test/host/iso_upload/test_up_finish.c` | `finish` の受付(`size_mismatch`、枠、冪等、`invalid`、`finalizing`、取り消し)と、`FINISH` ジョブのステップ: 逐次の SHA-256 / 再起動後の全パーツの読み直し(`budget` ごと、読み出しの回数を手で数えた期待値)、宣言値の一致・不一致、署名(`CD001` / `BEA01` / 不正 / 後ろのパーツ)、エクステント(4096 本ちょうど、4100 本、作業領域の枯渇、`get_extents` の `TOO_FRAGMENTED`)、`part_mismatch`(欠落、短い、長い、`part_count` の食い違い)、I/O エラー(`incomplete` と再試行)、確保の失敗、`meta` の失敗、中止、古いジョブ、`epoch` の記録、**`FINISH` の途中で SD が替わったとき(`epoch` が進んだら `ready` にせず `incomplete`)**、再起動の後に、取り消せなかった分が残っているときの SHA-256 の読み直し | 74 |
+| `test/host/iso_upload/test_up_finish.c` | `finish` の受付(`size_mismatch`、枠、冪等、`invalid`、`finalizing`、取り消し)と、`FINISH` ジョブのステップ: 逐次の SHA-256 / 再起動後の全パーツの読み直し(`budget` ごと、読み出しの回数を手で数えた期待値)、宣言値の一致・不一致、署名(`CD001` / `BEA01` / 不正 / 後ろのパーツ)、エクステント(4096 本ちょうど、4100 本、作業領域の枯渇、`get_extents` の `TOO_FRAGMENTED`)、`part_mismatch`(欠落、短い、長い、`part_count` の食い違い)、I/O エラー(`incomplete` と再試行)、確保の失敗、`meta` の失敗、中止、古いジョブ、`epoch` の記録、**`FINISH` の途中で SD が替わったとき(`epoch` が進んだら `ready` にせず `incomplete`)**、再起動の後に、取り消せなかった分が残っているときの SHA-256 の読み直し、**SHA-256 の `final` の失敗(C-14。逐次の経路と読み直しの経路、宣言値あり / なし / 全ゼロ、読み直しの途中、`ISO_OK` 以外の戻り値、`iso_upload_hash_step` の単体、成功のときは `final` が 1 回だけ)** | 84 |
 | `test/host/iso_upload/test_up_index.c` | `iso_index_step`: 1 パーツずつ + 表の構築(ステップ数 = 初期化 + パーツ + 構築)、`iso_extent_map` で変換を確かめる、孤児の末尾のクリップ、`epoch`、`part_mismatch` / `too_fragmented` / I/O エラー / 確保の失敗 | 26 |
 | `test/host/iso_upload/test_up_powercut.c` | **電源断の網羅**(下記) | 4 |
 | `test/host/iso_upload/test_up_fuzz.c` | **固定シードのファズ**(下記) | 1 |
 | `test/host/iso_catalog/iso_mock_fs.c` / `.h` | モックの `iso_fs_t` に、`read_at`、`open_for_write` / `write` / `sync` / `truncate` / `close`(未同期の分は電源断で失われる、書き込み中のファイルは読み取りで開けない)、`get_extents`、`mount_info` の設定、書き込みの失敗の注入(`mock_fs_fail_write`)、即時の電源断(`mock_fs_crash`)を足した(既存の関数は変えていない) | - |
-| `test/host/iso_upload/up_common.h`、`up_sha256.c` / `.h` | 共通の部品(偽の時計、確保の数え上げ、決定的なデータの生成 `gen_byte`、ディスク上の中身の照合、SHA-256) | - |
+| `test/host/iso_upload/up_common.h`、`up_sha256.c` / `.h` | 共通の部品(偽の時計、確保の数え上げ、決定的なデータの生成 `gen_byte`、ディスク上の中身の照合、SHA-256)。**C-14: `up_sha256_fail_final_at(n, rc)`(`iso_sha256_t` の `final` の n 回目を `rc` で失敗させる。失敗のとき出力は全ゼロ = 本番の `worker_sha_final()` と同じ)と `up_sha256_final_calls()`** | - |
 
-合計 213 件(`test/host/CMakeLists.txt` の既存の自動発見で、ctest の実行ファイルが 8 個増える)。
+合計 223 件(`test/host/CMakeLists.txt` の既存の自動発見で、ctest の実行ファイルが 8 個増える)。
 
 **期待値はすべて手書き**。SHA-256 の定数は Python の `hashlib` で、同じ生成規則(`gen_byte`)から別に求めた。書き込みの総数(28)は、手順から手で数えた(`test_up_powercut.c`)。パーツの大きさは、テストでは 17 ブロック(34816 バイト)など小さくして、境界を安く試す
 (`begin` の後に `iso_catalog_write_meta` で `part_blocks` を書き直す。`iso_upload` は、常に `meta.part_blocks` を使う)。1 GiB の境界は、大きさだけを持つ(中身を捨てる)モードと、何もしない SHA-256 で試す。
@@ -88,13 +88,18 @@ U231(`test_a_new_pending_truncate_is_never_dropped_even_when_the_list_is_nearly_
 `corrected = true` の初期値(U435。訂正がないときに、更新が増えないこと)は、`test_finish_begin_without_a_correction_does_not_add_a_view_update` で殺した。訂正して受理するときに 1 回だけ更新することは、`test_finish_begin_that_corrects_received_and_accepts_notifies_once` で確かめた。
 新しく生存したのは、`rc > 0` → `rc > 1`(U456。`ISO_TR_REJECT_STATE` は、直前の `switch` で除かれていて、起きない)。同値。
 
+**C-14(Issue #162。`iso_sha256_t.final` が失敗を返す。PR #160 のレビューの CodeRabbit の指摘)の後の再実行**: `iso_finish.c` の 2 か所(`iso_upload_hash_step` の確定と `FP_VERIFY`)を変えたので、ミュータントを `gen_iso_mutants.py` で作り直した(821 個。前は 819 個)。
+さらに、`gen_iso_mutants.py` が作らない形(代入の右辺の比較 `== ISO_OK`、定数でないエラーの引数 `ISO_ERR_IO`、関数の呼び出しの戻り値を捨てる)を、**手書きの 11 個**(`tools/test/iso_upload_mutants_c14.py`。C001〜C011)に足し、同じスクリプトで実行した。**合計 832 個を、最初から全数**実行した。
+`final` の戻り値の比較は、`ISO_OK` だけを成功にする(正の値も、`ISO_ERR_IO` 以外の負の値も失敗)。`!= ISO_OK` を `< ISO_OK` / `== ISO_ERR_IO` / `>= ISO_OK` に変えるミュータント(C002、C003、C007、C008)は、**逐次の経路と読み直しの経路のそれぞれに、正の値(1)と `ISO_ERR_NOMEM` を返す偽の `final` を試すテスト**で殺した(最初は、片方の経路に片方の値だけで、C007 が生き残る形だったので、テストを 2 つに分けた)。
+`FP_VERIFY` の `have_digest = true`(旧 F167、F168。同値だった)は、`final` の戻り値になったので、同値でなくなった(`F168` は殺された)。それ以外の生存は、前と同じミュータントで、同じ理由(ID は付け替えた。ソースの行が増えたので、F の番号がずれる)。
+
 **結果**(ミュータントを入れる前のベースラインは、全テスト成功):
 
 | 実行した数 | 殺した数 | 生き残った数(すべて同値と判断) | ビルドエラー(コンパイラが検出) |
 |---|---|---|---|
-| 819 | 746 | 66 | 7 |
+| 832 | 761 | 64 | 7 |
 
-### 3.1 同値のミュータント(66 個)
+### 3.1 同値のミュータント(64 個)
 
 生き残ったものは、1 つずつ、変更の前後の挙動が同じ理由を確かめた。同じ理由のものは、まとめた。
 
@@ -109,12 +114,11 @@ U231(`test_a_new_pending_truncate_is_never_dropped_even_when_the_list_is_nearly_
 | U495 | `iso_upload_reinit` の走査の `<` → `<=`: カタログが満杯(`count == ISO_MAX_IMAGES`)のときだけ、`images[count]`(配列の外。`count`、`hidden` と、構造体の外)の `state` を読む。**範囲外の読み出しだけが違い、サニタイザーは検出しない**(`&images[i]` のアドレスを取る形は、1 つ先を許す)。満杯のカタログのテスト(`test_the_storage_check_and_reinit_scan_a_full_catalog_without_reading_past_it`)は通り、結果は変わらない。範囲外の値に依存するので、厳密な同値とは言わない(検出手段がない) |
 | U096, U098 | 空き容量の推定: キャッシュ未採取なら `free_bytes` は 0 なので、早期の return がなくても 0。`free_bytes > used` と `>=` は、等しいとき両方 0 |
 | U104, U105, U106 | 関数の定義の配列引数の大きさ(`char out_id[ISO_ID_LEN + 1]` の大きさ)は、ポインターに読み替えられ、意味を持たない |
-| F049, F084, F176, U166, X073 | 初期値が、直後の呼び出しで必ず上書きされる(`r`、`n`、`got`、`ok`)。失敗の戻り値のときは読まない |
-| F027, F078, U175, U327, U453, U456, X062 | 起きない失敗の分岐: パスの組み立て(`ISO_PATH_MAX` に収まる)、`iso_catalog_apply(PUT / FINISH)` の拒否(直前の検査で除かれている。FINISH と PUT は `meta` を書かない)(`finish_begin` の `rc > 0` の `ISO_TR_REJECT_STATE`(= 1)は、直前の `switch` で、`ready` / `finalizing` / `invalid` などを除いてあるので、起きない) |
+| F049, F086, F178, U166, X073 | 初期値が、直後の呼び出しで必ず上書きされる(`r`、`n`、`got`、`ok`)。失敗の戻り値のときは読まない |
+| F027, F080, U175, U327, U453, U456, X062 | 起きない失敗の分岐: パスの組み立て(`ISO_PATH_MAX` に収まる)、`iso_catalog_apply(PUT / FINISH)` の拒否(直前の検査で除かれている。FINISH と PUT は `meta` を書かない)(`finish_begin` の `rc > 0` の `ISO_TR_REJECT_STATE`(= 1)は、直前の `switch` で、`ready` / `finalizing` / `invalid` などを除いてあるので、起きない) |
 | F041, F044, U338, U475, U477 | 境界で、両方の分岐が同じ値になる: `seg > len - done` と `>=`(等しければ代入しても同じ)、読み出しの長さの `>` と `>=`、経過の `now >= last` と `>`(等しければ 0)、巻き戻りの経過が 0 か 1(どちらも `receiving`) |
 | U397, U398, U401 | `iso_upload_idle_close` の枠の検査: 「`uploading` のイメージは、必ず枠の持ち主」という不変条件があるので、後ろの `e->state != ISO_STATE_UPLOADING` の検査だけで同じ結果(防御として残している) |
-| F113, F116, F118, F119, F123, F125, F126, F127, F132, F149, F198, F201, F208 | `end_invalid` / `end_ioerr` の冗長な後始末: 作業領域は、その前に解放済み、SHA-256 の状態は検証の前に捨てている、書き込み用のハンドルは、先頭の `close` で閉じ済み、`phase = FP_DONE` がなくても、状態が `finalizing` でなくなるので、次のステップは古いジョブとして終わる、`rc` の分岐は `rc == 0` でも同じ |
-| F167, F168 | `FP_VERIFY` で `have_digest` を立てても、その後は読まれない |
+| F115, F118, F120, F121, F125, F127, F128, F129, F134, F151, F200, F203, F210 | `end_invalid` / `end_ioerr` の冗長な後始末: 作業領域は、その前に解放済み、SHA-256 の状態は検証の前に捨てている、書き込み用のハンドルは、先頭の `close` で閉じ済み、`phase = FP_DONE` がなくても、状態が `finalizing` でなくなるので、次のステップは古いジョブとして終わる、`rc` の分岐は `rc == 0` でも同じ |
 | X040 | `n == 0 \|\| n > ISO_MAX_PARTS` は、`n != part_count`(meta の検査で 1〜16)の検査に含まれる(配列の範囲の防御として残している) |
 | F001 | `cur_epoch` の、`bdev` がないときの値(0 → 1): 開始のときの記録(`epoch0`)と、`ready` の前の確認は、同じ関数を呼ぶので、同じ値を比べる(結果は変わらない。`bdev` は必須の欄で、`NULL` の分岐は防御) |
 
@@ -124,20 +128,215 @@ U231(`test_a_new_pending_truncate_is_never_dropped_even_when_the_list_is_nearly_
 
 | ID | 変更箇所 |
 |---|---|
+| F099 | L115: + -> - |
+| F100 | L115: + -> - |
+| F101 | L115: const 1+1 -> 2 |
+| F103 | L115: const 5+1 -> 6 |
+| F106 | L115: const 1+1 -> 2 |
+| F108 | L115: const 5+1 -> 6 |
 | U141 | L120: const 1+1 -> 2 |
-| F097 | L115: + -> - |
-| F098 | L115: + -> - |
-| F099 | L115: const 1+1 -> 2 |
-| F101 | L115: const 5+1 -> 6 |
-| F104 | L115: const 1+1 -> 2 |
-| F106 | L115: const 5+1 -> 6 |
 
-### 3.3 殺したミュータントの一覧(746 個)
+### 3.3 殺したミュータントの一覧(761 個)
 
 「殺したテスト」は、失敗したテストのうち先頭の 2 つ(最初に落ちたテストの実行ファイルで止める)。
+C001〜C011 は、`tools/test/iso_upload_mutants_c14.py`(手書き。C-14)のミュータント。
 
 | ID | 変更箇所 | 殺したテスト |
 |---|---|---|
+| C001 | FP_VERIFY: final == ISO_OK -> != ISO_OK | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| C002 | FP_VERIFY: final == ISO_OK -> >= ISO_OK(正の戻り値を成功にする) | `test_final_failure_with_a_positive_code_in_the_streamed_path_and_nomem_in_the_reread_path` |
+| C003 | FP_VERIFY: final == ISO_OK -> != ISO_ERR_IO(ISO_ERR_IO だけを失敗にする) | `test_final_failure_with_a_positive_code_in_the_streamed_path_and_nomem_in_the_reread_path`, `test_final_failure_with_nomem_in_the_streamed_path_and_a_positive_code_in_the_reread_path` |
+| C004 | FP_VERIFY: final の戻り値を捨てて、常に成功 | `test_final_failure_with_the_streamed_sha_and_no_declaration_is_incomplete_not_ready`, `test_final_failure_with_the_streamed_sha_and_a_matching_declaration_is_incomplete_not_invalid` |
+| C005 | FP_VERIFY: 失敗の終わりのエラー ISO_ERR_IO -> ISO_OK | `test_final_failure_with_the_streamed_sha_and_no_declaration_is_incomplete_not_ready`, `test_final_failure_with_the_streamed_sha_and_a_matching_declaration_is_incomplete_not_invalid` |
+| C006 | FP_VERIFY: 失敗の終わりが end_ioerr -> end_invalid(checksum_mismatch) | `test_final_failure_with_the_streamed_sha_and_no_declaration_is_incomplete_not_ready`, `test_final_failure_with_the_streamed_sha_and_a_matching_declaration_is_incomplete_not_invalid` |
+| C007 | hash_step: final != ISO_OK -> < ISO_OK(正の戻り値を成功にする) | `test_final_failure_with_nomem_in_the_streamed_path_and_a_positive_code_in_the_reread_path` |
+| C008 | hash_step: final != ISO_OK -> == ISO_ERR_IO(ISO_ERR_IO だけを失敗にする) | `test_final_failure_with_a_positive_code_in_the_streamed_path_and_nomem_in_the_reread_path`, `test_final_failure_with_nomem_in_the_streamed_path_and_a_positive_code_in_the_reread_path` |
+| C009 | hash_step: 失敗のエラー ISO_ERR_IO -> ISO_OK | `test_final_failure_in_the_middle_of_the_hash_steps_after_a_reboot_is_incomplete_not_ready`, `test_final_failure_after_a_reboot_with_a_declaration_is_incomplete_not_invalid` |
+| C010 | hash_step: 失敗が I/O エラーでなく invalid(part_mismatch) | `test_final_failure_in_the_middle_of_the_hash_steps_after_a_reboot_is_incomplete_not_ready`, `test_final_failure_after_a_reboot_with_a_declaration_is_incomplete_not_invalid` |
+| C011 | hash_step: final の戻り値を捨てて、常に成功 | `test_final_failure_in_the_middle_of_the_hash_steps_after_a_reboot_is_incomplete_not_ready`, `test_final_failure_after_a_reboot_with_a_declaration_is_incomplete_not_invalid` |
+| F002 | L18: \|\| -> && | `test_up_index:crash/rc=1` |
+| F003 | L18: negate if condition | `test_up_index:crash/rc=1` |
+| F004 | L18: delete statement | `test_up_index:crash/rc=1` |
+| F005 | L19: const 0+1 -> 1 | `test_job_init_clears_the_whole_job` |
+| F006 | L19: delete statement | `test_up_index:crash/rc=1` |
+| F007 | L20: + -> - | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F008 | L20: const 1+1 -> 2 | `test_up_index:crash/rc=1` |
+| F010 | L20: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F012 | L30: delete statement | `test_missing_part_found_by_the_hash_step`, `test_short_part_found_while_rehashing` |
+| F013 | L31: delete statement | `test_missing_part_found_by_the_hash_step`, `test_short_part_found_while_rehashing` |
+| F014 | L36: delete statement | `test_hash_read_error_makes_incomplete`, `test_hash_open_error_makes_incomplete` |
+| F015 | L37: delete statement | `test_hash_read_error_makes_incomplete`, `test_hash_step_of_an_unknown_image_fails_without_touching_the_sha_state` |
+| F016 | L45: \|\| -> && | `test_up_finish:crash/rc=1` |
+| F017 | L45: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F018 | L45: delete statement | `test_up_finish:crash/rc=1` |
+| F019 | L48: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F020 | L49: delete statement | `test_hash_step_discards_the_streamed_state_it_overwrites` |
+| F021 | L50: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F022 | L51: true -> false | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F023 | L51: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F024 | L57: < -> <= | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F025 | L57: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F026 | L57: const 0+1 -> 1 | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F028 | L59: delete statement | `test_up_finish:crash/rc=1` |
+| F029 | L60: == -> != | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F030 | L60: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F031 | L60: delete statement | `test_missing_part_found_by_the_hash_step` |
+| F032 | L61: < -> <= | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F033 | L61: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F034 | L61: const 0+1 -> 1 | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F035 | L61: delete statement | `test_up_finish:crash/rc=1` |
+| F036 | L64: const 0+1 -> 1 | `test_hash_step_budget_zero_still_progresses` |
+| F037 | L65: < -> <= | `test_up_finish:crash/rc=1` |
+| F038 | L65: < -> <= | `test_up_finish:crash/rc=1` |
+| F039 | L65: && -> \|\| | `test_up_finish:crash/rc=1` |
+| F040 | L66: - -> + | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F042 | L67: negate if condition | `test_up_finish:crash/rc=1` |
+| F043 | L67: delete statement | `test_up_finish:crash/rc=1` |
+| F045 | L68: negate if condition | `test_up_finish:crash/rc=1` |
+| F046 | L68: - -> + | `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F047 | L68: - -> + | `test_up_finish:crash/rc=1` |
+| F048 | L68: delete statement | `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F050 | L70: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F051 | L71: < -> <= | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F052 | L71: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F053 | L71: const 0+1 -> 1 | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F054 | L72: delete statement | `test_hash_read_error_makes_incomplete` |
+| F055 | L75: != -> == | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F056 | L75: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F057 | L76: delete statement | `test_short_part_found_while_rehashing` |
+| F058 | L79: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F059 | L80: += -> -= | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F060 | L80: delete statement | `test_up_finish:timeout` |
+| F061 | L81: += -> -= | `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps`, `test_hash_step_runs_to_the_digest_across_parts` |
+| F062 | L81: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F063 | L83: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F064 | L85: >= -> > | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F065 | L85: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F066 | L86: delete statement | `test_up_finish:timeout` |
+| F067 | L87: const 0+1 -> 1 | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F068 | L87: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F069 | L88: >= -> > | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F070 | L88: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F071 | L89: != -> == | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F072 | L89: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F073 | L89: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F074 | L90: true -> false | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F075 | L90: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F076 | L105: / -> * | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F077 | L106: < -> <= | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F078 | L106: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F079 | L106: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F081 | L108: delete statement | `test_up_finish:crash/rc=1` |
+| F082 | L109: < -> <= | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F083 | L109: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F084 | L109: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F085 | L109: delete statement | `test_up_finish:crash/rc=1` |
+| F087 | L112: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F088 | L113: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F089 | L114: < -> <= | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F090 | L114: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F091 | L114: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F092 | L114: delete statement | `test_signature_read_error_makes_incomplete` |
+| F093 | L115: == -> != | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F094 | L115: == -> != | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F095 | L115: == -> != | `test_signature_bea01_is_accepted`, `test_wrong_signature_is_not_iso` |
+| F096 | L115: && -> \|\| | `test_wrong_signature_is_not_iso`, `test_invalid_image_stays_invalid_for_later_finish` |
+| F097 | L115: \|\| -> && | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F098 | L115: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F102 | L115: const 1-1 -> 0 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F104 | L115: const 5-1 -> 4 | `test_wrong_signature_is_not_iso` |
+| F105 | L115: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F107 | L115: const 1-1 -> 0 | `test_signature_bea01_is_accepted` |
+| F109 | L115: const 5-1 -> 4 | `test_wrong_signature_is_not_iso` |
+| F110 | L115: const 0+1 -> 1 | `test_signature_bea01_is_accepted`, `test_wrong_signature_is_not_iso` |
+| F111 | L115: true -> false | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F112 | L115: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F113 | L125: != -> == | `test_invalid_meta_write_failure_returns_error_but_state_is_invalid` |
+| F114 | L125: negate if condition | `test_invalid_meta_write_failure_returns_error_but_state_is_invalid` |
+| F116 | L126: delete statement | `test_invalid_meta_write_failure_returns_error_but_state_is_invalid` |
+| F117 | L127: delete statement | `test_invalid_meta_write_failure_returns_error_but_state_is_invalid` |
+| F119 | L130: delete statement | `test_wrong_signature_is_not_iso`, `test_declared_sha_mismatch_with_streamed_state` |
+| F122 | L133: delete statement | `test_invalid_end_notifies_and_refreshes_the_free_space` |
+| F123 | L134: delete statement | `test_invalid_end_notifies_and_refreshes_the_free_space` |
+| F124 | L135: < -> <= | `test_wrong_signature_is_not_iso`, `test_declared_sha_mismatch_with_streamed_state` |
+| F126 | L135: const 0+1 -> 1 | `test_wrong_signature_is_not_iso`, `test_declared_sha_mismatch_with_streamed_state` |
+| F130 | L141: delete statement | `test_ioerr_end_notifies_and_takes_received_from_the_disk` |
+| F131 | L142: delete statement | `test_get_extents_io_error_makes_incomplete_and_a_retry_succeeds`, `test_stat_io_error_during_index` |
+| F132 | L143: delete statement | `test_meta_write_failure_at_the_end_does_not_install_the_table`, `test_card_change_after_the_indexing_started_makes_the_finish_incomplete` |
+| F133 | L144: delete statement | `test_get_extents_io_error_makes_incomplete_and_a_retry_succeeds`, `test_stat_io_error_during_index` |
+| F135 | L146: delete statement | `test_ioerr_end_notifies_and_takes_received_from_the_disk` |
+| F136 | L152: == -> != | `test_extent_count_over_the_limit_is_too_fragmented_by_the_table_build`, `test_get_extents_too_fragmented_is_too_fragmented` |
+| F137 | L152: negate if condition | `test_extent_count_over_the_limit_is_too_fragmented_by_the_table_build`, `test_get_extents_too_fragmented_is_too_fragmented` |
+| F138 | L152: delete statement | `test_extent_count_over_the_limit_is_too_fragmented_by_the_table_build`, `test_get_extents_too_fragmented_is_too_fragmented` |
+| F139 | L157: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F140 | L158: delete statement | `test_aborted_job_frees_its_work_area_and_changes_nothing` |
+| F141 | L159: delete statement | `test_up_finish:crash/rc=1` |
+| F142 | L163: == -> != | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F143 | L163: != -> == | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F144 | L163: \|\| -> && | `test_up_finish:crash/rc=1` |
+| F145 | L163: \|\| -> && | `test_up_finish:crash/rc=1` |
+| F146 | L163: \|\| -> && | `test_stale_job_when_the_state_changed_but_the_slot_is_still_held`, `test_stale_job_when_the_meta_is_invalid` |
+| F147 | L163: \|\| -> && | `test_stale_job_when_the_state_changed_but_the_slot_is_still_held` |
+| F148 | L163: \|\| -> && | `test_stale_job_when_the_slot_is_not_finalizing` |
+| F149 | L164: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F150 | L165: delete statement | `test_stale_job_after_the_work_area_was_allocated_frees_it` |
+| F152 | L173: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F153 | L174: delete statement | `test_up_finish:timeout` |
+| F154 | L179: true -> false | `test_close_failure_keeps_the_streamed_sha_for_the_retry` |
+| F155 | L180: < -> <= | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F156 | L180: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F157 | L180: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F158 | L180: delete statement | `test_close_failure_keeps_the_streamed_sha_for_the_retry`, `test_close_failure_after_a_good_sync_is_an_io_error` |
+| F159 | L181: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_resumed_upload_after_idle_still_streams_the_sha` |
+| F160 | L182: delete statement | `test_up_finish:timeout` |
+| F161 | L187: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F162 | L188: != -> == | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F163 | L188: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F164 | L188: delete statement | `test_missing_part_found_by_the_hash_step`, `test_short_part_found_while_rehashing` |
+| F165 | L189: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F166 | L189: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
+| F167 | L194: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F168 | L196: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F169 | L198: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_get_extents_io_error_makes_incomplete_and_a_retry_succeeds` |
+| F170 | L199: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F171 | L199: delete statement | `test_final_failure_with_the_streamed_sha_and_no_declaration_is_incomplete_not_ready`, `test_final_failure_with_the_streamed_sha_and_a_matching_declaration_is_incomplete_not_invalid` |
+| F172 | L200: == -> != | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps` |
+| F173 | L200: != -> == | `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag`, `test_declared_sha_mismatch_with_streamed_state` |
+| F174 | L200: && -> \|\| | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F175 | L200: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F176 | L200: const 0+1 -> 1 | `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag`, `test_declared_sha_mismatch_with_streamed_state` |
+| F177 | L202: delete statement | `test_up_finish:timeout` |
+| F179 | L209: == -> != | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F180 | L209: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F181 | L209: delete statement | `test_missing_first_part_with_the_streamed_sha_is_part_mismatch` |
+| F182 | L210: < -> <= | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F183 | L210: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F184 | L210: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F185 | L210: delete statement | `test_signature_read_error_makes_incomplete`, `test_signature_open_error_makes_incomplete` |
+| F186 | L211: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F187 | L211: delete statement | `test_wrong_signature_is_not_iso`, `test_invalid_image_stays_invalid_for_later_finish` |
+| F188 | L212: delete statement | `test_up_finish:timeout` |
+| F189 | L218: == -> != | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F190 | L218: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F191 | L218: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F192 | L219: == -> != | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F193 | L219: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F194 | L220: delete statement | `test_up_finish:timeout` |
+| F195 | L230: != -> == | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F196 | L230: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F197 | L230: delete statement | `test_card_change_after_the_indexing_started_makes_the_finish_incomplete`, `test_card_change_before_the_indexing_started_makes_the_finish_incomplete` |
+| F198 | L231: true -> false | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F199 | L233: != -> == | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F201 | L233: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F202 | L233: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F204 | L233: delete statement | `test_meta_write_failure_at_the_end_does_not_install_the_table` |
+| F205 | L236: delete statement | `test_up_powercut:crash/rc=1` |
+| F206 | L237: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F207 | L238: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
+| F208 | L240: delete statement | `test_table_hook_may_be_absent` |
+| F209 | L242: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
+| F211 | L244: delete statement | `test_finish_refreshes_the_free_space_cache` |
+| F212 | L245: delete statement | `test_finish_notifies_the_view_at_the_acceptance_and_at_the_end_only` |
 | U001 | L8: \|\| -> && | `test_up_begin:crash/rc=1` |
 | U002 | L8: \|\| -> && | `test_up_begin:crash/rc=1` |
 | U003 | L8: \|\| -> && | `test_up_begin:crash/rc=1` |
@@ -604,185 +803,6 @@ U231(`test_a_new_pending_truncate_is_never_dropped_even_when_the_list_is_nearly_
 | U499 | L432: \|\| -> && | `test_the_storage_check_and_reinit_scan_a_full_catalog_without_reading_past_it`, `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
 | U500 | L432: negate if condition | `test_the_storage_check_and_reinit_scan_a_full_catalog_without_reading_past_it`, `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
 | U501 | L432: delete statement | `test_the_storage_check_and_reinit_scan_a_full_catalog_without_reading_past_it`, `test_reinit_drops_the_file_the_sha_state_and_the_slot` |
-| F002 | L18: \|\| -> && | `test_up_index:crash/rc=1` |
-| F003 | L18: negate if condition | `test_up_index:crash/rc=1` |
-| F004 | L18: delete statement | `test_up_index:crash/rc=1` |
-| F005 | L19: const 0+1 -> 1 | `test_job_init_clears_the_whole_job` |
-| F006 | L19: delete statement | `test_up_index:crash/rc=1` |
-| F007 | L20: + -> - | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F008 | L20: const 1+1 -> 2 | `test_up_index:crash/rc=1` |
-| F010 | L20: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F012 | L30: delete statement | `test_missing_part_found_by_the_hash_step`, `test_short_part_found_while_rehashing` |
-| F013 | L31: delete statement | `test_missing_part_found_by_the_hash_step`, `test_short_part_found_while_rehashing` |
-| F014 | L36: delete statement | `test_hash_read_error_makes_incomplete`, `test_hash_open_error_makes_incomplete` |
-| F015 | L37: delete statement | `test_hash_read_error_makes_incomplete`, `test_hash_step_of_an_unknown_image_fails_without_touching_the_sha_state` |
-| F016 | L45: \|\| -> && | `test_up_finish:crash/rc=1` |
-| F017 | L45: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F018 | L45: delete statement | `test_up_finish:crash/rc=1` |
-| F019 | L48: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F020 | L49: delete statement | `test_hash_step_discards_the_streamed_state_it_overwrites` |
-| F021 | L50: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F022 | L51: true -> false | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F023 | L51: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F024 | L57: < -> <= | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F025 | L57: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F026 | L57: const 0+1 -> 1 | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F028 | L59: delete statement | `test_up_finish:crash/rc=1` |
-| F029 | L60: == -> != | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F030 | L60: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F031 | L60: delete statement | `test_missing_part_found_by_the_hash_step` |
-| F032 | L61: < -> <= | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F033 | L61: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F034 | L61: const 0+1 -> 1 | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F035 | L61: delete statement | `test_up_finish:crash/rc=1` |
-| F036 | L64: const 0+1 -> 1 | `test_hash_step_budget_zero_still_progresses` |
-| F037 | L65: < -> <= | `test_up_finish:crash/rc=1` |
-| F038 | L65: < -> <= | `test_up_finish:crash/rc=1` |
-| F039 | L65: && -> \|\| | `test_up_finish:crash/rc=1` |
-| F040 | L66: - -> + | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F042 | L67: negate if condition | `test_up_finish:crash/rc=1` |
-| F043 | L67: delete statement | `test_up_finish:crash/rc=1` |
-| F045 | L68: negate if condition | `test_up_finish:crash/rc=1` |
-| F046 | L68: - -> + | `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F047 | L68: - -> + | `test_up_finish:crash/rc=1` |
-| F048 | L68: delete statement | `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F050 | L70: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F051 | L71: < -> <= | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F052 | L71: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F053 | L71: const 0+1 -> 1 | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F054 | L72: delete statement | `test_hash_read_error_makes_incomplete` |
-| F055 | L75: != -> == | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F056 | L75: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F057 | L76: delete statement | `test_short_part_found_while_rehashing` |
-| F058 | L79: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F059 | L80: += -> -= | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F060 | L80: delete statement | `test_up_finish:timeout` |
-| F061 | L81: += -> -= | `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps`, `test_hash_step_runs_to_the_digest_across_parts` |
-| F062 | L81: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F063 | L83: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F064 | L85: >= -> > | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F065 | L85: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F066 | L86: delete statement | `test_up_finish:timeout` |
-| F067 | L87: const 0+1 -> 1 | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F068 | L87: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F069 | L88: >= -> > | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F070 | L88: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F071 | L89: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F072 | L90: true -> false | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F073 | L90: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F074 | L105: / -> * | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F075 | L106: < -> <= | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F076 | L106: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F077 | L106: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F079 | L108: delete statement | `test_up_finish:crash/rc=1` |
-| F080 | L109: < -> <= | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F081 | L109: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F082 | L109: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F083 | L109: delete statement | `test_up_finish:crash/rc=1` |
-| F085 | L112: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F086 | L113: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F087 | L114: < -> <= | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F088 | L114: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F089 | L114: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F090 | L114: delete statement | `test_signature_read_error_makes_incomplete` |
-| F091 | L115: == -> != | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F092 | L115: == -> != | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F093 | L115: == -> != | `test_signature_bea01_is_accepted`, `test_wrong_signature_is_not_iso` |
-| F094 | L115: && -> \|\| | `test_wrong_signature_is_not_iso`, `test_invalid_image_stays_invalid_for_later_finish` |
-| F095 | L115: \|\| -> && | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F096 | L115: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F100 | L115: const 1-1 -> 0 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F102 | L115: const 5-1 -> 4 | `test_wrong_signature_is_not_iso` |
-| F103 | L115: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F105 | L115: const 1-1 -> 0 | `test_signature_bea01_is_accepted` |
-| F107 | L115: const 5-1 -> 4 | `test_wrong_signature_is_not_iso` |
-| F108 | L115: const 0+1 -> 1 | `test_signature_bea01_is_accepted`, `test_wrong_signature_is_not_iso` |
-| F109 | L115: true -> false | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F110 | L115: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F111 | L125: != -> == | `test_invalid_meta_write_failure_returns_error_but_state_is_invalid` |
-| F112 | L125: negate if condition | `test_invalid_meta_write_failure_returns_error_but_state_is_invalid` |
-| F114 | L126: delete statement | `test_invalid_meta_write_failure_returns_error_but_state_is_invalid` |
-| F115 | L127: delete statement | `test_invalid_meta_write_failure_returns_error_but_state_is_invalid` |
-| F117 | L130: delete statement | `test_wrong_signature_is_not_iso`, `test_declared_sha_mismatch_with_streamed_state` |
-| F120 | L133: delete statement | `test_invalid_end_notifies_and_refreshes_the_free_space` |
-| F121 | L134: delete statement | `test_invalid_end_notifies_and_refreshes_the_free_space` |
-| F122 | L135: < -> <= | `test_wrong_signature_is_not_iso`, `test_declared_sha_mismatch_with_streamed_state` |
-| F124 | L135: const 0+1 -> 1 | `test_wrong_signature_is_not_iso`, `test_declared_sha_mismatch_with_streamed_state` |
-| F128 | L141: delete statement | `test_ioerr_end_notifies_and_takes_received_from_the_disk` |
-| F129 | L142: delete statement | `test_get_extents_io_error_makes_incomplete_and_a_retry_succeeds`, `test_stat_io_error_during_index` |
-| F130 | L143: delete statement | `test_meta_write_failure_at_the_end_does_not_install_the_table`, `test_card_change_after_the_indexing_started_makes_the_finish_incomplete` |
-| F131 | L144: delete statement | `test_get_extents_io_error_makes_incomplete_and_a_retry_succeeds`, `test_stat_io_error_during_index` |
-| F133 | L146: delete statement | `test_ioerr_end_notifies_and_takes_received_from_the_disk` |
-| F134 | L152: == -> != | `test_extent_count_over_the_limit_is_too_fragmented_by_the_table_build`, `test_get_extents_too_fragmented_is_too_fragmented` |
-| F135 | L152: negate if condition | `test_extent_count_over_the_limit_is_too_fragmented_by_the_table_build`, `test_get_extents_too_fragmented_is_too_fragmented` |
-| F136 | L152: delete statement | `test_extent_count_over_the_limit_is_too_fragmented_by_the_table_build`, `test_get_extents_too_fragmented_is_too_fragmented` |
-| F137 | L157: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F138 | L158: delete statement | `test_aborted_job_frees_its_work_area_and_changes_nothing` |
-| F139 | L159: delete statement | `test_up_finish:crash/rc=1` |
-| F140 | L163: == -> != | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F141 | L163: != -> == | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F142 | L163: \|\| -> && | `test_up_finish:crash/rc=1` |
-| F143 | L163: \|\| -> && | `test_up_finish:crash/rc=1` |
-| F144 | L163: \|\| -> && | `test_stale_job_when_the_state_changed_but_the_slot_is_still_held`, `test_stale_job_when_the_meta_is_invalid` |
-| F145 | L163: \|\| -> && | `test_stale_job_when_the_state_changed_but_the_slot_is_still_held` |
-| F146 | L163: \|\| -> && | `test_stale_job_when_the_slot_is_not_finalizing` |
-| F147 | L164: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F148 | L165: delete statement | `test_up_finish:crash/rc=1` |
-| F150 | L173: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F151 | L174: delete statement | `test_up_finish:timeout` |
-| F152 | L179: true -> false | `test_close_failure_keeps_the_streamed_sha_for_the_retry` |
-| F153 | L180: < -> <= | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F154 | L180: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F155 | L180: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F156 | L180: delete statement | `test_close_failure_keeps_the_streamed_sha_for_the_retry`, `test_close_failure_after_a_good_sync_is_an_io_error` |
-| F157 | L181: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_resumed_upload_after_idle_still_streams_the_sha` |
-| F158 | L182: delete statement | `test_up_finish:timeout` |
-| F159 | L187: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F160 | L188: != -> == | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F161 | L188: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F162 | L188: delete statement | `test_missing_part_found_by_the_hash_step`, `test_short_part_found_while_rehashing` |
-| F163 | L189: negate if condition | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F164 | L189: delete statement | `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps`, `test_finish_after_a_reboot_with_a_larger_budget_makes_fewer_steps` |
-| F165 | L194: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F166 | L195: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F169 | L198: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_get_extents_io_error_makes_incomplete_and_a_retry_succeeds` |
-| F170 | L199: == -> != | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_after_a_reboot_recomputes_the_sha_in_budget_steps` |
-| F171 | L199: != -> == | `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag`, `test_declared_sha_mismatch_with_streamed_state` |
-| F172 | L199: && -> \|\| | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F173 | L199: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F174 | L199: const 0+1 -> 1 | `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag`, `test_declared_sha_mismatch_with_streamed_state` |
-| F175 | L201: delete statement | `test_up_finish:timeout` |
-| F177 | L208: == -> != | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F178 | L208: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F179 | L208: delete statement | `test_missing_first_part_with_the_streamed_sha_is_part_mismatch` |
-| F180 | L209: < -> <= | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F181 | L209: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F182 | L209: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F183 | L209: delete statement | `test_signature_read_error_makes_incomplete`, `test_signature_open_error_makes_incomplete` |
-| F184 | L210: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F185 | L210: delete statement | `test_wrong_signature_is_not_iso`, `test_invalid_image_stays_invalid_for_later_finish` |
-| F186 | L211: delete statement | `test_up_finish:timeout` |
-| F187 | L217: == -> != | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F188 | L217: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F189 | L217: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F190 | L218: == -> != | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F191 | L218: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F192 | L219: delete statement | `test_up_finish:timeout` |
-| F193 | L229: != -> == | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F194 | L229: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F195 | L229: delete statement | `test_card_change_after_the_indexing_started_makes_the_finish_incomplete`, `test_card_change_before_the_indexing_started_makes_the_finish_incomplete` |
-| F196 | L230: true -> false | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F197 | L232: != -> == | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F199 | L232: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F200 | L232: const 0+1 -> 1 | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F202 | L232: delete statement | `test_meta_write_failure_at_the_end_does_not_install_the_table` |
-| F203 | L235: delete statement | `test_up_powercut:crash/rc=1` |
-| F204 | L236: negate if condition | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F205 | L237: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_refreshes_the_free_space_cache` |
-| F206 | L239: delete statement | `test_table_hook_may_be_absent` |
-| F207 | L241: delete statement | `test_finish_with_the_streamed_sha_reaches_ready`, `test_finish_with_a_matching_declared_sha_reaches_ready_and_stores_the_computed_flag` |
-| F209 | L243: delete statement | `test_finish_refreshes_the_free_space_cache` |
-| F210 | L244: delete statement | `test_finish_notifies_the_view_at_the_acceptance_and_at_the_end_only` |
 | X001 | L13: \|\| -> && | `test_job_init_rejects_a_bad_id` |
 | X002 | L13: negate if condition | `test_index_builds_the_table_part_by_part`, `test_index_step_count_is_init_plus_parts_plus_build` |
 | X003 | L13: delete statement | `test_job_init_rejects_a_bad_id` |
@@ -911,3 +931,4 @@ U231(`test_a_new_pending_truncate_is_never_dropped_even_when_the_list_is_nearly_
    テスト: `test_card_change_after_the_indexing_started_makes_the_finish_incomplete`、`test_card_change_before_the_indexing_started_makes_the_finish_incomplete`(`BDEV.epoch_bump` を `FINISH` の途中で呼ぶ)、`test_finish_started_after_the_card_change_is_not_affected`。これまでの `test_table_epoch_is_read_when_the_indexing_starts` は、同じ仮定(`INDEX` の途中で `epoch` を変えても `ready` になる)に立っていたので、置き換えた。
 16. **`IDLE_CLOSE` と `PUT` の競合は、`iso_core` で取り除く(レビュー)**: `iso_upload_write_chunk` が成功したとき、**`chunk_accepted` フック**を呼ぶ。`iso_core` は、キューに待っている同じイメージの `IDLE_CLOSE` を取り除き、選ばれた後(実行前)のものには中止の印を立てる(`docs/ISO_CORE_TESTS.md` §4)。`iso_upload_idle_close` 自体は、強制の閉じ(SD のエラーからの復帰など)のままで、経過時間を見ない。
 17. **`iso_upload_hash_step` の使い方の契約(レビュー)**: 全パーツの読み直しの SHA-256 は、逐次の状態と**同じ `sha_state` の領域**を使う。**ハッシュの開始から終わりまでの間に、同じ `iso_upload_t` の別の操作(別のイメージの `PUT` の SHA-256、`begin` など)を挟めない**(`FINISH` は枠を持つので、`finalizing` の間、別のアップロードは枠で拒否され、この制約は満たされる)。`iso_upload.h` に明記した。
+18. **SHA-256 の `final` の失敗(C-14。PR #160 のレビュー)**: `iso_sha256_t.final` は `int` を返す(成功 `ISO_OK`、失敗 `ISO_ERR_IO`)。`iso_upload` は **`ISO_OK` 以外をすべて失敗**として扱い(契約の外の値でも、失敗の側に倒す)、出力を保存も比較もしない。**逐次の経路(`FP_VERIFY`)**: 状態を捨ててから `end_ioerr(ISO_ERR_IO)`(`ISO_EV_FINALIZE_IOERR`。`incomplete`。署名の読み出しにも `INDEX` にも進まない)。**読み直しの経路(`iso_upload_hash_step`)**: `hash_ioerr(ISO_ERR_IO)`(`DONE` + `job->fail = IOERR`)で、`have_digest` は立たず、`FP_HASH` が `end_ioerr` にする。**宣言値があっても、`checksum_mismatch` の `invalid` にしない**(失敗した `final` の全ゼロの出力と比べない。宣言値が全ゼロでも、一致扱いにしない)。報告するエラーは、`final` の戻り値によらず `ISO_ERR_IO`。再試行(`finish`)は、逐次の状態が使い切られているので、全パーツを読み直す。`init` / `update` は失敗を返さない(`update` の失敗を実装が覚えて、`final` で返すのは、実装の側)。テストは `test_up_finish.c` の `test_final_failure_*` 一式。

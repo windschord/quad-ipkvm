@@ -1,0 +1,35 @@
+menu "ISO Virtual Media: HTTP API (P8 / C-12)"
+
+    config ISO_ENABLE
+        bool "Enable the ISO virtual media HTTP API (/api/v1/iso*)"
+        default n
+        depends on SD_ENABLE
+        help
+            Register /api/v1/iso* (upload, list, mount, eject, delete) on the main HTTPS server
+            (docs/WEB_API.md section 8, docs/ISO_MOUNT_DESIGN.md). When disabled, the paths are not
+            registered (404).
+            The API answers 503 not_ready until the SD / MSC glue (A-13, A-14) calls web_iso_set_env().
+            TODO(A-14): add "&& USB_MSC_ENABLE" to the dependency when the USB MSC option exists
+            (docs/ISO_MOUNT_DESIGN.md section 8: ISO_ENABLE depends on both).
+
+    config ISO_OP_LOCK_WAIT_MS
+        int "iso_op_mutex wait limit of an HTTP handler (ms)"
+        default 20
+        range 1 1000
+        depends on ISO_ENABLE
+        help
+            A mutating request waits at most this long for iso_op_mutex, then answers
+            503 {"error":"busy"} with Retry-After: 1 (the single-threaded httpd must not be held by the
+            worker's long steps). docs/ISO_MOUNT_DESIGN.md section 4.1.
+
+    config ISO_PUT_RECV_TIMEOUT_S
+        int "Receive deadline of one PUT chunk (s)"
+        default 2
+        range 1 30
+        depends on ISO_ENABLE
+        help
+            One chunk must be received within this time; otherwise nothing is written and the
+            connection is closed (the /ws input must not be stalled). Used by the PUT receive loop
+            (TODO(A-15), docs/ISO_MOUNT_DESIGN.md section 6.1).
+
+endmenu

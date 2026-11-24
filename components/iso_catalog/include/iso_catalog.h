@@ -40,8 +40,12 @@ extern "C" {
 #define ISO_ID_LEN 8u
 /* begin / import の size の下限: 2048 x 17 (セクタ 0〜16。署名のセクタ 16 を含む) */
 #define ISO_IMAGE_BYTES_MIN 34816u
-/* <id> の mkdir が EXISTS のときの引き直しの上限 */
+/* <id> の mkdir が EXISTS のとき(または乱数が 0 のとき。下の予約 ID)の引き直しの上限 */
 #define ISO_ID_TRIES 16u
+/* 予約 ID(C-14)。iso_id_valid() は真(形式は有効で、API の id の検査は変えない。404 になる)が、
+ * ワーカー(#160 の iso_worker)は media_id == 0 を「イメージなし」として扱うので、このイメージは、サイズも表も引けない。
+ * iso_id_generate() は、乱数が 0 のとき引き直す(1 回に数える)。iso_catalog_scan() は、この名前のディレクトリを採用しない(hidden に数える)。 */
+#define ISO_ID_RESERVED "00000000"
 
 /* ---- 名前と id ------------------------------------------------------------ */
 
@@ -209,6 +213,7 @@ bool iso_catalog_name_exists(const iso_catalog_t *cat, const char *name, size_t 
 /*
  * 起動時のスキャン(SD の再初期化の後も同じ)。カタログを作り直す。
  *   - /iso/ の直下で、<id> の形式でない名前、ディレクトリでないものは無視。
+ *   - 予約 ID (ISO_ID_RESERVED = "00000000") のディレクトリは、採用しない(ISO_MAX_IMAGES の枠も使わない)。hidden に数える。
  *   - 先頭から ISO_MAX_IMAGES 個を一覧に入れ、それを超える分は hidden に数える(ディレクトリの順)。
  *   - meta の状態 uploading -> incomplete (ISO_EV_REBOOT)。両スロット無効 -> state INVALID、理由 meta_corrupt。
  *     meta の状態 deleting -> resume_delete。
@@ -232,7 +237,7 @@ int iso_catalog_received(const iso_fs_t *fs, const char *id, const iso_meta_t *m
 int iso_catalog_begin(iso_catalog_t *cat, const char *name, size_t name_len, uint64_t size_bytes, const uint8_t *sha256,
                       char out_id[ISO_ID_LEN + 1]);
 
-/* <id> を作る(mkdir)。begin と import が使う。 */
+/* <id> を作る(mkdir)。begin と import が使う。乱数が 0 のときは、予約 ID なので、mkdir せずに引き直す(ISO_ID_TRIES に数える)。 */
 int iso_id_generate(const iso_fs_t *fs, const iso_random_t *rnd, char out[ISO_ID_LEN + 1]);
 
 /* 採用していないスロットに、世代 + 1 で meta を書く(overwrite + sync)。成功したら e->meta / e->adopted を更新する。

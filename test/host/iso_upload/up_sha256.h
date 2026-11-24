@@ -25,6 +25,12 @@ void up_sha256_final(up_sha256_state_t *s, uint8_t out[32]);
 /* 一括 */
 void up_sha256(const void *data, size_t len, uint8_t out[32]);
 
+/* final の失敗の注入。up_sha256_iface() の final の n 回目(1 始まり。数え直しは、この関数の呼び出し)が rc を返して失敗する。
+ * n = 0 は注入なし(数え直すだけ)。失敗したときの出力は全ゼロ(本番の worker_sha_final() と同じ)。up_sha256_final() には効かない */
+void up_sha256_fail_final_at(int n, int rc);
+/* up_sha256_iface() の final を呼んだ回数(up_sha256_fail_final_at() からの) */
+int up_sha256_final_calls(void);
+
 /* iso_sha256_t(state_size = sizeof(up_sha256_state_t))。状態は呼び出し側が確保する */
 iso_sha256_t up_sha256_iface(void);
 
