@@ -1,0 +1,147 @@
+Y01   survived    dir map: IN -> OUT  -> 
+Y03   survived    dir map: OUT -> IN  -> 
+Y02   survived    dir map: IN -> NONE  -> 
+Y05   survived    dir map: default -> IN  -> 
+Y04   survived    dir map: OUT -> NONE  -> 
+Y07   killed      execute: cdb_len - 1  -> test_iso_usb_msc_glue:crash/rc=1
+Y06   survived    dir map: NONE -> IN  -> 
+Y09   killed      execute: out NULL  -> test_iso_usb_msc_glue:crash/rc=1
+Y08   survived    execute: expected_len 0  -> 
+Y11   survived    execute: dir always IN  -> 
+Y10   killed      execute: out_cap 0  -> test_iso_usb_msc_glue:crash/rc=1
+Y13   survived    execute: out_cap + 1  -> 
+Y12   survived    execute: dir always NONE  -> 
+Y15   killed      execute: is_read always false  -> test_iso_usb_msc_glue:crash/rc=1
+Y14   killed      execute: good always true  -> test_iso_usb_msc_glue:crash/rc=1
+Y17   killed      execute: read_blocks 0  -> test_iso_usb_msc_glue:crash/rc=1
+Y16   survived    execute: read_lba 0  -> 
+Y19   killed      execute: data_len gets read blocks  -> test_iso_usb_msc_glue:crash/rc=1
+Y18   killed      execute: data_len 0  -> test_iso_usb_msc_glue:crash/rc=1
+Y21   survived    execute: read dir always NONE  -> 
+Y20   survived    execute: read dir always IN  -> 
+Y23   survived    execute: read dir OUT  -> 
+Y22   survived    execute: read dir swapped  -> 
+Y24   survived    execute: data dir always IN  -> 
+Y25   killed      execute: data dir always NONE  -> test_iso_usb_msc_glue:crash/rc=1
+Y26   killed      execute: data dir swapped  -> test_iso_usb_msc_glue:crash/rc=1
+Y27   killed      execute: data dir OUT  -> test_iso_usb_msc_glue:crash/rc=1
+Y28   killed      execute: data dir decided by the read blocks  -> test_iso_usb_msc_glue:crash/rc=1
+Y29   killed      read_blocks: lba not forwarded  -> test_iso_usb_msc_glue:crash/rc=1
+Y30   killed      read_blocks: lba + 1  -> test_iso_usb_msc_glue:crash/rc=1
+Y31   killed      read_blocks: blocks 1  -> test_iso_usb_msc_glue:crash/rc=1
+Y32   killed      read_blocks: buf NULL  -> test_iso_usb_msc_glue:crash/rc=1
+Y33   killed      read_blocks: cap 0  -> test_iso_usb_msc_glue:crash/rc=1
+Y34   survived    read_blocks: cap = blocks * 2048 (ignores the caller's cap)  -> 
+Y35   killed      read_blocks: good always true  -> test_iso_usb_msc_glue:crash/rc=1
+Y36   survived    read_blocks: lba above 32 bits reports good  -> 
+Y37   survived    read_blocks: lba above 32 bits is truncated and read  -> 
+Y38   survived    unknown kind reports good  -> 
+Y39   killed      result: seq always 0  -> test_iso_usb_msc_glue:crash/rc=1
+Y40   survived    size: NULL args return NOT_FOUND  -> 
+Y41   survived    size: missing table returns INVALID  -> 
+Y42   survived    size: table-null term dropped  -> 
+Y43   survived    size: media-id term dropped  -> 
+Y44   killed      size: result not written  -> test_iso_usb_msc_glue:crash/rc=1
+Y45   killed      size: result is the capacity in blocks  -> test_iso_usb_msc_glue:crash/rc=1
+Y46   killed      size: resolver ctx NULL  -> test_iso_usb_msc_glue:crash/rc=1
+Y47   killed      size: resolver id 0  -> test_iso_usb_msc_glue:crash/rc=1
+Y48   killed      size: resolver id from the backend  -> test_iso_usb_msc_glue:crash/rc=1
+Y49   survived    size: resolver result forced to OK  -> 
+Y50   survived    size: resolver chosen by the acquire pointer  -> 
+Y52   killed      size: resolver ignored  -> test_iso_usb_msc_glue:crash/rc=1
+Y54   survived    acquire: NULL args return NOT_FOUND  -> 
+Y56   killed      acquire: resolver table not stored in the handle  -> test_iso_usb_msc_glue:crash/rc=1
+Y58   killed      acquire: resolver ctx NULL  -> test_iso_usb_msc_glue:crash/rc=1
+Y60   killed      acquire: resolver id from the backend  -> test_iso_usb_msc_glue:crash/rc=1
+Y62   killed      acquire: resolver ignored  -> test_iso_usb_msc_glue:crash/rc=1
+Y64   survived    acquire: table path misses the table-null term  -> 
+Y66   survived    acquire: table path misses NOT_FOUND code  -> 
+Y68   killed      acquire: table path handle is the media id  -> test_iso_usb_msc_glue:crash/rc=1
+Y70   survived    read: be-null term dropped  -> 
+Y72   survived    read: NULL buf returns NO_CARD  -> 
+Y74   survived    read: missing bdev returns IO  -> 
+Y76   survived    read: bdev-null term dropped  -> 
+Y78   survived    read: epoch from the blockdev  -> 
+Y80   killed      read: map the remaining blocks  -> test_iso_usb_msc_glue:crash/rc=1
+Y82   killed      read: map span capacity 1  -> test_iso_usb_msc_glue:crash/rc=1
+Y84   killed      read: SPANS_FULL never halves  -> test_iso_usb_msc_glue:crash/rc=1
+Y86   survived    read: map error returns the code  -> 
+Y88   survived    read: map error ignored  -> 
+Y90   survived    read: step falls to 1 (batch size only)  -> 
+Y92   killed      read: span bytes use the block size  -> test_iso_usb_msc_glue:crash/rc=1
+Y94   survived    read: span overrun returns NO_CARD (unreachable)  -> 
+Y96   killed      read: bdev epoch 0  -> test_iso_usb_msc_glue:crash/rc=1
+Y98   killed      read: bdev sector count 1  -> test_iso_usb_msc_glue:crash/rc=1
+YA0   survived    read: bdev error returns IO  -> 
+YA2   killed      read: bdev error skips the span  -> test_iso_usb_msc_glue:crash/rc=1
+YA4   survived    read: valid bytes for the remaining blocks  -> 
+YA6   killed      read: zero fill runs one byte too far  -> test_iso_usb_msc_glue:crash/rc=1
+YA8   survived    read: zero fill uses 0xFF  -> 
+YB0   killed      read: zero fill length is the whole step  -> test_iso_usb_msc_glue:crash/rc=1
+Y51   killed      size: resolver called under the backend lock  -> test_iso_usb_msc_glue:timeout
+Y53   survived    acquire: handle not cleared first  -> 
+Y55   survived    acquire: resolver NULL table returns INVALID  -> 
+Y57   survived    acquire: resolver NULL table accepted  -> 
+Y59   killed      acquire: resolver id 0  -> test_iso_usb_msc_glue:crash/rc=1
+Y61   survived    acquire: resolver chosen by the size pointer  -> 
+YB2   killed      read: the lock is not released before the read (bdev under the lock)  -> test_iso_usb_msc_gl
+YB4   killed      release: unref dropped  -> test_iso_usb_msc_glue:crash/rc=1
+YB6   survived    set_image: NULL guard on the old table dropped (equivalent: iso_extent_t  -> 
+YB8   killed      set_image: id always 0  -> test_iso_usb_msc_glue:crash/rc=1
+YC0   survived    set_image: the old table is released under the lock, before the new refe  -> 
+YC2   survived    clear: id 1 (equivalent: the id is ignored when the table is NULL)  -> 
+YC4   killed      sync: clears when loaded  -> test_iso_usb_msc_glue:crash/rc=1
+YC6   killed      sync: never clears  -> test_iso_usb_msc_glue:crash/rc=1
+YC8   killed      epoch_matches: compares with the blockdev's epoch + 1  -> test_iso_usb_msc_glue:crash/rc=1
+YD0   survived    epoch_matches: table-null term dropped  -> 
+YD2   killed      disconnect: force_eject instead of bus_reset  -> test_iso_usb_msc_glue:crash/rc=1
+YD4   killed      disconnect: ejects the media  -> test_iso_usb_msc_glue:crash/rc=1
+YD6   killed      as_scsi: size_bytes missing  -> test_iso_usb_msc_glue:crash/rc=1
+YD8   killed      as_scsi: read missing  -> test_iso_usb_msc_glue:crash/rc=1
+YE0   killed      init: bdev not stored  -> test_iso_usb_msc_glue:crash/rc=1
+YE2   killed      set_resolver: copies only the ctx  -> test_iso_usb_msc_glue:crash/rc=1
+YE4   survived    set_resolver: NULL keeps the old resolver  -> 
+YE6   survived    set_resolver: NULL clears only the acquire function  -> 
+Y63   killed      acquire: resolver called under the backend lock  -> test_iso_usb_msc_glue:timeout
+Y65   survived    acquire: table path misses the media-id term  -> 
+Y67   killed      acquire: table path handle not stored  -> test_iso_usb_msc_glue:crash/rc=1
+Y69   survived    read: handle-null term dropped  -> 
+Y71   survived    read: zero blocks returns INVALID  -> 
+Y73   survived    read: NULL buf accepted  -> 
+Y75   survived    read: read_sectors-null term dropped  -> 
+Y77   killed      read: epoch 0  -> test_iso_usb_msc_glue:crash/rc=1
+Y79   killed      read: map from the request lba  -> test_iso_usb_msc_glue:crash/rc=1
+Y81   killed      read: map span capacity 128 (overruns the 64-entry array)  -> test_iso_usb_msc_glue:crash/rc
+Y83   survived    read: any map error halves the step  -> 
+Y85   survived    read: halving ignores the step floor  -> 
+Y87   survived    read: map error returns NO_CARD  -> 
+Y89   survived    read: step shrinks by 1 (batch size only)  -> 
+Y91   killed      read: step bytes use the sector size  -> test_iso_usb_msc_glue:crash/rc=1
+Y93   survived    read: span overrun check dropped (unreachable: map returns at most step_  -> 
+Y95   killed      read: bdev ctx NULL  -> test_iso_usb_msc_glue:crash/rc=1
+Y97   killed      read: bdev start sector 0  -> test_iso_usb_msc_glue:crash/rc=1
+Y99   killed      read: bdev dst does not advance  -> test_iso_usb_msc_glue:crash/rc=1
+YA1   killed      read: bdev error ignored  -> test_iso_usb_msc_glue:crash/rc=1
+YA3   survived    read: valid bytes from the request lba  -> 
+YA5   killed      read: zero fill starts at the buffer start  -> test_iso_usb_msc_glue:crash/rc=1
+YA7   survived    read: zero fill stops one byte short  -> 
+YA9   killed      read: zero fill from the wrong place (step start)  -> test_iso_usb_msc_glue:crash/rc=1
+YB1   killed      read: success returns IO  -> test_iso_usb_msc_glue:crash/rc=1
+YB3   survived    release: NULL guard dropped (equivalent: iso_extent_table_unref(NULL) re  -> 
+YB5   survived    set_image: NULL guard on the new table dropped (equivalent: iso_extent_t  -> 
+YB7   survived    set_image: id always kept  -> 
+YB9   killed      set_image: id kept only for no table  -> test_iso_usb_msc_glue:crash/rc=1
+YC1   killed      set_image: the old table is released after the lock but the new table's   -> test_iso_usb_ms
+YC3   killed      clear: does nothing  -> test_iso_usb_msc_glue:crash/rc=1
+YC5   killed      sync: always clears  -> test_iso_usb_msc_glue:crash/rc=1
+YC7   killed      epoch_matches: bdev ctx NULL  -> test_iso_usb_msc_glue:crash/rc=1
+YC9   killed      epoch_matches: epoch-null term dropped  -> test_iso_usb_msc_glue:crash/rc=1
+YD1   killed      epoch_matches: bdev-null term dropped  -> test_iso_usb_msc_glue:crash/rc=1
+YD3   survived    disconnect: only the prevent flag is cleared  -> 
+YD5   killed      as_scsi: ctx NULL  -> test_iso_usb_msc_glue:crash/rc=1
+YD7   killed      as_scsi: acquire missing  -> test_iso_usb_msc_glue:crash/rc=1
+YD9   killed      as_scsi: release missing  -> test_iso_usb_msc_glue:crash/rc=1
+YE1   killed      init: lock_ctx not stored  -> test_iso_usb_msc_glue:crash/rc=1
+YE3   killed      set_resolver: copies only the functions  -> test_iso_usb_msc_glue:crash/rc=1
+YE5   survived    set_resolver: NULL clears only the size function  -> 
+YE7   killed      set_resolver: NULL clears only the ctx  -> test_iso_usb_msc_glue:crash/rc=1
