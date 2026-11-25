@@ -16,11 +16,15 @@ import mutate_iso_extent as common  # noqa: E402
 # 未初期化のローカル変数と詰め物を、固定のパターン(0xFE)で埋める(mutate_iso_worker.py と同じ理由。正しいコードの挙動は変わらない)。
 os.environ["CFLAGS"] = (os.environ.get("CFLAGS", "") + " -ftrivial-auto-var-init=pattern").strip()
 
+TESTS = [
+    "test_iso_usb_msc_glue_mut",  # 先に実行する(終わらないミュータントを、モックの上限で早く止めるため)
+    "test_iso_usb_msc_glue",
+]
+if os.environ.get("MUTATE_ORIGINAL_ONLY"):
+    TESTS = ["test_iso_usb_msc_glue"]  # 元のテストだけで実行する(足したテストが殺した数を、docs の表で分けるため)
+
 if __name__ == "__main__":
     common.main({
         "files": ["components/iso_usb_msc/iso_usb_msc_glue.c"],
-        "tests": [
-            "test_iso_usb_msc_glue_mut",  # 先に実行する(終わらないミュータントを、モックの上限で早く止めるため)。元のテストだけでの結果は、docs の 2 章
-            "test_iso_usb_msc_glue",
-        ],
+        "tests": TESTS,
     })
