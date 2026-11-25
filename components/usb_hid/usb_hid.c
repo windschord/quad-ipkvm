@@ -57,6 +57,7 @@ static bool s_initialized = false;
 static bool s_force_uninstalled = false;
 static usb_hid_gate_t s_hid_gate = {0};
 static hid_sink_t s_sink;
+static usb_hid_sink_ctx_t s_sink_ctx;
 
 static bool is_initialized(void) {
     return __atomic_load_n(&s_initialized, __ATOMIC_ACQUIRE);
@@ -73,7 +74,6 @@ static bool is_force_uninstalled(void) {
 static void set_force_uninstalled(bool val) {
     __atomic_store_n(&s_force_uninstalled, val, __ATOMIC_RELEASE);
 }
-static usb_hid_sink_ctx_t s_sink_ctx;
 static char s_serial_str[17] = "QUADIPKVM0001";
 static usb_vbus_ctrl_t s_vbus_ctrl;
 static SemaphoreHandle_t s_usb_ctrl_mux = NULL;
@@ -389,6 +389,8 @@ static bool vbus_apply_action(usb_vbus_ctrl_action_t action) {
                 }
                 return phy_stopped;
             }
+            /* Once stage-2 teardown closes s_hid_gate, retries skip stage-1 (sftdiscon) and go
+             * straight to draining/uninstalling TinyUSB. */
             if (!usb_hid_gate_is_closed(&s_hid_gate)) {
                 usb_dwc_dctl_reg_t dctl = USB_DWC_HS.dctl_reg;
                 dctl.sftdiscon = 1;
@@ -614,6 +616,7 @@ esp_err_t usb_hid_init_ex(usb_hid_mounted_cb_t on_mounted, bool msc_ready) {
     set_initialized(true);
     if (xTaskCreate(usb_vbus_task, "usb_vbus", USB_HID_VBUS_TASK_STACK_SIZE, NULL,
                     USB_HID_VBUS_TASK_PRIO, &s_vbus_task) != pdPASS) {
+        /* Safe to reset without draining here because s_sink has not been published yet. */
         (void)usb_hid_gate_begin_teardown(&s_hid_gate);
         set_initialized(false);
         s_vbus_task = NULL;

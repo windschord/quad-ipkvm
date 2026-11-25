@@ -104,16 +104,25 @@ menu "KVM Board (74HC139 / ATX / KVM LED) Configuration"
             circuit MUST provide an external pull-up (or pull-down) resistor so the input does not float.
             TODO(hw-verify)
 
-    config KVM_BOARD_LED_ACTIVE_LOW
-        bool "KVM LED sense inputs are active-low (0 = lit)"
-        default y
+    choice KVM_BOARD_LED_POLARITY
+        prompt "KVM LED sense polarity"
+        default KVM_BOARD_LED_POLARITY_UNSET
         depends on KVM_BOARD_ENABLE
         help
-            Provisional default (assuming open-collector optocoupler with external pull-up)
-            until docs/HW_VERIFY.md A6 is measured on the KVM PCB:
-            y = GPIO low (0) means LED ON; n = GPIO high (1) means LED ON.
-            Internal pull resistors are disabled; external pull-up/pull-down resistor required.
+            Wait for docs/HW_VERIFY.md A6 measurement on the KVM PCB before selecting
+            ACTIVE_LOW or ACTIVE_HIGH. Leaving this UNSET fails runtime init closed
+            while keeping CI Kconfig builds non-interactive.
             TODO(hw-verify)
+
+        config KVM_BOARD_LED_POLARITY_UNSET
+            bool "Unset (fail-closed until HW_VERIFY A6 is measured)"
+
+        config KVM_BOARD_LED_POLARITY_ACTIVE_LOW
+            bool "Active-low (0 = lit)"
+
+        config KVM_BOARD_LED_POLARITY_ACTIVE_HIGH
+            bool "Active-high (1 = lit)"
+    endchoice
 
     config KVM_BOARD_ALLOW_JTAG_INPUTS
         bool "Allow JTAG GPIOs (GPIO2..5) for KVM LED inputs only"

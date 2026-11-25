@@ -26,6 +26,7 @@ extern "C" {
 
 #define KVM_BOARD_GPIO_MAX                54
 #define KVM_BOARD_NUM_CHANNELS            4u
+#define KVM_BOARD_CH_UNKNOWN              0u
 #define KVM_BOARD_NUM_ENABLE_LINES        3u
 #define KVM_BOARD_DEFAULT_HARD_MAX_KVM_MS 1000u  /* TODO(hw-verify) */
 #define KVM_BOARD_HARD_MAX_KVM_CAP_MS     5000u  /* TODO(hw-verify) */

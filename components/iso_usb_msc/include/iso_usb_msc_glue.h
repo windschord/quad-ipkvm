@@ -31,8 +31,11 @@ extern "C" {
 void iso_usb_msc_exec_cmd(mmc_scsi_t *scsi, const msc_bot_cmd_t *cmd, msc_bot_cmd_result_t *out_res);
 
 /**
- * @brief Optional external table resolver (e.g. iso_worker) invoked under shared iso_state_mutex.
+ * @brief Optional external table resolver (e.g. iso_worker) invoked under caller's iso_state_mutex.
  *
+ * The `_locked` suffix refers to the caller's iso_state_mutex (held by iso_msc_task across
+ * MSC_BOT_CMD_EXECUTE); iso_usb_msc_extent_backend releases its internal be->lock before calling
+ * these callbacks to preserve strict lock ordering (iso_state_mutex -> be->lock).
  * acquire_table_locked MUST return a table with an incremented reference count (released later via
  * iso_extent_table_unref() inside mmc_scsi_backend_t.release()).
  */

@@ -75,6 +75,7 @@ bool usb_hid_gate_enter(usb_hid_gate_t *gate);
 void usb_hid_gate_leave(usb_hid_gate_t *gate);
 uint32_t usb_hid_gate_begin_teardown(usb_hid_gate_t *gate);
 uint32_t usb_hid_gate_in_flight(const usb_hid_gate_t *gate);
+/* Diagnostics / host-test helper (not needed on firmware fast paths). */
 bool usb_hid_gate_is_active(const usb_hid_gate_t *gate);
 bool usb_hid_gate_is_closed(const usb_hid_gate_t *gate);
 

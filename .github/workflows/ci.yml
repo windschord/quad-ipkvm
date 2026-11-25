@@ -51,7 +51,7 @@ jobs:
       - name: Build IDF Project with KVM_BOARD_ENABLE=y
         run: |
           . $IDF_PATH/export.sh
-          printf 'CONFIG_KVM_BOARD_ENABLE=y\n' > sdkconfig.ci_kvm_board
+          printf 'CONFIG_KVM_BOARD_ENABLE=y\nCONFIG_KVM_BOARD_LED_POLARITY_ACTIVE_LOW=y\n' > sdkconfig.ci_kvm_board
           idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.ci_kvm_board" set-target esp32p4
           idf.py build
       - name: Verify sdkconfig and kvm_board ISR IRAM placement
@@ -61,6 +61,7 @@ jobs:
           grep '^CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y' sdkconfig
           grep '^CONFIG_ESP32P4_REV_MIN_100=y' sdkconfig
           grep '^CONFIG_KVM_BOARD_ENABLE=y' sdkconfig
+          grep '^CONFIG_KVM_BOARD_LED_POLARITY_ACTIVE_LOW=y' sdkconfig
           grep '^CONFIG_GPTIMER_ISR_CACHE_SAFE=y' sdkconfig
           grep '^CONFIG_GPTIMER_CTRL_FUNC_IN_IRAM=y' sdkconfig
           python3 tools/test/check_kvm_board_iram.py build/quad-ipkvm.elf

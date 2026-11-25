@@ -689,6 +689,13 @@ static void test_drv_set_addr_partial_failure_rollback_and_idle_timer_stop(void)
     TEST_ASSERT_EQUAL_INT(1, f.gpio_level[cfg.pins.a0]);
     TEST_ASSERT_EQUAL_INT(0, f.gpio_level[cfg.pins.a1]);
 
+    /* Issue #142 follow-up: A1 write fails AND A0 rollback fails -> current_channel becomes KVM_BOARD_CH_UNKNOWN. */
+    reset_trace(&f);
+    f.fail_set_lvl_value = 1; /* A0=0 succeeds, A1=1 fails, then prev_a0=1 rollback also fails */
+    TEST_ASSERT_EQUAL_INT(-1, hal->set_addr(hal->ctx, 3u));
+    f.fail_set_lvl_value = -1;
+    TEST_ASSERT_EQUAL_UINT8(KVM_BOARD_CH_UNKNOWN, f.drv.logic.current_channel);
+
     /* Verify subsequent valid switch to CH4 (A0=1, A1=1) still works cleanly. */
     TEST_ASSERT_EQUAL_INT(0, hal->set_addr(hal->ctx, 4u));
     TEST_ASSERT_EQUAL_UINT8(4u, f.drv.logic.current_channel);

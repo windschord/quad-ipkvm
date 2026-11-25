@@ -1,6 +1,8 @@
 #include "unity.h"
 #include "usb_hid_logic.h"
 
+#include <pthread.h>
+#include <stdatomic.h>
 #include <string.h>
 
 typedef struct {
@@ -394,6 +396,80 @@ void test_teardown_gate_lifecycle_and_drain(void) {
     usb_hid_gate_leave(&gate);
 }
 
+typedef struct {
+    usb_hid_gate_t gate;
+    _Atomic bool stop;
+    _Atomic bool uninstalled;
+    _Atomic bool use_after_uninstall;
+    _Atomic uint64_t entered_ok;
+} gate_stress_ctx_t;
+
+static void *gate_stress_worker(void *arg) {
+    gate_stress_ctx_t *ctx = (gate_stress_ctx_t *)arg;
+    while (!atomic_load_explicit(&ctx->stop, memory_order_acquire)) {
+        if (usb_hid_gate_enter(&ctx->gate)) {
+            if (atomic_load_explicit(&ctx->uninstalled, memory_order_acquire)) {
+                atomic_store_explicit(&ctx->use_after_uninstall, true, memory_order_release);
+            }
+            for (volatile int s = 0; s < 10; s++) {
+            }
+            if (atomic_load_explicit(&ctx->uninstalled, memory_order_acquire)) {
+                atomic_store_explicit(&ctx->use_after_uninstall, true, memory_order_release);
+            }
+            atomic_fetch_add_explicit(&ctx->entered_ok, 1u, memory_order_relaxed);
+            usb_hid_gate_leave(&ctx->gate);
+        }
+    }
+    return NULL;
+}
+
+void test_teardown_gate_multithreaded_stress(void) {
+    gate_stress_ctx_t ctx = {
+        .stop = false,
+        .uninstalled = false,
+        .use_after_uninstall = false,
+        .entered_ok = 0u,
+    };
+    usb_hid_gate_init(&ctx.gate);
+    TEST_ASSERT_TRUE(usb_hid_gate_activate(&ctx.gate));
+
+    pthread_t workers[4];
+    for (size_t i = 0u; i < 4u; i++) {
+        TEST_ASSERT_EQUAL_INT(0, pthread_create(&workers[i], NULL, gate_stress_worker, &ctx));
+    }
+
+    for (unsigned round = 0u; round < 400u; round++) {
+        for (volatile int spin = 0; spin < 200; spin++) {
+        }
+        (void)usb_hid_gate_begin_teardown(&ctx.gate);
+        TEST_ASSERT_TRUE(usb_hid_gate_is_closed(&ctx.gate));
+        TEST_ASSERT_FALSE(usb_hid_gate_enter(&ctx.gate));
+
+        uint32_t guard = 0u;
+        while (usb_hid_gate_in_flight(&ctx.gate) > 0u) {
+            TEST_ASSERT_LESS_THAN_UINT32(10000000u, ++guard);
+        }
+        atomic_store_explicit(&ctx.uninstalled, true, memory_order_release);
+        for (volatile int spin = 0; spin < 200; spin++) {
+            TEST_ASSERT_EQUAL_UINT32(0u, usb_hid_gate_in_flight(&ctx.gate));
+        }
+        TEST_ASSERT_EQUAL_UINT32(0u, usb_hid_gate_begin_teardown(&ctx.gate));
+
+        atomic_store_explicit(&ctx.uninstalled, false, memory_order_release);
+        usb_hid_gate_init(&ctx.gate);
+        TEST_ASSERT_TRUE(usb_hid_gate_activate(&ctx.gate));
+    }
+
+    atomic_store_explicit(&ctx.stop, true, memory_order_release);
+    for (size_t i = 0u; i < 4u; i++) {
+        TEST_ASSERT_EQUAL_INT(0, pthread_join(workers[i], NULL));
+    }
+
+    TEST_ASSERT_FALSE(atomic_load_explicit(&ctx.use_after_uninstall, memory_order_acquire));
+    TEST_ASSERT_GREATER_THAN_UINT64(0u, atomic_load_explicit(&ctx.entered_ok, memory_order_acquire));
+    TEST_ASSERT_EQUAL_UINT32(0u, usb_hid_gate_in_flight(&ctx.gate));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_report_descriptors_lengths_and_no_report_ids);
@@ -401,5 +477,6 @@ int main(void) {
     RUN_TEST(test_pack_keyboard_abs_and_rel_reports);
     RUN_TEST(test_sink_nonblocking_ready_and_routing);
     RUN_TEST(test_teardown_gate_lifecycle_and_drain);
+    RUN_TEST(test_teardown_gate_multithreaded_stress);
     return UNITY_END();
 }

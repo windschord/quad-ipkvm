@@ -135,10 +135,13 @@ static int hal_set_addr(void *ctx, uint8_t ch)
                 rc = -1;
             } else if (drv->io.gpio_set_level(drv->io.ctx, drv->logic.config.pins.a1, a1 ? 1 : 0) != 0) {
                 bool prev_a0 = false;
-                drv->logic.current_channel = prev_ch;
-                if (kvm_board_logic_channel_to_addr(prev_ch, &prev_a0, NULL) == 0) {
-                    (void)drv->io.gpio_set_level(drv->io.ctx, drv->logic.config.pins.a0,
-                                                 prev_a0 ? 1 : 0);
+                if (kvm_board_logic_channel_to_addr(prev_ch, &prev_a0, NULL) == 0 &&
+                    drv->io.gpio_set_level(drv->io.ctx, drv->logic.config.pins.a0,
+                                           prev_a0 ? 1 : 0) == 0) {
+                    drv->logic.current_channel = prev_ch;
+                } else {
+                    /* Both A1 write and best-effort A0 rollback failed: mark channel unknown. */
+                    drv->logic.current_channel = KVM_BOARD_CH_UNKNOWN;
                 }
                 rc = -1;
             }
