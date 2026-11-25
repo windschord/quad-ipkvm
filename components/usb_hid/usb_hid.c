@@ -613,17 +613,19 @@ esp_err_t usb_hid_init_ex(usb_hid_mounted_cb_t on_mounted, bool msc_ready) {
              CONFIG_USB_DEVICE_VBUS_SENSE_GPIO, CONFIG_USB_DEVICE_VBUS_POLL_MS);
     ESP_RETURN_ON_FALSE(usb_hid_gate_activate(&s_hid_gate), ESP_ERR_INVALID_STATE,
                         TAG, "usb_hid_gate_activate failed");
-    set_initialized(true);
+    xSemaphoreTake(s_usb_ctrl_mux, portMAX_DELAY);
     if (xTaskCreate(usb_vbus_task, "usb_vbus", USB_HID_VBUS_TASK_STACK_SIZE, NULL,
                     USB_HID_VBUS_TASK_PRIO, &s_vbus_task) != pdPASS) {
-        /* Safe to reset without draining here because s_sink has not been published yet. */
+        xSemaphoreGive(s_usb_ctrl_mux);
+        /* Safe without draining: set_initialized(true) has not run, so usb_hid_get_sink() is still NULL. */
         (void)usb_hid_gate_begin_teardown(&s_hid_gate);
-        set_initialized(false);
         s_vbus_task = NULL;
         (void)tinyusb_driver_uninstall();
         usb_hid_gate_init(&s_hid_gate);
         return ESP_ERR_NO_MEM;
     }
+    set_initialized(true);
+    xSemaphoreGive(s_usb_ctrl_mux);
 #else
     (void)boot_reg_ok;
     vbus_cfg.enabled = false;

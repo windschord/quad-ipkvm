@@ -1,9 +1,12 @@
+#define _POSIX_C_SOURCE 200809L
 #include "unity.h"
 #include "usb_hid_logic.h"
 
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <string.h>
+#include <time.h>
 
 typedef struct {
     bool mounted;
@@ -396,6 +399,12 @@ void test_teardown_gate_lifecycle_and_drain(void) {
     usb_hid_gate_leave(&gate);
 }
 
+static uint64_t stress_mono_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
 typedef struct {
     usb_hid_gate_t gate;
     _Atomic bool stop;
@@ -411,13 +420,16 @@ static void *gate_stress_worker(void *arg) {
             if (atomic_load_explicit(&ctx->uninstalled, memory_order_acquire)) {
                 atomic_store_explicit(&ctx->use_after_uninstall, true, memory_order_release);
             }
+            /* Publish post-enter checkpoint so main waits until a worker actually runs inside the gate. */
+            atomic_fetch_add_explicit(&ctx->entered_ok, 1u, memory_order_release);
             for (volatile int s = 0; s < 10; s++) {
             }
             if (atomic_load_explicit(&ctx->uninstalled, memory_order_acquire)) {
                 atomic_store_explicit(&ctx->use_after_uninstall, true, memory_order_release);
             }
-            atomic_fetch_add_explicit(&ctx->entered_ok, 1u, memory_order_relaxed);
             usb_hid_gate_leave(&ctx->gate);
+        } else {
+            sched_yield();
         }
     }
     return NULL;
@@ -434,39 +446,106 @@ void test_teardown_gate_multithreaded_stress(void) {
     TEST_ASSERT_TRUE(usb_hid_gate_activate(&ctx.gate));
 
     pthread_t workers[4];
+    size_t created = 0u;
+    int create_err = 0;
+    int join_err = 0;
+    const char *fail_msg = NULL;
+
     for (size_t i = 0u; i < 4u; i++) {
-        TEST_ASSERT_EQUAL_INT(0, pthread_create(&workers[i], NULL, gate_stress_worker, &ctx));
+        int rc = pthread_create(&workers[i], NULL, gate_stress_worker, &ctx);
+        if (rc != 0) {
+            create_err = rc;
+            fail_msg = "pthread_create failed";
+            break;
+        }
+        created++;
     }
 
-    for (unsigned round = 0u; round < 400u; round++) {
-        for (volatile int spin = 0; spin < 200; spin++) {
-        }
-        (void)usb_hid_gate_begin_teardown(&ctx.gate);
-        TEST_ASSERT_TRUE(usb_hid_gate_is_closed(&ctx.gate));
-        TEST_ASSERT_FALSE(usb_hid_gate_enter(&ctx.gate));
+    if (fail_msg == NULL) {
+        const struct timespec backoff = {.tv_sec = 0, .tv_nsec = 100000L};
+        for (unsigned round = 0u; round < 400u; round++) {
+            uint64_t before = atomic_load_explicit(&ctx.entered_ok, memory_order_acquire);
+            const uint64_t wait_deadline = stress_mono_ns() + 5000000000ULL;
+            unsigned iter = 0u;
+            while (atomic_load_explicit(&ctx.entered_ok, memory_order_acquire) == before) {
+                if (stress_mono_ns() >= wait_deadline) {
+                    fail_msg = "worker did not enter gate before timeout";
+                    break;
+                }
+                sched_yield();
+                if ((++iter % 1000u) == 0u) {
+                    nanosleep(&backoff, NULL);
+                }
+            }
+            if (fail_msg != NULL) {
+                break;
+            }
 
-        uint32_t guard = 0u;
-        while (usb_hid_gate_in_flight(&ctx.gate) > 0u) {
-            TEST_ASSERT_LESS_THAN_UINT32(10000000u, ++guard);
-        }
-        atomic_store_explicit(&ctx.uninstalled, true, memory_order_release);
-        for (volatile int spin = 0; spin < 200; spin++) {
-            TEST_ASSERT_EQUAL_UINT32(0u, usb_hid_gate_in_flight(&ctx.gate));
-        }
-        TEST_ASSERT_EQUAL_UINT32(0u, usb_hid_gate_begin_teardown(&ctx.gate));
+            (void)usb_hid_gate_begin_teardown(&ctx.gate);
+            if (!usb_hid_gate_is_closed(&ctx.gate)) {
+                fail_msg = "gate was not closed after begin_teardown";
+                break;
+            }
+            if (usb_hid_gate_enter(&ctx.gate)) {
+                fail_msg = "gate allowed enter after begin_teardown";
+                break;
+            }
 
-        atomic_store_explicit(&ctx.uninstalled, false, memory_order_release);
-        usb_hid_gate_init(&ctx.gate);
-        TEST_ASSERT_TRUE(usb_hid_gate_activate(&ctx.gate));
+            const uint64_t drain_deadline = stress_mono_ns() + 5000000000ULL;
+            iter = 0u;
+            while (usb_hid_gate_in_flight(&ctx.gate) > 0u) {
+                if (stress_mono_ns() >= drain_deadline) {
+                    fail_msg = "gate did not drain in-flight workers";
+                    break;
+                }
+                sched_yield();
+                if ((++iter % 1000u) == 0u) {
+                    nanosleep(&backoff, NULL);
+                }
+            }
+            if (fail_msg != NULL) {
+                break;
+            }
+
+            atomic_store_explicit(&ctx.uninstalled, true, memory_order_release);
+            for (int k = 0; k < 16; k++) {
+                if (usb_hid_gate_in_flight(&ctx.gate) != 0u) {
+                    fail_msg = "in-flight count became non-zero while uninstalled";
+                    break;
+                }
+                sched_yield();
+            }
+            if (fail_msg != NULL) {
+                break;
+            }
+            if (usb_hid_gate_begin_teardown(&ctx.gate) != 0u) {
+                fail_msg = "second begin_teardown returned non-zero in-flight count";
+                break;
+            }
+
+            atomic_store_explicit(&ctx.uninstalled, false, memory_order_release);
+            usb_hid_gate_init(&ctx.gate);
+            if (!usb_hid_gate_activate(&ctx.gate)) {
+                fail_msg = "usb_hid_gate_activate failed on round re-init";
+                break;
+            }
+        }
     }
 
+    /* Always stop and join all created workers before any Unity longjmp assertion. */
     atomic_store_explicit(&ctx.stop, true, memory_order_release);
-    for (size_t i = 0u; i < 4u; i++) {
-        TEST_ASSERT_EQUAL_INT(0, pthread_join(workers[i], NULL));
+    for (size_t i = 0u; i < created; i++) {
+        int rc = pthread_join(workers[i], NULL);
+        if (rc != 0 && join_err == 0) {
+            join_err = rc;
+        }
     }
 
+    TEST_ASSERT_EQUAL_INT(0, create_err);
+    TEST_ASSERT_EQUAL_INT(0, join_err);
+    TEST_ASSERT_NULL_MESSAGE(fail_msg, fail_msg ? fail_msg : "");
     TEST_ASSERT_FALSE(atomic_load_explicit(&ctx.use_after_uninstall, memory_order_acquire));
-    TEST_ASSERT_GREATER_THAN_UINT64(0u, atomic_load_explicit(&ctx.entered_ok, memory_order_acquire));
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT64(400u, atomic_load_explicit(&ctx.entered_ok, memory_order_acquire));
     TEST_ASSERT_EQUAL_UINT32(0u, usb_hid_gate_in_flight(&ctx.gate));
 }
 
