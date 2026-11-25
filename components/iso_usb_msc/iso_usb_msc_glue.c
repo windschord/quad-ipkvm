@@ -153,6 +153,7 @@ static int be_read(void *ctx, void *handle, uint32_t lba, uint32_t blocks, uint8
                 step /= 2u;
                 continue;
             }
+            /* Translate iso_extent error domain explicitly rather than assuming numeric equality. */
             if (rc != ISO_EXT_OK) {
                 return ISO_ERR_IO;
             }

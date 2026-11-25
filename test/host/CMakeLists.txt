@@ -170,7 +170,7 @@ foreach(test_source ${TEST_SOURCES})
     endif()
 
     if (test_source MATCHES "/usb_hid/")
-        target_link_libraries(${test_name} PRIVATE usb_hid_logic)
+        target_link_libraries(${test_name} PRIVATE usb_hid_logic pthread)
     endif()
 
     if (test_source MATCHES "/kvm_board/")

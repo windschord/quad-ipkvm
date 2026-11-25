@@ -298,7 +298,10 @@ esp_err_t kvm_board_init_from_kconfig(void)
     cfg.max_reset_ms = CONFIG_KVM_BOARD_HARD_MAX_RESET_MS;
     cfg.max_force_ms = CONFIG_KVM_BOARD_HARD_MAX_FORCE_MS;
     cfg.max_kvm_ms = CONFIG_KVM_BOARD_HARD_MAX_KVM_MS;
-#if defined(CONFIG_KVM_BOARD_LED_ACTIVE_LOW) && CONFIG_KVM_BOARD_LED_ACTIVE_LOW
+#if defined(CONFIG_KVM_BOARD_LED_POLARITY_UNSET) && CONFIG_KVM_BOARD_LED_POLARITY_UNSET
+    ESP_LOGE(TAG, "KVM_BOARD_LED_POLARITY is UNSET; refusing init until HW_VERIFY A6 is configured");
+    return ESP_ERR_INVALID_STATE;
+#elif defined(CONFIG_KVM_BOARD_LED_POLARITY_ACTIVE_LOW) && CONFIG_KVM_BOARD_LED_POLARITY_ACTIVE_LOW
     cfg.led_active_low = true;
 #else
     cfg.led_active_low = false;

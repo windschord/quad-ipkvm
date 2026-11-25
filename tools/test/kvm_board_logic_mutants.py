@@ -212,17 +212,29 @@ MUTANTS = [
        "    (void)drv->io.timer_stop(drv->io.ctx);\n    drv->timer_running = false;"),
       file=DRV_FILE),
     M("D12", "hal_set_addr: omit current_channel rollback on A1 write failure (Issue #142 M-4)",
-      ("                bool prev_a0 = false;\n"
-       "                drv->logic.current_channel = prev_ch;\n"
-       "                if (kvm_board_logic_channel_to_addr(prev_ch, &prev_a0, NULL) == 0) {",
-       "                bool prev_a0 = false;\n"
-       "                if (kvm_board_logic_channel_to_addr(prev_ch, &prev_a0, NULL) == 0) {"),
+      ("                if (kvm_board_logic_channel_to_addr(prev_ch, &prev_a0, NULL) == 0 &&\n"
+       "                    drv->io.gpio_set_level(drv->io.ctx, drv->logic.config.pins.a0,\n"
+       "                                           prev_a0 ? 1 : 0) == 0) {\n"
+       "                    drv->logic.current_channel = prev_ch;",
+       "                if (kvm_board_logic_channel_to_addr(prev_ch, &prev_a0, NULL) == 0 &&\n"
+       "                    drv->io.gpio_set_level(drv->io.ctx, drv->logic.config.pins.a0,\n"
+       "                                           prev_a0 ? 1 : 0) == 0) {\n"
+       "                    (void)prev_ch;"),
       file=DRV_FILE),
     M("D13", "hal_set_addr: omit A0 GPIO rollback on A1 write failure (Issue #142 M-4)",
-      ("                if (kvm_board_logic_channel_to_addr(prev_ch, &prev_a0, NULL) == 0) {\n"
-       "                    (void)drv->io.gpio_set_level(drv->io.ctx, drv->logic.config.pins.a0,\n"
-       "                                                 prev_a0 ? 1 : 0);\n"
+      ("                if (kvm_board_logic_channel_to_addr(prev_ch, &prev_a0, NULL) == 0 &&\n"
+       "                    drv->io.gpio_set_level(drv->io.ctx, drv->logic.config.pins.a0,\n"
+       "                                           prev_a0 ? 1 : 0) == 0) {\n"
+       "                    drv->logic.current_channel = prev_ch;\n"
+       "                } else {\n"
+       "                    /* Both A1 write and best-effort A0 rollback failed: mark channel unknown. */\n"
+       "                    drv->logic.current_channel = KVM_BOARD_CH_UNKNOWN;\n"
        "                }",
-       "                (void)prev_a0;"),
+       "                (void)prev_a0;\n"
+       "                drv->logic.current_channel = prev_ch;"),
+      file=DRV_FILE),
+    M("D14", "hal_set_addr: keep prev_ch instead of KVM_BOARD_CH_UNKNOWN when A0 rollback fails",
+      ("                    drv->logic.current_channel = KVM_BOARD_CH_UNKNOWN;",
+       "                    drv->logic.current_channel = prev_ch;"),
       file=DRV_FILE),
 ]

@@ -658,7 +658,8 @@ esp_err_t iso_usb_msc_mount_image(uint32_t media_id, iso_extent_table_t *table, 
     backend_lock_cb(NULL);
     const iso_blockdev_t *bdev = s_backend.bdev;
     backend_unlock_cb(NULL);
-    if (bdev != NULL && bdev->epoch != NULL && !iso_usb_msc_table_epoch_matches(bdev, table)) {
+    /* Fail closed (ISO_MOUNT_DESIGN §5.5): reject mount if blockdev or epoch source is missing/stale. */
+    if (!iso_usb_msc_table_epoch_matches(bdev, table)) {
         msc_state_unlock();
         return ESP_ERR_INVALID_STATE;
     }
