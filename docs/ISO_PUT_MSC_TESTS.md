@@ -33,7 +33,7 @@ python3 tools/test/mutate_iso_put.py <repo> <スクラッチ> tools/test/iso_put
 python3 tools/test/mutate_iso_put.py <repo> <スクラッチ> tools/test/iso_put_mutants_extra.py <結果_extra.json> -j2
 ```
 
-結果の JSON とログ(1 行 1 ミュータント)は、`tools/test/results/c16/` に置いた: `put.json`(P)、`put_extra.json`(Q)、`msc.json`(G)、`msc_extra.json`(Y)。元のテストだけで実行した結果は、環境変数 `MUTATE_ORIGINAL_ONLY=1` をつけて実行したもの(`*_orig.json`)。
+結果の JSON(1 行 1 ミュータント)は、他のミューテーションテストと同じく、リポジトリには入れない(`-j3` で数十分。実行すれば作れる)。実行は `python3 tools/test/mutate_iso_put.py <repo> <workdir> tools/test/iso_put_mutants.py <out.json> -j3`(P)、`... iso_put_mutants_extra.py ...`(Q)、`mutate_iso_msc.py ... iso_msc_mutants.py ...`(G)、`... iso_msc_mutants_extra.py ...`(Y)。元のテストだけで実行した差は、環境変数 `MUTATE_ORIGINAL_ONLY=1` をつけて実行する。
 
 `mutate_iso_put.py` は、ビルドに `-ftrivial-auto-var-init=pattern` を足す(`mutate_iso_worker.py` と同じ。通常の ctest のビルドには入れない)。
 
