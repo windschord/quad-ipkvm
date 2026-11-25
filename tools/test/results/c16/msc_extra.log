@@ -1,0 +1,147 @@
+Y01   killed      dir map: IN -> OUT  -> test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction
+Y03   killed      dir map: OUT -> IN  -> test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction
+Y02   killed      dir map: IN -> NONE  -> test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction
+Y05   killed      dir map: default -> IN  -> test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction
+Y04   survived    dir map: OUT -> NONE  -> 
+Y07   killed      execute: cdb_len - 1  -> test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result,te
+Y06   killed      dir map: NONE -> IN  -> test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction
+Y09   killed      execute: out NULL  -> test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result,test_
+Y08   killed      execute: expected_len 0  -> test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction
+Y11   killed      execute: dir always IN  -> test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction
+Y10   killed      execute: out_cap 0  -> test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result,test
+Y13   killed      execute: out_cap + 1  -> test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result
+Y12   killed      execute: dir always NONE  -> test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction
+Y15   killed      execute: is_read always false  -> test_exec_cmd_read_reports_the_range_and_the_direction_fro
+Y14   killed      execute: good always true  -> test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_resu
+Y17   killed      execute: read_blocks 0  -> test_exec_cmd_read_reports_the_range_and_the_direction_from_the_b
+Y16   killed      execute: read_lba 0  -> test_exec_cmd_read_reports_the_range_and_the_direction_from_the_bloc
+Y19   killed      execute: data_len gets read blocks  -> test_exec_cmd_execute_copies_the_scsi_result_into_the
+Y18   killed      execute: data_len 0  -> test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result
+Y21   killed      execute: read dir always NONE  -> test_exec_cmd_read_reports_the_range_and_the_direction_fro
+Y20   killed      execute: read dir always IN  -> test_exec_cmd_read_reports_the_range_and_the_direction_from_
+Y23   killed      execute: read dir OUT  -> test_exec_cmd_read_reports_the_range_and_the_direction_from_the_bl
+Y22   killed      execute: read dir swapped  -> test_exec_cmd_read_reports_the_range_and_the_direction_from_th
+Y25   killed      execute: data dir always NONE  -> test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_
+Y24   killed      execute: data dir always IN  -> test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_re
+Y27   killed      execute: data dir OUT  -> test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result
+Y26   killed      execute: data dir swapped  -> test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_resu
+Y29   killed      read_blocks: lba not forwarded  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_onl
+Y28   killed      execute: data dir decided by the read blocks  -> test_exec_cmd_execute_copies_the_scsi_resul
+Y31   killed      read_blocks: blocks 1  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good
+Y30   killed      read_blocks: lba + 1  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good,tes
+Y33   killed      read_blocks: cap 0  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good
+Y32   killed      read_blocks: buf NULL  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good
+Y35   killed      read_blocks: good always true  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_only
+Y34   killed      read_blocks: cap = blocks * 2048 (ignores the caller's cap)  -> test_exec_cmd_read_blocks_re
+Y37   killed      read_blocks: lba above 32 bits is truncated and read  -> test_exec_cmd_read_blocks_rejects_a
+Y36   killed      read_blocks: lba above 32 bits reports good  -> test_exec_cmd_read_blocks_rejects_a_lba_abov
+Y39   killed      result: seq always 0  -> test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_e
+Y38   killed      unknown kind reports good  -> test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_noth
+Y41   killed      size: missing table returns INVALID  -> test_backend_size_bytes_validates_arguments_and_look
+Y40   killed      size: NULL args return NOT_FOUND  -> test_backend_size_bytes_validates_arguments_and_looks_u
+Y43   killed      size: media-id term dropped  -> test_backend_size_bytes_validates_arguments_and_looks_up_the
+Y42   killed      size: table-null term dropped  -> test_backend_size_bytes_validates_arguments_and_looks_up_t
+Y45   killed      size: result is the capacity in blocks  -> test_exec_cmd_read_reports_the_range_and_the_dire
+Y44   killed      size: result not written  -> test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_resul
+Y47   killed      size: resolver id 0  -> test_resolver_size_bytes_takes_precedence_passes_the_id_and_returns_
+Y46   killed      size: resolver ctx NULL  -> test_resolver_size_bytes_takes_precedence_passes_the_id_and_retu
+Y49   killed      size: resolver result forced to OK  -> test_resolver_size_bytes_takes_precedence_passes_the_
+Y48   killed      size: resolver id from the backend  -> test_resolver_size_bytes_takes_precedence_passes_the_
+Y51   killed      size: resolver called under the backend lock  -> test_resolver_size_bytes_takes_precedence_p
+Y50   killed      size: resolver chosen by the acquire pointer  -> test_iso_usb_msc_glue_mut:crash/rc=1
+Y53   killed      acquire: handle not cleared first  -> test_backend_acquire_validates_arguments_takes_a_refer
+Y52   killed      size: resolver ignored  -> test_resolver_size_bytes_takes_precedence_passes_the_id_and_retur
+Y55   killed      acquire: resolver NULL table returns INVALID  -> test_resolver_acquire_returns_the_table_the
+Y54   killed      acquire: NULL args return NOT_FOUND  -> test_backend_acquire_validates_arguments_takes_a_ref
+Y57   killed      acquire: resolver NULL table accepted  -> test_resolver_acquire_returns_the_table_the_resolv
+Y56   killed      acquire: resolver table not stored in the handle  -> test_resolver_acquire_returns_the_table
+Y59   killed      acquire: resolver id 0  -> test_resolver_acquire_returns_the_table_the_resolver_referenced_a
+Y58   killed      acquire: resolver ctx NULL  -> test_resolver_acquire_returns_the_table_the_resolver_referenc
+Y61   killed      acquire: resolver chosen by the size pointer  -> test_iso_usb_msc_glue_mut:crash/rc=1
+Y60   killed      acquire: resolver id from the backend  -> test_resolver_acquire_returns_the_table_the_resolv
+Y63   killed      acquire: resolver called under the backend lock  -> test_resolver_acquire_returns_the_table_
+Y62   killed      acquire: resolver ignored  -> test_resolver_acquire_returns_the_table_the_resolver_reference
+Y65   killed      acquire: table path misses the media-id term  -> test_backend_acquire_validates_arguments_ta
+Y64   killed      acquire: table path misses the table-null term  -> test_backend_acquire_validates_arguments_
+Y67   killed      acquire: table path handle not stored  -> test_exec_cmd_read_reports_the_range_and_the_direc
+Y66   killed      acquire: table path misses NOT_FOUND code  -> test_backend_acquire_validates_arguments_takes
+Y68   killed      acquire: table path handle is the media id  -> test_exec_cmd_read_reports_the_range_and_the_
+Y69   killed      read: handle-null term dropped  -> test_backend_read_rejects_null_arguments_in_the_documente
+Y70   killed      read: be-null term dropped  -> test_iso_usb_msc_glue_mut:crash/rc=1
+Y71   killed      read: zero blocks returns INVALID  -> test_backend_read_rejects_null_arguments_in_the_docume
+Y73   killed      read: NULL buf accepted  -> test_iso_usb_msc_glue_mut:crash/rc=1
+Y72   killed      read: NULL buf returns NO_CARD  -> test_backend_read_rejects_null_arguments_in_the_documente
+Y75   killed      read: read_sectors-null term dropped  -> test_iso_usb_msc_glue_mut:crash/rc=1
+Y74   killed      read: missing bdev returns IO  -> test_backend_read_rejects_null_arguments_in_the_documented
+Y77   killed      read: epoch 0  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good,test_backe
+Y76   killed      read: bdev-null term dropped  -> test_iso_usb_msc_glue_mut:crash/rc=1
+Y79   killed      read: map from the request lba  -> test_iso_usb_msc_glue_mut:crash/rc=1
+Y78   killed      read: epoch from the blockdev  -> test_backend_read_returns_the_blockdev_error_and_stops_at_
+Y81   killed      read: map span capacity 128 (overruns the 64-entry array)  -> test_iso_usb_msc_glue_mut:cras
+Y80   killed      read: map the remaining blocks  -> test_iso_usb_msc_glue_mut:crash/rc=1
+Y83   killed      read: any map error halves the step  -> test_iso_usb_msc_glue_mut:crash/rc=1
+Y82   killed      read: map span capacity 1  -> test_backend_read_issues_one_read_per_span_with_the_table_epoc
+Y85   survived    read: halving ignores the step floor  -> 
+Y84   killed      read: SPANS_FULL never halves  -> test_iso_usb_msc_glue_mut:crash/rc=1
+Y87   killed      read: map error returns NO_CARD  -> test_iso_usb_msc_glue_mut:crash/rc=1
+Y86   survived    read: map error returns the code  -> 
+Y89   survived    read: step shrinks by 1 (batch size only)  -> 
+Y88   killed      read: map error ignored  -> test_iso_usb_msc_glue_mut:crash/rc=1
+Y91   killed      read: step bytes use the sector size  -> test_exec_cmd_read_blocks_reads_the_range_and_repor
+Y90   survived    read: step falls to 1 (batch size only)  -> 
+Y93   survived    read: span overrun check dropped (unreachable: map returns at most step_  -> 
+Y92   killed      read: span bytes use the block size  -> test_exec_cmd_read_blocks_reads_the_range_and_report
+Y95   killed      read: bdev ctx NULL  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good,test
+Y94   survived    read: span overrun returns NO_CARD (unreachable)  -> 
+Y97   killed      read: bdev start sector 0  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_only_goo
+Y96   killed      read: bdev epoch 0  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good,test_
+Y99   killed      read: bdev dst does not advance  -> test_backend_read_issues_one_read_per_span_with_the_tabl
+Y98   killed      read: bdev sector count 1  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_only_goo
+YA1   killed      read: bdev error ignored  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good
+YA0   killed      read: bdev error returns IO  -> test_backend_read_returns_the_blockdev_error_and_stops_at_th
+YA3   killed      read: valid bytes from the request lba  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YA2   killed      read: bdev error skips the span  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_on
+YA5   killed      read: zero fill starts at the buffer start  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YA4   survived    read: valid bytes for the remaining blocks  -> 
+YA7   killed      read: zero fill stops one byte short  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YA6   killed      read: zero fill runs one byte too far  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YA9   killed      read: zero fill from the wrong place (step start)  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YA8   killed      read: zero fill uses 0xFF  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YB0   killed      read: zero fill length is the whole step  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YB1   killed      read: success returns IO  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good
+YB3   survived    release: NULL guard dropped (equivalent: iso_extent_table_unref(NULL) re  -> 
+YB2   killed      read: the lock is not released before the read (bdev under the lock)  -> test_exec_cmd_read_
+YB5   survived    set_image: NULL guard on the new table dropped (equivalent: iso_extent_t  -> 
+YB4   killed      release: unref dropped  -> test_exec_cmd_read_reports_the_range_and_the_direction_from_the_b
+YB7   killed      set_image: id always kept  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YB6   survived    set_image: NULL guard on the old table dropped (equivalent: iso_extent_t  -> 
+YB9   killed      set_image: id kept only for no table  -> test_exec_cmd_execute_copies_the_scsi_result_into_t
+YB8   killed      set_image: id always 0  -> test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result,
+YC1   killed      set_image: the old table is released after the lock but the new table's   -> test_exec_cmd_i
+YC0   killed      set_image: the old table is released under the lock, before the new refe  -> test_iso_usb_ms
+YC2   survived    clear: id 1 (equivalent: the id is ignored when the table is NULL)  -> 
+YC3   killed      clear: does nothing  -> test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone,tes
+YC4   killed      sync: clears when loaded  -> test_sync_media_backend_clears_the_backend_only_when_the_media_
+YC5   killed      sync: always clears  -> test_sync_media_backend_clears_the_backend_only_when_the_media_is_no
+YC6   killed      sync: never clears  -> test_sync_media_backend_clears_the_backend_only_when_the_media_is_not
+YC7   killed      epoch_matches: bdev ctx NULL  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YC8   killed      epoch_matches: compares with the blockdev's epoch + 1  -> test_iso_usb_msc_glue_mut:crash/rc
+YC9   killed      epoch_matches: epoch-null term dropped  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YD0   killed      epoch_matches: table-null term dropped  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YD1   killed      epoch_matches: bdev-null term dropped  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YD2   killed      disconnect: force_eject instead of bus_reset  -> test_on_disconnect_media_is_a_bus_reset_tha
+YD3   killed      disconnect: only the prevent flag is cleared  -> test_on_disconnect_media_is_a_bus_reset_tha
+YD4   killed      disconnect: ejects the media  -> test_on_disconnect_media_is_a_bus_reset_that_keeps_the_medi
+YD5   killed      as_scsi: ctx NULL  -> test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result,test_
+YD6   killed      as_scsi: size_bytes missing  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YD7   killed      as_scsi: acquire missing  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YD8   killed      as_scsi: read missing  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YD9   killed      as_scsi: release missing  -> test_iso_usb_msc_glue_mut:crash/rc=1
+YE0   killed      init: bdev not stored  -> test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good,te
+YE1   killed      init: lock_ctx not stored  -> test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alo
+YE2   killed      set_resolver: copies only the ctx  -> test_resolver_size_bytes_takes_precedence_passes_the_i
+YE3   killed      set_resolver: copies only the functions  -> test_resolver_size_bytes_takes_precedence_passes
+YE4   killed      set_resolver: NULL keeps the old resolver  -> test_set_resolver_copies_the_whole_struct_and_
+YE5   killed      set_resolver: NULL clears only the size function  -> test_set_resolver_copies_the_whole_stru
+YE6   killed      set_resolver: NULL clears only the acquire function  -> test_set_resolver_copies_the_whole_s
+YE7   killed      set_resolver: NULL clears only the ctx  -> test_set_resolver_copies_the_whole_struct_and_nul
