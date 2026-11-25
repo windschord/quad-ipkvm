@@ -1,0 +1,2374 @@
+[
+ {
+  "id": "G001",
+  "desc": "L6: != -> ==",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G002",
+  "desc": "L6: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G003",
+  "desc": "L7: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G004",
+  "desc": "L12: != -> ==",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G005",
+  "desc": "L12: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G006",
+  "desc": "L13: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G007",
+  "desc": "L30: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G008",
+  "desc": "L30: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G009",
+  "desc": "L30: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G010",
+  "desc": "L30: || -> &&",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone"
+  ]
+ },
+ {
+  "id": "G011",
+  "desc": "L30: || -> &&",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G012",
+  "desc": "L30: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G013",
+  "desc": "L33: const 0+1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G014",
+  "desc": "L33: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G015",
+  "desc": "L34: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba"
+  ]
+ },
+ {
+  "id": "G016",
+  "desc": "L39: const 0+1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "G017",
+  "desc": "L39: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "G018",
+  "desc": "L42: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba"
+  ]
+ },
+ {
+  "id": "G019",
+  "desc": "L43: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count"
+  ]
+ },
+ {
+  "id": "G020",
+  "desc": "L44: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count"
+  ]
+ },
+ {
+  "id": "G021",
+  "desc": "L45: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count"
+  ]
+ },
+ {
+  "id": "G022",
+  "desc": "L46: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result"
+  ]
+ },
+ {
+  "id": "G023",
+  "desc": "L48: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count"
+  ]
+ },
+ {
+  "id": "G024",
+  "desc": "L49: > -> >=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count"
+  ]
+ },
+ {
+  "id": "G025",
+  "desc": "L49: const 0+1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count"
+  ]
+ },
+ {
+  "id": "G026",
+  "desc": "L49: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count"
+  ]
+ },
+ {
+  "id": "G027",
+  "desc": "L51: > -> >=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count"
+  ]
+ },
+ {
+  "id": "G028",
+  "desc": "L51: const 0+1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result"
+  ]
+ },
+ {
+  "id": "G029",
+  "desc": "L51: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result"
+  ]
+ },
+ {
+  "id": "G030",
+  "desc": "L56: > -> >=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba"
+  ]
+ },
+ {
+  "id": "G031",
+  "desc": "L56: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba"
+  ]
+ },
+ {
+  "id": "G032",
+  "desc": "L57: false -> true",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba"
+  ]
+ },
+ {
+  "id": "G033",
+  "desc": "L57: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "G034",
+  "desc": "L61: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "build_error",
+  "failed_exes": [],
+  "failing_tests": [
+   "[  0%] Built target msc_bot\n[  0%] Built target iso_extent\n[ 25%] Built target iso_media\n[ 50%] Built target unity\n[ 75%] Built target kvm_logic\n[100%] Built target mmc_scsi\n[100%] Building C object iso_usb_msc/CMakeFiles/iso_usb_msc_glue.dir/iso_usb_msc_glue.c.o\nuad-ipkvm/686a4821-bea1-55d3-82e9-b3429f8329d5/scratchpad/c16/w_msc/w1/repo/components/iso_usb_msc/iso_usb_msc_glue.c: In function ‘iso_usb_msc_exec_cmd’:\n/tmp/claude-0/-home-user-quad-ipkvm/686a4821-bea1-55d3-82e9-b3429f8329d5/scratchpad/c16/w_msc/w1/repo/components/iso_usb_msc/iso_usb_msc_glue.c:73:13: error: expected expression before ‘;’ token\n   73 |             ;\n      |             ^\ngmake[3]: *** [iso_usb_msc/CMakeFiles/iso_usb_msc_glue.dir/build.make:76: iso_usb_msc/CMakeFiles/iso_usb_msc_glue.dir/iso_usb_msc_glue.c.o] Error 1\ngmake[2]: *** [CMakeFiles/Makefile2:5882: iso_usb_msc/CMakeFiles/iso_usb_msc_glue.dir/all] Error 2\ngmake[1]: *** [CMakeFiles/Makefile2:3118: CMakeFiles/test_iso_usb_msc_glue_mut.dir/rule] Error 2\ngmake: *** [Makefile:1089: test_iso_usb_msc_glue_mut] Error 2\n"
+  ]
+ },
+ {
+  "id": "G035",
+  "desc": "L62: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G036",
+  "desc": "L66: false -> true",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else"
+  ]
+ },
+ {
+  "id": "G037",
+  "desc": "L66: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "G038",
+  "desc": "L73: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G039",
+  "desc": "L73: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G040",
+  "desc": "L73: || -> &&",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G041",
+  "desc": "L73: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G042",
+  "desc": "L76: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_size_bytes_validates_arguments_and_looks_up_the_installed_table"
+  ]
+ },
+ {
+  "id": "G043",
+  "desc": "L78: != -> ==",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G044",
+  "desc": "L78: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G045",
+  "desc": "L79: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_resolver_size_bytes_takes_precedence_passes_the_id_and_returns_its_result_without_the_backend_lock"
+  ]
+ },
+ {
+  "id": "G046",
+  "desc": "L82: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_size_bytes_validates_arguments_and_looks_up_the_installed_table"
+  ]
+ },
+ {
+  "id": "G047",
+  "desc": "L82: != -> ==",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_size_bytes_validates_arguments_and_looks_up_the_installed_table"
+  ]
+ },
+ {
+  "id": "G048",
+  "desc": "L82: || -> &&",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_size_bytes_validates_arguments_and_looks_up_the_installed_table"
+  ]
+ },
+ {
+  "id": "G049",
+  "desc": "L82: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_size_bytes_validates_arguments_and_looks_up_the_installed_table"
+  ]
+ },
+ {
+  "id": "G050",
+  "desc": "L83: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_size_bytes_validates_arguments_and_looks_up_the_installed_table"
+  ]
+ },
+ {
+  "id": "G051",
+  "desc": "L87: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_size_bytes_validates_arguments_and_looks_up_the_installed_table"
+  ]
+ },
+ {
+  "id": "G052",
+  "desc": "L93: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G053",
+  "desc": "L93: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G054",
+  "desc": "L93: || -> &&",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G055",
+  "desc": "L93: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G056",
+  "desc": "L97: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_acquire_validates_arguments_takes_a_reference_and_clears_the_handle_first",
+   "test_backend_release_unrefs_a_handle_and_ignores_null_and_the_ctx",
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference"
+  ]
+ },
+ {
+  "id": "G057",
+  "desc": "L99: != -> ==",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G058",
+  "desc": "L99: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G059",
+  "desc": "L100: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference"
+  ]
+ },
+ {
+  "id": "G060",
+  "desc": "L102: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference"
+  ]
+ },
+ {
+  "id": "G061",
+  "desc": "L102: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference"
+  ]
+ },
+ {
+  "id": "G062",
+  "desc": "L108: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_acquire_validates_arguments_takes_a_reference_and_clears_the_handle_first",
+   "test_backend_release_unrefs_a_handle_and_ignores_null_and_the_ctx",
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference"
+  ]
+ },
+ {
+  "id": "G063",
+  "desc": "L108: != -> ==",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_acquire_validates_arguments_takes_a_reference_and_clears_the_handle_first",
+   "test_backend_release_unrefs_a_handle_and_ignores_null_and_the_ctx",
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference"
+  ]
+ },
+ {
+  "id": "G064",
+  "desc": "L108: || -> &&",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_acquire_validates_arguments_takes_a_reference_and_clears_the_handle_first"
+  ]
+ },
+ {
+  "id": "G065",
+  "desc": "L108: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_acquire_validates_arguments_takes_a_reference_and_clears_the_handle_first",
+   "test_backend_release_unrefs_a_handle_and_ignores_null_and_the_ctx",
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference"
+  ]
+ },
+ {
+  "id": "G066",
+  "desc": "L109: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_acquire_validates_arguments_takes_a_reference_and_clears_the_handle_first"
+  ]
+ },
+ {
+  "id": "G067",
+  "desc": "L112: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G068",
+  "desc": "L114: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_acquire_validates_arguments_takes_a_reference_and_clears_the_handle_first",
+   "test_backend_release_unrefs_a_handle_and_ignores_null_and_the_ctx",
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference"
+  ]
+ },
+ {
+  "id": "G069",
+  "desc": "L120: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G070",
+  "desc": "L120: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G071",
+  "desc": "L120: || -> &&",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G072",
+  "desc": "L120: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G073",
+  "desc": "L123: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G074",
+  "desc": "L123: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G075",
+  "desc": "L123: const 0+1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations"
+  ]
+ },
+ {
+  "id": "G076",
+  "desc": "L126: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G077",
+  "desc": "L126: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G078",
+  "desc": "L130: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G079",
+  "desc": "L132: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G080",
+  "desc": "L134: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G081",
+  "desc": "L134: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G082",
+  "desc": "L134: || -> &&",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G083",
+  "desc": "L134: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G084",
+  "desc": "L144: > -> >=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:timeout"
+  ]
+ },
+ {
+  "id": "G085",
+  "desc": "L144: const 0+1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations"
+  ]
+ },
+ {
+  "id": "G086",
+  "desc": "L146: const 0+1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "G087",
+  "desc": "L151: / -> *",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G088",
+  "desc": "L151: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "build_error",
+  "failed_exes": [],
+  "failing_tests": [
+   "[  0%] Built target iso_extent\n[ 25%] Built target unity\n[ 50%] Built target iso_media\n[ 50%] Built target msc_bot\n[ 75%] Built target kvm_logic\n[100%] Built target mmc_scsi\n[100%] Building C object iso_usb_msc/CMakeFiles/iso_usb_msc_glue.dir/iso_usb_msc_glue.c.o\nsb_msc_glue.c:205:13: error: invalid storage class for function ‘be_release’\n  205 | static void be_release(void *ctx, void *handle) {\n      |             ^~~~~~~~~~\n/tmp/claude-0/-home-user-quad-ipkvm/686a4821-bea1-55d3-82e9-b3429f8329d5/scratchpad/c16/w_msc/w1/repo/components/iso_usb_msc/iso_usb_msc_glue.c:307:1: error: expected declaration or statement at end of input\n  307 | }\n      | ^\ngmake[3]: *** [iso_usb_msc/CMakeFiles/iso_usb_msc_glue.dir/build.make:76: iso_usb_msc/CMakeFiles/iso_usb_msc_glue.dir/iso_usb_msc_glue.c.o] Error 1\ngmake[2]: *** [CMakeFiles/Makefile2:5882: iso_usb_msc/CMakeFiles/iso_usb_msc_glue.dir/all] Error 2\ngmake[1]: *** [CMakeFiles/Makefile2:3118: CMakeFiles/test_iso_usb_msc_glue_mut.dir/rule] Error 2\ngmake: *** [Makefile:1089: test_iso_usb_msc_glue_mut] Error 2\n"
+  ]
+ },
+ {
+  "id": "G089",
+  "desc": "L152: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations"
+  ]
+ },
+ {
+  "id": "G090",
+  "desc": "L152: > -> >=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "G091",
+  "desc": "L152: && -> ||",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations"
+  ]
+ },
+ {
+  "id": "G092",
+  "desc": "L152: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:timeout"
+  ]
+ },
+ {
+  "id": "G093",
+  "desc": "L152: const 1+1 -> 2",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "G094",
+  "desc": "L152: const 1-1 -> 0",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "G095",
+  "desc": "L153: const 2+1 -> 3",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "G096",
+  "desc": "L153: const 2-1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:timeout"
+  ]
+ },
+ {
+  "id": "G097",
+  "desc": "L156: != -> ==",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G098",
+  "desc": "L156: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G099",
+  "desc": "L162: * -> /",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G100",
+  "desc": "L164: const 0+1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G101",
+  "desc": "L166: < -> <=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations"
+  ]
+ },
+ {
+  "id": "G102",
+  "desc": "L166: const 0+1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G103",
+  "desc": "L167: * -> /",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_zero_fills_after_the_end_of_the_image_and_never_writes_past_the_request"
+  ]
+ },
+ {
+  "id": "G104",
+  "desc": "L168: > -> >=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G105",
+  "desc": "L168: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G106",
+  "desc": "L168: + -> -",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G107",
+  "desc": "L173: != -> ==",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G108",
+  "desc": "L173: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G109",
+  "desc": "L176: += -> -=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G110",
+  "desc": "L176: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_zero_fills_after_the_end_of_the_image_and_never_writes_past_the_request"
+  ]
+ },
+ {
+  "id": "G111",
+  "desc": "L177: += -> -=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_zero_fills_after_the_end_of_the_image_and_never_writes_past_the_request"
+  ]
+ },
+ {
+  "id": "G112",
+  "desc": "L177: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "G113",
+  "desc": "L181: < -> <=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "G114",
+  "desc": "L181: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_zero_fills_after_the_end_of_the_image_and_never_writes_past_the_request"
+  ]
+ },
+ {
+  "id": "G115",
+  "desc": "L182: + -> -",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G116",
+  "desc": "L182: - -> +",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G117",
+  "desc": "L182: const 0+1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_zero_fills_after_the_end_of_the_image_and_never_writes_past_the_request"
+  ]
+ },
+ {
+  "id": "G118",
+  "desc": "L182: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_zero_fills_after_the_end_of_the_image_and_never_writes_past_the_request"
+  ]
+ },
+ {
+  "id": "G119",
+  "desc": "L185: += -> -=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G120",
+  "desc": "L185: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G121",
+  "desc": "L186: -= -> +=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G122",
+  "desc": "L186: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G123",
+  "desc": "L187: += -> -=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G124",
+  "desc": "L187: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G125",
+  "desc": "L195: != -> ==",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_acquire_validates_arguments_takes_a_reference_and_clears_the_handle_first",
+   "test_backend_release_unrefs_a_handle_and_ignores_null_and_the_ctx",
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference"
+  ]
+ },
+ {
+  "id": "G126",
+  "desc": "L195: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_acquire_validates_arguments_takes_a_reference_and_clears_the_handle_first",
+   "test_backend_release_unrefs_a_handle_and_ignores_null_and_the_ctx",
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference"
+  ]
+ },
+ {
+  "id": "G127",
+  "desc": "L196: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_acquire_validates_arguments_takes_a_reference_and_clears_the_handle_first",
+   "test_backend_release_unrefs_a_handle_and_ignores_null_and_the_ctx",
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference"
+  ]
+ },
+ {
+  "id": "G128",
+  "desc": "L205: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G129",
+  "desc": "L205: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G130",
+  "desc": "L208: const 0+1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G131",
+  "desc": "L208: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G132",
+  "desc": "L209: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_backend_read_issues_one_read_per_span_with_the_table_epoch_and_contiguous_destinations",
+   "test_backend_read_returns_the_blockdev_error_and_stops_at_the_first_failure"
+  ]
+ },
+ {
+  "id": "G133",
+  "desc": "L210: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G134",
+  "desc": "L211: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G135",
+  "desc": "L212: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G136",
+  "desc": "L217: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_rejects_null_arguments_in_the_documented_order"
+  ]
+ },
+ {
+  "id": "G137",
+  "desc": "L217: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_rejects_null_arguments_in_the_documented_order"
+  ]
+ },
+ {
+  "id": "G138",
+  "desc": "L220: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_set_blockdev_replaces_the_pointer_under_the_lock_and_ignores_a_null_backend"
+  ]
+ },
+ {
+  "id": "G139",
+  "desc": "L221: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_rejects_null_arguments_in_the_documented_order"
+  ]
+ },
+ {
+  "id": "G140",
+  "desc": "L222: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_backend_read_rejects_null_arguments_in_the_documented_order",
+   "test_set_blockdev_replaces_the_pointer_under_the_lock_and_ignores_a_null_backend"
+  ]
+ },
+ {
+  "id": "G141",
+  "desc": "L227: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G142",
+  "desc": "L227: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G143",
+  "desc": "L230: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_resolver_size_bytes_takes_precedence_passes_the_id_and_returns_its_result_without_the_backend_lock",
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference",
+   "test_set_resolver_copies_the_whole_struct_and_null_clears_it"
+  ]
+ },
+ {
+  "id": "G144",
+  "desc": "L231: != -> ==",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_resolver_size_bytes_takes_precedence_passes_the_id_and_returns_its_result_without_the_backend_lock",
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference",
+   "test_set_resolver_copies_the_whole_struct_and_null_clears_it"
+  ]
+ },
+ {
+  "id": "G145",
+  "desc": "L231: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_resolver_size_bytes_takes_precedence_passes_the_id_and_returns_its_result_without_the_backend_lock",
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference",
+   "test_set_resolver_copies_the_whole_struct_and_null_clears_it"
+  ]
+ },
+ {
+  "id": "G146",
+  "desc": "L232: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_resolver_size_bytes_takes_precedence_passes_the_id_and_returns_its_result_without_the_backend_lock",
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference",
+   "test_set_resolver_copies_the_whole_struct_and_null_clears_it"
+  ]
+ },
+ {
+  "id": "G147",
+  "desc": "L234: const 0+1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_set_resolver_copies_the_whole_struct_and_null_clears_it"
+  ]
+ },
+ {
+  "id": "G148",
+  "desc": "L234: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_set_resolver_copies_the_whole_struct_and_null_clears_it"
+  ]
+ },
+ {
+  "id": "G149",
+  "desc": "L236: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_resolver_size_bytes_takes_precedence_passes_the_id_and_returns_its_result_without_the_backend_lock",
+   "test_resolver_acquire_returns_the_table_the_resolver_referenced_and_does_not_add_a_reference",
+   "test_set_resolver_copies_the_whole_struct_and_null_clears_it"
+  ]
+ },
+ {
+  "id": "G150",
+  "desc": "L240: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G151",
+  "desc": "L240: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G152",
+  "desc": "L240: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G153",
+  "desc": "L240: || -> &&",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G154",
+  "desc": "L240: || -> &&",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G155",
+  "desc": "L240: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G156",
+  "desc": "L241: false -> true",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G157",
+  "desc": "L243: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G158",
+  "desc": "L247: != -> ==",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_on_disconnect_media_is_a_bus_reset_that_keeps_the_media_loaded"
+  ]
+ },
+ {
+  "id": "G159",
+  "desc": "L247: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_on_disconnect_media_is_a_bus_reset_that_keeps_the_media_loaded"
+  ]
+ },
+ {
+  "id": "G160",
+  "desc": "L248: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_on_disconnect_media_is_a_bus_reset_that_keeps_the_media_loaded"
+  ]
+ },
+ {
+  "id": "G161",
+  "desc": "L255: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_size_bytes_validates_arguments_and_looks_up_the_installed_table"
+  ]
+ },
+ {
+  "id": "G162",
+  "desc": "L255: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_size_bytes_validates_arguments_and_looks_up_the_installed_table"
+  ]
+ },
+ {
+  "id": "G163",
+  "desc": "L258: != -> ==",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G164",
+  "desc": "L258: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G165",
+  "desc": "L259: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G166",
+  "desc": "L261: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G167",
+  "desc": "L263: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G168",
+  "desc": "L264: != -> ==",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_size_bytes_validates_arguments_and_looks_up_the_installed_table"
+  ]
+ },
+ {
+  "id": "G169",
+  "desc": "L264: const 0+1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_iso_usb_msc_glue_mut:crash/rc=1"
+  ]
+ },
+ {
+  "id": "G170",
+  "desc": "L264: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good",
+   "test_exec_cmd_read_blocks_rejects_a_lba_above_32_bits_without_reading_but_passes_the_max_32_bit_lba",
+   "test_backend_size_bytes_validates_arguments_and_looks_up_the_installed_table"
+  ]
+ },
+ {
+  "id": "G171",
+  "desc": "L265: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G172",
+  "desc": "L267: != -> ==",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G173",
+  "desc": "L267: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G174",
+  "desc": "L268: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G175",
+  "desc": "L273: const 0+1 -> 1",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "G176",
+  "desc": "L273: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_exec_cmd_ignores_null_arguments_and_leaves_the_result_alone",
+   "test_exec_cmd_with_an_unknown_kind_fails_with_the_seq_and_nothing_else",
+   "test_exec_cmd_execute_copies_the_scsi_result_into_the_bot_result",
+   "test_exec_cmd_read_reports_the_range_and_the_direction_from_the_block_count",
+   "test_exec_cmd_maps_the_bot_direction_to_the_mmc_direction",
+   "test_exec_cmd_read_blocks_reads_the_range_and_reports_only_good"
+  ]
+ },
+ {
+  "id": "G177",
+  "desc": "L278: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_sync_media_backend_clears_the_backend_only_when_the_media_is_not_loaded"
+  ]
+ },
+ {
+  "id": "G178",
+  "desc": "L278: == -> !=",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_sync_media_backend_clears_the_backend_only_when_the_media_is_not_loaded"
+  ]
+ },
+ {
+  "id": "G179",
+  "desc": "L278: || -> &&",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_sync_media_backend_clears_the_backend_only_when_the_media_is_not_loaded"
+  ]
+ },
+ {
+  "id": "G180",
+  "desc": "L278: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_sync_media_backend_clears_the_backend_only_when_the_media_is_not_loaded"
+  ]
+ },
+ {
+  "id": "G181",
+  "desc": "L281: negate if condition",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_sync_media_backend_clears_the_backend_only_when_the_media_is_not_loaded"
+  ]
+ },
+ {
+  "id": "G182",
+  "desc": "L282: delete statement",
+  "file": "components/iso_usb_msc/iso_usb_msc_glue.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_iso_usb_msc_glue_mut"
+  ],
+  "failing_tests": [
+   "test_sync_media_backend_clears_the_backend_only_when_the_media_is_not_loaded"
+  ]
+ }
+]
