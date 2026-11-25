@@ -1,0 +1,641 @@
+[
+ {
+  "id": "Q01",
+  "desc": "args: now_us term dropped",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "Q02",
+  "desc": "args: recv term dropped",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_web_iso_put_logic:crash/rc=1"
+  ]
+ },
+ {
+  "id": "Q03",
+  "desc": "args: buf term dropped",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_backwards_clock_and_invalid_args"
+  ]
+ },
+ {
+  "id": "Q04",
+  "desc": "args: want_len == 0 term dropped",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_backwards_clock_and_invalid_args"
+  ]
+ },
+ {
+  "id": "Q05",
+  "desc": "args: want_len > cap term dropped",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_backwards_clock_and_invalid_args"
+  ]
+ },
+ {
+  "id": "Q06",
+  "desc": "args: timeout_us == 0 term dropped",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_backwards_clock_and_invalid_args"
+  ]
+ },
+ {
+  "id": "Q07",
+  "desc": "args: INVALID returns IO",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_backwards_clock_and_invalid_args"
+  ]
+ },
+ {
+  "id": "Q08",
+  "desc": "args: want_len > cap becomes want_len + 1 > cap",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_single_chunk_exact",
+   "test_recv_all_partial_reads_and_min_slice_clamp",
+   "test_recv_all_timeout_before_and_after_recv"
+  ]
+ },
+ {
+  "id": "Q09",
+  "desc": "clock: start_us fixed at 0",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_web_iso_put_logic:timeout"
+  ]
+ },
+ {
+  "id": "Q10",
+  "desc": "clock: start read gets a NULL ctx",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_web_iso_put_logic:crash/rc=1"
+  ]
+ },
+ {
+  "id": "Q11",
+  "desc": "clock: loop read gets a NULL ctx",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_web_iso_put_logic:crash/rc=1"
+  ]
+ },
+ {
+  "id": "Q12",
+  "desc": "clock: post-timeout read gets a NULL ctx",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_web_iso_put_logic:crash/rc=1"
+  ]
+ },
+ {
+  "id": "Q13",
+  "desc": "clock: backwards clock treated as zero elapsed",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_web_iso_put_logic:timeout"
+  ]
+ },
+ {
+  "id": "Q14",
+  "desc": "clock: backwards guard dropped (wraps)",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "Q15",
+  "desc": "clock: loop-top timeout returns IO",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_timeout_before_and_after_recv",
+   "test_recv_all_backwards_clock_and_invalid_args"
+  ]
+ },
+ {
+  "id": "Q16",
+  "desc": "clock: post-recv timeout returns IO",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_timeout_before_and_after_recv"
+  ]
+ },
+ {
+  "id": "Q17",
+  "desc": "clock: post-recv backwards term dropped",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "Q18",
+  "desc": "clock: post-recv elapsed term dropped",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "Q19",
+  "desc": "clock: post-recv check never ends the loop",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "Q20",
+  "desc": "slice: no minimum clamp",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_partial_reads_and_min_slice_clamp"
+  ]
+ },
+ {
+  "id": "Q21",
+  "desc": "slice: always the minimum",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_single_chunk_exact",
+   "test_recv_all_partial_reads_and_min_slice_clamp"
+  ]
+ },
+ {
+  "id": "Q22",
+  "desc": "slice: ternary branches swapped",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_single_chunk_exact",
+   "test_recv_all_partial_reads_and_min_slice_clamp"
+  ]
+ },
+ {
+  "id": "Q23",
+  "desc": "slice: set_timeout gets a NULL ctx",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_web_iso_put_logic:crash/rc=1"
+  ]
+ },
+ {
+  "id": "Q24",
+  "desc": "slice: set_timeout gets the unclamped remainder",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_partial_reads_and_min_slice_clamp"
+  ]
+ },
+ {
+  "id": "Q25",
+  "desc": "slice: set_timeout gets the whole timeout",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_partial_reads_and_min_slice_clamp"
+  ]
+ },
+ {
+  "id": "Q26",
+  "desc": "slice: remainder uses want_len",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_single_chunk_exact",
+   "test_recv_all_partial_reads_and_min_slice_clamp"
+  ]
+ },
+ {
+  "id": "Q27",
+  "desc": "recv: buf offset dropped",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_partial_reads_and_min_slice_clamp"
+  ]
+ },
+ {
+  "id": "Q28",
+  "desc": "recv: asks for the whole want_len",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "Q29",
+  "desc": "recv: NULL ctx",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_web_iso_put_logic:crash/rc=1"
+  ]
+ },
+ {
+  "id": "Q30",
+  "desc": "recv: over-read returns TIMEOUT",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_io_errors_eof_and_overread"
+  ]
+ },
+ {
+  "id": "Q31",
+  "desc": "recv: over-read accepted and clamped",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_io_errors_eof_and_overread"
+  ]
+ },
+ {
+  "id": "Q32",
+  "desc": "recv: counts the whole remainder",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_partial_reads_and_min_slice_clamp",
+   "test_recv_all_timeout_before_and_after_recv"
+  ]
+ },
+ {
+  "id": "Q33",
+  "desc": "recv: every negative result is a timeout",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "Q34",
+  "desc": "recv: every non-positive result is a timeout",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_web_iso_put_logic:timeout"
+  ]
+ },
+ {
+  "id": "Q35",
+  "desc": "recv: IO error returns TIMEOUT",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_io_errors_eof_and_overread"
+  ]
+ },
+ {
+  "id": "Q36",
+  "desc": "recv: IO error is retried",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_web_iso_put_logic:timeout"
+  ]
+ },
+ {
+  "id": "Q37",
+  "desc": "recv: success returns the byte count",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_single_chunk_exact",
+   "test_recv_all_partial_reads_and_min_slice_clamp"
+  ]
+ },
+ {
+  "id": "Q38",
+  "desc": "recv: success returns IO",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_recv_all_single_chunk_exact",
+   "test_recv_all_partial_reads_and_min_slice_clamp"
+  ]
+ },
+ {
+  "id": "Q39",
+  "desc": "progress: invalid returns 0",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_progress_overflow_safe_large_sizes_and_invalid"
+  ]
+ },
+ {
+  "id": "Q40",
+  "desc": "progress: suppressed returns 0",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_progress_5pct_milestones_and_suppression"
+  ]
+ },
+ {
+  "id": "Q41",
+  "desc": "progress: last_bucket not updated",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_progress_5pct_milestones_and_suppression"
+  ]
+ },
+ {
+  "id": "Q42",
+  "desc": "progress: last_bucket gets the percentage",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_progress_5pct_milestones_and_suppression",
+   "test_progress_overflow_safe_large_sizes_and_invalid"
+  ]
+ },
+ {
+  "id": "Q43",
+  "desc": "progress: last_bucket gets the milestone",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_progress_5pct_milestones_and_suppression",
+   "test_progress_overflow_safe_large_sizes_and_invalid"
+  ]
+ },
+ {
+  "id": "Q44",
+  "desc": "progress: returns the percentage, not the milestone",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_progress_5pct_milestones_and_suppression"
+  ]
+ },
+ {
+  "id": "Q45",
+  "desc": "progress: returns the bucket",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_progress_5pct_milestones_and_suppression",
+   "test_progress_overflow_safe_large_sizes_and_invalid"
+  ]
+ },
+ {
+  "id": "Q46",
+  "desc": "progress: bucket 0 not suppressed",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_progress_5pct_milestones_and_suppression"
+  ]
+ },
+ {
+  "id": "Q47",
+  "desc": "progress: repeated bucket not suppressed",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_progress_5pct_milestones_and_suppression"
+  ]
+ },
+ {
+  "id": "Q48",
+  "desc": "progress: bucket width 10",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_progress_5pct_milestones_and_suppression",
+   "test_progress_overflow_safe_large_sizes_and_invalid"
+  ]
+ },
+ {
+  "id": "Q49",
+  "desc": "progress: bucket width 4",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_progress_5pct_milestones_and_suppression",
+   "test_progress_overflow_safe_large_sizes_and_invalid"
+  ]
+ },
+ {
+  "id": "Q50",
+  "desc": "progress: total + 1 in the exact path",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_progress_5pct_milestones_and_suppression",
+   "test_progress_overflow_safe_large_sizes_and_invalid"
+  ]
+ },
+ {
+  "id": "Q51",
+  "desc": "progress: pct from the wrong operand",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_web_iso_put_logic:crash/rc=1"
+  ]
+ },
+ {
+  "id": "Q52",
+  "desc": "progress: large path divides by total",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_progress_overflow_safe_large_sizes_and_invalid"
+  ]
+ },
+ {
+  "id": "Q53",
+  "desc": "progress: large path rounds the divisor up",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "killed",
+  "failed_exes": [
+   "test_web_iso_put_logic"
+  ],
+  "failing_tests": [
+   "test_progress_overflow_safe_large_sizes_and_invalid"
+  ]
+ },
+ {
+  "id": "Q54",
+  "desc": "progress: large path drops the zero-divisor guard (unreachable: received < total and received > UINT64_MAX / 100 mean total > UINT64_MAX / 100)",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ },
+ {
+  "id": "Q55",
+  "desc": "progress: large path drops the 100 clamp (unreachable: raw <= 100 because received < total)",
+  "file": "components/web_server/web_iso_put_logic.c",
+  "status": "survived",
+  "failed_exes": [],
+  "failing_tests": []
+ }
+]
