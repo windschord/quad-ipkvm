@@ -60,6 +60,9 @@ typedef struct {
     frame_hub_lock_fn lock_cb;
     frame_hub_unlock_fn unlock_cb;
     void* lock_ctx;
+
+    void (*on_commit_cb)(void* ctx);
+    void* on_commit_ctx;
 } frame_hub_config_t;
 
 typedef struct {

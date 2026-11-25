@@ -44,6 +44,12 @@ void web_server_set_video_source(const video_source_t *source);
  */
 void web_server_notify_usb_mounted(void);
 
+/**
+ * @brief Wake the video WebSocket dispatcher immediately when a new frame is published.
+ * Safe to call from any task once web_server_start() is initialized.
+ */
+void web_server_notify_video_frame(void);
+
 
 #ifdef __cplusplus
 }

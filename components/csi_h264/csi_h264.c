@@ -108,10 +108,11 @@ static esp_err_t ensure_buffers(struct csi_h264_t *h)
     }
 
     if (!h->out_buf) {
-        size_t req_out = csi_h264_calc_output_buf_size(h->cfg.max_output_bytes);
-        if (req_out == 0u || req_out > (size_t)UINT32_MAX) {
+        size_t base_out = csi_h264_calc_output_buf_size(h->cfg.max_output_bytes);
+        if (base_out == 0u || base_out > (size_t)UINT32_MAX - CSI_H264_SPS_HEADROOM) {
             return ESP_ERR_INVALID_ARG;
         }
+        size_t req_out = base_out + CSI_H264_SPS_HEADROOM;
         uint32_t actual_out = 0u;
         h->out_buf = (uint8_t *)esp_h264_aligned_calloc(
             CSI_H264_DMA_ALIGN, 1u, (uint32_t)req_out, &actual_out, ESP_H264_MEM_SPIRAM);
@@ -422,7 +423,7 @@ esp_err_t csi_h264_encode_prepared(csi_h264_handle_t h,
     }
     memset(out, 0, sizeof(*out));
 
-    if (!h->yuv_buf || !h->out_buf) {
+    if (!h->yuv_buf || !h->out_buf || h->out_buf_bytes <= CSI_H264_SPS_HEADROOM) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -447,6 +448,9 @@ esp_err_t csi_h264_encode_prepared(csi_h264_handle_t h,
         }
     }
 
+    uint8_t *enc_base = h->out_buf + CSI_H264_SPS_HEADROOM;
+    size_t enc_cap = h->out_buf_bytes - CSI_H264_SPS_HEADROOM;
+
     esp_h264_enc_in_frame_t in_frame = {
         .raw_data = {
             .buffer = h->yuv_buf,
@@ -456,8 +460,8 @@ esp_err_t csi_h264_encode_prepared(csi_h264_handle_t h,
     };
     esp_h264_enc_out_frame_t out_frame = {
         .raw_data = {
-            .buffer = h->out_buf,
-            .len = (uint32_t)h->out_buf_bytes,
+            .buffer = enc_base,
+            .len = (uint32_t)enc_cap,
         },
     };
 
@@ -482,29 +486,62 @@ esp_err_t csi_h264_encode_prepared(csi_h264_handle_t h,
     bool is_key = (out_frame.frame_type == ESP_H264_FRAME_TYPE_IDR ||
                    out_frame.frame_type == ESP_H264_FRAME_TYPE_I);
 
+    const uint8_t *au_ptr = enc_base;
+    size_t au_len = (size_t)out_frame.length;
+    if (is_key && au_len >= 9u &&
+        enc_base[0] == 0x00u && enc_base[1] == 0x00u &&
+        enc_base[2] == 0x00u && enc_base[3] == 0x01u &&
+        (enc_base[4] & 0x9Fu) == 0x07u) {
+        size_t scan_limit = (au_len < 72u) ? au_len : 72u;
+        size_t next_sc = 0u;
+        for (size_t pos = 5u; pos + 3u < scan_limit; pos++) {
+            if (enc_base[pos] == 0x00u && enc_base[pos + 1u] == 0x00u && enc_base[pos + 2u] == 0x01u) {
+                next_sc = (pos > 5u && enc_base[pos - 1u] == 0x00u) ? (pos - 1u) : pos;
+                break;
+            }
+        }
+        if (next_sc > 4u) {
+            size_t sps_len = next_sc - 4u;
+            uint8_t patched[80];
+            size_t patched_len = csi_h264_patch_sps_low_latency(enc_base + 4u, sps_len, patched, sizeof(patched));
+            if (patched_len > 0u &&
+                patched_len + 4u <= next_sc + CSI_H264_SPS_HEADROOM &&
+                au_len - next_sc + 4u + patched_len <= h->cfg.max_output_bytes) {
+                uint8_t *new_start = enc_base + next_sc - 4u - patched_len;
+                new_start[0] = 0x00u;
+                new_start[1] = 0x00u;
+                new_start[2] = 0x00u;
+                new_start[3] = 0x01u;
+                memcpy(new_start + 4u, patched, patched_len);
+                au_ptr = new_start;
+                au_len = au_len - next_sc + 4u + patched_len;
+            }
+        }
+    }
+
     csi_h264_frame_err_t ferr = csi_h264_check_frame(
-        h->out_buf, (size_t)out_frame.length, is_key, h->cfg.max_output_bytes);
+        au_ptr, au_len, is_key, h->cfg.max_output_bytes);
     if (ferr == CSI_H264_FRAME_ERR_OVERSIZE) {
-        out->len = (size_t)out_frame.length;
+        out->len = au_len;
         return CSI_H264_ERR_OUTPUT_OVERSIZE;
     }
     if (ferr != CSI_H264_FRAME_OK) {
         uint64_t err_cnt = 0u;
         if (should_log_h264_err(h, CSI_H264_ERR_LOG_MALFORMED, &err_cnt)) {
-            ESP_LOGW(TAG, "Malformed H.264 output (err=%d len=%" PRIu32 " key=%d head=%02x%02x%02x%02x %02x, count=%" PRIu64 ")",
-                     (int)ferr, out_frame.length, (int)is_key,
-                     out_frame.length > 0 ? h->out_buf[0] : 0u,
-                     out_frame.length > 1 ? h->out_buf[1] : 0u,
-                     out_frame.length > 2 ? h->out_buf[2] : 0u,
-                     out_frame.length > 3 ? h->out_buf[3] : 0u,
-                     out_frame.length > 4 ? h->out_buf[4] : 0u,
+            ESP_LOGW(TAG, "Malformed H.264 output (err=%d len=%u key=%d head=%02x%02x%02x%02x %02x, count=%" PRIu64 ")",
+                     (int)ferr, (unsigned)au_len, (int)is_key,
+                     au_len > 0u ? au_ptr[0] : 0u,
+                     au_len > 1u ? au_ptr[1] : 0u,
+                     au_len > 2u ? au_ptr[2] : 0u,
+                     au_len > 3u ? au_ptr[3] : 0u,
+                     au_len > 4u ? au_ptr[4] : 0u,
                      err_cnt);
         }
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    out->data = h->out_buf;
-    out->len = (size_t)out_frame.length;
+    out->data = au_ptr;
+    out->len = au_len;
     out->is_key = is_key;
     return ESP_OK;
 }

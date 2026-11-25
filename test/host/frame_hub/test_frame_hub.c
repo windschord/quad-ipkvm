@@ -947,6 +947,68 @@ void test_frame_hub_codec_flags_fuzz(void) {
     }
 }
 
+typedef struct {
+    int count;
+    int lock_depth_seen;
+} commit_cb_probe_t;
+
+static void on_commit_probe(void* ctx) {
+    commit_cb_probe_t* p = (commit_cb_probe_t*)ctx;
+    p->count++;
+    p->lock_depth_seen = lock_depth;
+}
+
+void test_frame_hub_on_commit_callback(void) {
+    commit_cb_probe_t probe = { .count = 0, .lock_depth_seen = -1 };
+    frame_hub_config_t cfg = {
+        .pool_size = 3,
+        .max_clients = 2,
+        .max_frame_size = 100,
+        .alloc_cb = test_alloc,
+        .free_cb = test_free,
+        .lock_cb = test_lock,
+        .unlock_cb = test_unlock,
+        .on_commit_cb = on_commit_probe,
+        .on_commit_ctx = &probe,
+    };
+    hub = frame_hub_create(&cfg);
+    TEST_ASSERT_NOT_NULL(hub);
+
+    // Valid commit invokes callback outside lock.
+    video_frame_t* f1 = frame_hub_begin_publish(hub, 20);
+    TEST_ASSERT_NOT_NULL(f1);
+    frame_hub_commit(hub, f1, 20, 640, 480, 1000);
+    TEST_ASSERT_EQUAL_INT(1, probe.count);
+    TEST_ASSERT_EQUAL_INT(0, probe.lock_depth_seen);
+
+    // Valid commit_ex also invokes callback outside lock.
+    video_frame_t* f2 = frame_hub_begin_publish(hub, 30);
+    TEST_ASSERT_NOT_NULL(f2);
+    frame_hub_commit_info_t info = {
+        .size = 30, .width = 1280, .height = 720, .timestamp_ms = 2000,
+        .codec = VIDEO_CODEC_H264, .flags = VIDEO_FRAME_FLAG_KEY,
+    };
+    frame_hub_commit_ex(hub, f2, &info);
+    TEST_ASSERT_EQUAL_INT(2, probe.count);
+    TEST_ASSERT_EQUAL_INT(0, probe.lock_depth_seen);
+
+    // Abort and invalid size (0 / > max) / misuse must NOT invoke callback.
+    video_frame_t* f3 = frame_hub_begin_publish(hub, 20);
+    TEST_ASSERT_NOT_NULL(f3);
+    frame_hub_abort_publish(hub, f3);
+    TEST_ASSERT_EQUAL_INT(2, probe.count);
+
+    f3 = frame_hub_begin_publish(hub, 20);
+    TEST_ASSERT_NOT_NULL(f3);
+    frame_hub_commit(hub, f3, 0, 10, 10, 3000);
+    TEST_ASSERT_EQUAL_INT(2, probe.count);
+
+    f3 = frame_hub_begin_publish(hub, 20);
+    TEST_ASSERT_NOT_NULL(f3);
+    frame_hub_commit(hub, f3, 101, 10, 10, 4000);
+    TEST_ASSERT_EQUAL_INT(2, probe.count);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_frame_hub_create_invalid_config);
@@ -973,5 +1035,6 @@ int main(void) {
     RUN_TEST(test_video_source_designated_init_keeps_p7_fields_zero);
     RUN_TEST(test_video_source_p7_extension_fields);
     RUN_TEST(test_frame_hub_codec_flags_fuzz);
+    RUN_TEST(test_frame_hub_on_commit_callback);
     return UNITY_END();
 }

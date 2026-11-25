@@ -117,7 +117,7 @@ Issue #86。`video_status`（`docs/INTERFACES.md` §1.3）の状態を、ビュ�
 
 ### 9.4 クライアントの申告: `GET /video?accept=h264`
 - クエリ `accept` は、カンマ区切りで、**そのクライアントが受け取れる、JPEG 以外のコーデック**。いまは `h264` だけ。**JPEG（MJPEG）は、常に受け取れる前提**（`accept` に書かない）。`accept` がない・空・未知の値だけ = **MJPEG だけ**（古いビューアと同じ）。未知の値は、無視する（エラーにしない）。
-- ビューアは、`VideoDecoder` があり、`VideoDecoder.isConfigSupported()` が（SPS が分かる前は、`avc1.42c01f` で仮に）真のときだけ `accept=h264` を付ける。**自己署名の HTTPS は、WebCodecs の Secure Context の条件を満たす**（評価 4.1）。
+- ビューアはツールバーの映像モード切替（既定: **低遅延** [MJPEG]、選択: **低帯域 (H.264)**、設定は `localStorage` キー `quadkvm.videoCodec` に保存）で **H.264 が選ばれており**、`VideoDecoder` があり、`VideoDecoder.isConfigSupported()` が（SPS が分かる前は、`avc1.42c01f` で仮に）真のときだけ `accept=h264` を付ける。**自己署名の HTTPS は、WebCodecs の Secure Context の条件を満たす**（評価 4.1）。
 
 ### 9.5 サーバーの方針: `video_codec_policy`（純 C）
 **全クライアントに配るコーデックは 1 つ**。次の条件を**すべて**満たすときだけ H.264。それ以外は MJPEG。
@@ -154,14 +154,15 @@ H.264 では、P フレームは直前のフレームに依存する。**`frame_
 **H.264 のメモリ**（Antigravity のレビュー、2026-11-16）: 1080p の HW H.264 は、内部 RAM 約 151 KiB + PSRAM 約 3.0 MiB を追加で使う（評価 3.2）。実機の `/video` ×2 + `/ws` ×2 のとき、内部 RAM の最小は 391,215 B だった。**H.264 を有効にしたときの内部 RAM の余裕**と、**切替のたびに確保する案と、起動時に 1 回確保する案の、PSRAM の断片化**は、`csi_h264` の実装時に device-check で確認する（`TODO(hw-verify)`）。
 
 ### 9.8 ビューア（`app.js`）
-- `accept=h264` を付けて接続し、バイナリメッセージの先頭で JPEG / H.264 を判別する（9.3）。H.264 は、`VideoDecoder`（`optimizeForLatency: true`）に、`EncodedVideoChunk`（IDR は `key`、P は `delta`）で渡し、出てきた `VideoFrame` を canvas に描いて、`close()` する。**最初の IDR まで、P は捨てる**。デコーダがエラーになったら、`accept` を付けずに再接続する（= MJPEG に落とす。**以後、そのタブでは `accept` を付けない**）。
+- `低帯域 (H.264)` 選択時に `accept=h264` を付けて接続し、バイナリメッセージの先頭で JPEG / H.264 を判別する（9.3）。H.264 は、`VideoDecoder`（`optimizeForLatency: true`）に、`EncodedVideoChunk`（IDR は `key`、P は `delta`、時刻は `performance.now()` 由来の単調増加マイクロ秒）で渡し、出てきた `VideoFrame` を canvas に描いて、`close()` する。**最初の IDR まで、P は捨てる**。デコーダがエラーになったら、`accept` を付けずに再接続する（= MJPEG に落とし、ツールバー表示も `低遅延` に戻す。ユーザーが明示的に `低帯域 (H.264)` を押し直すと再試行する）。
 - 解像度が変わったとき（SPS が変わる）は、デコーダを作り直す。表示に「H.264（低帯域）」と出す。
 - **実装（`app.js`。検査は `docs/VIDEO_VIEWER_TESTS.md` 7 章）で決めたこと**:
-  - `accept=h264` を付ける条件は、(a) `VideoDecoder`・`EncodedVideoChunk`・`VideoDecoder.isConfigSupported` がある、(b) 起動時の確認（`isConfigSupported({codec: "avc1.42c01f", optimizeForLatency: true})`）が `supported === true`、(c) このタブで H.264 が一度も失敗していない。最初の接続は、確認が終わるのを待つ（確認が終わらないときは 1500 ms で、`accept` なしで接続する。`TODO(hw-verify)`）。
-  - **`accept` を付けた接続だけ** `binaryType = "arraybuffer"`（先頭バイトの判別と、H.264 の到着順を保つため）。JPEG は `new Blob([bytes], {type: "image/jpeg"})` にして従来の `createImageBitmap` に渡す。**`accept` を付けない接続は、従来のまま**（`blob`、先頭バイトは見ない）。
+  - `accept=h264` を付ける条件は、(a) 映像モードが `h264`（既定 `mjpeg` はプローブ待ちをせず即時接続）、(b) `VideoDecoder`・`EncodedVideoChunk`・`VideoDecoder.isConfigSupported` がある、(c) 起動時の確認（`isConfigSupported({codec: "avc1.42c01f", optimizeForLatency: true})`）が `supported === true`、(d) この接続試行で H.264 が失敗していない。`h264` モードの接続時は確認が終わるのを待つ（確認が終わらないときは 1500 ms で `accept` なしで接続する）。
+  - **`accept` を付けた接続だけ** `binaryType = "arraybuffer"`（先頭バイトの判別と、H.264 の到着順を保つため）。JPEG は `new Blob([bytes], {type: "image/jpeg"})` にして、`createImageBitmap` に渡す（復号中に新しいフレームが届いた場合は最新 1 フレームのみを `pendingMjpegFrame` に保持して遅延蓄積を防ぐ。接続世代番号により切断・切替前の古いデコード結果は破棄する）。**`accept` を付けない接続は `blob` のまま** 同じ最新フレーム合流パスを通す。
+  - **ファームウェア側の低遅延最適化**: Frame Hub の公開完了（ロック外 `on_commit_cb`）で `web_server_notify_video_frame()` を即時起床させ、単一クライアント時は `slice_limit=65536` で分割オーバーヘッドを削減する。CSI 録画が DMA 専用（`RGB888`）のときは CPU キャッシュ無効化（`M2C` msync）を省略し、`csi_h264` は SPS VUI に `fixed_frame_rate_flag=0`・`bitstream_restriction_flag=1`（`max_num_reorder_frames=0`, `max_dec_frame_buffering=1`）をゼロコピーパッチしてクライアント側デコーダの並び替えバッファ待機を抑える（`CONFIG_FREERTOS_HZ=1000`、`VIDEO_CODEC_UPGRADE_DWELL_MS=1500`、`VIDEO_CODEC_IDR_MIN_INTERVAL_MS=250`）。
   - IDR は、SPS（type 7）または IDR スライス（type 5）を含むアクセスユニット。デコーダの作り直しは、SPS のバイト列が変わったとき（codec 文字列が同じでも、解像度が変われば作り直す）。IDR で SPS が来たら、**その codec 文字列を `isConfigSupported` で確認してから** `configure` する（確認の間のアクセスユニットは捨てる。確認が偽、`configure` / `decode` の例外、`error` コールバックはフォールバック）。
-  - フォールバックは、`WebSocket` を `close()` して、既存の再接続（`fetchStatus` を、既定 1000 ms の後に）に任せる。**そのタブでは 1 回だけ**。
-  - `decodeQueueSize >= 3`（`TODO(hw-verify)`）のとき、次の IDR まで P を捨てる。**ビューアからサーバーへ送れるデータはない**（送ると切断される。`docs/WEB_API.md` §5）ので、IDR の要求はできず、次の IDR（`CSI_H264_GOP`）まで待つ。
+  - フォールバックは、`WebSocket` を `close()` して、ツールバー状態を `mjpeg` に戻しつつ既存の再接続（`fetchStatus` を、既定 1000 ms の後に）に任せる（保存済みの `localStorage` 設定は上書きしない）。
+  - `decodeQueueSize >= 3` のとき、次の IDR まで P を捨てる。**ビューアからサーバーへ送れるデータはない**（送ると切断される。`docs/WEB_API.md` §5）ので、IDR の要求はできず、次の IDR（`CSI_H264_GOP`）まで待つ。
   - 表示は、映像のステータス行に ` / H.264（低帯域）` を足す（最初の `VideoFrame` を描いたときから。JPEG が来たら消える）。C-6b の状態表示（`VideoStatus`）は、コーデックに関係なく、そのまま動く。
 
 ### 9.9 担当と順序

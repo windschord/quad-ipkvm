@@ -426,17 +426,17 @@ menu "Quad IP-KVM Configuration"
 
     config VIDEO_CODEC_UPGRADE_DWELL_MS
         int "Time the H.264 conditions must hold before MJPEG is upgraded to H.264 (ms)"
-        default 5000
+        default 1500
         range 0 60000
         depends on VIDEO_CODEC_H264_ALLOWED
         help
             Debounce against connections coming and going (docs/VIDEO_TRANSPORT.md 9.5). 0 upgrades on the first tick
             in which all conditions hold. Downgrading to MJPEG is always immediate.
-            TODO(hw-verify): 5000 is a guess; decide from the observed churn and the size of an IDR (up to about 495 KB).
+            TODO(hw-verify): tuned from 5000 ms to 1500 ms for faster manual mode switch on the viewer.
 
     config VIDEO_CODEC_IDR_MIN_INTERVAL_MS
         int "Minimum interval between keyframe (IDR) requests (ms)"
-        default 1000
+        default 250
         range 0 60000
         depends on VIDEO_CODEC_H264_ALLOWED
         help
@@ -444,7 +444,7 @@ menu "Quad IP-KVM Configuration"
             (ws_video_core idr_min_interval_ms, docs/VIDEO_TRANSPORT.md 9.6). 0 does not merge across ticks
             (at most one request per ws_video tick). An IDR can reach about 495 KB, so requesting one for every
             lost frame would slow a slow client down further.
-            TODO(hw-verify): 1000 is a guess.
+            TODO(hw-verify): tuned from 1000 ms to 250 ms for faster frame-drop recovery.
 
     config VIDEO_CODEC_KEY_WAIT_MS
         int "Time a client may wait for a keyframe before it is disconnected (ms)"
