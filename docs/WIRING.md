@@ -4,6 +4,7 @@
 
 - **一次資料**:
   - ボード回路図・実装図: [ESP32-P4-ETH-schematic.pdf](ESP32-P4-ETH-schematic.pdf)（Page 1: 回路図、Page 2〜3: シルク・部品実装図）
+  - KiCad 回路図プロジェクト: [quad-ipkvm.kicad_pro](../hardware/kicad/quad-ipkvm.kicad_pro)（解説: [hardware/kicad/README.md](../hardware/kicad/README.md)）
   - 設計・決定事項: [HANDOFF.md](HANDOFF.md) / [PLAN.md](PLAN.md) / [USB_VBUS_DESIGN.md](USB_VBUS_DESIGN.md) / [OLED3_PLAN.md](OLED3_PLAN.md) / [ISO_MOUNT_DESIGN.md](ISO_MOUNT_DESIGN.md)
   - 実機確認記録・未確定一覧: [HW_VERIFY.md](HW_VERIFY.md) / [HW_STATE.md](HW_STATE.md)
   - GPIO 検証ロジック: [`components/kvm_board/kvm_board_logic.c`](../components/kvm_board/kvm_board_logic.c)、[`components/kvm_board/Kconfig`](../components/kvm_board/Kconfig)
@@ -49,6 +50,10 @@
 ### 3.2 サブシステム別・詳細回路結線図
 
 ![quad-ipkvm 詳細回路結線図](img/wiring_circuits.svg)
+
+### 3.3 KiCad 回路図プロジェクト（KiCad 8 / 9 階層シート）
+
+実配線・部品表・ERC 確認用の KiCad プロジェクトを [`hardware/kicad/quad-ipkvm.kicad_pro`](../hardware/kicad/quad-ipkvm.kicad_pro)（解説: [`hardware/kicad/README.md`](../hardware/kicad/README.md)）に格納しています。全 5 枚（A3 横）の階層シートで構成され、Page 1 ルートシート（`P1` 40pin / `J3`）から `USB_VBUS`、`X630_CSI`、`I2C_OLED_PANEL`、`ATX_KVM_CTRL` の各サブシートへ接続します。
 
 ---
 
