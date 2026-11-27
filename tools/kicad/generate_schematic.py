@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
-Deterministic KiCad 8/9 hierarchical schematic generator for quad-ipkvm.
+Deterministic KiCad 8/9 single-sheet A2 schematic generator for quad-ipkvm.
 
-Generates hardware/kicad/quad-ipkvm.kicad_pro and 5 hierarchical .kicad_sch files
-based on docs/WIRING.md (including PR #174 owner decisions: R1=130k/R2=162k 0.5% E96
+Generates hardware/kicad/:
+  - quad-ipkvm.kicad_pro     (KiCad 8/9 project file)
+  - quad-ipkvm.kicad_sch     (Unified A2 single-sheet schematic with direct wiring)
+  - quad_ipkvm.kicad_sym     (Project symbol library for all custom quad_ipkvm:* parts)
+  - sym-lib-table            (Project symbol library table referencing ${KIPRJMOD})
+
+Based on docs/WIRING.md (including PR #174 owner decisions: R1=130k/R2=162k 0.5% E96
 VBUS divider and no J3 ESD diode).
 
 KiCad coordinate conventions enforced:
-- Inside lib_symbols: Y-UP coordinate space.
+- Inside lib_symbols / .kicad_sym: Y-UP coordinate space.
 - On schematic canvas: Y-DOWN coordinate space (origin top-left).
 - Canvas position of pin (px, py) on symbol at (sx, sy, angle):
     rotate (px, py) CCW by angle -> (rx, ry), then (sx + rx, sy - ry).
@@ -109,8 +114,10 @@ class LibSymDef:
     def short_name(self) -> str:
         return self.lib_id.split(":", 1)[1]
 
-    def to_sexpr(self) -> str:
+    def to_sexpr(self, indent: str = "    ", use_short_name: bool = False) -> str:
+        """Serialize symbol definition. Inside .kicad_sym, top name is unprefixed (short_name)."""
         lines: List[str] = []
+        top_name = self.short_name if use_short_name else self.lib_id
         pn_hide = " hide" if self.hide_pin_names else ""
         pnum_hide = " (pin_numbers hide)" if self.hide_pin_numbers else ""
         pwr = " (power)" if self.is_power else ""
@@ -118,55 +125,57 @@ class LibSymDef:
         on_board = "yes" if self.on_board else "no"
         ref_hide = " hide" if self.is_power else ""
         lines.append(
-            f'    (symbol {q(self.lib_id)}{pwr}{pnum_hide}'
+            f'{indent}(symbol {q(top_name)}{pwr}{pnum_hide}'
             f' (pin_names (offset {fmt(self.pin_names_offset)}){pn_hide})'
             f' (exclude_from_sim no) (in_bom {in_bom}) (on_board {on_board})'
         )
         rx, ry, ra = self.ref_pos
         vx, vy, va = self.val_pos
+        i2 = indent + "  "
+        i3 = indent + "    "
         lines.append(
-            f'      (property "Reference" {q(self.ref_prefix)} (at {fmt(rx)} {fmt(ry)} {ra})'
+            f'{i2}(property "Reference" {q(self.ref_prefix)} (at {fmt(rx)} {fmt(ry)} {ra})'
             f' (effects (font (size 1.27 1.27)){ref_hide}))'
         )
         lines.append(
-            f'      (property "Value" {q(self.value)} (at {fmt(vx)} {fmt(vy)} {va})'
+            f'{i2}(property "Value" {q(self.value)} (at {fmt(vx)} {fmt(vy)} {va})'
             f' (effects (font (size 1.27 1.27))))'
         )
         lines.append(
-            f'      (property "Footprint" {q(self.footprint)} (at 0 0 0)'
+            f'{i2}(property "Footprint" {q(self.footprint)} (at 0 0 0)'
             f' (effects (font (size 1.27 1.27)) hide))'
         )
         lines.append(
-            f'      (property "Datasheet" "~" (at 0 0 0)'
+            f'{i2}(property "Datasheet" "~" (at 0 0 0)'
             f' (effects (font (size 1.27 1.27)) hide))'
         )
 
         g0 = self.graphics_by_unit.get(0, [])
         if g0:
-            lines.append(f'      (symbol {q(f"{self.short_name}_0_1")}')
+            lines.append(f'{i2}(symbol {q(f"{self.short_name}_0_1")}')
             for item in g0:
-                lines.append(f"        {item}")
-            lines.append("      )")
+                lines.append(f"{i3}{item}")
+            lines.append(f"{i2})")
 
         for u in range(1, self.unit_count + 1):
             gu = self.graphics_by_unit.get(u, [])
             pu = [p for p in self.pins if p.unit == u]
             if not gu and not pu:
                 continue
-            lines.append(f'      (symbol {q(f"{self.short_name}_{u}_1")}')
+            lines.append(f'{i2}(symbol {q(f"{self.short_name}_{u}_1")}')
             for item in gu:
-                lines.append(f"        {item}")
+                lines.append(f"{i3}{item}")
             for p in pu:
                 phide = " hide" if p.hide else ""
                 lines.append(
-                    f'        (pin {p.etype} line (at {fmt(p.x)} {fmt(p.y)} {p.angle})'
+                    f'{i3}(pin {p.etype} line (at {fmt(p.x)} {fmt(p.y)} {p.angle})'
                     f' (length {fmt(p.length)}){phide}'
                     f' (name {q(p.name)} (effects (font (size 1.016 1.016))))'
                     f' (number {q(p.number)} (effects (font (size 1.016 1.016))))'
                     f")"
                 )
-            lines.append("      )")
-        lines.append("    )")
+            lines.append(f"{i2})")
+        lines.append(f"{indent})")
         return "\n".join(lines)
 
 
@@ -509,38 +518,37 @@ def make_p1_40pin() -> LibSymDef:
 
 
 def make_mcp23017_module() -> LibSymDef:
-    """Switch Science SSCI-016506 MCP23017 3.3V module with generous vertical spacing for outputs/switches."""
+    """Switch Science SSCI-016506 MCP23017 3.3V module."""
     half_w = g(12)
     pin_len = g(4)
     lx = round(-half_w - pin_len, 2)
     rx = round(half_w + pin_len, 2)
-    box_top = g(36)
-    box_bot = g(-36)
+    box_top = g(32)
+    box_bot = g(-32)
 
     left_pins = [
-        ("1", "VDD", "power_in", g(32)),
-        ("2", "VSS", "power_in", g(24)),
-        ("3", "SCL", "input", g(16)),
+        ("1", "VDD", "power_in", g(28)),
+        ("2", "VSS", "power_in", g(22)),
+        ("3", "SCL", "input", g(14)),
         ("4", "SDA", "bidirectional", g(8)),
         ("5", "GPB0", "bidirectional", g(-4)),
         ("6", "GPB1", "bidirectional", g(-10)),
-        ("7", "GPB2", "bidirectional", g(-14)),
-        ("8", "GPB3", "bidirectional", g(-18)),
-        ("9", "GPB4", "bidirectional", g(-22)),
-        ("10", "GPB5", "bidirectional", g(-26)),
-        ("11", "GPB6", "bidirectional", g(-30)),
-        ("12", "GPB7", "bidirectional", g(-34)),
+        ("7", "GPB2", "bidirectional", g(-13)),
+        ("8", "GPB3", "bidirectional", g(-16)),
+        ("9", "GPB4", "bidirectional", g(-19)),
+        ("10", "GPB5", "bidirectional", g(-22)),
+        ("11", "GPB6", "bidirectional", g(-25)),
+        ("12", "GPB7", "bidirectional", g(-28)),
     ]
-    # Right side GPA0..GPA7 spaced by g(9) = 11.43 mm -> zero crowding for resistors/LEDs/switches!
     right_pins = [
-        ("13", "GPA0", "bidirectional", g(32)),
-        ("14", "GPA1", "bidirectional", g(23)),
-        ("15", "GPA2", "bidirectional", g(14)),
-        ("16", "GPA3", "bidirectional", g(5)),
-        ("17", "GPA4", "bidirectional", g(-5)),
-        ("18", "GPA5", "bidirectional", g(-14)),
-        ("19", "GPA6", "bidirectional", g(-23)),
-        ("20", "GPA7", "bidirectional", g(-32)),
+        ("13", "GPA0", "bidirectional", g(28)),
+        ("14", "GPA1", "bidirectional", g(20)),
+        ("15", "GPA2", "bidirectional", g(12)),
+        ("16", "GPA3", "bidirectional", g(4)),
+        ("17", "GPA4", "bidirectional", g(-4)),
+        ("18", "GPA5", "bidirectional", g(-12)),
+        ("19", "GPA6", "bidirectional", g(-20)),
+        ("20", "GPA7", "bidirectional", g(-28)),
     ]
     pins: List[PinDef] = []
     for num, name, etype, py in left_pins:
@@ -554,8 +562,8 @@ def make_mcp23017_module() -> LibSymDef:
         value="MCP23017_SSCI-016506",
         footprint="Module:SSCI-016506_MCP23017",
         pin_names_offset=1.016,
-        ref_pos=(0.0, g(38), 0),
-        val_pos=(0.0, g(-38), 0),
+        ref_pos=(0.0, g(34), 0),
+        val_pos=(0.0, g(-34), 0),
         graphics_by_unit={
             0: [
                 f"(rectangle (start {fmt(-half_w)} {fmt(box_top)}) (end {fmt(half_w)} {fmt(box_bot)})"
@@ -567,7 +575,7 @@ def make_mcp23017_module() -> LibSymDef:
 
 
 def make_74hc139() -> LibSymDef:
-    """Dual 2-to-4 line decoder/demultiplexer 74HC139 (DIP-16/SOIC-16, 3 units)."""
+    """Dual 2-to-4 line decoder/demultiplexer 74HC139 (project custom quad_ipkvm:74HC139, DIP-16/SOIC-16, 3 units)."""
     hw = g(6)
     pin_len = g(3)
     lx = round(-hw - pin_len, 2)
@@ -606,7 +614,7 @@ def make_74hc139() -> LibSymDef:
         " (stroke (width 0.254) (type default)) (fill (type background)))"
     )
     return LibSymDef(
-        lib_id="74xx:74HC139",
+        lib_id="quad_ipkvm:74HC139",
         ref_prefix="U",
         value="74HC139",
         footprint="Package_DIP:DIP-16_W7.62mm",
@@ -651,8 +659,13 @@ def make_photorelay() -> LibSymDef:
     )
 
 
-def make_optocoupler() -> LibSymDef:
-    """4-pin DC Optocoupler (PC817 / LTV-817 candidate — TODO(hw-verify) C2)."""
+def make_optocoupler_left_out() -> LibSymDef:
+    """
+    4-pin DC Optocoupler (PC817 / LTV-817 candidate — TODO(hw-verify) C2) oriented for signal flow
+    RIGHT-TO-LEFT toward ESP32-P4 P1:
+      Left side (facing P1):  4=C (open_collector), 3=E (passive — ERC-clean with GND!)
+      Right side (facing KVM): 1=A (passive), 2=K (passive)
+    """
     hw = g(4)
     hh = g(3)
     pin_len = g(2)
@@ -670,15 +683,17 @@ def make_optocoupler() -> LibSymDef:
             0: [
                 f"(rectangle (start {fmt(-hw)} {fmt(hh)}) (end {fmt(hw)} {fmt(-hh)})"
                 " (stroke (width 0.254) (type default)) (fill (type background)))",
-                "(polyline (pts (xy -2.54 1.524) (xy -1.016 1.524) (xy -1.778 0.254) (xy -2.54 1.524)) (stroke (width 0.2) (type default)) (fill (type none)))",
-                "(polyline (pts (xy 1.778 1.524) (xy 1.778 -1.524)) (stroke (width 0.2) (type default)) (fill (type none)))",
+                # Phototransistor bar on left inside box
+                "(polyline (pts (xy -1.778 1.524) (xy -1.778 -1.524)) (stroke (width 0.2) (type default)) (fill (type none)))",
+                # LED triangle on right inside box
+                "(polyline (pts (xy 1.016 1.524) (xy 2.54 1.524) (xy 1.778 0.254) (xy 1.016 1.524)) (stroke (width 0.2) (type default)) (fill (type none)))",
             ]
         },
         pins=[
-            PinDef("1", "A", "passive", lx, g(2), 0, length=pin_len),
-            PinDef("2", "K", "passive", lx, g(-2), 0, length=pin_len),
-            PinDef("4", "C", "open_collector", rx, g(2), 180, length=pin_len),
-            PinDef("3", "E", "open_emitter", rx, g(-2), 180, length=pin_len),
+            PinDef("4", "C", "open_collector", lx, g(2), 0, length=pin_len),
+            PinDef("3", "E", "passive", lx, g(-2), 0, length=pin_len),
+            PinDef("1", "A", "passive", rx, g(2), 180, length=pin_len),
+            PinDef("2", "K", "passive", rx, g(-2), 180, length=pin_len),
         ],
     )
 
@@ -688,12 +703,11 @@ def make_optocoupler() -> LibSymDef:
 # ---------------------------------------------------------------------------
 
 class SheetBuilder:
-    def __init__(self, key: str, title: str, rev: str, page_num: int, hier_path: str, comment_lines: List[str]):
+    def __init__(self, key: str, title: str, rev: str, hier_path: str, comment_lines: List[str]):
         self.key = key
         self.uuid = det_uuid(f"sheet:{key}")
         self.title = title
         self.rev = rev
-        self.page_num = page_num
         self.hier_path = hier_path
         self.comment_lines = comment_lines
         self.lib_defs: Dict[str, LibSymDef] = {}
@@ -802,6 +816,10 @@ class SheetBuilder:
             f'  )'
         )
 
+    def add_wire_poly(self, pts: List[Tuple[float, float]]) -> None:
+        for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+            self.add_wire(x1, y1, x2, y2)
+
     def add_junction(self, x: float, y: float) -> None:
         x, y = round(x, 2), round(y, 2)
         u = det_uuid(f"{self.key}:junc:{x}:{y}")
@@ -817,29 +835,11 @@ class SheetBuilder:
         self.items.append(f'  (no_connect (at {fmt(x)} {fmt(y)}) (uuid {q(u)}))')
 
     def add_label(self, name: str, x: float, y: float, angle: int = 0) -> None:
-        """
-        Place net label at (x, y).
-        Convention: angle=0 places text RIGHT of (x, y); angle=180 places text LEFT of (x, y).
-        Wait: on wire right endpoint use angle=0 (text extends right, away from wire);
-        on wire left endpoint use angle=180 (text extends left, away from wire).
-        """
         x, y = round(x, 2), round(y, 2)
         u = det_uuid(f"{self.key}:lbl:{len(self.items)}:{name}:{x}:{y}:{angle}")
         just = "right bottom" if angle == 180 else "left bottom"
         self.items.append(
             f'  (label {q(name)} (at {fmt(x)} {fmt(y)} {angle}) (fields_autoplaced yes)\n'
-            f'    (effects (font (size 1.27 1.27)) (justify {just}))\n'
-            f'    (uuid {q(u)})\n'
-            f'  )'
-        )
-
-    def add_hlabel(self, name: str, shape: str, x: float, y: float, angle: int = 180) -> None:
-        """angle=180 -> flag extends LEFT of (x,y); angle=0 -> flag extends RIGHT of (x,y)."""
-        x, y = round(x, 2), round(y, 2)
-        u = det_uuid(f"{self.key}:hlbl:{name}:{x}:{y}:{angle}")
-        just = "right" if angle == 180 else "left"
-        self.items.append(
-            f'  (hierarchical_label {q(name)} (shape {shape}) (at {fmt(x)} {fmt(y)} {angle}) (fields_autoplaced yes)\n'
             f'    (effects (font (size 1.27 1.27)) (justify {just}))\n'
             f'    (uuid {q(u)})\n'
             f'  )'
@@ -860,65 +860,27 @@ class SheetBuilder:
         )
 
     def add_rect(self, x1: float, y1: float, x2: float, y2: float, width: float = 0.254,
-                 color: Optional[Tuple[int, int, int, float]] = None) -> None:
+                 stroke_type: str = "solid", color: Optional[Tuple[int, int, int, float]] = None) -> None:
         u = det_uuid(f"{self.key}:rect:{len(self.items)}:{x1}:{y1}:{x2}:{y2}")
         c_str = f" (color {color[0]} {color[1]} {color[2]} {color[3]})" if color else ""
         self.items.append(
             f'  (rectangle (start {fmt(x1)} {fmt(y1)}) (end {fmt(x2)} {fmt(y2)})\n'
-            f'    (stroke (width {fmt(width)}) (type solid){c_str}) (fill (type none))\n'
+            f'    (stroke (width {fmt(width)}) (type {stroke_type}){c_str}) (fill (type none))\n'
             f'    (uuid {q(u)})\n'
             f'  )'
         )
 
-    def add_sheet_block(
-        self,
-        block_uuid: str,
-        name: str,
-        filename: str,
-        x: float,
-        y: float,
-        w: float,
-        h: float,
-        pins: List[Tuple[str, str, float, float, int]],
-        page_str: str,
-    ) -> None:
-        lines = [
-            f'  (sheet (at {fmt(x)} {fmt(y)}) (size {fmt(w)} {fmt(h)})',
-            f'    (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no) (fields_autoplaced yes)',
-            f'    (stroke (width 0.254) (type solid)) (fill (color 245 248 255 0.6))',
-            f'    (uuid {q(block_uuid)})',
-            f'    (property "Sheetname" {q(name)} (at {fmt(x)} {fmt(round(y - 1.27, 2))} 0)',
-            f'      (effects (font (size 1.524 1.524) bold) (justify left bottom)))',
-            f'    (property "Sheetfile" {q(filename)} (at {fmt(x)} {fmt(round(y + h + 1.27, 2))} 0)',
-            f'      (effects (font (size 1.27 1.27)) (justify left top)))',
-        ]
-        for pname, pshape, px, py, pang in pins:
-            pu = det_uuid(f"{self.key}:sheetpin:{block_uuid}:{pname}")
-            just = "left" if pang == 180 else "right"
-            lines.append(
-                f'    (pin {q(pname)} {pshape} (at {fmt(px)} {fmt(py)} {pang})'
-                f' (effects (font (size 1.27 1.27)) (justify {just})) (uuid {q(pu)}))'
-            )
-        lines.append("    (instances")
-        lines.append(f'      (project {q(PROJECT_NAME)}')
-        lines.append(f'        (path {q(self.hier_path)} (page {q(page_str)}))')
-        lines.append("      )")
-        lines.append("    )")
-        lines.append("  )")
-        self.items.append("\n".join(lines))
-
-    def render_sch(self, is_root: bool = False) -> str:
+    def render_sch(self) -> str:
         c_lines = "\n".join(f'    (comment {i + 1} {q(c)})' for i, c in enumerate(self.comment_lines[:4]))
         lib_block = "\n".join(self.lib_defs[k].to_sexpr() for k in sorted(self.lib_defs))
         body = "\n".join(self.items)
-        extra_tail = '\n  (sheet_instances\n    (path "/" (page "1"))\n  )' if is_root else ""
         return (
             f'(kicad_sch\n'
             f'  (version {KICAD_VERSION})\n'
             f'  (generator {q(GENERATOR_NAME)})\n'
             f'  (generator_version "1.0")\n'
             f'  (uuid {q(self.uuid)})\n'
-            f'  (paper "A3")\n'
+            f'  (paper "A2")\n'
             f'  (title_block\n'
             f'    (title {q(self.title)})\n'
             f'    (date "2026-11-27")\n'
@@ -929,22 +891,24 @@ class SheetBuilder:
             f'  (lib_symbols\n'
             f'{lib_block}\n'
             f'  )\n'
-            f'{body}{extra_tail}\n'
+            f'{body}\n'
+            f'  (sheet_instances\n'
+            f'    (path "/" (page "1"))\n'
+            f'  )\n'
             f')\n'
         )
 
 
 # ---------------------------------------------------------------------------
-# Sheet Content Builders
+# Unified A2 Schematic Layout (Direct Continuous Inter-Module Wiring)
 # ---------------------------------------------------------------------------
 
-def build_root_sheet(child_uuids: Dict[str, str]) -> SheetBuilder:
+def build_unified_sheet() -> SheetBuilder:
     root_uuid = det_uuid("sheet:root")
     sb = SheetBuilder(
         key="root",
-        title="quad-ipkvm Top-Level Interconnect (ESP32-P4-ETH rev v1.3)",
+        title="quad-ipkvm Full System Schematic (ESP32-P4-ETH rev v1.3)",
         rev="1.0",
-        page_num=1,
         hier_path=f"/{root_uuid}",
         comment_lines=[
             "Primary reference: docs/WIRING.md & docs/ESP32-P4-ETH-schematic.pdf",
@@ -954,82 +918,42 @@ def build_root_sheet(child_uuids: Dict[str, str]) -> SheetBuilder:
         ],
     )
 
-    sb.add_text("quad-ipkvm Top-Level Hardware Architecture (Waveshare ESP32-P4-ETH rev v1.3)",
-                g(14), g(12), size=2.4, bold=True)
+    sb.add_text(
+        "quad-ipkvm Unified Hardware Schematic (Waveshare ESP32-P4-ETH rev v1.3 + X630 V1.5 + USB VBUS + OLED/MCP23017 + 4ch ATX/KVM)",
+        g(12), g(10), size=2.4, bold=True
+    )
 
-    p1_sym = make_p1_40pin()
-    p1_x, p1_y = g(68), g(72)
-    p1_pins = sb.place_symbol(p1_sym, "P1", "ESP32-P4-ETH_P1_2x20", p1_x, p1_y, angle=0)
+    # ==================================================================
+    # Zone Borders (clean dashed frames dividing the 5 functional areas)
+    # ==================================================================
+    # Center Hub: ESP32-P4-ETH (J3 + P1)
+    sb.add_rect(g(144), g(16), g(204), g(210), width=0.254, stroke_type="dash", color=(40, 90, 170, 1.0))
+    sb.add_text("ESP32-P4-ETH rev v1.3 (HOST BOARD)", g(147), g(18), size=1.6, bold=True, color=(30, 80, 160, 1.0))
 
-    # P1 left column (1..20)
-    for pin_num in ["1", "2", "7", "9", "10"]:
-        sb.add_nc(*p1_pins[pin_num])
-    sb.add_text("[SPARE SAFE GPIOs]", g(14), p1_pins["1"][1] - g(1), size=1.14, color=(20, 110, 40, 1.0))
+    # Zone 1: Top-Left USB OTG + VBUS
+    sb.add_rect(g(12), g(16), g(138), g(70), width=0.254, stroke_type="dash", color=(20, 120, 50, 1.0))
+    sb.add_text("1. TARGET PC USB OTG HS & VBUS SENSE (PR #174: 130k/162k 0.5% E96, NO ESD)", g(15), g(18), size=1.5, bold=True, color=(20, 110, 40, 1.0))
 
-    for pin_num in ["11", "12", "14", "15"]:
-        sb.add_nc(*p1_pins[pin_num])
-    sb.add_text("[JTAG AVOID - kvm_board rejects out]", g(12), p1_pins["11"][1] - g(1), size=1.14, color=(150, 90, 0, 1.0))
+    # Zone 2: Mid-Left Geekworm X630
+    sb.add_rect(g(12), g(74), g(138), g(204), width=0.254, stroke_type="dash", color=(20, 120, 50, 1.0))
+    sb.add_text("2. GEEKWORM X630 V1.5 (TC358743XBG) MIPI-CSI & 10-PIN CTRL", g(15), g(76), size=1.5, bold=True, color=(20, 110, 40, 1.0))
 
-    for pin_num in ["19", "20"]:
-        sb.add_nc(*p1_pins[pin_num])
-    sb.add_text("[PCB FIXED USB Serial/JTAG]", g(14), p1_pins["19"][1] - g(1), size=1.14, color=(30, 80, 160, 1.0))
+    # Zone 3: Bottom-Left Shared I2C OLED & MCP23017
+    sb.add_rect(g(12), g(208), g(204), g(318), width=0.254, stroke_type="dash", color=(180, 90, 0, 1.0))
+    sb.add_text("3. SHARED I2C BUS (GPIO7/8) — SSD1306 OLED & MCP23017 PANEL", g(15), g(210), size=1.5, bold=True, color=(150, 70, 0, 1.0))
 
-    # Left GND pins (3, 8, 13, 18) + PWR_FLAG cleanly offset
-    for idx, pin_num in enumerate(["3", "8", "13", "18"]):
-        px, py = p1_pins[pin_num]
-        gx = px - g(6)
-        sb.add_wire(px, py, gx, py)
-        sb.place_power("GND", gx, py)
-        if idx == 0:
-            fx = gx - g(10)
-            sb.add_wire(gx, py, fx, py)
-            sb.add_junction(gx, py)
-            sb.place_power("PWR_FLAG", fx, py)
+    # Zone 4: Top/Mid-Right 4ch ATX/KVM Control
+    sb.add_rect(g(216), g(16), g(456), g(204), width=0.254, stroke_type="dash", color=(110, 40, 160, 1.0))
+    sb.add_text("4. 4ch ATX & KVM SWITCH OUTPUTS (Direct GPIO -> Pulls -> 74HC139 x2 -> 12x Photorelays) [TODO(hw-verify)]", g(219), g(18), size=1.5, bold=True, color=(90, 30, 140, 1.0))
 
-    # Left active signals (wire goes LEFT -> label at LEFT end with angle=180 so text extends LEFT)
-    for pin_num, lbl in [("4", "VBUS_SENSE"), ("5", "X630_INT"), ("6", "X630_RESET_N"),
-                         ("16", "I2C_SCL"), ("17", "I2C_SDA")]:
-        px, py = p1_pins[pin_num]
-        lx = px - g(8)
-        sb.add_wire(px, py, lx, py)
-        sb.add_label(lbl, lx, py, angle=180)
+    # Zone 5: Bottom-Mid-Right KVM LED Opto Inputs
+    sb.add_rect(g(216), g(208), g(360), g(318), width=0.254, stroke_type="dash", color=(110, 40, 160, 1.0))
+    sb.add_text("5. KVM LED ISOLATED INPUTS (4x Optocouplers -> 10k PU -> Direct GPIO)", g(219), g(210), size=1.5, bold=True, color=(90, 30, 140, 1.0))
 
-    # P1 right column (40..21)
-    for pin_num in ["40", "39", "37", "30", "29", "27"]:
-        sb.add_nc(*p1_pins[pin_num])
-    sb.add_text("[H2 USB-C ONLY; NO EXT 5V]", p1_pins["40"][0] + g(3), p1_pins["40"][1] - g(1), size=1.14, color=(190, 20, 20, 1.0))
-    sb.add_text("[PCB FIXED USB_FS OTG]", p1_pins["29"][0] + g(3), p1_pins["29"][1] - g(1), size=1.14, color=(30, 80, 160, 1.0))
-
-    for pin_num in ["38", "33", "28", "23"]:
-        px, py = p1_pins[pin_num]
-        gx = px + g(6)
-        sb.add_wire(px, py, gx, py)
-        sb.place_power("GND", gx, py)
-
-    # Pin 36 (+3V3 + well-separated PWR_FLAG)
-    p36x, p36y = p1_pins["36"]
-    pwr_x = p36x + g(8)
-    flg_x = pwr_x + g(14)
-    sb.add_wire(p36x, p36y, pwr_x, p36y)
-    sb.add_wire(pwr_x, p36y, flg_x, p36y)
-    sb.add_junction(pwr_x, p36y)
-    sb.place_power("+3V3", pwr_x, p36y)
-    sb.place_power("PWR_FLAG", flg_x, p36y)
-    sb.add_text("meas 3.34V [V2]", flg_x + g(2), p36y - g(1), size=1.14)
-
-    # Right active signals (wire goes RIGHT -> label at RIGHT end with angle=0 so text extends RIGHT)
-    for pin_num, lbl in [
-        ("35", "KVM_A0"), ("34", "KVM_A1"), ("32", "~{E_PWR}"), ("31", "~{E_RST}"),
-        ("26", "KVM_LED_CH1"), ("25", "KVM_LED_CH2"), ("24", "~{E_KVM}"),
-        ("22", "KVM_LED_CH3"), ("21", "KVM_LED_CH4"),
-    ]:
-        px, py = p1_pins[pin_num]
-        lx = px + g(8)
-        sb.add_wire(px, py, lx, py)
-        sb.add_label(lbl, lx, py, angle=0)
-
-    # J3 USB OTG HS 4-pin header
-    j3_sym = make_conn_1xN(
+    # ==================================================================
+    # CENTER HUB: J3 (USB OTG HS) & P1 (40-pin Header)
+    # ==================================================================
+    j3_sym = make_conn_1xN_left(
         "quad_ipkvm:ESP32-P4-ETH_J3",
         4,
         ["VCC_5V (NC!)", "USBD_N", "USBD_P", "GND"],
@@ -1038,214 +962,125 @@ def build_root_sheet(child_uuids: Dict[str, str]) -> SheetBuilder:
         spacing_units=4,
         footprint="Connector_JST:JST_SH_BM04B-SRSS-TB_1x04-1MP_P1.00mm_Horizontal",
     )
-    j3_pins = sb.place_symbol(j3_sym, "J3", "USB_OTG_HS_4P", g(32), g(148))
+    j3_pins = sb.place_symbol(j3_sym, "J3", "USB_OTG_HS_4P", g(168), g(36))
     sb.add_nc(*j3_pins["1"])
-    sb.add_text("FORBIDDEN: DO NOT CONNECT TO PC VBUS [H3]!", j3_pins["1"][0] + g(2), j3_pins["1"][1] - g(1),
-                size=1.27, bold=True, color=(200, 0, 0, 1.0))
-    for pnum, lbl in [("2", "USB_DM"), ("3", "USB_DP")]:
-        px, py = j3_pins[pnum]
-        sb.add_wire(px, py, px + g(8), py)
-        sb.add_label(lbl, px + g(8), py, angle=0)
-    g4x, g4y = j3_pins["4"]
-    sb.add_wire(g4x, g4y, g4x + g(6), g4y)
-    sb.place_power("GND", g4x + g(6), g4y)
+    sb.add_text("FORBIDDEN: DO NOT CONNECT TO PC VBUS [H3]!", g(150), g(23), size=1.2, bold=True, color=(200, 0, 0, 1.0))
+    sb.add_wire(j3_pins["4"][0], j3_pins["4"][1], j3_pins["4"][0] - g(4), j3_pins["4"][1])
+    sb.place_power("GND", j3_pins["4"][0] - g(4), j3_pins["4"][1])
 
-    # 4 Hierarchical Sheet Blocks (pin wires go LEFT -> label at LEFT end angle=180)
-    b1_x, b1_y, b1_w, b1_h = g(148), g(20), g(56), g(28)
-    b1_pins = [
-        ("USB_DM", "bidirectional", b1_x, b1_y + g(7), 180),
-        ("USB_DP", "bidirectional", b1_x, b1_y + g(14), 180),
-        ("VBUS_SENSE", "output", b1_x, b1_y + g(21), 180),
-    ]
-    sb.add_sheet_block(child_uuids["usb_vbus"], "USB_VBUS", "usb_vbus.kicad_sch", b1_x, b1_y, b1_w, b1_h, b1_pins, "2")
-    for pname, _, px, py, _ in b1_pins:
-        sb.add_wire(px - g(10), py, px, py)
-        sb.add_label(pname, px - g(10), py, angle=180)
+    p1_sym = make_p1_40pin()
+    p1_x, p1_y = g(174), g(120)
+    p1_pins = sb.place_symbol(p1_sym, "P1", "ESP32-P4-ETH_P1_2x20", p1_x, p1_y)
+    # Note: left pins at x = g(154), right pins at x = g(194), y spans g(82)..g(158)
 
-    b2_x, b2_y, b2_w, b2_h = g(148), g(58), g(56), g(34)
-    b2_pins = [
-        ("I2C_SDA", "bidirectional", b2_x, b2_y + g(7), 180),
-        ("I2C_SCL", "output", b2_x, b2_y + g(14), 180),
-        ("X630_RESET_N", "input", b2_x, b2_y + g(21), 180),
-        ("X630_INT", "output", b2_x, b2_y + g(28), 180),
-    ]
-    sb.add_sheet_block(child_uuids["x630_csi"], "X630_CSI", "x630_csi.kicad_sch", b2_x, b2_y, b2_w, b2_h, b2_pins, "3")
-    for pname, _, px, py, _ in b2_pins:
-        sb.add_wire(px - g(10), py, px, py)
-        sb.add_label(pname, px - g(10), py, angle=180)
+    # P1 Left Unused / JTAG / Fixed
+    for pin_num in ["1", "2", "7", "9", "10", "11", "12", "14", "15", "19", "20"]:
+        sb.add_nc(*p1_pins[pin_num])
+    sb.add_text("SPARE", g(148), p1_pins["1"][1] - g(1), size=1.05, color=(20, 110, 40, 1.0))
+    sb.add_text("JTAG(NO OUT)", g(145), p1_pins["11"][1] - g(1), size=1.0, color=(150, 90, 0, 1.0))
+    sb.add_text("USB_JTAG", g(146), p1_pins["19"][1] - g(1), size=1.0, color=(30, 80, 160, 1.0))
 
-    b3_x, b3_y, b3_w, b3_h = g(148), g(102), g(56), g(22)
-    b3_pins = [
-        ("I2C_SDA", "bidirectional", b3_x, b3_y + g(7), 180),
-        ("I2C_SCL", "input", b3_x, b3_y + g(14), 180),
-    ]
-    sb.add_sheet_block(child_uuids["i2c_oled_panel"], "I2C_OLED_PANEL", "i2c_oled_panel.kicad_sch", b3_x, b3_y, b3_w, b3_h, b3_pins, "4")
-    for pname, _, px, py, _ in b3_pins:
-        sb.add_wire(px - g(10), py, px, py)
-        sb.add_label(pname, px - g(10), py, angle=180)
+    # P1 Left GNDs (3, 8, 13, 18) + single PWR_FLAG on GND (CodeRabbit fix: PWR_FLAG on GND only)
+    for idx, pin_num in enumerate(["3", "8", "13", "18"]):
+        px, py = p1_pins[pin_num]
+        gx = px - g(4)
+        sb.add_wire(px, py, gx, py)
+        sb.place_power("GND", gx, py)
+        if idx == 0:
+            fx = gx - g(10)
+            sb.add_wire(gx, py, fx, py)
+            sb.add_junction(gx, py)
+            sb.place_power("PWR_FLAG", fx, py)
 
-    b4_x, b4_y, b4_w, b4_h = g(148), g(134), g(62), g(68)
-    b4_pins = [
-        ("KVM_A0", "input", b4_x, b4_y + g(6), 180),
-        ("KVM_A1", "input", b4_x, b4_y + g(13), 180),
-        ("~{E_PWR}", "input", b4_x, b4_y + g(20), 180),
-        ("~{E_RST}", "input", b4_x, b4_y + g(27), 180),
-        ("~{E_KVM}", "input", b4_x, b4_y + g(34), 180),
-        ("KVM_LED_CH1", "output", b4_x, b4_y + g(42), 180),
-        ("KVM_LED_CH2", "output", b4_x, b4_y + g(49), 180),
-        ("KVM_LED_CH3", "output", b4_x, b4_y + g(56), 180),
-        ("KVM_LED_CH4", "output", b4_x, b4_y + g(63), 180),
-    ]
-    sb.add_sheet_block(child_uuids["atx_kvm_ctrl"], "ATX_KVM_CTRL", "atx_kvm_ctrl.kicad_sch", b4_x, b4_y, b4_w, b4_h, b4_pins, "5")
-    for pname, _, px, py, _ in b4_pins:
-        sb.add_wire(px - g(10), py, px, py)
-        sb.add_label(pname, px - g(10), py, angle=180)
+    # P1 Right Unused / Fixed
+    for pin_num in ["40", "39", "37", "30", "29", "27"]:
+        sb.add_nc(*p1_pins[pin_num])
+    sb.add_text("H2 ONLY (NO EXT 5V)", p1_pins["40"][0] + g(2), p1_pins["40"][1] - g(1), size=1.05, color=(190, 20, 20, 1.0))
+    sb.add_text("USB_FS", p1_pins["29"][0] + g(2), p1_pins["29"][1] - g(1), size=1.05, color=(30, 80, 160, 1.0))
 
-    # Bottom-Left Safety Rules Box
-    sb.add_rect(g(14), g(172), g(120), g(222), width=0.254, color=(180, 0, 0, 1.0))
-    sb.add_text(
-        "CRITICAL SAFETY RULES & OWNER DECISIONS (docs/WIRING.md)\n"
-        "1. [H3] NEVER connect J3 #1 (VCC_5V) to PC USB VBUS. Only D-/D+/GND go to J3.\n"
-        "2. [HW_STATE] NEVER connect X630 10-pin #2 (HDET = 4.8V) to ESP32-P4 GPIO (3.3V max).\n"
-        "3. [PLAN 4.4] ATX/KVM outputs & KVM LED inputs MUST use direct GPIO (NOT MCP23017).\n"
-        "4. [PR #174] VBUS divider: R1=130k, R2=162k (0.5% E96); NO ESD diode on J3 (#4/#174).\n"
-        "5. [PWR SEQ] Power ESP32-P4 via H2 Type-C BEFORE connecting target PC VBUS.\n"
-        "6. [PROVISIONAL] P1 GPIOs 20..23,46 (ATX/KVM out) & 32,33,47,48 (KVM LED in) are\n"
-        "   PROVISIONAL TODO(hw-verify) candidates from safe pool; finalize via Kconfig!",
-        g(16), g(175), size=1.35, color=(120, 10, 10, 1.0)
-    )
+    # P1 Right GNDs (38, 33, 28, 23)
+    for pin_num in ["38", "33", "28", "23"]:
+        px, py = p1_pins[pin_num]
+        gx = px + g(4)
+        sb.add_wire(px, py, gx, py)
+        sb.place_power("GND", gx, py)
 
-    # Right Side Info Boxes (kept inside x <= 406 mm, y <= 185 mm)
-    sb.add_rect(g(220), g(20), g(318), g(116), width=0.254, color=(30, 80, 160, 1.0))
-    sb.add_text(
-        "PCB-FIXED INTERFACES ON ESP32-P4-ETH\n"
-        "(Internal to Waveshare PCB — No external P1 wiring)\n\n"
-        "- H2 Type-C UART: U4 CH343P -> GPIO37/38, +5V via AO3401/D2\n"
-        "- J4 100M Ethernet: U10 IP101GRI -> GPIO28..31,34,35,49..52\n"
-        "- TF1 microSD 4-bit: GPIO39..44, PMOS Q1 gate GPIO45 (+10k PD)\n"
-        "    Pull-ups R8..R12 (51k) -> ESP_LDO_VO4 (3300 mV)\n"
-        "- J1 MIPI-CSI 22-pin: CSI_CLK/D0/D1, R44/R46 2.2k I2C PU\n"
-        "    (Detailed on Sheet 3: x630_csi.kicad_sch)\n"
-        "- U9/U11 Audio (unused): I2S GPIO9..13, GPIO53 PA_CTRL,\n"
-        "    I2C shared on GPIO7/8 (check ES8311 addr conflict G2)\n"
-        "- Boot/Reset: Key1 BOOT=GPIO35, Key2 RESET=CHIP_PU (3.3V)\n"
-        "- Strapping: GPIO34..38 (no external drive allowed)\n"
-        "- Power Rails: MP1658GTF-Z ESP_3V3 (meas 3.34V),\n"
-        "    LDO_VO3=2500mV (MIPI PHY), LDO_VO4=3300mV (SD PU)",
-        g(223), g(23), size=1.3, color=(20, 50, 120, 1.0)
-    )
+    # P1 #36 (+3V3 power_out -> +3V3 ONLY, NO PWR_FLAG so ERC has no duplicate power_out driver!)
+    p36x, p36y = p1_pins["36"]
+    sb.add_wire(p36x, p36y, p36x + g(5), p36y)
+    sb.place_power("+3V3", p36x + g(5), p36y)
+    sb.add_text("meas 3.34V [V2]", p36x + g(7), p36y - g(1), size=1.05)
 
-    sb.add_rect(g(220), g(124), g(318), g(180), width=0.254, color=(80, 40, 140, 1.0))
-    sb.add_text(
-        "SHEET DIRECTORY & GPIO BUDGET\n\n"
-        "Page 1 (Root): P1 40-pin + J3 USB OTG + System Interconnect\n"
-        "Page 2 (USB_VBUS): Target PC USB + R1/R2 0.5% E96 VBUS Sense\n"
-        "Page 3 (X630_CSI): J1 22p <-> X630 15p CSI + X630 10p Ctrl\n"
-        "Page 4 (I2C_OLED_PANEL): SSD1306 (0x3C/3D) + MCP23017 (0x20)\n"
-        "Page 5 (ATX_KVM_CTRL): 74HC139 x2 + 12x Photorelay + 4x Opto\n\n"
-        "Remaining P1 Safe Spare GPIOs (5 pins after provisional):\n"
-        "  GPIO6, GPIO14, GPIO15, GPIO19, GPIO54 (+ JTAG GPIO2..5)",
-        g(223), g(127), size=1.3, color=(60, 30, 110, 1.0)
-    )
-
-    return sb
-
-
-def build_usb_vbus_sheet(root_uuid: str, block_uuid: str) -> SheetBuilder:
-    sb = SheetBuilder(
-        key="usb_vbus",
-        title="Target PC USB OTG HS (J3) & VBUS Sense Divider",
-        rev="1.0",
-        page_num=2,
-        hier_path=f"/{root_uuid}/{block_uuid}",
-        comment_lines=[
-            "docs/WIRING.md §6.2 & docs/USB_VBUS_DESIGN.md §3.1 (USB 2.0 §7.2.1)",
-            "Owner decision (#174): 0.5% E96 R1=130k, R2=162k; NO ESD diode on J3 (H4)",
-        ],
-    )
-    sb.add_text("Sheet 2: Target PC USB OTG HS Data (3-wire) & VBUS Sense Divider", g(14), g(12), size=2.2, bold=True)
-
+    # ==================================================================
+    # ZONE 1: J2 Target PC USB + VBUS Sense Divider -> DIRECTLY wired to J3 & P1 #4
+    # ==================================================================
     j2_sym = make_conn_1xN(
         "quad_ipkvm:Target_PC_USB_4P",
         4,
-        ["VBUS_PC (4.75-5.50V)", "D-", "D+", "GND"],
+        ["VBUS_PC(5V)", "D-", "D+", "GND"],
         ["passive", "bidirectional", "bidirectional", "power_in"],
-        width_units=20,
-        spacing_units=6,
+        width_units=16,
+        spacing_units=4,
         footprint="Connector_USB:USB_A_Molex_67643_Horizontal",
     )
-    j2_pins = sb.place_symbol(j2_sym, "J2", "Target_PC_USB_4P", g(46), g(70))
+    j2_pins = sb.place_symbol(j2_sym, "J2", "Target_PC_USB_4P", g(32), g(36))
+    # J2 pins exit RIGHT at x = g(44), y = [30, 34, 38, 42] — EXACTLY matching J3 y = [30, 34, 38, 42]!
+    sb.add_wire(j2_pins["4"][0], j2_pins["4"][1], j2_pins["4"][0] + g(4), j2_pins["4"][1])
+    sb.place_power("GND", j2_pins["4"][0] + g(4), j2_pins["4"][1])
 
-    # D- and D+ straight to hierarchical labels (well below VBUS divider at y-g(14))
-    for pnum, hname in [("2", "USB_DM"), ("3", "USB_DP")]:
-        px, py = j2_pins[pnum]
-        hx = px + g(20)
-        sb.add_wire(px, py, hx, py)
-        sb.add_hlabel(hname, "bidirectional", hx, py, angle=0)
+    # Direct wires J2 #2/#3 -> J3 #2/#3 (purely horizontal, no detours!)
+    for pnum, lname in [("2", "USB_DM"), ("3", "USB_DP")]:
+        x2, y2 = j2_pins[pnum]
+        x3, y3 = j3_pins[pnum]
+        sb.add_wire(x2, y2, x3, y3)
+        sb.add_label(lname, g(120), y2, angle=0)
 
-    # GND on pin 4
-    gpx, gpy = j2_pins["4"]
-    sb.add_wire(gpx, gpy, gpx + g(8), gpy)
-    sb.place_power("GND", gpx + g(8), gpy)
-
-    # Route J2 pin 1 (VBUS_PC) UP to y = v1y - g(18) so divider is completely clear of D-/D+!
+    # VBUS divider: J2 #1 (g(44), g(30)) -> UP to y=g(24) -> R1 (g(68), g(24)) -> mid (g(86), g(24))
+    # -> R2 hangs DOWN cleanly inside Zone 1 (y=g(34)..g(46), well left of any labels!) -> GND at (g(86), g(46))
+    # -> VBUS_SENSE wire runs from mid (g(86), g(24)) RIGHT to g(142), DOWN to y=g(94) (P1 #4 level), RIGHT to P1 #4!
     r_sym = make_resistor()
     v1x, v1y = j2_pins["1"]
-    top_y = v1y - g(18)
-    sb.add_wire(v1x, v1y, v1x, top_y)
-    r1_cx = v1x + g(20)
-    r1_pins = sb.place_symbol(r_sym, "R1", "130k_0.5%_E96", r1_cx, top_y, angle=90,
+    top_vbus_y = g(24)
+    sb.add_wire_poly([(v1x, v1y), (v1x, top_vbus_y)])
+    r1_pins = sb.place_symbol(r_sym, "R1", "130k_0.5%_E96", g(68), top_vbus_y, angle=90,
                               ref_offset=(0, -g(3), 0), val_offset=(0, g(3), 0))
-    sb.add_wire(v1x, top_y, r1_pins["1"][0], r1_pins["1"][1])
+    sb.add_wire(v1x, top_vbus_y, r1_pins["1"][0], r1_pins["1"][1])
 
-    mid_x = r1_pins["2"][0] + g(14)
-    sb.add_wire(r1_pins["2"][0], r1_pins["2"][1], mid_x, top_y)
-    sb.add_junction(mid_x, top_y)
+    mid_x = g(86)
+    sb.add_wire(r1_pins["2"][0], r1_pins["2"][1], mid_x, top_vbus_y)
+    sb.add_junction(mid_x, top_vbus_y)
 
-    # VBUS_SENSE goes RIGHT
-    vbus_hx = mid_x + g(20)
-    sb.add_wire(mid_x, top_y, vbus_hx, top_y)
-    sb.add_hlabel("VBUS_SENSE", "output", vbus_hx, top_y, angle=0)
-
-    # R2 hangs DOWN to GND (x = mid_x >= g(100), completely right of USB_DM/DP at g(80)!)
-    r2_cy = top_y + g(12)
-    r2_pins = sb.place_symbol(r_sym, "R2", "162k_0.5%_E96", mid_x, r2_cy, angle=0,
+    r2_pins = sb.place_symbol(r_sym, "R2", "162k_0.5%_E96", mid_x, g(46), angle=0,
                               ref_offset=(g(4), -g(1), 0), val_offset=(g(4), g(1), 0))
-    sb.add_wire(mid_x, top_y, r2_pins["1"][0], r2_pins["1"][1])
-    sb.add_wire(r2_pins["2"][0], r2_pins["2"][1], r2_pins["2"][0], r2_pins["2"][1] + g(5))
-    sb.place_power("GND", r2_pins["2"][0], r2_pins["2"][1] + g(5))
+    sb.add_wire(mid_x, top_vbus_y, r2_pins["1"][0], r2_pins["1"][1])
+    sb.add_wire(r2_pins["2"][0], r2_pins["2"][1], mid_x, g(54))
+    sb.place_power("GND", mid_x, g(54))
 
-    sb.add_rect(g(14), g(104), g(195), g(168), width=0.254, color=(20, 90, 40, 1.0))
+    # Direct VBUS_SENSE wire to P1 #4 (GPIO18)
+    p4x, p4y = p1_pins["4"]
+    vs_drop_x = g(141)
+    sb.add_wire_poly([(mid_x, top_vbus_y), (vs_drop_x, top_vbus_y), (vs_drop_x, p4y), (p4x, p4y)])
+    sb.add_label("VBUS_SENSE", g(108), top_vbus_y, angle=0)
+
     sb.add_text(
-        "VBUS DIVIDER DESIGN & VERIFICATION NOTES (docs/WIRING.md §6.2.1)\n"
-        "- Owner decision (2026-11-26, #174): Use 0.5% E96 pair R1=130 kOhm, R2=162 kOhm.\n"
-        "  (Alternative 1% E24 pair: R1=120k, R2=150k — NEVER mix E96 and E24 pairs!)\n"
-        "- Ratio R2/(R1+R2) = 0.5548: VBUS=4.75V -> 2.635V (> VIH_max 2.53V);\n"
-        "  VBUS=5.50V -> 3.051V (< VDD_min 3.18V). ESP_3V3 measured 3.34V [V2].\n"
-        "- Max power ~0.11 mW; standard THT 1/4W metal-film +/-0.5% resistors suffice.\n"
-        "- No ESD clamp diode added on J3 or VBUS sense (#174 / H4 decision).\n"
-        "  R1 (130 kOhm) acts as series current limiter on VBUS sense.\n"
-        "- Kconfig: CONFIG_USB_DEVICE_VBUS_SENSE_GPIO=18, BVALID_OVERRIDE=y, POLL=100ms.\n"
-        "- Safety: PC VBUS MUST NOT touch J3 #1 (VCC_5V). Power ESP32-P4 via H2 BEFORE PC!",
-        g(17), g(107), size=1.35, color=(15, 70, 30, 1.0)
+        "Ratio=0.5548 -> 4.75V:2.64V (>VIH 2.53V), 5.50V:3.05V (<VDD 3.18V). Power H2 BEFORE PC!",
+        g(15), g(63), size=1.1, color=(20, 90, 40, 1.0)
     )
 
-    return sb
-
-
-def build_x630_csi_sheet(root_uuid: str, block_uuid: str) -> SheetBuilder:
-    sb = SheetBuilder(
-        key="x630_csi",
-        title="Geekworm X630 V1.5 (TC358743XBG) MIPI-CSI & Control",
-        rev="1.0",
-        page_num=3,
-        hier_path=f"/{root_uuid}/{block_uuid}",
-        comment_lines=[
-            "docs/WIRING.md §6.1(a) 15pin-to-22pin FFC & §6.1(b) 10pin SH1.0 header",
-            "SAFETY: X630 10-pin #2 HDET outputs 4.8V -> FORBIDDEN to connect to ESP32-P4!",
-        ],
+    # ==================================================================
+    # ZONE 2: Geekworm X630 V1.5 (J4 15p <-> J1 22p Direct FFC + J5 10p -> P1)
+    # ==================================================================
+    j4_names = [
+        "1:3V3", "2:SDA", "3:SCL", "4:REFCLK?", "5:IO0?",
+        "6:GND", "7:CK_P", "8:CK_N", "9:GND", "10:D1_P",
+        "11:D1_N", "12:GND", "13:D0_P", "14:D0_N", "15:GND"
+    ]
+    j4_sym = make_conn_1xN(
+        "quad_ipkvm:X630_CSI_15P", 15, j4_names,
+        width_units=14, spacing_units=3,
+        footprint="Connector_FFC-FPC:Molex_52207-1585_1x15-1MP_P1.00mm_Horizontal"
     )
-    sb.add_text("Sheet 3: Geekworm X630 V1.5 (TC358743XBG) — CSI FFC & 10-pin Control", g(14), g(12), size=2.2, bold=True)
+    j4_pins = sb.place_symbol(j4_sym, "J4", "X630_CSI_15P", g(23), g(108))
 
     j1_names = [
         "1:3V3", "2:SDA(G7)", "3:SCL(G8)", "4:GND?", "5:CSI_IO1",
@@ -1261,327 +1096,361 @@ def build_x630_csi_sheet(root_uuid: str, block_uuid: str) -> SheetBuilder:
         "power_in", "bidirectional", "bidirectional", "power_in", "bidirectional",
         "bidirectional", "power_in"
     ]
-    j1_sym = make_conn_1xN(
+    j1_sym = make_conn_1xN_left(
         "quad_ipkvm:ESP32-P4-ETH_J1_CSI_22P", 22, j1_names, j1_types,
-        width_units=16, spacing_units=4,
+        width_units=14, spacing_units=3,
         footprint="Connector_FFC-FPC:Hirose_FH12-22S-0.5SH_1x22-1MP_P0.50mm_Horizontal"
     )
-    j1_pins = sb.place_symbol(j1_sym, "J1", "ESP_J1_CSI_22P", g(32), g(80))
-
-    j4_names = [
-        "1:3V3", "2:SDA", "3:SCL", "4:REFCLK?[est]", "5:IO0?[est]",
-        "6:GND", "7:CK_P", "8:CK_N", "9:GND", "10:D1_P",
-        "11:D1_N", "12:GND", "13:D0_P", "14:D0_N", "15:GND"
-    ]
-    j4_sym = make_conn_1xN_left(
-        "quad_ipkvm:X630_CSI_15P", 15, j4_names,
-        width_units=16, spacing_units=4,
-        footprint="Connector_FFC-FPC:Molex_52207-1585_1x15-1MP_P1.00mm_Horizontal"
-    )
-    j4_pins = sb.place_symbol(j4_sym, "J4", "X630_CSI_15P", g(138), g(66))
+    j1_pins = sb.place_symbol(j1_sym, "J1", "ESP_J1_CSI_22P", g(110), g(119))
 
     for p in ["4", "7", "8", "9", "10", "11", "12"]:
         sb.add_nc(*j1_pins[p])
 
-    # Single shared GND bus trunk for J1 (13,16,19,22) and J4 (6,9,12,15) -> ZERO overlap with adjacent signal labels!
-    j1_gnds = [j1_pins[p] for p in ["13", "16", "19", "22"]]
-    j1_gx = j1_gnds[0][0] + g(14)
-    for idx, (px, py) in enumerate(j1_gnds):
-        sb.add_wire(px, py, j1_gx, py)
-        if idx > 0:
-            sb.add_wire(j1_gx, j1_gnds[idx - 1][1], j1_gx, py)
-            sb.add_junction(j1_gx, py)
-    sb.add_wire(j1_gx, j1_gnds[-1][1], j1_gx, j1_gnds[-1][1] + g(4))
-    sb.place_power("GND", j1_gx, j1_gnds[-1][1] + g(4))
+    # Shared +3V3 on J4 #1 & J1 #1
+    sb.add_wire(j4_pins["1"][0], j4_pins["1"][1], j4_pins["1"][0] + g(5), j4_pins["1"][1])
+    sb.place_power("+3V3", j4_pins["1"][0] + g(5), j4_pins["1"][1])
+    sb.add_wire(j1_pins["1"][0], j1_pins["1"][1], j1_pins["1"][0] - g(5), j1_pins["1"][1])
+    sb.place_power("+3V3", j1_pins["1"][0] - g(5), j1_pins["1"][1])
 
+    # Direct staircase wires J4 <-> J1 for all signal pairs (unique step_x right of I2C trunk g(48)/g(52))
+    ffc_direct = [
+        ("2", "2", "I2C_SDA"),
+        ("3", "3", "I2C_SCL"),
+        ("4", "5", "CSI_IO1"),
+        ("5", "6", "CSI_IO0"),
+        ("7", "14", "CSI_CLK_P"),
+        ("8", "15", "CSI_CLK_N"),
+        ("10", "17", "CSI_D1_P"),
+        ("11", "18", "CSI_D1_N"),
+        ("13", "20", "CSI_D0_P"),
+        ("14", "21", "CSI_D0_N"),
+    ]
+    for idx, (p4, p1, nname) in enumerate(ffc_direct):
+        if nname in ("I2C_SDA", "I2C_SCL"):
+            continue
+        x4, y4 = j4_pins[p4]
+        x1, y1 = j1_pins[p1]
+        step_x = g(56 + (idx - 2) * 3)  # g(56)..g(77) — clean gap right of I2C trunk & left of J1 GND bus
+        sb.add_wire_poly([(x4, y4), (step_x, y4), (step_x, y1), (x1, y1)])
+        sb.add_label(nname, g(92), y1, angle=180)
+
+    # GND buses on J4 and J1
     j4_gnds = [j4_pins[p] for p in ["6", "9", "12", "15"]]
-    j4_gx = j4_gnds[0][0] - g(14)
+    j4_gx = g(40)
     for idx, (px, py) in enumerate(j4_gnds):
         sb.add_wire(px, py, j4_gx, py)
         if idx > 0:
             sb.add_wire(j4_gx, j4_gnds[idx - 1][1], j4_gx, py)
             sb.add_junction(j4_gx, py)
-    sb.add_wire(j4_gx, j4_gnds[-1][1], j4_gx, j4_gnds[-1][1] + g(4))
-    sb.place_power("GND", j4_gx, j4_gnds[-1][1] + g(4))
+    sb.add_wire(j4_gx, j4_gnds[-1][1], j4_gx, j4_gnds[-1][1] + g(3))
+    sb.place_power("GND", j4_gx, j4_gnds[-1][1] + g(3))
 
-    ffc_nets = [
-        ("1", "1", "FFC_3V3"),
-        ("2", "2", "I2C_SDA"),
-        ("3", "3", "I2C_SCL"),
-        ("5", "4", "FFC_IO1_R43NC"),
-        ("6", "5", "FFC_IO0_R42PU"),
-        ("14", "7", "CSI_CLK_P"),
-        ("15", "8", "CSI_CLK_N"),
-        ("17", "10", "CSI_D1_P"),
-        ("18", "11", "CSI_D1_N"),
-        ("20", "13", "CSI_D0_P"),
-        ("21", "14", "CSI_D0_N"),
-    ]
-    for p1, p4, nname in ffc_nets:
-        x1, y1 = j1_pins[p1]
-        x4, y4 = j4_pins[p4]
-        if nname == "FFC_3V3":
-            sb.add_wire(x1, y1, x1 + g(6), y1)
-            sb.place_power("+3V3", x1 + g(6), y1)
-            sb.add_wire(x4, y4, x4 - g(6), y4)
-            sb.place_power("+3V3", x4 - g(6), y4)
-        else:
-            # Rightward wire from J1 -> angle=0 puts text to the RIGHT cleanly!
-            sb.add_wire(x1, y1, x1 + g(8), y1)
-            sb.add_label(nname, x1 + g(8), y1, angle=0)
-            # Leftward wire from J4 -> angle=180 puts text to the LEFT cleanly!
-            sb.add_wire(x4, y4, x4 - g(8), y4)
-            sb.add_label(nname, x4 - g(8), y4, angle=180)
+    j1_gnds = [j1_pins[p] for p in ["13", "16", "19", "22"]]
+    j1_gx = g(95)
+    for idx, (px, py) in enumerate(j1_gnds):
+        sb.add_wire(px, py, j1_gx, py)
+        if idx > 0:
+            sb.add_wire(j1_gx, j1_gnds[idx - 1][1], j1_gx, py)
+            sb.add_junction(j1_gx, py)
+    sb.add_wire(j1_gx, j1_gnds[-1][1], j1_gx, j1_gnds[-1][1] + g(3))
+    sb.place_power("GND", j1_gx, j1_gnds[-1][1] + g(3))
 
-    # Hierarchical I2C labels
-    for idx, (hname, shape) in enumerate([("I2C_SDA", "bidirectional"), ("I2C_SCL", "output")]):
-        hx, hy = g(196), g(34 + idx * 8)
-        sb.add_hlabel(hname, shape, hx, hy, angle=180)
-        sb.add_wire(hx, hy, hx + g(8), hy)
-        sb.add_label(hname, hx + g(8), hy, angle=0)
-
-    # J5: X630 10-pin SH1.0 Connector
+    # J5 X630 10-pin SH1.0 Connector (bottom-left of Zone 2)
     j5_names = [
         "1:3V3_OUT", "2:HDET_4.8V!", "3:IR", "4:INT", "5:RESET_N",
         "6:A_SCK", "7:A_WFS", "8:A_OSCK", "9:A_SD", "10:GND"
     ]
     j5_sym = make_conn_1xN(
         "quad_ipkvm:X630_10P_SH1", 10, j5_names,
-        width_units=16, spacing_units=6,
+        width_units=16, spacing_units=3,
         footprint="Connector_JST:JST_SH_BM10B-SRSS-TB_1x10-1MP_P1.00mm_Horizontal"
     )
-    j5_pins = sb.place_symbol(j5_sym, "J5", "X630_10P_SH1.0", g(196), g(96))
+    j5_pins = sb.place_symbol(j5_sym, "J5", "X630_10P_SH1.0", g(28), g(176))
     for p in ["1", "2", "3", "6", "7", "8", "9"]:
         sb.add_nc(*j5_pins[p])
-    sb.add_text("FORBIDDEN: 4.8V! DO NOT CONNECT", j5_pins["2"][0] + g(2), j5_pins["2"][1] - g(1),
-                size=1.27, bold=True, color=(200, 0, 0, 1.0))
+    sb.add_text("FORBIDDEN: 4.8V!", j5_pins["2"][0] + g(2), j5_pins["2"][1] - g(1), size=1.15, bold=True, color=(200, 0, 0, 1.0))
+    sb.add_wire(j5_pins["10"][0], j5_pins["10"][1], j5_pins["10"][0] + g(4), j5_pins["10"][1])
+    sb.place_power("GND", j5_pins["10"][0] + g(4), j5_pins["10"][1])
 
-    x4, y4 = j5_pins["4"]
-    sb.add_wire(x4, y4, x4 + g(14), y4)
-    sb.add_hlabel("X630_INT", "output", x4 + g(14), y4, angle=0)
-    sb.add_text("TODO(hw-verify) B6: Check High V", x4 + g(2), y4 - g(2), size=1.14, color=(120, 30, 150, 1.0))
+    # Direct wires: J5 #4 (INT) -> P1 #5 (GPIO17); J5 #5 (RESET) -> P1 #6 (GPIO16)
+    j5_4x, j5_4y = j5_pins["4"]
+    p5x, p5y = p1_pins["5"]
+    sb.add_wire_poly([(j5_4x, j5_4y), (g(132), j5_4y), (g(132), p5y), (p5x, p5y)])
+    sb.add_label("X630_INT[B6]", g(92), j5_4y, angle=0)
 
-    x5, y5 = j5_pins["5"]
-    sb.add_wire(x5, y5, x5 + g(14), y5)
-    sb.add_hlabel("X630_RESET_N", "input", x5 + g(14), y5, angle=0)
-    sb.add_text("OD Active-Low, ~20k PU [Verified]", x5 + g(2), y5 + g(2), size=1.14, color=(20, 110, 40, 1.0))
+    j5_5x, j5_5y = j5_pins["5"]
+    p6x, p6y = p1_pins["6"]
+    sb.add_wire_poly([(j5_5x, j5_5y), (g(128), j5_5y), (g(128), p6y), (p6x, p6y)])
+    sb.add_label("X630_RESET_N", g(92), j5_5y, angle=0)
 
-    gx, gy = j5_pins["10"]
-    sb.add_wire(gx, gy, gx + g(6), gy)
-    sb.place_power("GND", gx + g(6), gy)
-
-    sb.add_rect(g(14), g(158), g(240), g(196), width=0.254, color=(30, 80, 160, 1.0))
-    sb.add_text(
-        "X630 V1.5 (TC358743XBG) NOTES (docs/WIRING.md §6.1)\n"
-        "- I2C Address: 0x0F (verified at 100 kHz, 27 MHz onboard XTAL, Chip ID 0x0000).\n"
-        "- CSI 2-lane capture verified (1080p30 / 720p60) via 15p <-> 22p conversion FFC.\n"
-        "- J1 R44/R46 2.2k I2C pull-ups to ESP_3V3 on ESP32-P4-ETH PCB.\n"
-        "- X630 #5 RESET wired to P1 #6 (GPIO16, Open-Drain); #10 GND wired to P1 #8.",
-        g(17), g(161), size=1.35, color=(20, 50, 120, 1.0)
-    )
-
-    return sb
-
-
-def build_i2c_oled_sheet(root_uuid: str, block_uuid: str) -> SheetBuilder:
-    sb = SheetBuilder(
-        key="i2c_oled_panel",
-        title="Shared I2C Bus, SSD1306 OLED & MCP23017 Panel",
-        rev="1.0",
-        page_num=4,
-        hier_path=f"/{root_uuid}/{block_uuid}",
-        comment_lines=[
-            "docs/WIRING.md §6.3 & docs/OLED3_PLAN.md (I2C 3.3V <=400kHz, PCB 2.2k PU R44/R46)",
-            "CRITICAL: SSCI-016506 /RESET tied high internally — NEVER place ATX/KVM on MCP23017!",
-        ],
-    )
-    sb.add_text("Sheet 4: Shared I2C Bus — SSD1306 OLED (0x3C/3D) & MCP23017 Panel (0x20)", g(14), g(12), size=2.2, bold=True)
-
-    # Hierarchical I2C Inputs
-    sb.add_hlabel("I2C_SDA", "bidirectional", g(32), g(28), angle=180)
-    sb.add_wire(g(32), g(28), g(42), g(28))
-    sb.add_label("I2C_SDA", g(42), g(28), angle=0)
-
-    sb.add_hlabel("I2C_SCL", "input", g(32), g(36), angle=180)
-    sb.add_wire(g(32), g(36), g(42), g(36))
-    sb.add_label("I2C_SCL", g(42), g(36), angle=0)
-
-    # J6: SSD1306 OLED with g(8) = 10.16 mm spacing so +3V3 & GND have zero text collision!
+    # ==================================================================
+    # ZONE 3: Shared I2C Bus -> SSD1306 OLED (J6) & MCP23017 (U3)
+    # ==================================================================
     j6_sym = make_conn_1xN(
         "quad_ipkvm:SSD1306_OLED_4P", 4,
         ["GND", "VCC(+3V3)", "SCL", "SDA"],
         ["power_in", "power_in", "input", "bidirectional"],
-        width_units=16, spacing_units=8,
+        width_units=16, spacing_units=6,
         footprint="Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical"
     )
-    j6_pins = sb.place_symbol(j6_sym, "J6", "SSD1306_OLED_0x3C", g(40), g(68))
-    sb.add_wire(j6_pins["1"][0], j6_pins["1"][1], j6_pins["1"][0] + g(8), j6_pins["1"][1])
-    sb.place_power("GND", j6_pins["1"][0] + g(8), j6_pins["1"][1])
-    sb.add_wire(j6_pins["2"][0], j6_pins["2"][1], j6_pins["2"][0] + g(14), j6_pins["2"][1])
-    sb.place_power("+3V3", j6_pins["2"][0] + g(14), j6_pins["2"][1])
-    for pnum, lbl in [("3", "I2C_SCL"), ("4", "I2C_SDA")]:
-        px, py = j6_pins[pnum]
-        sb.add_wire(px, py, px + g(8), py)
-        sb.add_label(lbl, px + g(8), py, angle=0)
+    j6_pins = sb.place_symbol(j6_sym, "J6", "SSD1306_OLED_0x3C", g(22), g(236))
+    sb.add_wire(j6_pins["1"][0], j6_pins["1"][1], j6_pins["1"][0] + g(3), j6_pins["1"][1])
+    sb.place_power("GND", j6_pins["1"][0] + g(3), j6_pins["1"][1])
+    sb.add_wire(j6_pins["2"][0], j6_pins["2"][1], j6_pins["2"][0] + g(8), j6_pins["2"][1])
+    sb.place_power("+3V3", j6_pins["2"][0] + g(8), j6_pins["2"][1])
 
-    # U3: MCP23017 SSCI-016506
     u3_sym = make_mcp23017_module()
-    u3_pins = sb.place_symbol(u3_sym, "U3", "MCP23017_SSCI-016506_0x20", g(144), g(96))
-
-    vx, vy = u3_pins["1"]
-    sb.add_wire(vx, vy, vx - g(8), vy)
-    sb.place_power("+3V3", vx - g(8), vy)
-
-    gx, gy = u3_pins["2"]
-    sb.add_wire(gx, gy, gx - g(8), gy)
-    sb.place_power("GND", gx - g(8), gy)
-
-    for pnum, lbl in [("3", "I2C_SCL"), ("4", "I2C_SDA")]:
-        px, py = u3_pins[pnum]
-        sb.add_wire(px, py, px - g(8), py)
-        sb.add_label(lbl, px - g(8), py, angle=180)
+    u3_pins = sb.place_symbol(u3_sym, "U3", "MCP23017_SSCI-016506_0x20", g(120), g(262))
+    sb.add_wire(u3_pins["1"][0], u3_pins["1"][1], u3_pins["1"][0] - g(6), u3_pins["1"][1])
+    sb.place_power("+3V3", u3_pins["1"][0] - g(6), u3_pins["1"][1])
+    sb.add_wire(u3_pins["2"][0], u3_pins["2"][1], u3_pins["2"][0] - g(6), u3_pins["2"][1])
+    sb.place_power("GND", u3_pins["2"][0] - g(6), u3_pins["2"][1])
 
     sw_sym = make_switch_push()
-    b0x, b0y = u3_pins["5"]
-    sw5_pins = sb.place_symbol(sw_sym, "SW5", "BTN_OLED", b0x - g(16), b0y,
+    sw5_pins = sb.place_symbol(sw_sym, "SW5", "BTN_OLED", u3_pins["5"][0] - g(14), u3_pins["5"][1],
                                ref_offset=(0, -g(3), 0), val_offset=(0, g(3), 0))
-    sb.add_wire(b0x, b0y, sw5_pins["2"][0], sw5_pins["2"][1])
-    sb.add_wire(sw5_pins["1"][0], sw5_pins["1"][1], sw5_pins["1"][0] - g(6), sw5_pins["1"][1])
-    sb.place_power("GND", sw5_pins["1"][0] - g(6), sw5_pins["1"][1])
+    sb.add_wire(u3_pins["5"][0], u3_pins["5"][1], sw5_pins["2"][0], sw5_pins["2"][1])
+    sb.add_wire(sw5_pins["1"][0], sw5_pins["1"][1], sw5_pins["1"][0] - g(4), sw5_pins["1"][1])
+    sb.place_power("GND", sw5_pins["1"][0] - g(4), sw5_pins["1"][1])
 
     for pnum in [str(i) for i in range(6, 13)]:
         sb.add_nc(*u3_pins[pnum])
 
-    r_sym = make_resistor()
     led_sym = make_led()
     for ch in range(1, 5):
-        pnum = str(12 + ch)
-        ax, ay = u3_pins[pnum]
-        r_cx = ax + g(14)
-        r_pins = sb.place_symbol(r_sym, f"R{9+ch}", "R_LED_TBD[G6]", r_cx, ay, angle=90,
-                                 ref_offset=(0, -g(3), 0), val_offset=(0, g(3), 0))
-        sb.add_wire(ax, ay, r_pins["1"][0], r_pins["1"][1])
-        d_cx = r_pins["2"][0] + g(14)
-        d_pins = sb.place_symbol(led_sym, f"D{ch}", f"PANEL_LED_CH{ch}", d_cx, ay, angle=180,
-                                 ref_offset=(0, -g(3), 0), val_offset=(0, g(3), 0))
-        sb.add_wire(r_pins["2"][0], r_pins["2"][1], d_pins["2"][0], d_pins["2"][1])
-        sb.add_wire(d_pins["1"][0], d_pins["1"][1], d_pins["1"][0] + g(6), d_pins["1"][1])
-        sb.place_power("GND", d_pins["1"][0] + g(6), d_pins["1"][1])
+        ax, ay = u3_pins[str(12 + ch)]
+        rp = sb.place_symbol(r_sym, f"R{9+ch}", "R_TBD[G6]", ax + g(12), ay, angle=90,
+                             ref_offset=(0, -g(2), 0), val_offset=(0, g(2), 0))
+        sb.add_wire(ax, ay, rp["1"][0], rp["1"][1])
+        dp = sb.place_symbol(led_sym, f"D{ch}", f"LED_CH{ch}", rp["2"][0] + g(12), ay, angle=180,
+                             ref_offset=(0, -g(2), 0), val_offset=(0, g(2), 0))
+        sb.add_wire(rp["2"][0], rp["2"][1], dp["2"][0], dp["2"][1])
+        sb.add_wire(dp["1"][0], dp["1"][1], dp["1"][0] + g(4), dp["1"][1])
+        sb.place_power("GND", dp["1"][0] + g(4), dp["1"][1])
 
     for ch in range(1, 5):
-        pnum = str(16 + ch)
-        bx, by = u3_pins[pnum]
-        sw_cx = bx + g(16)
-        sw_pins = sb.place_symbol(sw_sym, f"SW{ch}", f"BTN_CH{ch}", sw_cx, by,
-                                  ref_offset=(0, -g(3), 0), val_offset=(0, g(3), 0))
-        sb.add_wire(bx, by, sw_pins["1"][0], sw_pins["1"][1])
-        sb.add_wire(sw_pins["2"][0], sw_pins["2"][1], sw_pins["2"][0] + g(6), sw_pins["2"][1])
-        sb.place_power("GND", sw_pins["2"][0] + g(6), sw_pins["2"][1])
+        bx, by = u3_pins[str(16 + ch)]
+        swp = sb.place_symbol(sw_sym, f"SW{ch}", f"BTN_CH{ch}", bx + g(14), by,
+                              ref_offset=(0, -g(2), 0), val_offset=(0, g(2), 0))
+        sb.add_wire(bx, by, swp["1"][0], swp["1"][1])
+        sb.add_wire(swp["2"][0], swp["2"][1], swp["2"][0] + g(4), swp["2"][1])
+        sb.place_power("GND", swp["2"][0] + g(4), swp["2"][1])
 
-    sb.add_rect(g(14), g(158), g(220), g(214), width=0.254, color=(30, 80, 160, 1.0))
+    # Continuous Shared I2C Bus linking P1 #16/#17, J4 #2/#3, J1 #2/#3, J6 #3/#4, and U3 #3/#4!
+    # SDA vertical trunk x = g(48); SCL vertical trunk x = g(52)
+    sda_x, scl_x = g(48), g(52)
+    j4_sda, j1_sda = j4_pins["2"], j1_pins["2"]
+    j6_sda, u3_sda = j6_pins["4"], u3_pins["4"]
+    p1_sda = p1_pins["17"]
+
+    def build_trunk(trunk_x: float, stops_raw: List[Tuple[float, Tuple[float, float]]]) -> None:
+        by_y: Dict[float, List[Tuple[float, float]]] = {}
+        for y, seg in stops_raw:
+            by_y.setdefault(y, []).append(seg)
+        ys = sorted(by_y.keys())
+        for idx, y in enumerate(ys):
+            for x_a, x_b in by_y[y]:
+                sb.add_wire(x_a, y, x_b, y)
+            if idx > 0:
+                sb.add_wire(trunk_x, ys[idx - 1], trunk_x, y)
+            horiz_cnt = len(by_y[y])
+            vert_cnt = (1 if idx > 0 else 0) + (1 if idx < len(ys) - 1 else 0)
+            if horiz_cnt + vert_cnt >= 3:
+                sb.add_junction(trunk_x, y)
+
+    build_trunk(sda_x, [
+        (j4_sda[1], (j4_sda[0], sda_x)),
+        (j1_sda[1], (sda_x, j1_sda[0])),
+        (g(156), (sda_x, g(138))),
+        (j6_sda[1], (j6_sda[0], sda_x)),
+        (u3_sda[1], (sda_x, u3_sda[0])),
+    ])
+    sb.add_wire_poly([(g(138), g(156)), (g(138), p1_sda[1]), (p1_sda[0], p1_sda[1])])
+    sb.add_label("I2C_SDA", g(76), g(156), angle=0)
+
+    j4_scl, j1_scl = j4_pins["3"], j1_pins["3"]
+    j6_scl, u3_scl = j6_pins["3"], u3_pins["3"]
+    p1_scl = p1_pins["16"]
+    build_trunk(scl_x, [
+        (j4_scl[1], (j4_scl[0], scl_x)),
+        (j1_scl[1], (scl_x, j1_scl[0])),
+        (g(152), (scl_x, g(135))),
+        (j6_scl[1], (j6_scl[0], scl_x)),
+        (u3_scl[1], (scl_x, u3_scl[0])),
+    ])
+    sb.add_wire_poly([(g(135), g(152)), (g(135), p1_scl[1]), (p1_scl[0], p1_scl[1])])
+    sb.add_label("I2C_SCL", g(76), g(152), angle=0)
+
     sb.add_text(
-        "SHARED I2C BUS & MCP23017 PANEL NOTES (docs/WIRING.md §6.3, HW_VERIFY G1-G9)\n"
-        "- I2C Pull-Ups: ESP32-P4-ETH PCB has R44/R46 = 2.2kOhm -> ESP_3V3.\n"
-        "  SSCI-016506 has R1/R2 unpopulated; verify OLED module PU & combined R [G3].\n"
-        "- I2C Addresses: TC358743=0x0F [ok], MCP23017=0x20, SSD1306=0x3C/0x3D, ES8311=? [G2].\n"
-        "- SSCI-016506 INTA/INTB/~RESET are NOT exposed on module header (internal 10k+0.1uF\n"
-        "  on /RESET); polling operation only. SW1..SW5 use MCP23017 internal 100k pull-ups.\n"
-        "- OLED-3 display policy: 30s auto-off, no I2C traffic when OFF, 1Hz dirty-page update.\n"
-        "- NEVER route ATX (A0/A1/~E_*) or KVM LED truth inputs through MCP23017!",
-        g(17), g(161), size=1.35, color=(20, 50, 120, 1.0)
+        "PCB has R44/R46 2.2k I2C PU -> +3V3. SSCI-016506 /RESET fixed internally (polling only; NO ATX/KVM!).",
+        g(15), g(310), size=1.1, color=(120, 50, 0, 1.0)
     )
 
-    return sb
-
-
-def build_atx_kvm_sheet(root_uuid: str, block_uuid: str) -> SheetBuilder:
-    sb = SheetBuilder(
-        key="atx_kvm_ctrl",
-        title="4ch ATX & KVM Switch Control (74HC139 x2 + Photorelays + Opto LED)",
-        rev="1.0",
-        page_num=5,
-        hier_path=f"/{root_uuid}/{block_uuid}",
-        comment_lines=[
-            "docs/WIRING.md §6.4 & docs/PLAN.md §4 (Direct GPIO only; A0/A1 PD 100k, ~E PU 10k)",
-            "TODO(hw-verify): Photorelay/Optocoupler PNs, R values, sink current [A1-A8, C1-C7]",
-        ],
-    )
-    sb.add_text("Sheet 5: 4ch ATX & KVM Control (Direct GPIO + 74HC139 x2 + Isolated Drivers/Inputs)",
-                g(14), g(12), size=2.2, bold=True)
-
-    r_sym = make_resistor()
-    c_sym = make_cap()
+    # ==================================================================
+    # ZONE 4: 4ch ATX & KVM Outputs (Pulls -> 74HC139 x2 -> 12x Photorelays)
+    # ==================================================================
     dec_sym = make_74hc139()
     pr_sym = make_photorelay()
-    opto_sym = make_optocoupler()
 
-    # Fail-safe pull-downs (A0/A1 100k->GND) & pull-ups (~E_* 10k->+3V3) with staggered tap X for zero vertical overlap
-    ctrl_inputs = [
-        ("KVM_A0", "input", "R3", "100k", False, g(40)),
-        ("KVM_A1", "input", "R4", "100k", False, g(46)),
-        ("~{E_PWR}", "input", "R5", "10k", True, g(54)),
-        ("~{E_RST}", "input", "R6", "10k", True, g(40)),
-        ("~{E_KVM}", "input", "R7", "10k", True, g(52)),
+    # Connect P1 #35 (A0), #34 (A1) -> vertical A0/A1 trunks (x = g(236), g(240)) feeding U1 u1, U1 u2, U2 u1
+    # Plus fail-safe 100k PD resistors R3, R4 at top of trunks!
+    a0_x, a1_x = g(244), g(250)
+    u1_u1 = sb.place_symbol(dec_sym, "U1", "74HC139", g(276), g(46), unit=1)
+    u1_u2 = sb.place_symbol(dec_sym, "U1", "74HC139", g(276), g(108), unit=2)
+    u2_u1 = sb.place_symbol(dec_sym, "U2", "74HC139", g(276), g(170), unit=1)
+
+    # R3 (100k PD on A0) and R4 (100k PD on A1) placed cleanly at y = g(28), g(32) above P1 route
+    r3_pins = sb.place_symbol(r_sym, "R3", "100k_PD", g(228), g(32), angle=0,
+                              ref_offset=(g(3), -g(1), 0), val_offset=(g(3), g(1), 0))
+    sb.add_wire(r3_pins["2"][0], r3_pins["2"][1], r3_pins["2"][0], r3_pins["2"][1] + g(2))
+    sb.place_power("GND", r3_pins["2"][0], r3_pins["2"][1] + g(2))
+
+    r4_pins = sb.place_symbol(r_sym, "R4", "100k_PD", g(224), g(50), angle=0,
+                              ref_offset=(-g(4), -g(1), 0), val_offset=(-g(4), g(1), 0))
+    sb.add_wire(r4_pins["2"][0], r4_pins["2"][1], r4_pins["2"][0], r4_pins["2"][1] + g(2))
+    sb.place_power("GND", r4_pins["2"][0], r4_pins["2"][1] + g(2))
+
+    # Build A0 trunk (a0_x = g(244)): connects R3 top, P1 #35 -> elbow, U1 u1 pin 2, U1 u2 pin 14, U2 u1 pin 2
+    p35x, p35y = p1_pins["35"]
+    sb.add_wire_poly([(p35x, p35y), (g(218), p35y), (g(218), r3_pins["1"][1] - g(2)), (r3_pins["1"][0], r3_pins["1"][1] - g(2)), (a0_x, r3_pins["1"][1] - g(2))])
+    sb.add_wire(r3_pins["1"][0], r3_pins["1"][1], r3_pins["1"][0], r3_pins["1"][1] - g(2))
+    sb.add_junction(r3_pins["1"][0], r3_pins["1"][1] - g(2))
+    sb.add_label("KVM_A0", g(220), r3_pins["1"][1] - g(2), angle=0)
+
+    a0_ys = [r3_pins["1"][1] - g(2), u1_u1["2"][1], u1_u2["14"][1], u2_u1["2"][1]]
+    a0_pins_x = [None, u1_u1["2"][0], u1_u2["14"][0], u2_u1["2"][0]]
+    for i, y in enumerate(a0_ys):
+        if a0_pins_x[i] is not None:
+            sb.add_wire(a0_x, y, a0_pins_x[i], y)
+        if i > 0:
+            sb.add_wire(a0_x, a0_ys[i - 1], a0_x, y)
+        if 0 < i < len(a0_ys) - 1:
+            sb.add_junction(a0_x, y)
+
+    # Build A1 trunk (a1_x = g(250)): connects P1 #34 -> elbow, R4 top (placed BEFORE ~E_PWR tap_x=g(230)!), U1/U2
+    p34x, p34y = p1_pins["34"]
+    a1_top_y = u1_u1["3"][1]  # g(45)
+    sb.add_wire_poly([(p34x, p34y), (g(221), p34y), (g(221), a1_top_y), (r4_pins["1"][0], a1_top_y), (a1_x, a1_top_y), (u1_u1["3"][0], a1_top_y)])
+    sb.add_wire(r4_pins["1"][0], r4_pins["1"][1], r4_pins["1"][0], a1_top_y)
+    sb.add_junction(r4_pins["1"][0], a1_top_y)
+    sb.add_junction(a1_x, a1_top_y)
+    sb.add_label("KVM_A1", g(226), a1_top_y, angle=0)
+    sb.add_wire(a1_x, a1_top_y, a1_x, u1_u2["13"][1])
+    sb.add_junction(a1_x, u1_u2["13"][1])
+    sb.add_wire(a1_x, u1_u2["13"][1], u1_u2["13"][0], u1_u2["13"][1])
+    sb.add_wire(a1_x, u1_u2["13"][1], a1_x, u2_u1["3"][1])
+    sb.add_wire(a1_x, u2_u1["3"][1], u2_u1["3"][0], u2_u1["3"][1])
+
+    # ~{E_PWR} (P1 #32), ~{E_RST} (P1 #31), ~{E_KVM} (P1 #24) with 10k PU (R5, R6, R7) directly into 74HC139 ~G pins
+    en_routes = [
+        ("32", "~{E_PWR}", u1_u1["1"], "R5", g(230), g(256)),
+        ("31", "~{E_RST}", u1_u2["15"], "R6", g(233), g(258)),
+        ("24", "~{E_KVM}", u2_u1["1"], "R7", g(236), g(260)),
     ]
-    for idx, (hname, shape, rref, rval, pull_up, jx) in enumerate(ctrl_inputs):
-        hy = g(26 + idx * 18)
-        hx = g(28)
-        sb.add_hlabel(hname, shape, hx, hy, angle=180)
-        lx = g(64)
-        sb.add_wire(hx, hy, jx, hy)
-        sb.add_wire(jx, hy, lx, hy)
-        sb.add_junction(jx, hy)
-        sb.add_label(hname, lx, hy, angle=0)
-        if pull_up:
-            rcx, rcy = jx, hy - g(6)
-            rp = sb.place_symbol(r_sym, rref, rval, rcx, rcy, angle=0,
-                                 ref_offset=(g(3), -g(1), 0), val_offset=(g(3), g(1), 0))
-            sb.add_wire(jx, hy, rp["2"][0], rp["2"][1])
-            sb.add_wire(rp["1"][0], rp["1"][1], rp["1"][0], rp["1"][1] - g(2))
-            sb.place_power("+3V3", rp["1"][0], rp["1"][1] - g(2))
-        else:
-            rcx, rcy = jx, hy + g(6)
-            rp = sb.place_symbol(r_sym, rref, rval, rcx, rcy, angle=0,
-                                 ref_offset=(g(3), -g(1), 0), val_offset=(g(3), g(1), 0))
-            sb.add_wire(jx, hy, rp["1"][0], rp["1"][1])
-            sb.add_wire(rp["2"][0], rp["2"][1], rp["2"][0], rp["2"][1] + g(2))
-            sb.place_power("GND", rp["2"][0], rp["2"][1] + g(2))
+    for pnum, lname, gpin, rref, tap_x, pu_x in en_routes:
+        px, py = p1_pins[pnum]
+        gx, gy = gpin
+        sb.add_wire_poly([(px, py), (tap_x, py), (tap_x, gy), (pu_x, gy)])
+        sb.add_wire(pu_x, gy, gx, gy)
+        rp = sb.place_symbol(r_sym, rref, "10k_PU", pu_x, gy - g(6), angle=0,
+                             ref_offset=(g(3), -g(1), 0), val_offset=(g(3), g(1), 0))
+        sb.add_wire(pu_x, gy, rp["2"][0], rp["2"][1])
+        sb.add_junction(pu_x, gy)
+        sb.add_wire(rp["1"][0], rp["1"][1], rp["1"][0], rp["1"][1] - g(2))
+        sb.place_power("+3V3", rp["1"][0], rp["1"][1] - g(2))
+        sb.add_label(lname, g(238), gy, angle=0)
 
-    # U1 & U2 (74HC139 #1 and #2)
-    u1_u1 = sb.place_symbol(dec_sym, "U1", "74HC139", g(96), g(34), unit=1)
-    for pnum, lbl in [("2", "KVM_A0"), ("3", "KVM_A1"), ("1", "~{E_PWR}")]:
-        px, py = u1_u1[pnum]
-        sb.add_wire(px, py, px - g(6), py)
-        sb.add_label(lbl, px - g(6), py, angle=180)
-    for ch, pnum in enumerate(["4", "5", "6", "7"], start=1):
-        px, py = u1_u1[pnum]
-        sb.add_wire(px, py, px + g(6), py)
-        sb.add_label(f"PWR_DRV_CH{ch}", px + g(6), py, angle=0)
+    # 3 Banks of 4 Photorelays DIRECTLY wired to 74HC139 outputs (no label disconnects!)
+    j2p_sym = make_conn_1xN_left(
+        "quad_ipkvm:Conn_Out_2P", 2, ["OUT_A", "OUT_B"], width_units=8, spacing_units=4,
+        footprint="Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
+    )
+    bank_specs = [
+        ("ATX POWER SW (CH1..4)", u1_u1, ["4", "5", "6", "7"], "PWR_DRV_CH", 1, "J7", "PWR", g(28)),
+        ("ATX RESET SW (CH1..4)", u1_u2, ["12", "11", "10", "9"], "RST_DRV_CH", 5, "J8", "RST", g(90)),
+        ("KVM BUTTON SW (CH1..4)", u2_u1, ["4", "5", "6", "7"], "KVM_DRV_CH", 9, "J9", "KVM", g(152)),
+    ]
+    for title_txt, dec_pins, out_pnums, drv_prefix, k_start, j_ref, tag, y_top in bank_specs:
+        sb.add_text(title_txt, g(330), y_top - g(5), size=1.35, bold=True)
+        for ch_idx, out_p in enumerate(out_pnums):
+            ch = ch_idx + 1
+            k_num = k_start + ch_idx
+            ky = y_top + ch_idx * g(14)
+            kx = g(384)
+            kp = sb.place_symbol(pr_sym, f"K{k_num}", "PhotoMOS_TBD[C1]", kx, ky,
+                                 ref_offset=(0, -g(5), 0), val_offset=(0, g(5), 0))
+            ax, ay = kp["1"]
+            rp = sb.place_symbol(r_sym, f"R{20+k_num}", "R_TBD[C1/C3]", ax - g(8), ay, angle=90,
+                                 ref_offset=(0, -g(4), 0), val_offset=(0, -g(2), 0))
+            sb.add_wire(rp["2"][0], rp["2"][1], ax, ay)
+            sb.add_wire(rp["1"][0], rp["1"][1], rp["1"][0] - g(4), rp["1"][1])
+            sb.place_power("+3V3", rp["1"][0] - g(4), rp["1"][1])
 
-    u1_u2 = sb.place_symbol(dec_sym, "U1", "74HC139", g(96), g(62), unit=2)
-    for pnum, lbl in [("14", "KVM_A0"), ("13", "KVM_A1"), ("15", "~{E_RST}")]:
-        px, py = u1_u2[pnum]
-        sb.add_wire(px, py, px - g(6), py)
-        sb.add_label(lbl, px - g(6), py, angle=180)
-    for ch, pnum in enumerate(["12", "11", "10", "9"], start=1):
-        px, py = u1_u2[pnum]
-        sb.add_wire(px, py, px + g(6), py)
-        sb.add_label(f"RST_DRV_CH{ch}", px + g(6), py, angle=0)
+            dx, dy = dec_pins[out_p]
+            cat_x, cat_y = kp["2"]
+            step_x = g(302 + ch_idx * 6)
+            sb.add_wire_poly([(dx, dy), (step_x, dy), (step_x, cat_y), (cat_x, cat_y)])
+            sb.add_label(f"{drv_prefix}{ch}", g(334), cat_y, angle=0)
 
-    u2_u1 = sb.place_symbol(dec_sym, "U2", "74HC139", g(96), g(90), unit=1)
-    for pnum, lbl in [("2", "KVM_A0"), ("3", "KVM_A1"), ("1", "~{E_KVM}")]:
-        px, py = u2_u1[pnum]
-        sb.add_wire(px, py, px - g(6), py)
-        sb.add_label(lbl, px - g(6), py, angle=180)
-    for ch, pnum in enumerate(["4", "5", "6", "7"], start=1):
-        px, py = u2_u1[pnum]
-        sb.add_wire(px, py, px + g(6), py)
-        sb.add_label(f"KVM_DRV_CH{ch}", px + g(6), py, angle=0)
+            jp = sb.place_symbol(j2p_sym, f"{j_ref}_{ch}", f"{tag}_CH{ch}", kx + g(20), ky,
+                                 ref_offset=(g(12), -g(2), 0), val_offset=(g(12), g(2), 0))
+            sb.add_wire(kp["3"][0], kp["3"][1], jp["1"][0], jp["1"][1])
+            sb.add_wire(kp["4"][0], kp["4"][1], jp["2"][0], jp["2"][1])
 
-    u2_u2 = sb.place_symbol(dec_sym, "U2", "74HC139", g(96), g(118), unit=2)
+    # ==================================================================
+    # ZONE 5: 4ch KVM LED Optocoupler Inputs -> DIRECTLY wired back to P1 #26,#25,#22,#21
+    # ==================================================================
+    opto_sym = make_optocoupler_left_out()
+    j2p_in_sym = make_conn_1xN_left(
+        "quad_ipkvm:Conn_KVM_LED_2P", 2, ["LED+", "LED-"], width_units=8, spacing_units=4,
+        footprint="Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
+    )
+    led_p1_nums = ["26", "25", "22", "21"]
+    for ch in range(1, 5):
+        oy = g(234 + (ch - 1) * 22)
+        ox = g(292)
+        ok_pins = sb.place_symbol(opto_sym, f"OK{ch}", "Opto_TBD[C2]", ox, oy,
+                                  ref_offset=(0, -g(5), 0), val_offset=(0, g(5), 0))
+        # Right side (LED A/K) -> R -> J10_ch
+        rp_in = sb.place_symbol(r_sym, f"R{32+ch}", "R_TBD[A6/C2]", ok_pins["1"][0] + g(10), ok_pins["1"][1], angle=90,
+                                ref_offset=(0, -g(2), 0), val_offset=(0, g(2), 0))
+        jp = sb.place_symbol(j2p_in_sym, f"J10_{ch}", f"KVM_LED_IN{ch}", ox + g(30), oy,
+                             ref_offset=(0, -g(6), 0), val_offset=(0, g(6), 0))
+        sb.add_wire(ok_pins["1"][0], ok_pins["1"][1], rp_in["1"][0], rp_in["1"][1])
+        sb.add_wire(rp_in["2"][0], rp_in["2"][1], jp["1"][0], jp["1"][1])
+        sb.add_wire(ok_pins["2"][0], ok_pins["2"][1], jp["2"][0], jp["2"][1])
+
+        # Left side: Emitter (pin 3) -> GND; Collector (pin 4) -> 10k PU (+3V3) & DIRECT wire to P1!
+        ex, ey = ok_pins["3"]
+        sb.add_wire(ex, ey, ex - g(4), ey)
+        sb.place_power("GND", ex - g(4), ey)
+
+        cx, cy = ok_pins["4"]
+        jx = cx - g(10)
+        rp_pu = sb.place_symbol(r_sym, f"R{36+ch}", "10k_PU", jx, cy - g(7), angle=0,
+                                ref_offset=(-g(4), -g(1), 0), val_offset=(-g(4), g(1), 0))
+        sb.add_wire(cx, cy, jx, cy)
+        sb.add_junction(jx, cy)
+        sb.add_wire(jx, cy, rp_pu["2"][0], rp_pu["2"][1])
+        sb.add_wire(rp_pu["1"][0], rp_pu["1"][1], rp_pu["1"][0], rp_pu["1"][1] - g(2))
+        sb.place_power("+3V3", rp_pu["1"][0], rp_pu["1"][1] - g(2))
+
+        # Direct bus wire from jx LEFT to vertical channel x = g(202 + (ch-1)*3), UP to P1 pin!
+        px, py = p1_pins[led_p1_nums[ch - 1]]
+        bus_x = g(202 + (ch - 1) * 3)
+        sb.add_wire_poly([(jx, cy), (bus_x, cy), (bus_x, py), (px, py)])
+        sb.add_label(f"KVM_LED_CH{ch}", g(236), cy, angle=0)
+
+    # ==================================================================
+    # BOTTOM-RIGHT AREA: 74HC139 Power/Unused Unit & Master Reference Box
+    # ==================================================================
+    sb.add_rect(g(366), g(208), g(456), g(244), width=0.254, stroke_type="dash", color=(110, 40, 160, 1.0))
+    sb.add_text("74HC139 POWER, DECOUPLING & UNUSED HALF", g(369), g(210), size=1.35, bold=True, color=(90, 30, 140, 1.0))
+
+    u2_u2 = sb.place_symbol(dec_sym, "U2", "74HC139", g(384), g(228), unit=2)
     p14x, p14y = u2_u2["14"]
     p13x, p13y = u2_u2["13"]
-    gx = p14x - g(6)
+    gx = p14x - g(4)
     sb.add_wire(p14x, p14y, gx, p14y)
     sb.add_wire(gx, p14y, gx, p13y)
     sb.add_wire(p13x, p13y, gx, p13y)
@@ -1589,109 +1458,40 @@ def build_atx_kvm_sheet(root_uuid: str, block_uuid: str) -> SheetBuilder:
     sb.add_wire(gx, p13y, gx - g(4), p13y)
     sb.place_power("GND", gx - g(4), p13y)
     g2x, g2y = u2_u2["15"]
-    sb.add_wire(g2x, g2y, g2x - g(6), g2y)
-    sb.place_power("+3V3", g2x - g(6), g2y)
+    sb.add_wire(g2x, g2y, g2x - g(3), g2y)
+    sb.place_power("+3V3", g2x - g(3), g2y)
     for pnum in ["12", "11", "10", "9"]:
         sb.add_nc(*u2_u2[pnum])
 
-    for uref, cref, cx in [("U1", "C1", g(76)), ("U2", "C2", g(104))]:
-        uy = g(144)
-        up = sb.place_symbol(dec_sym, uref, "74HC139", cx, uy, unit=3,
+    c_sym = make_cap()
+    for uref, cref, ux in [("U1", "C1", g(410)), ("U2", "C2", g(434))]:
+        uy = g(228)
+        up = sb.place_symbol(dec_sym, uref, "74HC139", ux, uy, unit=3,
                              ref_offset=(-g(6), -g(1), 0), val_offset=(-g(6), g(2), 0))
-        vx, vy = up["16"]
-        gx, gy = up["8"]
-        sb.add_wire(vx, vy, vx, vy - g(2))
-        sb.place_power("+3V3", vx, vy - g(2))
-        sb.add_wire(gx, gy, gx, gy + g(2))
-        sb.place_power("GND", gx, gy + g(2))
-        ccx = cx + g(14)
-        cp = sb.place_symbol(c_sym, cref, "100nF", ccx, uy)
+        sb.add_wire(up["16"][0], up["16"][1], up["16"][0], up["16"][1] - g(2))
+        sb.place_power("+3V3", up["16"][0], up["16"][1] - g(2))
+        sb.add_wire(up["8"][0], up["8"][1], up["8"][0], up["8"][1] + g(2))
+        sb.place_power("GND", up["8"][0], up["8"][1] + g(2))
+
+        cp = sb.place_symbol(c_sym, cref, "100nF", ux + g(11), uy)
         sb.add_wire(cp["1"][0], cp["1"][1], cp["1"][0], cp["1"][1] - g(2))
         sb.place_power("+3V3", cp["1"][0], cp["1"][1] - g(2))
         sb.add_wire(cp["2"][0], cp["2"][1], cp["2"][0], cp["2"][1] + g(2))
         sb.place_power("GND", cp["2"][0], cp["2"][1] + g(2))
 
-    # 3 Banks of 4 Photorelays positioned comfortably within x = 148..395 mm
-    banks = [
-        ("ATX POWER SW (CH1..4)", "PWR_DRV_CH", 1, g(164), "J7", "PWR"),
-        ("ATX RESET SW (CH1..4)", "RST_DRV_CH", 5, g(222), "J8", "RST"),
-        ("KVM BUTTON SW (CH1..4)", "KVM_DRV_CH", 9, g(280), "J9", "KVM"),
-    ]
-    j2p_sym = make_conn_1xN_left(
-        "quad_ipkvm:Conn_Out_2P", 2, ["OUT_A", "OUT_B"], width_units=8, spacing_units=4,
-        footprint="Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
-    )
-    for b_idx, (title_txt, drv_prefix, k_start, base_x, j_ref, tag) in enumerate(banks):
-        sb.add_text(title_txt, base_x - g(16), g(18), size=1.4, bold=True)
-        for ch in range(1, 5):
-            k_num = k_start + (ch - 1)
-            ky = g(32 + (ch - 1) * 20)
-            k_pins = sb.place_symbol(pr_sym, f"K{k_num}", "PhotoMOS_TBD[C1]", base_x, ky,
-                                     ref_offset=(0, -g(5), 0), val_offset=(0, g(5), 0))
-            ax, ay = k_pins["1"]
-            rp = sb.place_symbol(r_sym, f"R{20 + k_num}", "R_TBD[C1/C3]", ax - g(8), ay, angle=90,
-                                 ref_offset=(0, -g(4), 0), val_offset=(0, -g(2), 0))
-            sb.add_wire(rp["2"][0], rp["2"][1], ax, ay)
-            sb.add_wire(rp["1"][0], rp["1"][1], rp["1"][0] - g(4), rp["1"][1])
-            sb.place_power("+3V3", rp["1"][0] - g(4), rp["1"][1])
-
-            kx, k_y = k_pins["2"]
-            sb.add_wire(kx, k_y, kx - g(6), k_y)
-            sb.add_label(f"{drv_prefix}{ch}", kx - g(6), k_y, angle=180)
-
-            jp = sb.place_symbol(j2p_sym, f"{j_ref}_{ch}", f"{tag}_CH{ch}", base_x + g(16), ky,
-                                 ref_offset=(0, -g(6), 0), val_offset=(0, g(6), 0))
-            sb.add_wire(k_pins["3"][0], k_pins["3"][1], jp["1"][0], jp["1"][1])
-            sb.add_wire(k_pins["4"][0], k_pins["4"][1], jp["2"][0], jp["2"][1])
-
-    # 4x Isolated KVM LED Input Optocouplers (generous g(22) vertical spacing, x <= 265 so clear of title block!)
-    sb.add_text("KVM LED ISOLATED INPUTS (4ch Truth State -> ESP32-P4 Direct GPIO)",
-                g(126), g(116), size=1.4, bold=True)
-    j2p_in_sym = make_conn_1xN(
-        "quad_ipkvm:Conn_KVM_LED_2P", 2, ["LED+", "LED-"], width_units=8, spacing_units=4,
-        footprint="Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
-    )
-    for ch in range(1, 5):
-        oy = g(132 + (ch - 1) * 23)
-        ox = g(168)
-        ok_pins = sb.place_symbol(opto_sym, f"OK{ch}", "Opto_TBD[C2]", ox, oy,
-                                  ref_offset=(0, -g(5), 0), val_offset=(0, g(5), 0))
-        jp = sb.place_symbol(j2p_in_sym, f"J10_{ch}", f"KVM_LED_IN{ch}", ox - g(26), oy,
-                             ref_offset=(0, -g(6), 0), val_offset=(0, g(6), 0))
-        rp_in = sb.place_symbol(r_sym, f"R{32 + ch}", "R_TBD[A6/C2]", ox - g(12), ok_pins["1"][1], angle=90,
-                                ref_offset=(0, -g(2), 0), val_offset=(0, g(2), 0))
-        sb.add_wire(jp["1"][0], jp["1"][1], rp_in["1"][0], rp_in["1"][1])
-        sb.add_wire(rp_in["2"][0], rp_in["2"][1], ok_pins["1"][0], ok_pins["1"][1])
-        sb.add_wire(jp["2"][0], jp["2"][1], ok_pins["2"][0], ok_pins["2"][1])
-
-        cx, cy = ok_pins["4"]
-        jx = cx + g(14)
-        sb.add_wire(cx, cy, jx, cy)
-        sb.add_junction(jx, cy)
-        sb.add_wire(jx, cy, jx + g(14), cy)
-        sb.add_hlabel(f"KVM_LED_CH{ch}", "output", jx + g(14), cy, angle=0)
-        rp_pu = sb.place_symbol(r_sym, f"R{36 + ch}", "10k_PU", jx, cy - g(7), angle=0,
-                                ref_offset=(g(4), -g(1), 0), val_offset=(g(4), g(1), 0))
-        sb.add_wire(jx, cy, rp_pu["2"][0], rp_pu["2"][1])
-        sb.add_wire(rp_pu["1"][0], rp_pu["1"][1], rp_pu["1"][0], rp_pu["1"][1] - g(2))
-        sb.place_power("+3V3", rp_pu["1"][0], rp_pu["1"][1] - g(2))
-
-        ex, ey = ok_pins["3"]
-        sb.add_wire(ex, ey, ex + g(4), ey)
-        sb.place_power("GND", ex + g(4), ey)
-
-    # Bottom-Left Notes box
-    sb.add_rect(g(14), g(164), g(116), g(218), width=0.254, color=(150, 70, 0, 1.0))
+    # Notes & Safety Box above A2 Title Block (x = g(366)..g(456), y = g(248)..g(288))
+    sb.add_rect(g(366), g(248), g(456), g(289), width=0.254, color=(160, 20, 20, 1.0))
     sb.add_text(
-        "ATX/KVM SAFETY & TODO(hw-verify) NOTES (docs/WIRING.md §6.4)\n"
-        "- Invariant 4: NEVER change KVM_A0/A1 while any ~E is Low.\n"
-        "  Sequence: All ~E High -> change A0/A1 -> wait setup -> single ~E Low.\n"
-        "- Fail-safe on ESP reset (High-Z): R5..R7 (10k PU) disable ALL 74HC139\n"
-        "  outputs; R3/R4 (100k PD) hold A0/A1 = 00 (CH1).\n"
-        "- Verify 74HC139 sink current vs photorelay If [C1/C3]; add NPN buffer if needed.\n"
-        "- Verify KVM button common wire & LED voltage/polarity/PWM [A1..A8, C2].\n"
-        "- Firmware disables internal GPIO PU/PD on LED pins; external 10k PU/PD mandatory!",
-        g(17), g(167), size=1.3, color=(120, 50, 0, 1.0)
+        "SAFETY RULES, PCB-FIXED I/F & TODO(hw-verify) NOTES\n"
+        "- [H3] NEVER connect J3 #1 (VCC_5V) to PC VBUS. NEVER connect X630 #2 (HDET=4.8V).\n"
+        "- [PLAN 4.4] ATX/KVM ctrl & LED sense MUST use direct GPIO (NEVER MCP23017).\n"
+        "- Invariant 4: Keep all ~E_* High when changing A0/A1 (R3/R4 100k PD, R5..7 10k PU).\n"
+        "- KVM LED Polarity: Measure on ESP32-P4 GPIO side (OK1..4 collector: lit=Low, off=High)\n"
+        "  AND verify KVM PCB LED [HW_VERIFY A6] before selecting CONFIG_KVM_BOARD_LED_POLARITY_ACTIVE_LOW.\n"
+        "- PROVISIONAL GPIOs: P1 20..23,46 (ATX/KVM) & 32,33,47,48 (LED). Remain 5 safe spares: 6,14,15,19,54.\n"
+        "- PCB-Fixed (internal): H2 UART (G37/38), J4 100M ETH (G28-31,34,35,49-52), TF1 SD (G39-45),\n"
+        "  U9/U11 Audio (G9-13,53 + shared I2C; check ES8311 addr [G2]), Strapping (G34-38).",
+        g(368), g(250), size=1.12, color=(40, 20, 20, 1.0)
     )
 
     return sb
@@ -1780,31 +1580,50 @@ def build_project_json(root_uuid: str) -> dict:
     }
 
 
+def render_project_sym_lib(lib_defs: Dict[str, LibSymDef]) -> str:
+    """Emit quad_ipkvm.kicad_sym containing all custom quad_ipkvm:* symbols."""
+    custom = [lib_defs[k].to_sexpr(indent="  ", use_short_name=True)
+              for k in sorted(lib_defs) if k.startswith("quad_ipkvm:")]
+    body = "\n".join(custom)
+    return (
+        f'(kicad_symbol_lib\n'
+        f'  (version {KICAD_VERSION})\n'
+        f'  (generator {q(GENERATOR_NAME)})\n'
+        f'  (generator_version "1.0")\n'
+        f'{body}\n'
+        f')\n'
+    )
+
+
+def render_sym_lib_table() -> str:
+    return (
+        '(sym_lib_table\n'
+        '  (version 7)\n'
+        '  (lib (name "quad_ipkvm")(type "KiCad")(uri "${KIPRJMOD}/quad_ipkvm.kicad_sym")(options "")(descr "quad-ipkvm project symbols"))\n'
+        ')\n'
+    )
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else repo_root / "hardware" / "kicad"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     root_uuid = det_uuid("sheet:root")
-    child_keys = ["usb_vbus", "x630_csi", "i2c_oled_panel", "atx_kvm_ctrl"]
-    child_uuids = {k: det_uuid(f"block:{k}") for k in child_keys}
-
-    sheets = {
-        "quad-ipkvm.kicad_sch": (build_root_sheet(child_uuids), True),
-        "usb_vbus.kicad_sch": (build_usb_vbus_sheet(root_uuid, child_uuids["usb_vbus"]), False),
-        "x630_csi.kicad_sch": (build_x630_csi_sheet(root_uuid, child_uuids["x630_csi"]), False),
-        "i2c_oled_panel.kicad_sch": (build_i2c_oled_sheet(root_uuid, child_uuids["i2c_oled_panel"]), False),
-        "atx_kvm_ctrl.kicad_sch": (build_atx_kvm_sheet(root_uuid, child_uuids["atx_kvm_ctrl"]), False),
-    }
+    sb = build_unified_sheet()
 
     pro_path = out_dir / "quad-ipkvm.kicad_pro"
+    sch_path = out_dir / "quad-ipkvm.kicad_sch"
+    sym_path = out_dir / "quad_ipkvm.kicad_sym"
+    tbl_path = out_dir / "sym-lib-table"
+
     pro_path.write_text(json.dumps(build_project_json(root_uuid), indent=2) + "\n", encoding="utf-8")
+    sch_path.write_text(sb.render_sch(), encoding="utf-8")
+    sym_path.write_text(render_project_sym_lib(sb.lib_defs), encoding="utf-8")
+    tbl_path.write_text(render_sym_lib_table(), encoding="utf-8")
 
-    for fname, (sb, is_root) in sheets.items():
-        (out_dir / fname).write_text(sb.render_sch(is_root=is_root), encoding="utf-8")
-        print(f"Generated {out_dir / fname} ({len(sb.items)} items, {len(sb.lib_defs)} lib_symbols)")
-
-    print(f"Generated {pro_path}")
+    print(f"Generated {sch_path} (A2 unified single sheet, {len(sb.items)} items, {len(sb.lib_defs)} lib_symbols)")
+    print(f"Generated {sym_path}, {tbl_path}, and {pro_path}")
     return 0
 
 

@@ -51,9 +51,9 @@
 
 ![quad-ipkvm 詳細回路結線図](img/wiring_circuits.svg)
 
-### 3.3 KiCad 回路図プロジェクト（KiCad 8 / 9 階層シート）
+### 3.3 KiCad 回路図プロジェクト（KiCad 8 / 9 単一統合シート）
 
-実配線・部品表・ERC 確認用の KiCad プロジェクトを [`hardware/kicad/quad-ipkvm.kicad_pro`](../hardware/kicad/quad-ipkvm.kicad_pro)（解説: [`hardware/kicad/README.md`](../hardware/kicad/README.md)）に格納しています。全 5 枚（A3 横）の階層シートで構成され、Page 1 ルートシート（`P1` 40pin / `J3`）から `USB_VBUS`、`X630_CSI`、`I2C_OLED_PANEL`、`ATX_KVM_CTRL` の各サブシートへ接続します。
+実配線・部品表・ERC 確認用の KiCad プロジェクトを [`hardware/kicad/quad-ipkvm.kicad_pro`](../hardware/kicad/quad-ipkvm.kicad_pro)（回路図本体: [`hardware/kicad/quad-ipkvm.kicad_sch`](../hardware/kicad/quad-ipkvm.kicad_sch)、解説: [`hardware/kicad/README.md`](../hardware/kicad/README.md)）に格納しています。A2 横 1 枚の統合シート上に 5 つの機能ゾーンを配置し、ESP32-P4-ETH (`P1` / `J3` / `J1`) から全モジュールまでの配線を直接トレースできます。
 
 ---
 
