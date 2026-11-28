@@ -1162,7 +1162,7 @@ def build_unified_sheet() -> SheetBuilder:
     sb.add_label("VBUS_SENSE", g(108), top_vbus_y, angle=0)
 
     sb.add_text(
-        "Ratio=0.5556 (1%: 0.551-0.561) -> 4.75V: >=2.62V, 5.50V: <=3.08V (VDD meas. 3.34V [V2]). Power H2 BEFORE PC!",
+        "Ratio=0.5556 (1% parts: 0.550-0.561) -> 4.75V: >=2.61V, 5.50V: <=3.09V (VDD meas. 3.34V [V2]). Power H2 BEFORE PC!",
         g(15), g(63), size=1.1, color=(20, 90, 40, 1.0)
     )
 
@@ -1518,7 +1518,10 @@ def build_unified_sheet() -> SheetBuilder:
         "  lit = 0V (Active Low) [A6,A7],\n"
         "  no auto-scan [A8] -> GPIO input.\n"
         "TODO(hw-verify): LED off-level / pull-up,\n"
-        "  reverse-feed (KVM on, ESP off), GND.",
+        "  reverse-feed (KVM on, ESP off), GND.\n"
+        "kvm_board driver has ONE e_kvm output:\n"
+        "  it cannot drive 4 open-drain buttons.\n"
+        "  Do NOT enable it with this harness (A-9).",
         g(330), g(151), size=1.05, color=(40, 20, 20, 1.0)
     )
 
@@ -1658,7 +1661,9 @@ def build_unified_sheet() -> SheetBuilder:
         "- [PLAN 4.4] ATX/KVM ctrl & LED sense MUST use direct GPIO (NEVER MCP23017).\n"
         "- Invariant 4: Keep both ~E_* High when changing A0/A1 (R3/R4 100k PD, R5/R6 10k PU).\n"
         "- KVM: button = ESP OPEN-DRAIN (Low=press, never High); LED = Active Low (lit=0V) [A3-A8, Issue #180].\n"
-        "  Check reverse-feed (KVM on/ESP off) and common GND before connecting the KVM harness.\n"
+        "  Reverse-feed (KVM on/ESP off) is UNRESOLVED: pick one before connecting the harness (Issue #180):\n"
+        "  KVM pull-up only while ESP I/O is on / no pull-up path to the pin / series R + abs-max check [GPIO abs-max: not in repo docs].\n"
+        "- Relay LED (390 ohm): IF must reach the datasheet recommended value at min VCC, driver VOL, R tolerance, temp [C1/C3].\n"
         "- PROVISIONAL GPIOs: A0/A1 P1#35/#34, ~E_PWR/~E_RST #32/#31, KVM_BTN1 #24, KVM_LED1..4 #26/#25/#22/#21,\n"
         "  KVM_BTN2..4 #2/#7/#9 (GPIO19/15/14), PC_PWR_L #10 (GPIO6), PC_HDD_L #1 (GPIO54). No spare GPIO left.\n"
         "- PCB-Fixed (internal): H2 UART (G37/38), J4 100M ETH (G28-31,34,35,49-52), TF1 SD (G39-45),\n"
