@@ -629,7 +629,7 @@ def render_svg(data: Dict[str, Any], out_svg: Path) -> None:
         f'<rect x="{tb_x}" y="{tb_y}" width="{tb_w}" height="{tb_h}" fill="#f8fafc" stroke="#334155" stroke-width="0.35"/>',
         f'<text x="{tb_x+3}" y="{tb_y+7}" font-family="Helvetica, Arial, sans-serif" font-size="3.1" font-weight="bold" fill="#0f172a">{html.escape(data["title"][:48])}</text>',
         f'<text x="{tb_x+3}" y="{tb_y+14}" font-family="Helvetica, Arial, sans-serif" font-size="2.3" fill="#475569">File: {html.escape(data["name"])}  |  Format: KiCad 8 (20231120) {data["paper"]}</text>',
-        f'<text x="{tb_x+3}" y="{tb_y+21}" font-family="Helvetica, Arial, sans-serif" font-size="2.3" fill="#475569">Project: quad-ipkvm  |  Rev: 1.0  |  Date: 2026-11-27</text>',
+        f'<text x="{tb_x+3}" y="{tb_y+21}" font-family="Helvetica, Arial, sans-serif" font-size="2.3" fill="#475569">Project: quad-ipkvm  |  Rev: 1.1  |  Date: 2026-11-28</text>',
         f'<text x="{tb_x+3}" y="{tb_y+28}" font-family="Helvetica, Arial, sans-serif" font-size="2.1" fill="#64748b">Primary ref: docs/WIRING.md (verify ERC in KiCad GUI)</text>',
     ]
 
