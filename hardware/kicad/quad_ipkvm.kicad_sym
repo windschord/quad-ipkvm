@@ -95,8 +95,9 @@
   (symbol "ESP32-P4-ETH_J3" (pin_names (offset 1.016)) (exclude_from_sim no) (in_bom yes) (on_board yes)
     (property "Reference" "J" (at 0 12.7 0) (effects (font (size 1.27 1.27))))
     (property "Value" "ESP32-P4-ETH_J3" (at 0 -12.7 0) (effects (font (size 1.27 1.27))))
-    (property "Footprint" "Connector_JST:JST_SH_BM04B-SRSS-TB_1x04-1MP_P1.00mm_Horizontal" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
+    (property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
     (property "Datasheet" "~" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
+    (property "Description" "TODO(hw-verify) H7: Confirm J3 physical connector part number & pitch on rev v1.3 board before ordering harness" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
     (symbol "ESP32-P4-ETH_J3_0_1"
       (rectangle (start -10.16 10.16) (end 10.16 -10.16) (stroke (width 0.254) (type default)) (fill (type background)))
     )
@@ -164,6 +165,7 @@
     (property "Value" "MCP23017_SSCI-016506" (at 0 -43.18 0) (effects (font (size 1.27 1.27))))
     (property "Footprint" "Module:SSCI-016506_MCP23017" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
     (property "Datasheet" "~" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
+    (property "Description" "Logical pins 1..20; SSCI-016506 headers: I2C 5p(1:3V3,2:SDA,3:SCL,5:GND), JP1(GPA0..7), JP3(GPB0..7) [HW_VERIFY G4]" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
     (symbol "MCP23017_SSCI016506_0_1"
       (rectangle (start -15.24 40.64) (end 15.24 -40.64) (stroke (width 0.254) (type default)) (fill (type background)))
     )

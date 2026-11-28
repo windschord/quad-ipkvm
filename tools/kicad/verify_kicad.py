@@ -254,7 +254,7 @@ def validate_sheet(
     is_root: bool,
     seen_uuids: Dict[str, str],
     seen_ref_units: Set[Tuple[str, int]],
-    project_lib_syms: Set[str],
+    project_lib_syms: Optional[Set[str]],
 ) -> Tuple[List[str], Optional[Dict[str, Any]]]:
     errs: List[str] = []
     try:
@@ -262,7 +262,7 @@ def validate_sheet(
     except ValueError as exc:
         return [f"{sch_path.name}: S-expression parse error: {exc}"], None
 
-    if len(ast_roots) != 1 or not isinstance(ast_roots[0], list) or ast_roots[0][0] != "kicad_sch":
+    if len(ast_roots) != 1 or not isinstance(ast_roots[0], list) or not ast_roots[0] or ast_roots[0][0] != "kicad_sch":
         return [f"{sch_path.name}: top-level node must be (kicad_sch ...)"], None
 
     sch = ast_roots[0]
@@ -389,7 +389,7 @@ def validate_sheet(
     placed_syms: List[Dict[str, Any]] = []
     pin_pts: List[Tuple[str, str, str, Tuple[float, float]]] = []
     bboxes: List[Tuple[str, float, float, float, float]] = []
-    power_out_pts: Set[Tuple[int, int]] = set()
+    power_out_pins: Dict[Tuple[int, int], List[str]] = defaultdict(list)
     power_net_pts: Dict[str, Set[Tuple[int, int]]] = defaultdict(set)
 
     for sy_n in find_children(sch, "symbol"):
@@ -416,7 +416,7 @@ def validate_sheet(
         if lib_id not in lib_syms:
             errs.append(f"{sch_path.name}: symbol {ref} references missing embedded lib_id {lib_id!r}")
             continue
-        if lib_id.startswith("quad_ipkvm:") and project_lib_syms and lib_id.split(":", 1)[1] not in project_lib_syms:
+        if lib_id.startswith("quad_ipkvm:") and project_lib_syms is not None and lib_id.split(":", 1)[1] not in project_lib_syms:
             errs.append(f"{sch_path.name}: symbol {ref} ({lib_id}) missing from quad_ipkvm.kicad_sym")
 
         ls = lib_syms[lib_id]
@@ -450,7 +450,7 @@ def validate_sheet(
             else:
                 pin_pts.append((ref, p.num, p.etype, cp))
                 if p.etype == "power_out":
-                    power_out_pts.add(qpt(cp))
+                    power_out_pins[qpt(cp)].append(f"{ref}.{p.num}")
                 if ls.is_power and p.etype == "power_in":
                     power_net_pts[val].add(qpt(cp))
             sym_canvas_pins.append((p, cp))
@@ -512,6 +512,8 @@ def validate_sheet(
         has_nc = qp in ncs
         has_lbl = qp in all_label_qpts
         has_peer_pin = len(pin_qpts[qp]) > 1
+        if has_nc and (has_wire or has_lbl or has_peer_pin):
+            errs.append(f"{sch_path.name}: pin {ref}.{pnum} at {cp} has both no_connect marker and connection")
         if not (has_wire or has_nc or has_lbl or has_peer_pin):
             errs.append(f"{sch_path.name}: floating pin {ref}.{pnum} at {cp}")
         for a, b in wires:
@@ -605,7 +607,7 @@ def validate_sheet(
         "symbols": placed_syms,
         "texts": texts,
         "rects": rects,
-        "power_out_pts": power_out_pts,
+        "power_out_pins": power_out_pins,
         "power_net_pts": power_net_pts,
         "wire_edges": [(qpt(a), qpt(b)) for a, b in wires],
     }
@@ -628,7 +630,7 @@ def render_svg(data: Dict[str, Any], out_svg: Path) -> None:
         f'<rect x="6" y="6" width="{pw-12}" height="{ph-12}" fill="none" stroke="#334155" stroke-width="0.45"/>',
         f'<rect x="{tb_x}" y="{tb_y}" width="{tb_w}" height="{tb_h}" fill="#f8fafc" stroke="#334155" stroke-width="0.35"/>',
         f'<text x="{tb_x+3}" y="{tb_y+7}" font-family="Helvetica, Arial, sans-serif" font-size="3.1" font-weight="bold" fill="#0f172a">{html.escape(data["title"][:48])}</text>',
-        f'<text x="{tb_x+3}" y="{tb_y+14}" font-family="Helvetica, Arial, sans-serif" font-size="2.3" fill="#475569">File: {html.escape(data["name"])}  |  Format: KiCad 8 (20231120) {data["paper"]}</text>',
+        f'<text x="{tb_x+3}" y="{tb_y+14}" font-family="Helvetica, Arial, sans-serif" font-size="2.3" fill="#475569">File: {html.escape(data["name"])}  |  Format: KiCad 8 (20231120) {html.escape(data["paper"])}</text>',
         f'<text x="{tb_x+3}" y="{tb_y+21}" font-family="Helvetica, Arial, sans-serif" font-size="2.3" fill="#475569">Project: quad-ipkvm  |  Rev: 1.0  |  Date: 2026-11-27</text>',
         f'<text x="{tb_x+3}" y="{tb_y+28}" font-family="Helvetica, Arial, sans-serif" font-size="2.1" fill="#64748b">Primary ref: docs/WIRING.md (verify ERC in KiCad GUI)</text>',
     ]
@@ -729,26 +731,43 @@ def verify_project(pro_path: Path, render_dir: Optional[Path]) -> int:
 
     # Verify sym-lib-table + project symbol library quad_ipkvm.kicad_sym
     sym_table_path = pro_path.parent / "sym-lib-table"
-    project_lib_syms: Set[str] = set()
+    sym_lib_path = pro_path.parent / "quad_ipkvm.kicad_sym"
+    project_lib_syms: Optional[Set[str]] = None
+
     if not sym_table_path.exists():
         errs.append("Missing sym-lib-table in project directory")
     else:
         try:
             tbl_ast = parse_sexpr(sym_table_path.read_text(encoding="utf-8"))
-            if not tbl_ast or tbl_ast[0][0] != "sym_lib_table":
+            if not tbl_ast or not isinstance(tbl_ast[0], list) or not tbl_ast[0] or tbl_ast[0][0] != "sym_lib_table":
                 errs.append("Invalid sym-lib-table format")
+            else:
+                found_proj_lib = False
+                for lib_n in find_children(tbl_ast[0], "lib"):
+                    name_n = find_child(lib_n, "name")
+                    uri_n = find_child(lib_n, "uri")
+                    if name_n and len(name_n) >= 2 and str(name_n[1]) == "quad_ipkvm":
+                        found_proj_lib = True
+                        uri_str = str(uri_n[1]) if uri_n and len(uri_n) >= 2 else ""
+                        resolved_uri = Path(uri_str.replace("${KIPRJMOD}", str(pro_path.parent))).resolve()
+                        if resolved_uri != sym_lib_path.resolve():
+                            errs.append(
+                                f"sym-lib-table 'quad_ipkvm' uri {uri_str!r} does not resolve to {sym_lib_path}"
+                            )
+                if not found_proj_lib:
+                    errs.append("sym-lib-table missing library entry named 'quad_ipkvm'")
         except ValueError as exc:
             errs.append(f"sym-lib-table parse error: {exc}")
 
-    sym_lib_path = pro_path.parent / "quad_ipkvm.kicad_sym"
     if not sym_lib_path.exists():
         errs.append("Missing quad_ipkvm.kicad_sym in project directory")
     else:
         try:
             sym_ast = parse_sexpr(sym_lib_path.read_text(encoding="utf-8"))
-            if not sym_ast or sym_ast[0][0] != "kicad_symbol_lib":
+            if not sym_ast or not isinstance(sym_ast[0], list) or not sym_ast[0] or sym_ast[0][0] != "kicad_symbol_lib":
                 errs.append("Invalid quad_ipkvm.kicad_sym top-level node")
             else:
+                project_lib_syms = set()
                 for snode in find_children(sym_ast[0], "symbol"):
                     ls, lerrs = parse_lib_symbol(snode, require_prefix=False)
                     errs.extend([f"quad_ipkvm.kicad_sym: {e}" for e in lerrs])
@@ -769,7 +788,7 @@ def verify_project(pro_path: Path, render_dir: Optional[Path]) -> int:
         print(f"FAILED: {root_sch.name} parse error: {exc}", file=sys.stderr)
         return 1
 
-    if not root_ast_list or not isinstance(root_ast_list[0], list) or root_ast_list[0][0] != "kicad_sch":
+    if not root_ast_list or not isinstance(root_ast_list[0], list) or not root_ast_list[0] or root_ast_list[0][0] != "kicad_sch":
         print(f"FAILED: {root_sch.name} missing (kicad_sch ...)", file=sys.stderr)
         return 1
 
@@ -782,6 +801,7 @@ def verify_project(pro_path: Path, render_dir: Optional[Path]) -> int:
     seen_uuids: Dict[str, str] = {}
     seen_ref_units: Set[Tuple[str, int]] = set()
     all_sheets_data: List[Dict[str, Any]] = []
+    loaded_children: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
 
     root_errs, root_data = validate_sheet(root_sch, f"/{root_uuid}", True, seen_uuids, seen_ref_units, project_lib_syms)
     errs.extend(root_errs)
@@ -800,17 +820,16 @@ def verify_project(pro_path: Path, render_dir: Optional[Path]) -> int:
             if c_data is None:
                 continue
             all_sheets_data.append(c_data)
+            loaded_children.append((sh, c_data))
 
             sp_counts = Counter((pname, pshape) for pname, pshape, _, _ in sh["pins"])
             hl_counts = Counter((hname, hshape) for hname, hshape, _, _ in c_data["hlabels"])
             if sp_counts != hl_counts:
                 errs.append(f"{sh['file']}: sheet pin <-> hierarchical_label mismatch: root={dict(sp_counts)} child={dict(hl_counts)}")
 
-        # Project-wide power rail ERC check across wires + hierarchical connections
-        # Nodes are (sheet_name, qx, qy) plus shared global power rail nodes ("__GLOBAL__", net_name)
+        # Project-wide power rail ERC check across wires, same-sheet local labels, and hierarchical pins
         adj: Dict[Tuple[Any, ...], Set[Tuple[Any, ...]]] = defaultdict(set)
-        all_power_out_nodes: Set[Tuple[Any, ...]] = set()
-        sheet_by_name = {d["name"]: d for d in all_sheets_data}
+        power_out_pins_by_node: Dict[Tuple[Any, ...], Set[Tuple[str, str]]] = defaultdict(set)
 
         for d in all_sheets_data:
             sn = d["name"]
@@ -818,22 +837,31 @@ def verify_project(pro_path: Path, render_dir: Optional[Path]) -> int:
                 na, nb = (sn, *a), (sn, *b)
                 adj[na].add(nb)
                 adj[nb].add(na)
-            for p_out in d["power_out_pts"]:
-                all_power_out_nodes.add((sn, *p_out))
+            for p_qpt, pin_ids in d["power_out_pins"].items():
+                for pid in pin_ids:
+                    power_out_pins_by_node[(sn, *p_qpt)].add((sn, pid))
+            # Bridge same-name local labels within the SAME sheet (never across sheets!)
+            for lname, lpt_mm, _ in d["labels"]:
+                lnode = (sn, *qpt(lpt_mm))
+                lbl_hub = ("__LBL__", sn, lname)
+                adj[lnode].add(lbl_hub)
+                adj[lbl_hub].add(lnode)
+                # If label sits in interior of any wire on this sheet, attach it to that wire's net
+                for wa, wb in d["wires"]:
+                    if pt_on_seg_interior(lpt_mm, wa, wb):
+                        wnode = (sn, *qpt(wa))
+                        adj[lnode].add(wnode)
+                        adj[wnode].add(lnode)
             # Bridge same-name power symbols globally (as KiCad global power nets do)
             for pnet, pts in d["power_net_pts"].items():
-                pts_list = list(pts)
-                for pt in pts_list:
+                for pt in pts:
                     gnode = ("__PWR__", pnet)
                     npt = (sn, *pt)
                     adj[npt].add(gnode)
                     adj[gnode].add(npt)
 
-        # Bridge hierarchical sheet pins <-> child hierarchical labels
-        for sh in root_data["sheets"]:
-            cdata = sheet_by_name.get(sh["file"])
-            if not cdata:
-                continue
+        # Bridge hierarchical sheet pins <-> child hierarchical labels using loaded child association
+        for sh, cdata in loaded_children:
             for pname, _, pt, _ in sh["pins"]:
                 for hname, _, hpt, _ in cdata["hlabels"]:
                     if pname == hname:
@@ -841,16 +869,21 @@ def verify_project(pro_path: Path, render_dir: Optional[Path]) -> int:
                         nb = (cdata["name"], *qpt(hpt))
                         adj[na].add(nb)
                         adj[nb].add(na)
+                        # If hierarchical label sits on wire interior in child, attach it
+                        for wa, wb in cdata["wires"]:
+                            if pt_on_seg_interior(hpt, wa, wb):
+                                wnode = (cdata["name"], *qpt(wa))
+                                adj[nb].add(wnode)
+                                adj[wnode].add(nb)
 
         for pnet in ("+3V3", "GND"):
             start = ("__PWR__", pnet)
             vis: Set[Tuple[Any, ...]] = {start}
             q = [start]
-            drivers: List[Tuple[Any, ...]] = []
+            drivers: Set[Tuple[str, str]] = set()
             while q:
                 cur = q.pop()
-                if cur in all_power_out_nodes:
-                    drivers.append(cur)
+                drivers.update(power_out_pins_by_node.get(cur, ()))
                 for nb in adj[cur]:
                     if nb not in vis:
                         vis.add(nb)
@@ -858,7 +891,7 @@ def verify_project(pro_path: Path, render_dir: Optional[Path]) -> int:
             if len(drivers) == 0:
                 errs.append(f"Power net {pnet} has no power_out driver (component power_out or PWR_FLAG)")
             elif len(drivers) > 1:
-                errs.append(f"Power net {pnet} has multiple conflicting power_out drivers: {drivers}")
+                errs.append(f"Power net {pnet} has multiple conflicting power_out drivers: {sorted(drivers)}")
 
     if render_dir is not None and all_sheets_data:
         render_dir.mkdir(parents=True, exist_ok=True)

@@ -107,6 +107,7 @@ class LibSymDef:
     unit_count: int = 1
     ref_pos: Tuple[float, float, int] = (0.0, 3.81, 0)
     val_pos: Tuple[float, float, int] = (0.0, -3.81, 0)
+    description: str = ""
     graphics_by_unit: Dict[int, List[str]] = field(default_factory=dict)
     pins: List[PinDef] = field(default_factory=list)
 
@@ -149,6 +150,11 @@ class LibSymDef:
             f'{i2}(property "Datasheet" "~" (at 0 0 0)'
             f' (effects (font (size 1.27 1.27)) hide))'
         )
+        if self.description:
+            lines.append(
+                f'{i2}(property "Description" {q(self.description)} (at 0 0 0)'
+                f' (effects (font (size 1.27 1.27)) hide))'
+            )
 
         g0 = self.graphics_by_unit.get(0, [])
         if g0:
@@ -518,7 +524,15 @@ def make_p1_40pin() -> LibSymDef:
 
 
 def make_mcp23017_module() -> LibSymDef:
-    """Switch Science SSCI-016506 MCP23017 3.3V module."""
+    """
+    Switch Science SSCI-016506 MCP23017 3.3V module.
+    NOTE: Pins 1..20 on this schematic symbol are LOGICAL pin numbers grouped by function
+    (left: power/I2C/GPB0..7, right: GPA0..7). Physical SSCI-016506 module headers are:
+      - I2C 5-pin header: 1=3V3, 2=SDA, 3=SCL, 4=NC, 5=GND
+      - JP1: GPA0..GPA7
+      - JP3: GPB0..GPB7
+      - INTA/INTB/~RESET: NOT broken out on module header (HW_VERIFY G4).
+    """
     half_w = g(12)
     pin_len = g(4)
     lx = round(-half_w - pin_len, 2)
@@ -564,6 +578,7 @@ def make_mcp23017_module() -> LibSymDef:
         pin_names_offset=1.016,
         ref_pos=(0.0, g(34), 0),
         val_pos=(0.0, g(-34), 0),
+        description="Logical pins 1..20; SSCI-016506 headers: I2C 5p(1:3V3,2:SDA,3:SCL,5:GND), JP1(GPA0..7), JP3(GPB0..7) [HW_VERIFY G4]",
         graphics_by_unit={
             0: [
                 f"(rectangle (start {fmt(-half_w)} {fmt(box_top)}) (end {fmt(half_w)} {fmt(box_bot)})"
@@ -960,8 +975,9 @@ def build_unified_sheet() -> SheetBuilder:
         ["passive", "bidirectional", "bidirectional", "power_in"],
         width_units=16,
         spacing_units=4,
-        footprint="Connector_JST:JST_SH_BM04B-SRSS-TB_1x04-1MP_P1.00mm_Horizontal",
+        footprint="",
     )
+    j3_sym.description = "TODO(hw-verify) H7: Confirm J3 physical connector part number & pitch on rev v1.3 board before ordering harness"
     j3_pins = sb.place_symbol(j3_sym, "J3", "USB_OTG_HS_4P", g(168), g(36))
     sb.add_nc(*j3_pins["1"])
     sb.add_text("FORBIDDEN: DO NOT CONNECT TO PC VBUS [H3]!", g(150), g(23), size=1.2, bold=True, color=(200, 0, 0, 1.0))
@@ -1177,6 +1193,7 @@ def build_unified_sheet() -> SheetBuilder:
     p5x, p5y = p1_pins["5"]
     sb.add_wire_poly([(j5_4x, j5_4y), (g(132), j5_4y), (g(132), p5y), (p5x, p5y)])
     sb.add_label("X630_INT[B6]", g(92), j5_4y, angle=0)
+    sb.add_text("HOLD: Do not wire INT until High V verified [B6]", g(66), j5_4y - g(3), size=1.05, color=(120, 30, 150, 1.0))
 
     j5_5x, j5_5y = j5_pins["5"]
     p6x, p6y = p1_pins["6"]
@@ -1282,8 +1299,9 @@ def build_unified_sheet() -> SheetBuilder:
     sb.add_label("I2C_SCL", g(76), g(152), angle=0)
 
     sb.add_text(
+        "U3 pins 1..20 are logical; SSCI-016506: I2C 5p(1:3V3,2:SDA,3:SCL,5:GND), JP1(GPA0..7), JP3(GPB0..7) [G4]\n"
         "PCB has R44/R46 2.2k I2C PU -> +3V3. SSCI-016506 /RESET fixed internally (polling only; NO ATX/KVM!).",
-        g(15), g(310), size=1.1, color=(120, 50, 0, 1.0)
+        g(15), g(307), size=1.08, color=(120, 50, 0, 1.0)
     )
 
     # ==================================================================
@@ -1341,23 +1359,24 @@ def build_unified_sheet() -> SheetBuilder:
     sb.add_wire(a1_x, u1_u2["13"][1], a1_x, u2_u1["3"][1])
     sb.add_wire(a1_x, u2_u1["3"][1], u2_u1["3"][0], u2_u1["3"][1])
 
-    # ~{E_PWR} (P1 #32), ~{E_RST} (P1 #31), ~{E_KVM} (P1 #24) with 10k PU (R5, R6, R7) directly into 74HC139 ~G pins
+    # ~{E_PWR} (P1 #32), ~{E_RST} (P1 #31), ~{E_KVM} (P1 #24) with 10k PU (R5, R6, R7) BELOW ~G pins so A1 wires stay clear!
     en_routes = [
         ("32", "~{E_PWR}", u1_u1["1"], "R5", g(230), g(256)),
-        ("31", "~{E_RST}", u1_u2["15"], "R6", g(233), g(258)),
-        ("24", "~{E_KVM}", u2_u1["1"], "R7", g(236), g(260)),
+        ("31", "~{E_RST}", u1_u2["15"], "R6", g(233), g(256)),
+        ("24", "~{E_KVM}", u2_u1["1"], "R7", g(236), g(256)),
     ]
     for pnum, lname, gpin, rref, tap_x, pu_x in en_routes:
         px, py = p1_pins[pnum]
         gx, gy = gpin
         sb.add_wire_poly([(px, py), (tap_x, py), (tap_x, gy), (pu_x, gy)])
         sb.add_wire(pu_x, gy, gx, gy)
-        rp = sb.place_symbol(r_sym, rref, "10k_PU", pu_x, gy - g(6), angle=0,
-                             ref_offset=(g(3), -g(1), 0), val_offset=(g(3), g(1), 0))
-        sb.add_wire(pu_x, gy, rp["2"][0], rp["2"][1])
+        rp = sb.place_symbol(r_sym, rref, "10k_PU", pu_x, gy + g(6), angle=0,
+                             ref_offset=(-g(4), -g(1), 0), val_offset=(-g(4), g(1), 0))
+        sb.add_wire(pu_x, gy, rp["1"][0], rp["1"][1])
         sb.add_junction(pu_x, gy)
-        sb.add_wire(rp["1"][0], rp["1"][1], rp["1"][0], rp["1"][1] - g(2))
-        sb.place_power("+3V3", rp["1"][0], rp["1"][1] - g(2))
+        bot_y = gy + g(11)
+        sb.add_wire_poly([(rp["2"][0], rp["2"][1]), (pu_x, bot_y), (pu_x + g(5), bot_y)])
+        sb.place_power("+3V3", pu_x + g(5), bot_y)
         sb.add_label(lname, g(238), gy, angle=0)
 
     # 3 Banks of 4 Photorelays DIRECTLY wired to 74HC139 outputs (no label disconnects!)
@@ -1488,7 +1507,8 @@ def build_unified_sheet() -> SheetBuilder:
         "- Invariant 4: Keep all ~E_* High when changing A0/A1 (R3/R4 100k PD, R5..7 10k PU).\n"
         "- KVM LED Polarity: Measure on ESP32-P4 GPIO side (OK1..4 collector: lit=Low, off=High)\n"
         "  AND verify KVM PCB LED [HW_VERIFY A6] before selecting CONFIG_KVM_BOARD_LED_POLARITY_ACTIVE_LOW.\n"
-        "- PROVISIONAL GPIOs: P1 20..23,46 (ATX/KVM) & 32,33,47,48 (LED). Remain 5 safe spares: 6,14,15,19,54.\n"
+        "- PROVISIONAL: ATX/KVM out GPIO20/21/22/23/46 (P1 #35/#34/#32/#31/#24),\n"
+        "  LED in GPIO32/33/47/48 (P1 #26/#25/#22/#21). Spares: GPIO6/14/15/19/54.\n"
         "- PCB-Fixed (internal): H2 UART (G37/38), J4 100M ETH (G28-31,34,35,49-52), TF1 SD (G39-45),\n"
         "  U9/U11 Audio (G9-13,53 + shared I2C; check ES8311 addr [G2]), Strapping (G34-38).",
         g(368), g(250), size=1.12, color=(40, 20, 20, 1.0)

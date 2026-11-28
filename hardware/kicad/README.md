@@ -38,7 +38,8 @@ KiCad 8 または KiCad 9 で [`quad-ipkvm.kicad_pro`](quad-ipkvm.kicad_pro) を
 
 - `P1` の ATX/KVM GPIO 割当（暫定候補: `GPIO20, 21, 22, 23, 46` を出力、`GPIO32, 33, 47, 48` を LED 入力）
 - フォトリレー・フォトカプラの型番、駆動抵抗 `R21..R36`、`74HC139` シンク電流余裕（バッファ Tr 要否 `C1/C3`）
-- パネル LED 制限抵抗 `R10..R13` (`G6`)、OLED モジュール I2C アドレス/PU (`G2/G3`)、`X630 #4 INT` High 電圧 (`B6`)
+- パネル LED 制限抵抗 `R10..R13` (`G6`)、OLED モジュール I2C アドレス/PU (`G2/G3`)、`X630 #4 INT` High 電圧 (`B6`)、`J3` 実コネクタ形状/ピッチ (`H7`)
+- `U3` (`MCP23017`, `SSCI-016506`) のピン番号 `1..20` は機能別論理番号であり、実基板ヘッダ対応は I2C 5pin (`1:3V3, 2:SDA, 3:SCL, 4:NC, 5:GND`), `JP1` (`GPA0..7`), `JP3` (`GPB0..7`)（`HW_VERIFY G4`）
 
 ## 再生成と検証
 
