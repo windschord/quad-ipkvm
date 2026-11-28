@@ -822,6 +822,15 @@ def verify_project(pro_path: Path, render_dir: Optional[Path]) -> int:
             all_sheets_data.append(c_data)
             loaded_children.append((sh, c_data))
 
+            sp_name_counts = Counter(pname for pname, _, _, _ in sh["pins"])
+            hl_name_counts = Counter(hname for hname, _, _, _ in c_data["hlabels"])
+            dup_sp = {k: v for k, v in sp_name_counts.items() if v != 1}
+            dup_hl = {k: v for k, v in hl_name_counts.items() if v != 1}
+            if dup_sp:
+                errs.append(f"{sh['file']}: duplicate root sheet pin names (expected 1 each): {dup_sp}")
+            if dup_hl:
+                errs.append(f"{sh['file']}: duplicate child hierarchical_label names (expected 1 each): {dup_hl}")
+
             sp_counts = Counter((pname, pshape) for pname, pshape, _, _ in sh["pins"])
             hl_counts = Counter((hname, hshape) for hname, hshape, _, _ in c_data["hlabels"])
             if sp_counts != hl_counts:
