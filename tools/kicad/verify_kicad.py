@@ -586,16 +586,26 @@ def validate_sheet(
 
     title_n = find_child(sch, "title_block")
     title_str = ""
+    rev_str = ""
+    date_str = ""
     if title_n:
         tn = find_child(title_n, "title")
         if tn:
             title_str = str(tn[1])
+        rn = find_child(title_n, "rev")
+        if rn:
+            rev_str = str(rn[1])
+        dn = find_child(title_n, "date")
+        if dn:
+            date_str = str(dn[1])
 
     return errs, {
         "name": sch_path.name,
         "uuid": sheet_uuid,
         "paper": paper_name,
         "title": title_str,
+        "rev": rev_str,
+        "date": date_str,
         "wires": wires,
         "junctions": junction_pts,
         "ncs": nc_pts,
@@ -621,6 +631,13 @@ def render_svg(data: Dict[str, Any], out_svg: Path) -> None:
     vmax = max(pw, ph)
     vy_off = round((vmax - ph) / 2.0, 2)
     tb_x, tb_y, tb_w, tb_h = pw - 128.0, ph - 43.0, 122.0, 37.0
+    # Show the revision/date written in the schematic's own title_block; omit a missing field (never invent one).
+    tb_parts = ["Project: quad-ipkvm"]
+    if data.get("rev"):
+        tb_parts.append("Rev: " + data["rev"])
+    if data.get("date"):
+        tb_parts.append("Date: " + data["date"])
+    tb_meta = "  |  ".join(tb_parts)
 
     s: List[str] = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="2800" height="2800" viewBox="0 {-vy_off} {vmax} {vmax}">',
@@ -629,7 +646,7 @@ def render_svg(data: Dict[str, Any], out_svg: Path) -> None:
         f'<rect x="{tb_x}" y="{tb_y}" width="{tb_w}" height="{tb_h}" fill="#f8fafc" stroke="#334155" stroke-width="0.35"/>',
         f'<text x="{tb_x+3}" y="{tb_y+7}" font-family="Helvetica, Arial, sans-serif" font-size="3.1" font-weight="bold" fill="#0f172a">{html.escape(data["title"][:48])}</text>',
         f'<text x="{tb_x+3}" y="{tb_y+14}" font-family="Helvetica, Arial, sans-serif" font-size="2.3" fill="#475569">File: {html.escape(data["name"])}  |  Format: KiCad 8 (20231120) {data["paper"]}</text>',
-        f'<text x="{tb_x+3}" y="{tb_y+21}" font-family="Helvetica, Arial, sans-serif" font-size="2.3" fill="#475569">Project: quad-ipkvm  |  Rev: 1.0  |  Date: 2026-11-27</text>',
+        f'<text x="{tb_x+3}" y="{tb_y+21}" font-family="Helvetica, Arial, sans-serif" font-size="2.3" fill="#475569">{html.escape(tb_meta)}</text>',
         f'<text x="{tb_x+3}" y="{tb_y+28}" font-family="Helvetica, Arial, sans-serif" font-size="2.1" fill="#64748b">Primary ref: docs/WIRING.md (verify ERC in KiCad GUI)</text>',
     ]
 
